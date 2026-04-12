@@ -1,0 +1,3 @@
+tradeId,instrumentKey,entryTime,exitTime,quantity,entryPrice,exitPrice,pnl,entryReason,exitReason
+BT-TRD-SAMPLE-1,NFO:NIFTY-MOCK-ATM-CE,2026-04-12T04:15:00Z,2026-04-12T04:32:00Z,150,100.00,120.00,3000.00,"VWAP + breakout + volume spike","Target hit"
+BT-TRD-SAMPLE-2,NFO:NIFTY-MOCK-ATM-CE,2026-04-12T05:10:00Z,2026-04-12T05:18:00Z,150,110.00,99.00,-1650.00,"VWAP + breakout + volume spike","Hard stop loss"

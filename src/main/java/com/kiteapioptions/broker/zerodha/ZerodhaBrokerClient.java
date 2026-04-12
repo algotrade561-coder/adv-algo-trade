@@ -1,0 +1,340 @@
+package com.kiteapioptions.broker.zerodha;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kiteapioptions.broker.BrokerClient;
+import com.kiteapioptions.broker.BrokerException;
+import com.kiteapioptions.broker.MarketDataListener;
+import com.kiteapioptions.config.TradingProperties;
+import com.kiteapioptions.domain.BrokerName;
+import com.kiteapioptions.domain.BrokerSession;
+import com.kiteapioptions.domain.Candle;
+import com.kiteapioptions.domain.HistoricalDataRequest;
+import com.kiteapioptions.domain.Instrument;
+import com.kiteapioptions.domain.OrderRequest;
+import com.kiteapioptions.domain.OrderResponse;
+import com.kiteapioptions.domain.OrderSide;
+import com.kiteapioptions.domain.OrderStatus;
+import com.kiteapioptions.domain.Position;
+import com.kiteapioptions.domain.Quote;
+import com.kiteapioptions.domain.Timeframe;
+import com.kiteapioptions.marketdata.KiteInstrumentCsvParser;
+import java.math.BigDecimal;
+import java.net.URI;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import java.util.Collection;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.util.LinkedMultiValueMap;
+import org.springframework.util.MultiValueMap;
+import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientException;
+import org.springframework.web.util.UriComponentsBuilder;
+
+/**
+ * Zerodha Kite Connect REST adapter isolated behind the broker-neutral interface.
+ */
+public class ZerodhaBrokerClient implements BrokerClient {
+
+    private static final DateTimeFormatter HISTORICAL_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+    private static final DateTimeFormatter KITE_TIMESTAMP_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ssZ");
+
+    private final TradingProperties properties;
+    private final RestClient restClient;
+    private final ObjectMapper objectMapper;
+    private final KiteInstrumentCsvParser instrumentCsvParser;
+    private final KiteAccessTokenStore tokenStore;
+
+    public ZerodhaBrokerClient(
+            TradingProperties properties,
+            RestClient restClient,
+            ObjectMapper objectMapper,
+            KiteInstrumentCsvParser instrumentCsvParser,
+            KiteAccessTokenStore tokenStore
+    ) {
+        this.properties = properties;
+        this.restClient = restClient;
+        this.objectMapper = objectMapper;
+        this.instrumentCsvParser = instrumentCsvParser;
+        this.tokenStore = tokenStore;
+    }
+
+    @Override
+    public BrokerSession session() {
+        boolean authenticated = hasText(properties.broker().apiKey()) && tokenStore.authenticated();
+        return new BrokerSession(BrokerName.ZERODHA, tokenStore.userId().orElse(properties.broker().userId()),
+                authenticated, tokenStore.updatedAt().orElse(null), null);
+    }
+
+    @Override
+    public List<Instrument> downloadInstruments() {
+        try {
+            String csv = restClient.get()
+                    .uri("/instruments")
+                    .headers(this::applyAuthHeaders)
+                    .retrieve()
+                    .body(String.class);
+            return instrumentCsvParser.parse(csv);
+        } catch (RestClientException ex) {
+            throw new BrokerException("Failed to download Zerodha instruments", ex);
+        }
+    }
+
+    @Override
+    public Optional<Quote> quote(String instrumentKey) {
+        return Optional.ofNullable(quotes(List.of(instrumentKey)).get(instrumentKey));
+    }
+
+    @Override
+    public Map<String, Quote> quotes(Collection<String> instrumentKeys) {
+        if (instrumentKeys == null || instrumentKeys.isEmpty()) {
+            return Map.of();
+        }
+
+        URI uri = UriComponentsBuilder.fromPath("/quote")
+                .queryParam("i", instrumentKeys.toArray())
+                .build()
+                .encode()
+                .toUri();
+
+        try {
+            String body = restClient.get()
+                    .uri(uri)
+                    .headers(this::applyAuthHeaders)
+                    .retrieve()
+                    .body(String.class);
+            JsonNode data = objectMapper.readTree(body).path("data");
+            Map<String, Quote> quotes = new LinkedHashMap<>();
+            data.fields().forEachRemaining(entry -> quotes.put(entry.getKey(), quoteFromJson(entry.getKey(), entry.getValue())));
+            return Map.copyOf(quotes);
+        } catch (Exception ex) {
+            throw new BrokerException("Failed to retrieve Zerodha quotes", ex);
+        }
+    }
+
+    @Override
+    public List<Candle> historicalCandles(HistoricalDataRequest request) {
+        String token = tokenFromInstrumentKey(request.instrumentKey());
+        ZoneId zoneId = properties.timezone();
+        String from = HISTORICAL_FORMAT.format(LocalDateTime.ofInstant(request.from(), zoneId));
+        String to = HISTORICAL_FORMAT.format(LocalDateTime.ofInstant(request.to(), zoneId));
+
+        URI uri = UriComponentsBuilder.fromPath("/instruments/historical/{token}/{interval}")
+                .queryParam("from", from)
+                .queryParam("to", to)
+                .queryParam("oi", request.includeOpenInterest() ? 1 : 0)
+                .build(token, kiteInterval(request.timeframe()));
+
+        try {
+            String body = restClient.get()
+                    .uri(uri)
+                    .headers(this::applyAuthHeaders)
+                    .retrieve()
+                    .body(String.class);
+            JsonNode candles = objectMapper.readTree(body).path("data").path("candles");
+            return parseCandles(request.instrumentKey(), request.timeframe(), candles);
+        } catch (Exception ex) {
+            throw new BrokerException("Failed to retrieve Zerodha historical candles", ex);
+        }
+    }
+
+    @Override
+    public OrderResponse placeOrder(OrderRequest request) {
+        if (!properties.liveTradingEnabled()) {
+            return new OrderResponse(request.clientOrderId(), Optional.empty(), request.instrumentKey(), request.side(),
+                    OrderStatus.REJECTED, request.quantity(), 0, Optional.empty(),
+                    Optional.of("Live trading is disabled by configuration"), Instant.now());
+        }
+
+        String[] instrumentParts = splitInstrumentKey(request.instrumentKey());
+        MultiValueMap<String, String> body = new LinkedMultiValueMap<>();
+        body.add("exchange", instrumentParts[0]);
+        body.add("tradingsymbol", instrumentParts[1]);
+        body.add("transaction_type", request.side().name());
+        body.add("quantity", String.valueOf(request.quantity()));
+        body.add("product", request.productType().name());
+        body.add("order_type", request.orderType().name());
+        request.limitPrice().ifPresent(price -> body.add("price", price.toPlainString()));
+        body.add("validity", "DAY");
+        body.add("tag", request.tag());
+
+        try {
+            String responseBody = restClient.post()
+                    .uri("/orders/regular")
+                    .headers(this::applyAuthHeaders)
+                    .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                    .body(body)
+                    .retrieve()
+                    .body(String.class);
+            JsonNode data = objectMapper.readTree(responseBody).path("data");
+            Optional<String> orderId = Optional.ofNullable(data.path("order_id").textValue());
+            return new OrderResponse(request.clientOrderId(), orderId, request.instrumentKey(), request.side(),
+                    OrderStatus.OPEN, request.quantity(), 0, Optional.empty(), Optional.empty(), Instant.now());
+        } catch (Exception ex) {
+            throw new BrokerException("Failed to place Zerodha order", ex);
+        }
+    }
+
+    @Override
+    public Optional<OrderResponse> orderStatus(String brokerOrderId) {
+        return orders().stream()
+                .filter(order -> order.brokerOrderId().filter(brokerOrderId::equals).isPresent())
+                .findFirst();
+    }
+
+    @Override
+    public List<OrderResponse> orders() {
+        try {
+            String body = restClient.get()
+                    .uri("/orders")
+                    .headers(this::applyAuthHeaders)
+                    .retrieve()
+                    .body(String.class);
+            JsonNode data = objectMapper.readTree(body).path("data");
+            return parseOrders(data);
+        } catch (Exception ex) {
+            throw new BrokerException("Failed to retrieve Zerodha orders", ex);
+        }
+    }
+
+    @Override
+    public List<Position> positions() {
+        try {
+            String body = restClient.get()
+                    .uri("/portfolio/positions")
+                    .headers(this::applyAuthHeaders)
+                    .retrieve()
+                    .body(String.class);
+            JsonNode net = objectMapper.readTree(body).path("data").path("net");
+            return parsePositions(net);
+        } catch (Exception ex) {
+            throw new BrokerException("Failed to retrieve Zerodha positions", ex);
+        }
+    }
+
+    @Override
+    public void subscribeMarketData(Collection<String> instrumentKeys, MarketDataListener listener) {
+        throw new BrokerException("Zerodha WebSocket streaming will be implemented in a later phase");
+    }
+
+    private void applyAuthHeaders(HttpHeaders headers) {
+        requireAuth();
+        headers.set("X-Kite-Version", "3");
+        headers.set(HttpHeaders.AUTHORIZATION,
+                "token " + properties.broker().apiKey() + ":" + tokenStore.accessToken().orElseThrow());
+    }
+
+    private void requireAuth() {
+        if (!hasText(properties.broker().apiKey()) || tokenStore.accessToken().isEmpty()) {
+            throw new BrokerException("Zerodha api-key and access-token are required for live broker calls");
+        }
+    }
+
+    private Quote quoteFromJson(String instrumentKey, JsonNode node) {
+        return new Quote(instrumentKey, Instant.now(), decimal(node, "last_price"), node.path("volume").asLong(0),
+                node.path("oi").asLong(0), Optional.ofNullable(nullableDecimal(node, "implied_volatility")),
+                Optional.empty(), Optional.empty());
+    }
+
+    private List<Candle> parseCandles(String instrumentKey, Timeframe timeframe, JsonNode candles) {
+        return java.util.stream.StreamSupport.stream(candles.spliterator(), false)
+                .map(row -> new Candle(instrumentKey, parseKiteInstant(row.get(0).asText()), timeframe,
+                        rowDecimal(row, 1), rowDecimal(row, 2), rowDecimal(row, 3), rowDecimal(row, 4),
+                        row.get(5).asLong(), row.size() > 6 ? row.get(6).asLong() : 0L))
+                .toList();
+    }
+
+    private List<OrderResponse> parseOrders(JsonNode data) {
+        return java.util.stream.StreamSupport.stream(data.spliterator(), false)
+                .map(node -> new OrderResponse(
+                        node.path("tag").asText(node.path("order_id").asText()),
+                        Optional.ofNullable(node.path("order_id").textValue()),
+                        node.path("exchange").asText() + ":" + node.path("tradingsymbol").asText(),
+                        parseSide(node.path("transaction_type").asText()),
+                        parseStatus(node.path("status").asText()),
+                        node.path("quantity").asInt(),
+                        node.path("filled_quantity").asInt(0),
+                        Optional.ofNullable(nullableDecimal(node, "average_price")),
+                        Optional.ofNullable(node.path("status_message").textValue()),
+                        Instant.now()))
+                .toList();
+    }
+
+    private List<Position> parsePositions(JsonNode net) {
+        return java.util.stream.StreamSupport.stream(net.spliterator(), false)
+                .map(node -> new Position(
+                        node.path("exchange").asText() + ":" + node.path("tradingsymbol").asText(),
+                        node.path("quantity").asInt(),
+                        decimal(node, "average_price"),
+                        decimal(node, "last_price"),
+                        decimal(node, "pnl")))
+                .toList();
+    }
+
+    private String tokenFromInstrumentKey(String instrumentKey) {
+        if (instrumentKey.chars().allMatch(Character::isDigit)) {
+            return instrumentKey;
+        }
+        throw new BrokerException("Zerodha historical candles require an instrument token as instrumentKey");
+    }
+
+    private String[] splitInstrumentKey(String instrumentKey) {
+        String[] parts = instrumentKey.split(":", 2);
+        if (parts.length != 2 || parts[0].isBlank() || parts[1].isBlank()) {
+            throw new BrokerException("Expected instrument key in EXCHANGE:TRADINGSYMBOL format");
+        }
+        return parts;
+    }
+
+    private String kiteInterval(Timeframe timeframe) {
+        return switch (timeframe) {
+            case ONE_MINUTE -> "minute";
+            case FIVE_MINUTE -> "5minute";
+            case FIFTEEN_MINUTE -> "15minute";
+        };
+    }
+
+    private OrderSide parseSide(String side) {
+        return "SELL".equalsIgnoreCase(side) ? OrderSide.SELL : OrderSide.BUY;
+    }
+
+    private OrderStatus parseStatus(String status) {
+        return switch (status.toUpperCase()) {
+            case "COMPLETE" -> OrderStatus.COMPLETE;
+            case "REJECTED" -> OrderStatus.REJECTED;
+            case "CANCELLED" -> OrderStatus.CANCELLED;
+            case "OPEN", "TRIGGER PENDING" -> OrderStatus.OPEN;
+            default -> OrderStatus.NEW;
+        };
+    }
+
+    private BigDecimal rowDecimal(JsonNode row, int index) {
+        return new BigDecimal(row.get(index).asText());
+    }
+
+    private Instant parseKiteInstant(String value) {
+        return OffsetDateTime.parse(value, KITE_TIMESTAMP_FORMAT).toInstant();
+    }
+
+    private BigDecimal decimal(JsonNode node, String field) {
+        BigDecimal value = nullableDecimal(node, field);
+        return value == null ? BigDecimal.ZERO : value;
+    }
+
+    private BigDecimal nullableDecimal(JsonNode node, String field) {
+        JsonNode value = node.path(field);
+        return value.isMissingNode() || value.isNull() ? null : new BigDecimal(value.asText());
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
+    }
+}
