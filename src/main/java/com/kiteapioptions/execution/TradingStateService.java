@@ -8,7 +8,6 @@ import com.kiteapioptions.domain.UnderlyingSymbol;
 import java.time.Instant;
 import java.util.EnumSet;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -22,12 +21,12 @@ public class TradingStateService {
 
     private static final Logger log = LoggerFactory.getLogger(TradingStateService.class);
 
-    private final AtomicBoolean running = new AtomicBoolean(false);
-    private final AtomicBoolean killSwitch = new AtomicBoolean(false);
     private final AtomicReference<TradingMode> requestedMode;
     private final AtomicReference<MarketDataMode> marketDataMode;
     private final AtomicReference<ExecutionMode> executionMode;
     private final AtomicReference<EnumSet<UnderlyingSymbol>> enabledUnderlyings;
+    private final AtomicReference<RuntimeState> runtimeState =
+            new AtomicReference<>(new RuntimeState(false, false, Instant.now()));
     private final AtomicReference<Instant> updatedAt = new AtomicReference<>(Instant.now());
 
     public TradingStateService(TradingProperties properties) {
@@ -41,36 +40,37 @@ public class TradingStateService {
     }
 
     public void start() {
-        boolean wasRunning = running.getAndSet(true);
+        RuntimeState previous = runtimeState.getAndUpdate(state ->
+                state.killSwitch ? state.withTimestamp(Instant.now()) : new RuntimeState(true, state.killSwitch, Instant.now()));
+        RuntimeState current = runtimeState.get();
         Instant timestamp = Instant.now();
         updatedAt.set(timestamp);
         log.info("Trading state started: wasRunning={}, running={}, requestedMode={}, killSwitch={}, updatedAt={}",
-                wasRunning, running.get(), requestedMode.get(), killSwitch.get(), timestamp);
+                previous.running, current.running, requestedMode.get(), current.killSwitch, current.updatedAt);
     }
 
     public void stop() {
-        boolean wasRunning = running.getAndSet(false);
-        Instant timestamp = Instant.now();
-        updatedAt.set(timestamp);
+        RuntimeState previous = runtimeState.getAndUpdate(state -> new RuntimeState(false, state.killSwitch, Instant.now()));
+        RuntimeState current = runtimeState.get();
+        updatedAt.set(current.updatedAt);
         log.info("Trading state stopped: wasRunning={}, running={}, requestedMode={}, killSwitch={}, updatedAt={}",
-                wasRunning, running.get(), requestedMode.get(), killSwitch.get(), timestamp);
+                previous.running, current.running, requestedMode.get(), current.killSwitch, current.updatedAt);
     }
 
     public void enableKillSwitch() {
-        boolean wasKillSwitchEnabled = killSwitch.getAndSet(true);
-        boolean wasRunning = running.getAndSet(false);
-        Instant timestamp = Instant.now();
-        updatedAt.set(timestamp);
+        RuntimeState previous = runtimeState.getAndUpdate(state -> new RuntimeState(false, true, Instant.now()));
+        RuntimeState current = runtimeState.get();
+        updatedAt.set(current.updatedAt);
         log.warn("Kill switch enabled: wasKillSwitchEnabled={}, wasRunning={}, running={}, requestedMode={}, updatedAt={}",
-                wasKillSwitchEnabled, wasRunning, running.get(), requestedMode.get(), timestamp);
+                previous.killSwitch, previous.running, current.running, requestedMode.get(), current.updatedAt);
     }
 
     public void clearKillSwitch() {
-        boolean wasKillSwitchEnabled = killSwitch.getAndSet(false);
-        Instant timestamp = Instant.now();
-        updatedAt.set(timestamp);
+        RuntimeState previous = runtimeState.getAndUpdate(state -> new RuntimeState(state.running, false, Instant.now()));
+        RuntimeState current = runtimeState.get();
+        updatedAt.set(current.updatedAt);
         log.warn("Kill switch cleared: wasKillSwitchEnabled={}, running={}, requestedMode={}, updatedAt={}",
-                wasKillSwitchEnabled, running.get(), requestedMode.get(), timestamp);
+                previous.killSwitch, current.running, requestedMode.get(), current.updatedAt);
     }
 
     public void setRequestedMode(TradingMode mode) {
@@ -78,7 +78,7 @@ public class TradingStateService {
         Instant timestamp = Instant.now();
         updatedAt.set(timestamp);
         log.info("Requested trading mode changed: previousMode={}, requestedMode={}, running={}, killSwitch={}, updatedAt={}",
-                previousMode, mode, running.get(), killSwitch.get(), timestamp);
+                previousMode, mode, running(), killSwitchEnabled(), timestamp);
     }
 
     public void setUnderlyingScanEnabled(UnderlyingSymbol underlying, boolean enabled) {
@@ -115,11 +115,17 @@ public class TradingStateService {
                 previousMarketDataMode, this.marketDataMode.get(), previousExecutionMode, this.executionMode.get(), timestamp);
     }
 
-    public boolean running() { return running.get(); }
-    public boolean killSwitchEnabled() { return killSwitch.get(); }
+    public boolean running() { return runtimeState.get().running; }
+    public boolean killSwitchEnabled() { return runtimeState.get().killSwitch; }
     public TradingMode requestedMode() { return requestedMode.get(); }
     public MarketDataMode marketDataMode() { return marketDataMode.get(); }
     public ExecutionMode executionMode() { return executionMode.get(); }
     public List<UnderlyingSymbol> enabledUnderlyings() { return List.copyOf(enabledUnderlyings.get()); }
     public Instant updatedAt() { return updatedAt.get(); }
+
+    private record RuntimeState(boolean running, boolean killSwitch, Instant updatedAt) {
+        RuntimeState withTimestamp(Instant timestamp) {
+            return new RuntimeState(running, killSwitch, timestamp);
+        }
+    }
 }

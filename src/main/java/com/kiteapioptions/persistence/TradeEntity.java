@@ -5,6 +5,7 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
+import jakarta.persistence.Version;
 import java.math.BigDecimal;
 import java.time.Instant;
 
@@ -13,6 +14,8 @@ public class TradeEntity {
 
     @Id
     private String tradeId;
+    @Version
+    private Long version;
     private String instrumentKey;
     private String underlying;
     private String optionType;
@@ -53,6 +56,7 @@ public class TradeEntity {
     }
 
     public String getTradeId() { return tradeId; }
+    public Long getVersion() { return version; }
     public String getInstrumentKey() { return instrumentKey; }
     public String getUnderlying() { return underlying; }
     public String getOptionType() { return optionType; }

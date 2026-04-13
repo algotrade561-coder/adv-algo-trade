@@ -24,6 +24,7 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalTime;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.EnumMap;
@@ -341,6 +342,14 @@ public class AlgoTradingScheduler {
                         underlying, selectedInstrument.instrumentKey(), underlyingCandles.size(), optionCandles.size());
                 continue;
             }
+            if (!freshQuote(context.spotQuote()) || !freshQuote(selectedQuote)
+                    || !freshCandles(underlyingCandles) || !freshCandles(optionCandles)) {
+                log.warn("Strategy evaluation skipped: stale market data, underlying={}, instrument={}, spotQuoteTime={}, optionQuoteTime={}, latestUnderlyingCandleTime={}, latestOptionCandleTime={}, threshold={}",
+                        underlying, selectedInstrument.instrumentKey(), context.spotQuote().timestamp(),
+                        selectedQuote.timestamp(), latestCandleTimestamp(underlyingCandles).orElse(null),
+                        latestCandleTimestamp(optionCandles).orElse(null), properties.safety().staleMarketDataThreshold());
+                continue;
+            }
 
             StrategyEvaluationRequest request = new StrategyEvaluationRequest(
                     Instant.now(),
@@ -395,6 +404,23 @@ public class AlgoTradingScheduler {
                     instrumentKey, timeframe, ex.getMessage());
             return List.of();
         }
+    }
+
+    private boolean freshQuote(Quote quote) {
+        return quote.timestamp().plus(properties.safety().staleMarketDataThreshold()).isAfter(Instant.now());
+    }
+
+    private boolean freshCandles(List<Candle> candles) {
+        if (candles.isEmpty()) {
+            return false;
+        }
+        Candle latest = candles.getLast();
+        Duration allowedAge = latest.timeframe().duration().plus(properties.safety().staleMarketDataThreshold());
+        return latest.timestamp().plus(allowedAge).isAfter(Instant.now());
+    }
+
+    private Optional<Instant> latestCandleTimestamp(List<Candle> candles) {
+        return candles.isEmpty() ? Optional.empty() : Optional.of(candles.getLast().timestamp());
     }
 
     private String historicalKey(Instrument instrument) {

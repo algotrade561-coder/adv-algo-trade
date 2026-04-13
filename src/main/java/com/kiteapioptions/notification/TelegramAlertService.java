@@ -21,6 +21,8 @@ import org.springframework.web.client.RestClientException;
 public class TelegramAlertService {
 
     private static final Logger log = LoggerFactory.getLogger(TelegramAlertService.class);
+    private static final int MAX_ATTEMPTS = 3;
+    private static final long INITIAL_BACKOFF_MILLIS = 500;
 
     private final TradingProperties properties;
     private final RestClient.Builder restClientBuilder;
@@ -101,20 +103,28 @@ public class TelegramAlertService {
             return;
         }
 
-        try {
-            restClientBuilder
-                    .clone()
-                    .baseUrl("https://api.telegram.org")
-                    .requestFactory(requestFactory(telegram.requestTimeout()))
-                    .build()
-                    .post()
-                    .uri("/bot{token}/sendMessage", telegram.botToken())
-                    .contentType(MediaType.APPLICATION_JSON)
-                    .body(new SendMessageRequest(telegram.chatId(), text))
-                    .retrieve()
-                    .toBodilessEntity();
-        } catch (RestClientException ex) {
-            log.warn("Telegram alert failed: {}", ex.getMessage());
+        for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+            try {
+                restClientBuilder
+                        .clone()
+                        .baseUrl("https://api.telegram.org")
+                        .requestFactory(requestFactory(telegram.requestTimeout()))
+                        .build()
+                        .post()
+                        .uri("/bot{token}/sendMessage", telegram.botToken())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .body(new SendMessageRequest(telegram.chatId(), text))
+                        .retrieve()
+                        .toBodilessEntity();
+                return;
+            } catch (RestClientException ex) {
+                if (attempt == MAX_ATTEMPTS) {
+                    log.warn("Telegram alert failed after {} attempts: {}", MAX_ATTEMPTS, ex.getMessage());
+                    return;
+                }
+                log.warn("Telegram alert attempt failed: attempt={}, message={}", attempt, ex.getMessage());
+                sleepBeforeRetry(attempt);
+            }
         }
     }
 
@@ -128,6 +138,14 @@ public class TelegramAlertService {
         requestFactory.setConnectTimeout(resolvedTimeout);
         requestFactory.setReadTimeout(resolvedTimeout);
         return requestFactory;
+    }
+
+    private void sleepBeforeRetry(int attempt) {
+        try {
+            Thread.sleep(INITIAL_BACKOFF_MILLIS * (1L << Math.max(0, attempt - 1)));
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private record SendMessageRequest(String chat_id, String text) {
