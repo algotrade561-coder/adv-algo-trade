@@ -20,12 +20,15 @@ class BacktestEngineTest {
     @Test
     void runsBacktestAndExportsCsvFiles() {
         TradingProperties properties = new TradingProperties(null, false, null, null, null, null, null,
-                null, null, null, null, new TradingProperties.Backtest(
+                null, null, null, null, null, new TradingProperties.Backtest(
                 java.time.LocalDate.of(2026, 4, 12),
                 java.time.LocalDate.of(2026, 4, 12),
                 com.kiteapioptions.domain.Timeframe.ONE_MINUTE,
                 tempDir.resolve("missing.csv").toString(),
-                tempDir.resolve("reports").toString()));
+                tempDir.resolve("reports").toString(),
+                "NFO:NIFTY-MOCK-ATM-CE",
+                180,
+                75));
         BacktestEngine engine = new BacktestEngine(properties, new MockMarketDataGenerator(), new VwapIndicator(),
                 new VolumeSpikeDetector(), new BreakoutDetector(), new TrailingStopService(properties));
 

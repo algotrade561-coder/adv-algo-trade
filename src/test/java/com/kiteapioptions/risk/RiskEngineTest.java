@@ -16,7 +16,7 @@ import org.junit.jupiter.api.Test;
 class RiskEngineTest {
 
     private final RiskEngine riskEngine = new RiskEngine(new TradingProperties(null, false, null, null,
-            null, null, null, null, null, null, null, null));
+            null, null, null, null, null, null, null, null, null));
 
     @Test
     void sizesQuantityByRiskAndLotSize() {

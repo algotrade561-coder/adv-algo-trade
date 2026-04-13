@@ -7,6 +7,8 @@ import java.math.BigDecimal;
 import java.math.MathContext;
 import java.util.ArrayList;
 import java.util.List;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 /**
@@ -16,6 +18,7 @@ import org.springframework.stereotype.Service;
 public class RiskEngine {
 
     private static final MathContext MATH_CONTEXT = MathContext.DECIMAL64;
+    private static final Logger log = LoggerFactory.getLogger(RiskEngine.class);
 
     private final TradingProperties properties;
 
@@ -31,6 +34,9 @@ public class RiskEngine {
             int consecutiveLosses,
             boolean killSwitchEnabled
     ) {
+        log.info("Risk check started: signalType={}, openTradeCount={}, tradesToday={}, dailyPnl={}, consecutiveLosses={}, runtimeKillSwitch={}, configuredKillSwitch={}",
+                decision.signalType(), openTradeCount, tradesToday, dailyPnl, consecutiveLosses, killSwitchEnabled,
+                properties.safety().killSwitchEnabled());
         List<String> rejections = new ArrayList<>();
         if (killSwitchEnabled || properties.safety().killSwitchEnabled()) {
             rejections.add("Kill switch is enabled");
@@ -53,17 +59,25 @@ public class RiskEngine {
         if (!decision.selectedInstrumentKey().isPresent() || !decision.optionType().isPresent()) {
             rejections.add("Decision does not contain selected option instrument details");
         }
-        return rejections.isEmpty()
-                ? RiskCheckResult.allowed("Entry risk checks passed")
-                : RiskCheckResult.rejected(rejections);
+        if (rejections.isEmpty()) {
+            log.info("Risk check accepted");
+            return RiskCheckResult.allowed("Entry risk checks passed");
+        }
+        log.warn("Risk check rejected: reasons={}", rejections);
+        return RiskCheckResult.rejected(rejections);
     }
 
     public PositionSizingResult calculateQuantity(BigDecimal optionPremium, int lotSize) {
+        log.info("Position sizing started: optionPremium={}, lotSize={}, totalCapital={}, maxRiskPerTradePercent={}, stopLossPercent={}",
+                optionPremium, lotSize, properties.risk().totalCapital(), properties.risk().maxRiskPerTradePercent(),
+                properties.exit().stopLossPercent());
         if (optionPremium == null || optionPremium.signum() <= 0) {
+            log.warn("Position sizing rejected: option premium must be positive");
             return new PositionSizingResult(false, 0, BigDecimal.ZERO, BigDecimal.ZERO,
                     "Option premium must be positive");
         }
         if (lotSize <= 0) {
+            log.warn("Position sizing rejected: lot size must be positive");
             return new PositionSizingResult(false, 0, BigDecimal.ZERO, BigDecimal.ZERO,
                     "Lot size must be positive");
         }
@@ -75,6 +89,7 @@ public class RiskEngine {
                 .multiply(properties.exit().stopLossPercent(), MATH_CONTEXT)
                 .divide(BigDecimal.valueOf(100), MATH_CONTEXT);
         if (lossPerUnit.signum() <= 0) {
+            log.warn("Position sizing rejected: configured stop loss produces zero risk per unit");
             return new PositionSizingResult(false, 0, riskAmount, BigDecimal.ZERO,
                     "Configured stop loss produces zero risk per unit");
         }
@@ -85,10 +100,14 @@ public class RiskEngine {
         BigDecimal estimatedCost = optionPremium.multiply(BigDecimal.valueOf(quantity), MATH_CONTEXT);
 
         if (quantity <= 0) {
+            log.warn("Position sizing rejected: premium too high for risk budget, riskAmount={}, estimatedCost={}",
+                    riskAmount, estimatedCost);
             return new PositionSizingResult(false, 0, riskAmount, estimatedCost,
                     "Premium is too high for the risk budget");
         }
         if (estimatedCost.compareTo(properties.risk().totalCapital()) > 0) {
+            log.info("Position sizing capped by total capital: originalQuantity={}, originalEstimatedCost={}",
+                    quantity, estimatedCost);
             int affordableLots = properties.risk().totalCapital()
                     .divide(optionPremium.multiply(BigDecimal.valueOf(lotSize), MATH_CONTEXT), MATH_CONTEXT)
                     .intValue();
@@ -96,9 +115,12 @@ public class RiskEngine {
             estimatedCost = optionPremium.multiply(BigDecimal.valueOf(quantity), MATH_CONTEXT);
         }
         if (quantity <= 0) {
+            log.warn("Position sizing rejected: estimated cost exceeds available capital, estimatedCost={}", estimatedCost);
             return new PositionSizingResult(false, 0, riskAmount, estimatedCost,
                     "Estimated cost exceeds available capital");
         }
+        log.info("Position sizing accepted: quantity={}, riskAmount={}, estimatedCost={}",
+                quantity, riskAmount, estimatedCost);
         return new PositionSizingResult(true, quantity, riskAmount, estimatedCost,
                 "Quantity sized within risk and capital limits");
     }

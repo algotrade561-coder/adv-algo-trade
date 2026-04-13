@@ -36,14 +36,14 @@ public class KiteInstrumentCsvParser {
     }
 
     private Instrument parseLine(String line) {
-        String[] columns = line.split(",", -1);
+        String[] columns = parseCsvLine(line);
         if (columns.length < 12) {
             throw new IllegalArgumentException("Invalid Kite instrument row: " + line);
         }
 
         long instrumentToken = Long.parseLong(columns[0]);
         String tradingSymbol = columns[2];
-        String name = columns[3];
+        String name = columns[3].isBlank() ? tradingSymbol : columns[3];
         String expiryText = columns[5];
         String strikeText = columns[6];
         BigDecimal tickSize = decimalOrZero(columns[7]);
@@ -60,6 +60,30 @@ public class KiteInstrumentCsvParser {
 
         return new Instrument(instrumentToken, exchange, tradingSymbol, name, underlying, expiry, strike,
                 optionType, lotSize, tickSize, tradableOption);
+    }
+
+    private String[] parseCsvLine(String line) {
+        List<String> columns = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
+        boolean quoted = false;
+        for (int index = 0; index < line.length(); index++) {
+            char ch = line.charAt(index);
+            if (ch == '"') {
+                if (quoted && index + 1 < line.length() && line.charAt(index + 1) == '"') {
+                    current.append('"');
+                    index++;
+                } else {
+                    quoted = !quoted;
+                }
+            } else if (ch == ',' && !quoted) {
+                columns.add(current.toString().trim());
+                current.setLength(0);
+            } else {
+                current.append(ch);
+            }
+        }
+        columns.add(current.toString().trim());
+        return columns.toArray(String[]::new);
     }
 
     private Optional<UnderlyingSymbol> parseUnderlying(String value) {

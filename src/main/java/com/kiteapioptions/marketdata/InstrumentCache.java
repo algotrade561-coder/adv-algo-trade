@@ -11,11 +11,15 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Local in-memory cache for broker instruments with option lookup helpers.
  */
 public class InstrumentCache {
+
+    private static final Logger log = LoggerFactory.getLogger(InstrumentCache.class);
 
     private final BrokerClient brokerClient;
     private final Map<String, Instrument> byInstrumentKey = new ConcurrentHashMap<>();
@@ -25,27 +29,34 @@ public class InstrumentCache {
     }
 
     public synchronized List<Instrument> refresh() {
+        log.info("Instrument cache refresh started");
         List<Instrument> instruments = brokerClient.downloadInstruments();
         byInstrumentKey.clear();
         instruments.forEach(instrument -> byInstrumentKey.put(instrument.instrumentKey(), instrument));
+        log.info("Instrument cache refresh completed: instrumentCount={}", instruments.size());
         return instruments;
     }
 
     public List<Instrument> all() {
+        log.debug("Instrument cache read: instrumentCount={}", byInstrumentKey.size());
         return List.copyOf(byInstrumentKey.values());
     }
 
     public Optional<Instrument> findByKey(String instrumentKey) {
-        return Optional.ofNullable(byInstrumentKey.get(instrumentKey));
+        Optional<Instrument> instrument = Optional.ofNullable(byInstrumentKey.get(instrumentKey));
+        log.debug("Instrument lookup by key: instrumentKey={}, present={}", instrumentKey, instrument.isPresent());
+        return instrument;
     }
 
     public Optional<LocalDate> nearestExpiry(UnderlyingSymbol underlying, LocalDate asOf) {
-        return byInstrumentKey.values().stream()
+        Optional<LocalDate> nearestExpiry = byInstrumentKey.values().stream()
                 .filter(Instrument::tradable)
                 .filter(instrument -> instrument.underlying().filter(underlying::equals).isPresent())
                 .flatMap(instrument -> instrument.expiry().stream())
-                .filter(expiry -> !expiry.isBefore(asOf))
+                .filter(candidateExpiry -> !candidateExpiry.isBefore(asOf))
                 .min(Comparator.naturalOrder());
+        log.debug("Nearest expiry lookup: underlying={}, asOf={}, expiry={}", underlying, asOf, nearestExpiry.orElse(null));
+        return nearestExpiry;
     }
 
     public Optional<Instrument> findOption(
@@ -54,12 +65,15 @@ public class InstrumentCache {
             BigDecimal strike,
             OptionType optionType
     ) {
-        return byInstrumentKey.values().stream()
+        Optional<Instrument> matchingInstrument = byInstrumentKey.values().stream()
                 .filter(Instrument::tradable)
-                .filter(instrument -> instrument.underlying().filter(underlying::equals).isPresent())
-                .filter(instrument -> instrument.expiry().filter(expiry::equals).isPresent())
-                .filter(instrument -> instrument.strike().filter(strike::equals).isPresent())
-                .filter(instrument -> instrument.optionType().filter(optionType::equals).isPresent())
+                .filter(candidate -> candidate.underlying().filter(underlying::equals).isPresent())
+                .filter(candidate -> candidate.expiry().filter(expiry::equals).isPresent())
+                .filter(candidate -> candidate.strike().filter(strike::equals).isPresent())
+                .filter(candidate -> candidate.optionType().filter(optionType::equals).isPresent())
                 .findFirst();
+        log.debug("Option lookup: underlying={}, expiry={}, strike={}, optionType={}, present={}",
+                underlying, expiry, strike, optionType, matchingInstrument.isPresent());
+        return matchingInstrument;
     }
 }

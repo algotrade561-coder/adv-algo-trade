@@ -62,7 +62,7 @@ class RuleBasedOptionsStrategyTest {
 
     private RuleBasedOptionsStrategy strategy() {
         return new RuleBasedOptionsStrategy(new TradingProperties(null, false, null, null, null, null, null,
-                null, null, null, null, null), new VwapIndicator(), new VolumeSpikeDetector(),
+                null, null, null, null, null, null), new VwapIndicator(), new VolumeSpikeDetector(),
                 new BreakoutDetector(), new VolatilityFilter(), new OiChangeTracker(), new OptionChainAnalyzer());
     }
 

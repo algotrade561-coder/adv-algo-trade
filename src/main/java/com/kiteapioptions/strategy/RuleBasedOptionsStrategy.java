@@ -15,16 +15,15 @@ import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Rule-based option buying entry strategy. This phase only evaluates signals; it never places orders.
  */
 public class RuleBasedOptionsStrategy {
 
-    private static final int BREAKOUT_LOOKBACK = 5;
-    private static final int VOLUME_LOOKBACK = 5;
-    private static final BigDecimal BULLISH_IMBALANCE_THRESHOLD = BigDecimal.valueOf(1.05);
-    private static final BigDecimal BEARISH_IMBALANCE_THRESHOLD = BigDecimal.valueOf(0.95);
+    private static final Logger log = LoggerFactory.getLogger(RuleBasedOptionsStrategy.class);
 
     private final TradingProperties properties;
     private final VwapIndicator vwapIndicator;
@@ -53,10 +52,16 @@ public class RuleBasedOptionsStrategy {
     }
 
     public StrategyDecision evaluateEntry(StrategyEvaluationRequest request) {
+        log.info("Strategy evaluation started: timestamp={}, marketTime={}, underlying={}, optionType={}, selectedInstrument={}, selectedStrike={}, underlyingCandles={}, optionCandles={}",
+                request.timestamp(), request.marketTime(), request.underlying(), request.optionType(),
+                request.selectedInstrumentKey(), request.selectedStrike(), request.underlyingCandles().size(),
+                request.selectedOptionCandles().size());
         if (request.underlyingCandles().isEmpty()) {
+            log.warn("Strategy evaluation rejected: no underlying candles available");
             return noTrade(request, Optional.empty(), false, "No underlying candles available");
         }
         if (request.selectedOptionCandles().isEmpty()) {
+            log.warn("Strategy evaluation rejected: no selected option candles available");
             return noTrade(request, Optional.empty(), false, "No selected option candles available");
         }
 
@@ -67,7 +72,8 @@ public class RuleBasedOptionsStrategy {
         boolean vwapPassed = !properties.entry().vwapFilterEnabled()
                 || vwapConditionPassed(request.optionType(), underlyingPrice, vwap);
         boolean breakoutPassed = breakoutPassed(request, chain);
-        boolean volumeSpike = volumeSpikeDetector.hasSpike(request.selectedOptionCandles(), VOLUME_LOOKBACK,
+        boolean volumeSpike = volumeSpikeDetector.hasSpike(request.selectedOptionCandles(),
+                properties.entry().volumeLookback(),
                 properties.entry().volumeSpikeMultiplier());
         boolean oiPassed = oiConditionPassed(request, chain);
         boolean ivPassed = volatilityFilter.isAcceptable(request.selectedOptionQuote().impliedVolatility(),
@@ -89,6 +95,9 @@ public class RuleBasedOptionsStrategy {
                 ? (request.optionType() == OptionType.CE ? SignalType.BUY_CE : SignalType.BUY_PE)
                 : SignalType.NO_TRADE;
 
+        log.info("Strategy evaluation completed: signalType={}, underlyingPrice={}, vwap={}, vwapPassed={}, breakoutPassed={}, volumeSpike={}, oiPassed={}, ivPassed={}, liquidityPassed={}, timePassed={}, imbalance={}, reasons={}",
+                signalType, underlyingPrice, vwap, vwapPassed, breakoutPassed, volumeSpike, oiPassed, ivPassed,
+                liquidityPassed, timePassed, chain.nearbyPutCallOiImbalance(), reasons);
         return new StrategyDecision(request.timestamp(), request.underlying(), signalType, underlyingPrice,
                 Optional.ofNullable(request.selectedInstrumentKey()), Optional.ofNullable(request.selectedStrike()),
                 Optional.ofNullable(request.optionType()), vwapPassed, Optional.of(chain.nearbyPutCallOiImbalance()),
@@ -103,12 +112,14 @@ public class RuleBasedOptionsStrategy {
             boolean resistanceBreak = chain.resistanceStrike()
                     .map(resistance -> price.compareTo(applyPositiveBuffer(resistance, buffer)) > 0)
                     .orElse(false);
-            return resistanceBreak || breakoutDetector.breaksAboveSwingHigh(candles, BREAKOUT_LOOKBACK, buffer);
+            return resistanceBreak || breakoutDetector.breaksAboveSwingHigh(candles,
+                    properties.entry().breakoutLookback(), buffer);
         }
         boolean supportBreak = chain.supportStrike()
                 .map(support -> price.compareTo(applyNegativeBuffer(support, buffer)) < 0)
                 .orElse(false);
-        return supportBreak || breakoutDetector.breaksBelowSwingLow(candles, BREAKOUT_LOOKBACK, buffer);
+        return supportBreak || breakoutDetector.breaksBelowSwingLow(candles,
+                properties.entry().breakoutLookback(), buffer);
     }
 
     private boolean oiConditionPassed(StrategyEvaluationRequest request, OptionChainAnalysis chain) {
@@ -121,8 +132,8 @@ public class RuleBasedOptionsStrategy {
                 ? chain.supportPutOiChange() > 0 || chain.resistanceCallOiChange() < 0
                 : chain.resistanceCallOiChange() > 0 || chain.supportPutOiChange() < 0;
         boolean imbalanceSupports = request.optionType() == OptionType.CE
-                ? chain.nearbyPutCallOiImbalance().compareTo(BULLISH_IMBALANCE_THRESHOLD) >= 0
-                : chain.nearbyPutCallOiImbalance().compareTo(BEARISH_IMBALANCE_THRESHOLD) <= 0;
+                ? chain.nearbyPutCallOiImbalance().compareTo(properties.entry().bullishImbalanceThreshold()) >= 0
+                : chain.nearbyPutCallOiImbalance().compareTo(properties.entry().bearishImbalanceThreshold()) <= 0;
         return priceOiBuildUp || chainBuildUp || imbalanceSupports;
     }
 

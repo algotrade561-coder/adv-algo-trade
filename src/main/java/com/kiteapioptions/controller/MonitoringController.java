@@ -7,12 +7,15 @@ import com.kiteapioptions.persistence.StrategyDecisionEntity;
 import com.kiteapioptions.persistence.TradeEntity;
 import com.kiteapioptions.reporting.ReportingService;
 import java.util.List;
-import org.springframework.http.MediaType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
 public class MonitoringController {
+
+    private static final Logger log = LoggerFactory.getLogger(MonitoringController.class);
 
     private final ReportingService reportingService;
 
@@ -22,31 +25,50 @@ public class MonitoringController {
 
     @GetMapping("/positions")
     public List<Position> positions() {
-        return reportingService.positions();
+        log.info("Positions endpoint called");
+        List<Position> positions = reportingService.positions();
+        log.info("Positions endpoint completed: count={}", positions.size());
+        return positions;
     }
 
     @GetMapping("/orders")
     public List<OrderEntity> orders() {
-        return reportingService.orders();
+        log.info("Orders endpoint called");
+        List<OrderEntity> orders = reportingService.orders();
+        log.info("Orders endpoint completed: count={}", orders.size());
+        return orders;
     }
 
     @GetMapping("/trades")
     public List<TradeEntity> trades() {
-        return reportingService.trades();
+        log.info("Trades endpoint called");
+        List<TradeEntity> trades = reportingService.trades();
+        log.info("Trades endpoint completed: count={}", trades.size());
+        return trades;
     }
 
     @GetMapping("/pnl")
     public PnlSnapshot pnl() {
-        return reportingService.pnl();
+        log.info("PnL endpoint called");
+        PnlSnapshot pnl = reportingService.pnl();
+        log.info("PnL endpoint completed: realized={}, unrealized={}, total={}",
+                pnl.realizedPnl(), pnl.unrealizedPnl(), pnl.totalPnl());
+        return pnl;
     }
 
     @GetMapping("/signals/latest")
     public StrategyDecisionEntity latestSignal() {
-        return reportingService.latestDecision().orElse(null);
+        log.info("Latest signal endpoint called");
+        StrategyDecisionEntity latest = reportingService.latestDecision().orElse(null);
+        log.info("Latest signal endpoint completed: present={}", latest != null);
+        return latest;
     }
 
     @GetMapping(value = "/trades/journal.csv", produces = "text/csv")
     public String tradeJournalCsv() {
-        return reportingService.tradeJournalCsv();
+        log.info("Trade journal CSV endpoint called");
+        String csv = reportingService.tradeJournalCsv();
+        log.info("Trade journal CSV endpoint completed: bytes={}", csv.length());
+        return csv;
     }
 }

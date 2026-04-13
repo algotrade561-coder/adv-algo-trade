@@ -2,7 +2,6 @@ package com.kiteapioptions.backtest;
 
 import com.kiteapioptions.config.TradingProperties;
 import com.kiteapioptions.domain.Candle;
-import com.kiteapioptions.domain.Timeframe;
 import com.kiteapioptions.execution.TrailingStopService;
 import com.kiteapioptions.indicator.BreakoutDetector;
 import com.kiteapioptions.indicator.VolumeSpikeDetector;
@@ -15,6 +14,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -22,6 +22,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 /**
@@ -31,8 +33,7 @@ import org.springframework.stereotype.Service;
 public class BacktestEngine {
 
     private static final MathContext MATH_CONTEXT = MathContext.DECIMAL64;
-    private static final int LOOKBACK = 5;
-
+    private static final Logger log = LoggerFactory.getLogger(BacktestEngine.class);
     private final TradingProperties properties;
     private final CandleCsvReader candleCsvReader;
     private final BacktestCsvExporter csvExporter;
@@ -57,7 +58,11 @@ public class BacktestEngine {
 
     public BacktestRunResult run() {
         try {
+            log.info("Backtest started: from={}, to={}, timeframe={}, csvImportPath={}, outputDirectory={}",
+                    properties.backtest().from(), properties.backtest().to(), properties.backtest().candleTimeframe(),
+                    properties.backtest().csvImportPath(), properties.backtest().outputDirectory());
             List<Candle> candles = loadCandles();
+            log.info("Backtest candles loaded: count={}", candles.size());
             String id = "BT-" + UUID.randomUUID();
             List<BacktestTrade> trades = replay(candles);
             BacktestMetrics metrics = metrics(trades);
@@ -67,8 +72,12 @@ public class BacktestEngine {
                     outputDirectory, outputDirectory.resolve("trades.csv"),
                     outputDirectory.resolve("metrics.csv"), outputDirectory.resolve("equity-curve.csv"));
             csvExporter.export(result);
+            log.info("Backtest completed: id={}, totalTrades={}, winRatePercent={}, cumulativePnl={}, maxDrawdown={}, outputDirectory={}",
+                    id, metrics.totalTrades(), metrics.winRatePercent(), metrics.cumulativePnl(),
+                    metrics.maxDrawdown(), outputDirectory);
             return result;
         } catch (IOException ex) {
+            log.warn("Backtest failed: {}", ex.getMessage());
             throw new IllegalStateException("Backtest failed", ex);
         }
     }
@@ -76,10 +85,17 @@ public class BacktestEngine {
     private List<Candle> loadCandles() throws IOException {
         Path csvPath = Path.of(properties.backtest().csvImportPath());
         if (Files.exists(csvPath)) {
-            return candleCsvReader.read(csvPath, properties.backtest().candleTimeframe());
+            log.info("Backtest loading candles from CSV: path={}", csvPath);
+            List<Candle> candles = candleCsvReader.read(csvPath, properties.backtest().candleTimeframe());
+            log.info("Backtest CSV candles loaded: path={}, count={}", csvPath, candles.size());
+            return candles;
         }
-        Instant from = properties.backtest().from().atStartOfDay(properties.timezone()).toInstant();
-        return mockMarketDataGenerator.candles("NFO:NIFTY-MOCK-ATM-CE", from, Timeframe.ONE_MINUTE, 180);
+        log.warn("Backtest CSV input missing. Falling back to generated mock candles: path={}, mockInstrumentKey={}, mockCandleCount={}",
+                csvPath, properties.backtest().mockInstrumentKey(), properties.backtest().mockCandleCount());
+        Instant from = properties.backtest().from().atTime(properties.entry().entryStartTime())
+                .atZone(properties.timezone()).toInstant();
+        return mockMarketDataGenerator.candles(properties.backtest().mockInstrumentKey(), from,
+                properties.backtest().candleTimeframe(), properties.backtest().mockCandleCount());
     }
 
     private List<BacktestTrade> replay(List<Candle> candles) {
@@ -89,15 +105,17 @@ public class BacktestEngine {
 
         for (Candle candle : candles) {
             history.add(candle);
-            if (history.size() <= LOOKBACK) {
+            if (history.size() <= lookback()) {
                 continue;
             }
 
-            if (openTrade == null && entrySignal(history)) {
+            if (openTrade == null && withinEntryWindow(candle) && entrySignal(history)) {
                 int quantity = quantity(candle.close());
                 if (quantity > 0) {
                     openTrade = new OpenTrade(candle.instrumentKey(), candle.timestamp(), candle.close(), quantity,
                             candle.close(), Optional.empty(), "VWAP + breakout + volume spike");
+                    log.info("Backtest trade opened: instrument={}, entryTime={}, entryPrice={}, quantity={}",
+                            openTrade.instrumentKey(), openTrade.entryTime(), openTrade.entryPrice(), openTrade.quantity());
                 }
                 continue;
             }
@@ -106,8 +124,13 @@ public class BacktestEngine {
                 openTrade = openTrade.withHigh(openTrade.highestPrice().max(candle.high()));
                 openTrade = openTrade.withTrailingStop(trailingStopService.nextStop(openTrade.entryPrice(),
                         openTrade.highestPrice(), openTrade.trailingStop()));
-                Optional<String> exitReason = exitReason(openTrade, candle);
+                Optional<String> exitReason = forcedExitDue(candle)
+                        ? Optional.of("Configured forced square-off")
+                        : exitReason(openTrade, candle);
                 if (exitReason.isPresent()) {
+                    log.info("Backtest trade closed: instrument={}, entryTime={}, exitTime={}, exitPrice={}, reason={}",
+                            openTrade.instrumentKey(), openTrade.entryTime(), candle.timestamp(), candle.close(),
+                            exitReason.get());
                     trades.add(toClosedTrade(openTrade, candle, exitReason.get()));
                     openTrade = null;
                 }
@@ -116,6 +139,8 @@ public class BacktestEngine {
 
         if (openTrade != null && !candles.isEmpty()) {
             Candle last = candles.getLast();
+            log.info("Backtest trade closed at end of data: instrument={}, entryTime={}, exitTime={}, exitPrice={}",
+                    openTrade.instrumentKey(), openTrade.entryTime(), last.timestamp(), last.close());
             trades.add(toClosedTrade(openTrade, last, "End of data square-off"));
         }
         return List.copyOf(trades);
@@ -125,8 +150,10 @@ public class BacktestEngine {
         BigDecimal close = history.getLast().close();
         BigDecimal vwap = vwapIndicator.calculate(history);
         return close.compareTo(vwap) > 0
-                && breakoutDetector.breaksAboveSwingHigh(history, LOOKBACK, properties.entry().breakoutBufferPercent())
-                && volumeSpikeDetector.hasSpike(history, LOOKBACK, properties.entry().volumeSpikeMultiplier());
+                && breakoutDetector.breaksAboveSwingHigh(history, properties.entry().breakoutLookback(),
+                properties.entry().breakoutBufferPercent())
+                && volumeSpikeDetector.hasSpike(history, properties.entry().volumeLookback(),
+                properties.entry().volumeSpikeMultiplier());
     }
 
     private Optional<String> exitReason(OpenTrade openTrade, Candle candle) {
@@ -172,9 +199,24 @@ public class BacktestEngine {
         if (lossPerUnit.signum() <= 0) {
             return 0;
         }
-        int lotSize = 75;
+        int lotSize = properties.backtest().lotSize();
         int rawQuantity = riskAmount.divide(lossPerUnit, MATH_CONTEXT).intValue();
         return Math.max(0, (rawQuantity / lotSize) * lotSize);
+    }
+
+    private boolean withinEntryWindow(Candle candle) {
+        LocalTime marketTime = LocalTime.ofInstant(candle.timestamp(), properties.timezone());
+        return !marketTime.isBefore(properties.entry().entryStartTime())
+                && !marketTime.isAfter(properties.entry().entryCutoffTime());
+    }
+
+    private boolean forcedExitDue(Candle candle) {
+        LocalTime marketTime = LocalTime.ofInstant(candle.timestamp(), properties.timezone());
+        return !marketTime.isBefore(properties.exit().forcedExitTime());
+    }
+
+    private int lookback() {
+        return Math.max(properties.entry().breakoutLookback(), properties.entry().volumeLookback());
     }
 
     private BacktestMetrics metrics(List<BacktestTrade> trades) {

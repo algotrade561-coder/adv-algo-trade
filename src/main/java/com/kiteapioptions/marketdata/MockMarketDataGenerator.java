@@ -27,15 +27,16 @@ public class MockMarketDataGenerator {
     }
 
     public Quote quote(String instrumentKey) {
-        BigDecimal price = instrumentKey.contains("BANKNIFTY") ? BigDecimal.valueOf(220) : BigDecimal.valueOf(120);
+        BigDecimal price = basePrice(instrumentKey);
         BigDecimal noise = BigDecimal.valueOf(ThreadLocalRandom.current().nextDouble(-2.0, 2.0));
+        long openInterest = instrumentKey.endsWith("PE") ? 130_000 : 100_000;
         return new Quote(instrumentKey, Instant.now(), price.add(noise).max(BigDecimal.ONE),
-                25_000, 100_000, Optional.of(BigDecimal.valueOf(18)), Optional.empty(), Optional.empty());
+                25_000, openInterest, Optional.of(BigDecimal.valueOf(18)), Optional.empty(), Optional.empty());
     }
 
     public List<Candle> candles(String instrumentKey, Instant from, Timeframe timeframe, int count) {
         List<Candle> candles = new ArrayList<>();
-        BigDecimal base = instrumentKey.contains("BANKNIFTY") ? BigDecimal.valueOf(220) : BigDecimal.valueOf(120);
+        BigDecimal base = basePrice(instrumentKey);
         for (int i = 0; i < count; i++) {
             BigDecimal open = base.add(BigDecimal.valueOf(i % 5));
             BigDecimal close = open.add(BigDecimal.valueOf((i % 3) - 1));
@@ -77,5 +78,15 @@ public class MockMarketDataGenerator {
 
     private int lotSize(UnderlyingSymbol underlying) {
         return underlying == UnderlyingSymbol.NIFTY ? 75 : 35;
+    }
+
+    private BigDecimal basePrice(String instrumentKey) {
+        if (instrumentKey.contains("NIFTY BANK") || instrumentKey.contains("BANKNIFTY")) {
+            return instrumentKey.startsWith("NSE:") ? BigDecimal.valueOf(52_000) : BigDecimal.valueOf(220);
+        }
+        if (instrumentKey.contains("NIFTY 50")) {
+            return BigDecimal.valueOf(24_000);
+        }
+        return BigDecimal.valueOf(120);
     }
 }

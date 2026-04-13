@@ -10,7 +10,7 @@ import org.junit.jupiter.api.Test;
 class TrailingStopServiceTest {
 
     private final TrailingStopService trailingStopService = new TrailingStopService(new TradingProperties(null,
-            false, null, null, null, null, null, null, null, null, null, null));
+            false, null, null, null, null, null, null, null, null, null, null, null));
 
     @Test
     void activatesTrailingStopAfterConfiguredProfitMove() {

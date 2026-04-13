@@ -26,4 +26,20 @@ class KiteInstrumentCsvParserTest {
         assertThat(instrument.optionType()).contains(OptionType.CE);
         assertThat(instrument.tradable()).isTrue();
     }
+
+    @Test
+    void fallsBackToTradingSymbolWhenNameIsBlank() {
+        String csv = """
+                instrument_token,exchange_token,tradingsymbol,name,last_price,expiry,strike,tick_size,lot_size,instrument_type,segment,exchange
+                218804229,854704,BANKEX26APR63000PE,,0,2026-04-30,63000,0.05,30,PE,BFO-OPT,BFO
+                """;
+
+        var instruments = parser.parse(csv);
+
+        assertThat(instruments).hasSize(1);
+        var instrument = instruments.getFirst();
+        assertThat(instrument.name()).isEqualTo("BANKEX26APR63000PE");
+        assertThat(instrument.instrumentKey()).isEqualTo("BFO:BANKEX26APR63000PE");
+        assertThat(instrument.optionType()).contains(OptionType.PE);
+    }
 }

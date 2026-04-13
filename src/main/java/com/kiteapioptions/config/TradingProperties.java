@@ -16,6 +16,7 @@ import java.time.LocalDate;
 import java.time.LocalTime;
 import java.time.ZoneId;
 import java.util.List;
+import java.util.Map;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.validation.annotation.Validated;
 
@@ -36,6 +37,7 @@ public record TradingProperties(
         @Valid @NotNull Risk risk,
         @Valid @NotNull Paper paper,
         @Valid @NotNull Safety safety,
+        @Valid @NotNull Algo algo,
         @Valid @NotNull Backtest backtest
 ) {
 
@@ -54,6 +56,7 @@ public record TradingProperties(
         risk = risk == null ? Risk.defaults() : risk;
         paper = paper == null ? Paper.defaults() : paper;
         safety = safety == null ? Safety.defaults() : safety;
+        algo = algo == null ? Algo.defaults() : algo;
         backtest = backtest == null ? Backtest.defaults() : backtest;
     }
 
@@ -67,21 +70,35 @@ public record TradingProperties(
             @NotNull String loginUrl,
             @NotNull String redirectUrl,
             @NotNull String callbackPath,
-            @NotNull Duration requestTimeout
+            @NotNull Duration requestTimeout,
+            boolean autoLoginOnStartup
     ) {
         public static Broker defaults() {
             return new Broker(BrokerName.ZERODHA, "", "", "", "", "https://api.kite.trade",
-                    "https://kite.zerodha.com/connect/login", "http://localhost:8080/auth/kite/callback",
-                    "/auth/kite/callback", Duration.ofSeconds(5));
+                    "https://kite.zerodha.com/connect/login", "http://localhost:8081/auth/kite/callback",
+                    "/auth/kite/callback", Duration.ofSeconds(5), true);
         }
     }
 
     public record Symbols(
             @NotEmpty List<UnderlyingSymbol> underlyings,
-            @NotNull String defaultExpiry
+            @NotNull String defaultExpiry,
+            @NotNull Map<UnderlyingSymbol, String> spotQuoteKeys,
+            @NotNull Map<UnderlyingSymbol, String> spotHistoricalKeys
     ) {
         public static Symbols defaults() {
-            return new Symbols(List.of(UnderlyingSymbol.NIFTY, UnderlyingSymbol.BANKNIFTY), "NEAREST_WEEKLY");
+            return new Symbols(
+                    List.of(UnderlyingSymbol.NIFTY),
+                    "NEAREST_WEEKLY",
+                    Map.of(
+                            UnderlyingSymbol.NIFTY, "NSE:NIFTY 50",
+                            UnderlyingSymbol.BANKNIFTY, "NSE:NIFTY BANK"
+                    ),
+                    Map.of(
+                            UnderlyingSymbol.NIFTY, "NSE:NIFTY 50",
+                            UnderlyingSymbol.BANKNIFTY, "NSE:NIFTY BANK"
+                    )
+            );
         }
     }
 
@@ -101,6 +118,10 @@ public record TradingProperties(
             boolean trendFilterEnabled,
             @DecimalMin("1.0") BigDecimal volumeSpikeMultiplier,
             @DecimalMin("0.0") BigDecimal breakoutBufferPercent,
+            @Min(1) int breakoutLookback,
+            @Min(1) int volumeLookback,
+            @DecimalMin("0.0") BigDecimal bullishImbalanceThreshold,
+            @DecimalMin("0.0") BigDecimal bearishImbalanceThreshold,
             @Min(0) long minLiquidityVolume,
             @DecimalMin("0.0") BigDecimal maxIvPercent,
             @NotNull LocalTime entryStartTime,
@@ -116,6 +137,10 @@ public record TradingProperties(
                     false,
                     BigDecimal.valueOf(1.5),
                     BigDecimal.valueOf(0.1),
+                    5,
+                    5,
+                    BigDecimal.valueOf(1.05),
+                    BigDecimal.valueOf(0.95),
                     10_000,
                     BigDecimal.valueOf(80),
                     LocalTime.of(9, 25),
@@ -175,16 +200,33 @@ public record TradingProperties(
         }
     }
 
+    public record Algo(
+            boolean schedulerEnabled,
+            @Min(1000) long scanIntervalMs,
+            @Min(0) long initialDelayMs,
+            @Min(6) int candleLookback,
+            @Min(1) int maxEntriesPerScan,
+            boolean refreshInstrumentsOnStart
+    ) {
+        public static Algo defaults() {
+            return new Algo(true, 60_000, 5_000, 30, 1, true);
+        }
+    }
+
     public record Backtest(
             @NotNull LocalDate from,
             @NotNull LocalDate to,
             @NotNull Timeframe candleTimeframe,
             @NotNull String csvImportPath,
-            @NotNull String outputDirectory
+            @NotNull String outputDirectory,
+            @NotNull String mockInstrumentKey,
+            @Min(1) int mockCandleCount,
+            @Min(1) int lotSize
     ) {
         public static Backtest defaults() {
             return new Backtest(LocalDate.of(2025, 1, 1), LocalDate.of(2025, 1, 31),
-                    Timeframe.ONE_MINUTE, "data/backtest/input.csv", "reports/backtest");
+                    Timeframe.ONE_MINUTE, "data/backtest/input.csv", "reports/backtest",
+                    "NFO:NIFTY-MOCK-ATM-CE", 180, 75);
         }
     }
 }

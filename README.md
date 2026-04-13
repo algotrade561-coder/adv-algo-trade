@@ -72,6 +72,8 @@ Phase 4 adds execution as a separate service. `ExecutionEngine` consumes `Strate
 - `POST /start`
 - `POST /stop`
 - `POST /kill-switch`
+- `GET /scan/underlyings`
+- `POST /scan/underlyings/{underlying}`
 - `GET /positions`
 - `GET /orders`
 - `GET /trades`
@@ -110,7 +112,43 @@ mvn test
 mvn spring-boot:run
 ```
 
-The app starts with paper broker wiring by default, JPA repositories, REST monitoring endpoints, execution/risk services, and the backtest runner. It still does not run an automated live signal scheduler.
+The app starts with paper broker wiring by default, JPA repositories, REST monitoring endpoints, execution/risk services, the backtest runner, and a scheduled algo scanner. The scanner only runs after `/start` sets the trading state to running.
+
+Start the scanner after the app is running:
+
+```powershell
+curl.exe -X POST http://localhost:8080/start
+```
+
+It then runs on the configured interval, refreshes instruments if needed, fetches spot and option market data, builds a near-ATM option-chain snapshot, evaluates CE/PE entries, and routes accepted signals through risk checks and execution. A `NO_TRADE` decision is still a valid scan result when strategy filters do not pass.
+
+By default, the scanner only scans NIFTY. Enable BANKNIFTY at runtime when needed:
+
+```powershell
+curl.exe -X POST http://localhost:8080/scan/underlyings/BANKNIFTY -H "Content-Type: application/json" -d "{\"enabled\":true}"
+```
+
+Check the current scan set:
+
+```powershell
+curl.exe http://localhost:8080/scan/underlyings
+```
+
+Scanner config:
+
+```yaml
+trading:
+  symbols:
+    underlyings:
+      - NIFTY
+  algo:
+    scheduler-enabled: true
+    scan-interval-ms: 60000
+    initial-delay-ms: 5000
+    candle-lookback: 30
+    max-entries-per-scan: 1
+    refresh-instruments-on-start: true
+```
 
 ## Zerodha Manual Login
 
@@ -133,16 +171,25 @@ trading:
   broker:
     api-key: ${KITE_API_KEY:}
     api-secret: ${KITE_API_SECRET:}
-    redirect-url: ${KITE_REDIRECT_URL:http://localhost:8080/auth/kite/callback}
+    redirect-url: ${KITE_REDIRECT_URL:http://localhost:8081/auth/kite/callback}
+    auto-login-on-startup: true
 ```
 
-Then start the app and open:
+With `trading.mode=LIVE` and no access token present, startup starts a temporary callback listener on the configured redirect port, opens/logs the Kite login URL automatically, and blocks until the callback captures the access token. Use a redirect URL on a different port from Spring Boot, for example `http://localhost:8081/auth/kite/callback`. If the login callback is not received within the configured login timeout, startup fails instead of continuing without a token. You can also open:
 
 ```text
 http://localhost:8080/auth/kite/login
 ```
 
 Copy/open the returned `loginUrl`, complete Kite login manually, and Zerodha will redirect to the ngrok callback. The callback exchanges `request_token` for `access_token` and stores it in memory for this app run. If you already have a daily access token, you can also set `KITE_ACCESS_TOKEN`.
+
+For the blocking login-manager flow, call:
+
+```text
+http://localhost:8080/auth/kite/session
+```
+
+This uses `KITE_ACCESS_TOKEN` immediately when configured. Otherwise it opens/logs the Kite login URL and waits up to two minutes for the Spring callback to capture the generated access token.
 
 ## Backtesting
 
@@ -156,6 +203,9 @@ trading:
     candle-timeframe: ONE_MINUTE
     csv-import-path: data/backtest/input.csv
     output-directory: reports/backtest
+    mock-instrument-key: NFO:NIFTY-MOCK-ATM-CE
+    mock-candle-count: 180
+    lot-size: 75
 ```
 
 CSV input format:
@@ -218,11 +268,12 @@ Live trading must remain disabled unless all of these are true:
 
 The Zerodha adapter rejects `placeOrder` whenever `trading.live-trading-enabled=false`, even if `trading.mode=LIVE`.
 
+For live Zerodha scanning, set `trading.symbols.spot-quote-keys` to Kite quote keys and `trading.symbols.spot-historical-keys` to valid historical instrument tokens for the index/underlying. Option historical candles use the option instrument token from the downloaded instrument master.
+
 ## Known Limitations
 
-- Automated signal scheduling and market data orchestration are not implemented yet.
+- Scheduled entry scanning is implemented through REST quotes and historical candles; Zerodha WebSocket streaming is not implemented yet.
 - Full exit orchestration is not implemented yet; trailing stop calculation and explicit trade close journaling exist, but no scheduler calls them.
-- Zerodha WebSocket streaming is not implemented yet.
 - Zerodha historical candle lookup currently expects the instrument token as `instrumentKey`; later phases can resolve this through `InstrumentCache`.
 - Backtest strategy is a simplified long-option candle replay using VWAP, breakout, volume spike, stop, target, and trailing stop logic; it does not reconstruct full live option-chain state.
 

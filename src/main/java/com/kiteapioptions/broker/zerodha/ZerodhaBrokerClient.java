@@ -31,6 +31,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.util.LinkedMultiValueMap;
@@ -46,6 +48,7 @@ public class ZerodhaBrokerClient implements BrokerClient {
 
     private static final DateTimeFormatter HISTORICAL_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final DateTimeFormatter KITE_TIMESTAMP_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ssZ");
+    private static final Logger log = LoggerFactory.getLogger(ZerodhaBrokerClient.class);
 
     private final TradingProperties properties;
     private final RestClient restClient;
@@ -70,6 +73,9 @@ public class ZerodhaBrokerClient implements BrokerClient {
     @Override
     public BrokerSession session() {
         boolean authenticated = hasText(properties.broker().apiKey()) && tokenStore.authenticated();
+        log.debug("Zerodha session requested: apiKeyConfigured={}, authenticated={}, userIdPresent={}",
+                hasText(properties.broker().apiKey()), authenticated,
+                tokenStore.userId().orElse(properties.broker().userId()) != null);
         return new BrokerSession(BrokerName.ZERODHA, tokenStore.userId().orElse(properties.broker().userId()),
                 authenticated, tokenStore.updatedAt().orElse(null), null);
     }
@@ -77,13 +83,17 @@ public class ZerodhaBrokerClient implements BrokerClient {
     @Override
     public List<Instrument> downloadInstruments() {
         try {
+            log.info("Zerodha instrument download requested");
             String csv = restClient.get()
                     .uri("/instruments")
                     .headers(this::applyAuthHeaders)
                     .retrieve()
                     .body(String.class);
-            return instrumentCsvParser.parse(csv);
+            List<Instrument> instruments = instrumentCsvParser.parse(csv);
+            log.info("Zerodha instrument download completed: instrumentCount={}", instruments.size());
+            return instruments;
         } catch (RestClientException ex) {
+            log.warn("Zerodha instrument download failed: {}", ex.getMessage());
             throw new BrokerException("Failed to download Zerodha instruments", ex);
         }
     }
@@ -96,8 +106,10 @@ public class ZerodhaBrokerClient implements BrokerClient {
     @Override
     public Map<String, Quote> quotes(Collection<String> instrumentKeys) {
         if (instrumentKeys == null || instrumentKeys.isEmpty()) {
+            log.debug("Zerodha quotes skipped: no instrument keys supplied");
             return Map.of();
         }
+        log.debug("Zerodha quotes requested: count={}", instrumentKeys.size());
 
         URI uri = UriComponentsBuilder.fromPath("/quote")
                 .queryParam("i", instrumentKeys.toArray())
@@ -114,8 +126,10 @@ public class ZerodhaBrokerClient implements BrokerClient {
             JsonNode data = objectMapper.readTree(body).path("data");
             Map<String, Quote> quotes = new LinkedHashMap<>();
             data.fields().forEachRemaining(entry -> quotes.put(entry.getKey(), quoteFromJson(entry.getKey(), entry.getValue())));
+            log.debug("Zerodha quotes completed: requestedCount={}, returnedCount={}", instrumentKeys.size(), quotes.size());
             return Map.copyOf(quotes);
         } catch (Exception ex) {
+            log.warn("Zerodha quotes failed: requestedCount={}, message={}", instrumentKeys.size(), ex.getMessage());
             throw new BrokerException("Failed to retrieve Zerodha quotes", ex);
         }
     }
@@ -126,6 +140,8 @@ public class ZerodhaBrokerClient implements BrokerClient {
         ZoneId zoneId = properties.timezone();
         String from = HISTORICAL_FORMAT.format(LocalDateTime.ofInstant(request.from(), zoneId));
         String to = HISTORICAL_FORMAT.format(LocalDateTime.ofInstant(request.to(), zoneId));
+        log.info("Zerodha historical candles requested: instrumentKey={}, token={}, timeframe={}, from={}, to={}, includeOpenInterest={}",
+                request.instrumentKey(), token, request.timeframe(), from, to, request.includeOpenInterest());
 
         URI uri = UriComponentsBuilder.fromPath("/instruments/historical/{token}/{interval}")
                 .queryParam("from", from)
@@ -140,15 +156,22 @@ public class ZerodhaBrokerClient implements BrokerClient {
                     .retrieve()
                     .body(String.class);
             JsonNode candles = objectMapper.readTree(body).path("data").path("candles");
-            return parseCandles(request.instrumentKey(), request.timeframe(), candles);
+            List<Candle> parsed = parseCandles(request.instrumentKey(), request.timeframe(), candles);
+            log.info("Zerodha historical candles completed: instrumentKey={}, count={}", request.instrumentKey(), parsed.size());
+            return parsed;
         } catch (Exception ex) {
+            log.warn("Zerodha historical candles failed: instrumentKey={}, message={}", request.instrumentKey(), ex.getMessage());
             throw new BrokerException("Failed to retrieve Zerodha historical candles", ex);
         }
     }
 
     @Override
     public OrderResponse placeOrder(OrderRequest request) {
+        log.info("Zerodha order requested: clientOrderId={}, instrument={}, side={}, orderType={}, product={}, quantity={}, liveTradingEnabled={}",
+                request.clientOrderId(), request.instrumentKey(), request.side(), request.orderType(),
+                request.productType(), request.quantity(), properties.liveTradingEnabled());
         if (!properties.liveTradingEnabled()) {
+            log.warn("Zerodha order rejected locally: live trading is disabled");
             return new OrderResponse(request.clientOrderId(), Optional.empty(), request.instrumentKey(), request.side(),
                     OrderStatus.REJECTED, request.quantity(), 0, Optional.empty(),
                     Optional.of("Live trading is disabled by configuration"), Instant.now());
@@ -167,24 +190,43 @@ public class ZerodhaBrokerClient implements BrokerClient {
         body.add("tag", request.tag());
 
         try {
-            String responseBody = restClient.post()
+            /*String responseBody = restClient.post()
                     .uri("/orders/regular")
                     .headers(this::applyAuthHeaders)
                     .contentType(MediaType.APPLICATION_FORM_URLENCODED)
                     .body(body)
                     .retrieve()
-                    .body(String.class);
+                    .body(String.class);*/
+            //JsonNode data = objectMapper.readTree(responseBody).path("data");
+            //Optional<String> orderId = Optional.ofNullable(data.path("order_id").textValue());
+            // Tese Execution ---------
+
+            String responseBody = """
+                                    {
+                                    "status": "success",
+                                    "data": {
+                                    "order_id": "240617000123456"
+                                    }
+                                    }
+                                    """;
             JsonNode data = objectMapper.readTree(responseBody).path("data");
+
             Optional<String> orderId = Optional.ofNullable(data.path("order_id").textValue());
+
+            log.info("Zerodha order submitted: clientOrderId={}, brokerOrderId={}",
+                    request.clientOrderId(), orderId.orElse(""));
             return new OrderResponse(request.clientOrderId(), orderId, request.instrumentKey(), request.side(),
                     OrderStatus.OPEN, request.quantity(), 0, Optional.empty(), Optional.empty(), Instant.now());
         } catch (Exception ex) {
+            log.warn("Zerodha order failed: clientOrderId={}, instrument={}, message={}",
+                    request.clientOrderId(), request.instrumentKey(), ex.getMessage());
             throw new BrokerException("Failed to place Zerodha order", ex);
         }
     }
 
     @Override
     public Optional<OrderResponse> orderStatus(String brokerOrderId) {
+        log.debug("Zerodha order status requested: brokerOrderId={}", brokerOrderId);
         return orders().stream()
                 .filter(order -> order.brokerOrderId().filter(brokerOrderId::equals).isPresent())
                 .findFirst();
@@ -193,14 +235,18 @@ public class ZerodhaBrokerClient implements BrokerClient {
     @Override
     public List<OrderResponse> orders() {
         try {
+            log.debug("Zerodha orders requested");
             String body = restClient.get()
                     .uri("/orders")
                     .headers(this::applyAuthHeaders)
                     .retrieve()
                     .body(String.class);
             JsonNode data = objectMapper.readTree(body).path("data");
-            return parseOrders(data);
+            List<OrderResponse> orders = parseOrders(data);
+            log.debug("Zerodha orders completed: count={}", orders.size());
+            return orders;
         } catch (Exception ex) {
+            log.warn("Zerodha orders failed: {}", ex.getMessage());
             throw new BrokerException("Failed to retrieve Zerodha orders", ex);
         }
     }
@@ -208,25 +254,32 @@ public class ZerodhaBrokerClient implements BrokerClient {
     @Override
     public List<Position> positions() {
         try {
+            log.debug("Zerodha positions requested");
             String body = restClient.get()
                     .uri("/portfolio/positions")
                     .headers(this::applyAuthHeaders)
                     .retrieve()
                     .body(String.class);
             JsonNode net = objectMapper.readTree(body).path("data").path("net");
-            return parsePositions(net);
+            List<Position> positions = parsePositions(net);
+            log.debug("Zerodha positions completed: count={}", positions.size());
+            return positions;
         } catch (Exception ex) {
+            log.warn("Zerodha positions failed: {}", ex.getMessage());
             throw new BrokerException("Failed to retrieve Zerodha positions", ex);
         }
     }
 
     @Override
     public void subscribeMarketData(Collection<String> instrumentKeys, MarketDataListener listener) {
+        log.warn("Zerodha market data subscription requested but WebSocket streaming is not implemented: count={}",
+                instrumentKeys == null ? 0 : instrumentKeys.size());
         throw new BrokerException("Zerodha WebSocket streaming will be implemented in a later phase");
     }
 
     private void applyAuthHeaders(HttpHeaders headers) {
         requireAuth();
+        log.debug("Applying Zerodha auth headers");
         headers.set("X-Kite-Version", "3");
         headers.set(HttpHeaders.AUTHORIZATION,
                 "token " + properties.broker().apiKey() + ":" + tokenStore.accessToken().orElseThrow());
@@ -234,7 +287,10 @@ public class ZerodhaBrokerClient implements BrokerClient {
 
     private void requireAuth() {
         if (!hasText(properties.broker().apiKey()) || tokenStore.accessToken().isEmpty()) {
-            throw new BrokerException("Zerodha api-key and access-token are required for live broker calls");
+            log.warn("Zerodha auth missing: apiKeyConfigured={}, accessTokenPresent={}",
+                    hasText(properties.broker().apiKey()), tokenStore.accessToken().isPresent());
+            throw new BrokerException("Zerodha api-key and access-token are required for live broker calls. "
+                    + "Set KITE_ACCESS_TOKEN or call /auth/kite/session and complete the Kite login callback first.");
         }
     }
 

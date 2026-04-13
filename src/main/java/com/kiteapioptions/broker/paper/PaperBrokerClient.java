@@ -24,6 +24,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * In-memory paper broker with simulated market fills and virtual positions.
@@ -31,6 +33,7 @@ import java.util.concurrent.ConcurrentHashMap;
 public class PaperBrokerClient implements BrokerClient {
 
     private static final MathContext MONEY_CONTEXT = MathContext.DECIMAL64;
+    private static final Logger log = LoggerFactory.getLogger(PaperBrokerClient.class);
 
     private final TradingProperties properties;
     private final MockMarketDataGenerator marketDataGenerator;
@@ -44,37 +47,53 @@ public class PaperBrokerClient implements BrokerClient {
 
     @Override
     public BrokerSession session() {
+        log.debug("Paper broker session requested");
         return new BrokerSession(BrokerName.MOCK, "paper", true, Instant.now(), null);
     }
 
     @Override
     public List<Instrument> downloadInstruments() {
-        return marketDataGenerator.optionInstruments(LocalDate.now().plusDays(7));
+        log.info("Paper broker instrument download requested");
+        List<Instrument> instruments = marketDataGenerator.optionInstruments(LocalDate.now().plusDays(7));
+        log.info("Paper broker instrument download completed: instrumentCount={}", instruments.size());
+        return instruments;
     }
 
     @Override
     public Optional<Quote> quote(String instrumentKey) {
+        log.debug("Paper quote requested: instrumentKey={}", instrumentKey);
         return Optional.of(marketDataGenerator.quote(instrumentKey));
     }
 
     @Override
     public Map<String, Quote> quotes(Collection<String> instrumentKeys) {
-        return instrumentKeys.stream().distinct()
+        log.debug("Paper quotes requested: count={}", instrumentKeys == null ? 0 : instrumentKeys.size());
+        Map<String, Quote> quotes = instrumentKeys.stream().distinct()
                 .collect(java.util.stream.Collectors.toUnmodifiableMap(key -> key, marketDataGenerator::quote));
+        log.debug("Paper quotes completed: returnedCount={}", quotes.size());
+        return quotes;
     }
 
     @Override
     public List<Candle> historicalCandles(HistoricalDataRequest request) {
+        log.info("Paper historical candles requested: instrumentKey={}, timeframe={}, from={}, to={}",
+                request.instrumentKey(), request.timeframe(), request.from(), request.to());
         long candleCount = Math.max(1, request.timeframe().duration().toSeconds() == 0
                 ? 1
                 : (request.to().getEpochSecond() - request.from().getEpochSecond()) / request.timeframe().duration().toSeconds());
         int boundedCount = (int) Math.min(candleCount, 2_000);
-        return marketDataGenerator.candles(request.instrumentKey(), request.from(), request.timeframe(), boundedCount);
+        List<Candle> candles = marketDataGenerator.candles(request.instrumentKey(), request.from(), request.timeframe(), boundedCount);
+        log.info("Paper historical candles generated: instrumentKey={}, count={}", request.instrumentKey(), candles.size());
+        return candles;
     }
 
     @Override
     public OrderResponse placeOrder(OrderRequest request) {
+        log.info("Paper order requested: clientOrderId={}, instrument={}, side={}, orderType={}, product={}, quantity={}",
+                request.clientOrderId(), request.instrumentKey(), request.side(), request.orderType(),
+                request.productType(), request.quantity());
         if (ordersByClientId.containsKey(request.clientOrderId())) {
+            log.warn("Paper order rejected as duplicate: clientOrderId={}", request.clientOrderId());
             return new OrderResponse(request.clientOrderId(), Optional.empty(), request.instrumentKey(), request.side(),
                     OrderStatus.REJECTED, request.quantity(), 0, Optional.empty(),
                     Optional.of("Duplicate paper order clientOrderId"), Instant.now());
@@ -92,11 +111,14 @@ public class PaperBrokerClient implements BrokerClient {
         if (updatedPosition.quantity == 0) {
             positions.remove(request.instrumentKey());
         }
+        log.info("Paper order filled: clientOrderId={}, instrument={}, fillPrice={}, filledQuantity={}, resultingPositionQuantity={}",
+                request.clientOrderId(), request.instrumentKey(), fillPrice, request.quantity(), updatedPosition.quantity);
         return response;
     }
 
     @Override
     public Optional<OrderResponse> orderStatus(String brokerOrderId) {
+        log.debug("Paper order status requested: brokerOrderId={}", brokerOrderId);
         return ordersByClientId.values().stream()
                 .filter(order -> order.brokerOrderId().filter(brokerOrderId::equals).isPresent())
                 .findFirst();
@@ -104,11 +126,13 @@ public class PaperBrokerClient implements BrokerClient {
 
     @Override
     public List<OrderResponse> orders() {
+        log.debug("Paper orders requested: count={}", ordersByClientId.size());
         return List.copyOf(ordersByClientId.values());
     }
 
     @Override
     public List<Position> positions() {
+        log.debug("Paper positions requested: count={}", positions.size());
         return positions.entrySet().stream()
                 .map(entry -> entry.getValue().toPosition(entry.getKey(), marketDataGenerator.quote(entry.getKey()).lastPrice()))
                 .toList();
@@ -116,6 +140,7 @@ public class PaperBrokerClient implements BrokerClient {
 
     @Override
     public void subscribeMarketData(Collection<String> instrumentKeys, MarketDataListener listener) {
+        log.info("Paper market data subscription requested: count={}", instrumentKeys == null ? 0 : instrumentKeys.size());
         quotes(instrumentKeys).values().forEach(listener::onQuote);
     }
 
