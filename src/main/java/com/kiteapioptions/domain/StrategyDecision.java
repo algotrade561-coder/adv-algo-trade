@@ -20,6 +20,7 @@ public record StrategyDecision(
         boolean vwapConditionPassed,
         Optional<BigDecimal> imbalance,
         boolean volumeSpike,
+        BigDecimal confidenceScore,
         List<String> reasons
 ) {
     public StrategyDecision {
@@ -31,6 +32,25 @@ public record StrategyDecision(
         selectedStrike = selectedStrike == null ? Optional.empty() : selectedStrike;
         optionType = optionType == null ? Optional.empty() : optionType;
         imbalance = imbalance == null ? Optional.empty() : imbalance;
+        confidenceScore = confidenceScore == null ? BigDecimal.ZERO : confidenceScore;
+        Validation.nonNegative(confidenceScore, "confidenceScore");
         reasons = List.copyOf(reasons == null ? List.of() : reasons);
+    }
+
+    public StrategyDecision(
+            Instant timestamp,
+            UnderlyingSymbol underlying,
+            SignalType signalType,
+            BigDecimal underlyingPrice,
+            Optional<String> selectedInstrumentKey,
+            Optional<BigDecimal> selectedStrike,
+            Optional<OptionType> optionType,
+            boolean vwapConditionPassed,
+            Optional<BigDecimal> imbalance,
+            boolean volumeSpike,
+            List<String> reasons
+    ) {
+        this(timestamp, underlying, signalType, underlyingPrice, selectedInstrumentKey, selectedStrike, optionType,
+                vwapConditionPassed, imbalance, volumeSpike, BigDecimal.ZERO, reasons);
     }
 }

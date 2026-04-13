@@ -190,25 +190,25 @@ public class ZerodhaBrokerClient implements BrokerClient {
         body.add("tag", request.tag());
 
         try {
-            /*String responseBody = restClient.post()
+            String responseBody = restClient.post()
                     .uri("/orders/regular")
                     .headers(this::applyAuthHeaders)
                     .contentType(MediaType.APPLICATION_FORM_URLENCODED)
                     .body(body)
                     .retrieve()
-                    .body(String.class);*/
+                    .body(String.class);
             //JsonNode data = objectMapper.readTree(responseBody).path("data");
             //Optional<String> orderId = Optional.ofNullable(data.path("order_id").textValue());
             // Tese Execution ---------
 
-            String responseBody = """
+            /*String responseBody = """
                                     {
                                     "status": "success",
                                     "data": {
                                     "order_id": "240617000123456"
                                     }
                                     }
-                                    """;
+                                    """;*/
             JsonNode data = objectMapper.readTree(responseBody).path("data");
 
             Optional<String> orderId = Optional.ofNullable(data.path("order_id").textValue());

@@ -64,6 +64,14 @@ public class MonitoringController {
         return latest;
     }
 
+    @GetMapping("/signals/recent")
+    public List<StrategyDecisionEntity> recentSignals() {
+        log.info("Recent signals endpoint called");
+        List<StrategyDecisionEntity> decisions = reportingService.recentDecisions();
+        log.info("Recent signals endpoint completed: count={}", decisions.size());
+        return decisions;
+    }
+
     @GetMapping(value = "/trades/journal.csv", produces = "text/csv")
     public String tradeJournalCsv() {
         log.info("Trade journal CSV endpoint called");

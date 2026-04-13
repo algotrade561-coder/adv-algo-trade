@@ -40,6 +40,7 @@ trading:
     bearish-imbalance-threshold: 0.95
     min-liquidity-volume: 10000
     max-iv-percent: 80
+    min-signal-score-percent: 70
     entry-start-time: "09:25"
     entry-cutoff-time: "14:45"
     allow-first-minutes-entry: false

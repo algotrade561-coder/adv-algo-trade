@@ -174,7 +174,7 @@ public class ExecutionEngine {
                 decision.signalType().name(), decision.underlyingPrice(), decision.selectedInstrumentKey().orElse(null),
                 decision.selectedStrike().orElse(null), decision.optionType().map(Enum::name).orElse(null),
                 decision.vwapConditionPassed(), decision.imbalance().orElse(null), decision.volumeSpike(),
-                String.join("; ", decision.reasons())));
+                decision.confidenceScore(), String.join("; ", decision.reasons())));
     }
 
     private void persistOrder(OrderResponse order) {

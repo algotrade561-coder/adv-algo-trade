@@ -32,6 +32,27 @@ public class RuleBasedOptionsStrategy {
     private final VolatilityFilter volatilityFilter;
     private final OiChangeTracker oiChangeTracker;
     private final OptionChainAnalyzer optionChainAnalyzer;
+    private final StrategySignalCsvRecorder signalCsvRecorder;
+
+    public RuleBasedOptionsStrategy(
+            TradingProperties properties,
+            VwapIndicator vwapIndicator,
+            VolumeSpikeDetector volumeSpikeDetector,
+            BreakoutDetector breakoutDetector,
+            VolatilityFilter volatilityFilter,
+            OiChangeTracker oiChangeTracker,
+            OptionChainAnalyzer optionChainAnalyzer,
+            StrategySignalCsvRecorder signalCsvRecorder
+    ) {
+        this.properties = properties;
+        this.vwapIndicator = vwapIndicator;
+        this.volumeSpikeDetector = volumeSpikeDetector;
+        this.breakoutDetector = breakoutDetector;
+        this.volatilityFilter = volatilityFilter;
+        this.oiChangeTracker = oiChangeTracker;
+        this.optionChainAnalyzer = optionChainAnalyzer;
+        this.signalCsvRecorder = signalCsvRecorder;
+    }
 
     public RuleBasedOptionsStrategy(
             TradingProperties properties,
@@ -42,13 +63,8 @@ public class RuleBasedOptionsStrategy {
             OiChangeTracker oiChangeTracker,
             OptionChainAnalyzer optionChainAnalyzer
     ) {
-        this.properties = properties;
-        this.vwapIndicator = vwapIndicator;
-        this.volumeSpikeDetector = volumeSpikeDetector;
-        this.breakoutDetector = breakoutDetector;
-        this.volatilityFilter = volatilityFilter;
-        this.oiChangeTracker = oiChangeTracker;
-        this.optionChainAnalyzer = optionChainAnalyzer;
+        this(properties, vwapIndicator, volumeSpikeDetector, breakoutDetector, volatilityFilter, oiChangeTracker,
+                optionChainAnalyzer, null);
     }
 
     public StrategyDecision evaluateEntry(StrategyEvaluationRequest request) {
@@ -80,6 +96,8 @@ public class RuleBasedOptionsStrategy {
                 properties.entry().maxIvPercent());
         boolean liquidityPassed = request.selectedOptionQuote().volume() >= properties.entry().minLiquidityVolume();
         boolean timePassed = withinEntryWindow(request.marketTime());
+        BigDecimal confidenceScore = confidenceScore(vwapPassed, breakoutPassed, volumeSpike, oiPassed,
+                ivPassed, liquidityPassed);
 
         List<String> reasons = new ArrayList<>();
         addReason(reasons, vwapPassed, "VWAP condition passed", "VWAP condition failed");
@@ -89,19 +107,26 @@ public class RuleBasedOptionsStrategy {
         addReason(reasons, ivPassed, "IV filter passed", "IV filter failed");
         addReason(reasons, liquidityPassed, "Liquidity filter passed", "Liquidity filter failed");
         addReason(reasons, timePassed, "Entry time window passed", "Entry time window failed");
+        addReason(reasons, confidenceScore.compareTo(properties.entry().minSignalScorePercent()) >= 0,
+                "Signal score passed: " + confidenceScore + "%",
+                "Signal score failed: " + confidenceScore + "%");
 
-        boolean entry = vwapPassed && breakoutPassed && volumeSpike && oiPassed && ivPassed && liquidityPassed && timePassed;
+        boolean entry = timePassed && ivPassed && liquidityPassed
+                && confidenceScore.compareTo(properties.entry().minSignalScorePercent()) >= 0;
         SignalType signalType = entry
                 ? (request.optionType() == OptionType.CE ? SignalType.BUY_CE : SignalType.BUY_PE)
                 : SignalType.NO_TRADE;
 
-        log.info("Strategy evaluation completed: signalType={}, underlyingPrice={}, vwap={}, vwapPassed={}, breakoutPassed={}, volumeSpike={}, oiPassed={}, ivPassed={}, liquidityPassed={}, timePassed={}, imbalance={}, reasons={}",
+        log.info("Strategy evaluation completed: signalType={}, underlyingPrice={}, vwap={}, vwapPassed={}, breakoutPassed={}, volumeSpike={}, oiPassed={}, ivPassed={}, liquidityPassed={}, timePassed={}, confidenceScore={}, minSignalScore={}, imbalance={}, reasons={}",
                 signalType, underlyingPrice, vwap, vwapPassed, breakoutPassed, volumeSpike, oiPassed, ivPassed,
-                liquidityPassed, timePassed, chain.nearbyPutCallOiImbalance(), reasons);
-        return new StrategyDecision(request.timestamp(), request.underlying(), signalType, underlyingPrice,
+                liquidityPassed, timePassed, confidenceScore, properties.entry().minSignalScorePercent(),
+                chain.nearbyPutCallOiImbalance(), reasons);
+        StrategyDecision decision = new StrategyDecision(request.timestamp(), request.underlying(), signalType, underlyingPrice,
                 Optional.ofNullable(request.selectedInstrumentKey()), Optional.ofNullable(request.selectedStrike()),
                 Optional.ofNullable(request.optionType()), vwapPassed, Optional.of(chain.nearbyPutCallOiImbalance()),
-                volumeSpike, reasons);
+                volumeSpike, confidenceScore, reasons);
+        recordSignal(request, decision, chain, vwap, breakoutPassed, oiPassed, ivPassed, liquidityPassed, timePassed);
+        return decision;
     }
 
     private boolean breakoutPassed(StrategyEvaluationRequest request, OptionChainAnalysis chain) {
@@ -148,14 +173,34 @@ public class RuleBasedOptionsStrategy {
 
     private StrategyDecision noTrade(StrategyEvaluationRequest request, Optional<BigDecimal> imbalance,
                                      boolean volumeSpike, String reason) {
-        return new StrategyDecision(request.timestamp(), request.underlying(), SignalType.NO_TRADE,
+        StrategyDecision decision = new StrategyDecision(request.timestamp(), request.underlying(), SignalType.NO_TRADE,
                 request.underlyingCandles().isEmpty() ? BigDecimal.ZERO : request.underlyingCandles().getLast().close(),
                 Optional.ofNullable(request.selectedInstrumentKey()), Optional.ofNullable(request.selectedStrike()),
-                Optional.ofNullable(request.optionType()), false, imbalance, volumeSpike, List.of(reason));
+                Optional.ofNullable(request.optionType()), false, imbalance, volumeSpike, BigDecimal.ZERO, List.of(reason));
+        recordSignal(request, decision, null, BigDecimal.ZERO, false, false, false, false, false);
+        return decision;
     }
 
     private void addReason(List<String> reasons, boolean passed, String passReason, String failReason) {
         reasons.add(passed ? passReason : failReason);
+    }
+
+    private BigDecimal confidenceScore(
+            boolean vwapPassed,
+            boolean breakoutPassed,
+            boolean volumeSpike,
+            boolean oiPassed,
+            boolean ivPassed,
+            boolean liquidityPassed
+    ) {
+        int score = 0;
+        score += vwapPassed ? 15 : 0;
+        score += breakoutPassed ? 25 : 0;
+        score += volumeSpike ? 20 : 0;
+        score += oiPassed ? 25 : 0;
+        score += liquidityPassed ? 10 : 0;
+        score += ivPassed ? 5 : 0;
+        return BigDecimal.valueOf(score);
     }
 
     private BigDecimal applyPositiveBuffer(BigDecimal value, BigDecimal bufferPercent) {
@@ -164,5 +209,23 @@ public class RuleBasedOptionsStrategy {
 
     private BigDecimal applyNegativeBuffer(BigDecimal value, BigDecimal bufferPercent) {
         return value.multiply(BigDecimal.ONE.subtract(bufferPercent.movePointLeft(2)));
+    }
+
+    private void recordSignal(
+            StrategyEvaluationRequest request,
+            StrategyDecision decision,
+            OptionChainAnalysis chain,
+            BigDecimal vwap,
+            boolean breakoutPassed,
+            boolean oiPassed,
+            boolean ivPassed,
+            boolean liquidityPassed,
+            boolean timePassed
+    ) {
+        if (signalCsvRecorder == null) {
+            return;
+        }
+        signalCsvRecorder.record(request, decision, chain, vwap, breakoutPassed, oiPassed, ivPassed, liquidityPassed,
+                timePassed);
     }
 }

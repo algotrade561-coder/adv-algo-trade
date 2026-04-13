@@ -15,12 +15,15 @@ import com.kiteapioptions.domain.TradingMode;
 import com.kiteapioptions.domain.UnderlyingSymbol;
 import com.kiteapioptions.marketdata.InstrumentCache;
 import com.kiteapioptions.marketdata.MarketDataService;
+import com.kiteapioptions.persistence.StrategyDecisionEntity;
+import com.kiteapioptions.persistence.StrategyDecisionRepository;
 import com.kiteapioptions.strategy.RuleBasedOptionsStrategy;
 import com.kiteapioptions.strategy.StrategyEvaluationRequest;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalTime;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.EnumMap;
 import java.util.LinkedHashMap;
@@ -49,6 +52,7 @@ public class AlgoTradingScheduler {
     private final RuleBasedOptionsStrategy strategy;
     private final ExecutionEngine executionEngine;
     private final KiteAccessTokenStore tokenStore;
+    private final StrategyDecisionRepository decisionRepository;
     private final Map<String, Quote> previousQuotes = new ConcurrentHashMap<>();
     private final AtomicBoolean scanInProgress = new AtomicBoolean(false);
 
@@ -59,7 +63,8 @@ public class AlgoTradingScheduler {
             MarketDataService marketDataService,
             RuleBasedOptionsStrategy strategy,
             ExecutionEngine executionEngine,
-            KiteAccessTokenStore tokenStore
+            KiteAccessTokenStore tokenStore,
+            StrategyDecisionRepository decisionRepository
     ) {
         this.properties = properties;
         this.tradingStateService = tradingStateService;
@@ -68,6 +73,7 @@ public class AlgoTradingScheduler {
         this.strategy = strategy;
         this.executionEngine = executionEngine;
         this.tokenStore = tokenStore;
+        this.decisionRepository = decisionRepository;
     }
 
     @Scheduled(
@@ -249,6 +255,10 @@ public class AlgoTradingScheduler {
         selected.put(OptionType.CE, findOption(options, selectedStrikeFor(OptionType.CE, strikes, underlyingPrice), OptionType.CE).orElse(null));
         selected.put(OptionType.PE, findOption(options, selectedStrikeFor(OptionType.PE, strikes, underlyingPrice), OptionType.PE).orElse(null));
         selected.values().removeIf(java.util.Objects::isNull);
+        selected.forEach((optionType, instrument) -> log.info(
+                "Selected option: optionType={}, instrument={}, token={}, parsedStrike={}, expiry={}, underlyingPrice={}",
+                optionType, instrument.instrumentKey(), instrument.instrumentToken(),
+                instrument.strike().orElse(null), instrument.expiry().orElse(null), underlyingPrice));
         return Map.copyOf(selected);
     }
 
@@ -313,11 +323,8 @@ public class AlgoTradingScheduler {
             int remainingEntries
     ) {
         int entriesSubmitted = 0;
+        List<EntryCandidate> candidates = new ArrayList<>();
         for (Map.Entry<OptionType, Instrument> entry : context.selectedOptions().entrySet()) {
-            if (entriesSubmitted >= remainingEntries) {
-                break;
-            }
-
             Instrument selectedInstrument = entry.getValue();
             Quote selectedQuote = context.quotes().get(selectedInstrument.instrumentKey());
             if (selectedQuote == null) {
@@ -352,12 +359,24 @@ public class AlgoTradingScheduler {
             if (decision.signalType().name().startsWith("BUY_")) {
                 log.info("Algo scan generated entry signal: underlying={}, instrument={}, signalType={}, premium={}",
                         underlying, selectedInstrument.instrumentKey(), decision.signalType(), selectedQuote.lastPrice());
-                executionEngine.executeEntry(decision, selectedQuote.lastPrice(), selectedInstrument.lotSize());
-                entriesSubmitted++;
+                log.info("Entry candidate details: instrument={}, token={}, parsedStrike={}, optionType={}, confidenceScore={}",
+                        selectedInstrument.instrumentKey(), selectedInstrument.instrumentToken(),
+                        selectedInstrument.strike().orElse(null), entry.getKey(), decision.confidenceScore());
+                candidates.add(new EntryCandidate(decision, selectedQuote, selectedInstrument));
             } else {
+                persistNoTradeDecision(decision);
                 log.info("Algo scan no-trade decision: underlying={}, instrument={}, optionType={}, reasons={}",
                         underlying, selectedInstrument.instrumentKey(), entry.getKey(), decision.reasons());
             }
+        }
+
+        List<EntryCandidate> selectedCandidates = candidates.stream()
+                .sorted(Comparator.comparing((EntryCandidate candidate) -> candidate.decision().confidenceScore()).reversed())
+                .limit(remainingEntries)
+                .toList();
+        for (EntryCandidate candidate : selectedCandidates) {
+            executionEngine.executeEntry(candidate.decision(), candidate.quote().lastPrice(), candidate.instrument().lotSize());
+            entriesSubmitted++;
         }
         return entriesSubmitted;
     }
@@ -401,6 +420,14 @@ public class AlgoTradingScheduler {
         return String.valueOf(instrument.get().instrumentToken());
     }
 
+    private void persistNoTradeDecision(StrategyDecision decision) {
+        decisionRepository.save(new StrategyDecisionEntity(decision.timestamp(), decision.underlying().name(),
+                decision.signalType().name(), decision.underlyingPrice(), decision.selectedInstrumentKey().orElse(null),
+                decision.selectedStrike().orElse(null), decision.optionType().map(Enum::name).orElse(null),
+                decision.vwapConditionPassed(), decision.imbalance().orElse(null), decision.volumeSpike(),
+                decision.confidenceScore(), String.join("; ", decision.reasons())));
+    }
+
     private BigDecimal nearestStrike(List<BigDecimal> strikes, BigDecimal price) {
         return strikes.stream()
                 .min(Comparator.comparing(strike -> strike.subtract(price).abs()))
@@ -412,6 +439,13 @@ public class AlgoTradingScheduler {
             OptionChainSnapshot optionChainSnapshot,
             Map<OptionType, Instrument> selectedOptions,
             Map<String, Quote> quotes
+    ) {
+    }
+
+    private record EntryCandidate(
+            StrategyDecision decision,
+            Quote quote,
+            Instrument instrument
     ) {
     }
 }

@@ -8,6 +8,7 @@ import com.kiteapioptions.indicator.VolumeSpikeDetector;
 import com.kiteapioptions.indicator.VwapIndicator;
 import com.kiteapioptions.strategy.OptionChainAnalyzer;
 import com.kiteapioptions.strategy.RuleBasedOptionsStrategy;
+import com.kiteapioptions.strategy.StrategySignalCsvRecorder;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -57,9 +58,10 @@ public class StrategyConfiguration {
             BreakoutDetector breakoutDetector,
             VolatilityFilter volatilityFilter,
             OiChangeTracker oiChangeTracker,
-            OptionChainAnalyzer optionChainAnalyzer
+            OptionChainAnalyzer optionChainAnalyzer,
+            StrategySignalCsvRecorder signalCsvRecorder
     ) {
         return new RuleBasedOptionsStrategy(properties, vwapIndicator, volumeSpikeDetector, breakoutDetector,
-                volatilityFilter, oiChangeTracker, optionChainAnalyzer);
+                volatilityFilter, oiChangeTracker, optionChainAnalyzer, signalCsvRecorder);
     }
 }

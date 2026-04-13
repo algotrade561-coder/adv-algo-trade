@@ -122,6 +122,8 @@ curl.exe -X POST http://localhost:8080/start
 
 It then runs on the configured interval, refreshes instruments if needed, fetches spot and option market data, builds a near-ATM option-chain snapshot, evaluates CE/PE entries, and routes accepted signals through risk checks and execution. A `NO_TRADE` decision is still a valid scan result when strategy filters do not pass.
 
+Every entry evaluation is appended to `reports/entry-signals/entry-signals.csv` with the raw candle/quote inputs, option-chain context, pass/fail flags, confidence score, and final reasons for later strategy tuning.
+
 By default, the scanner only scans NIFTY. Enable BANKNIFTY at runtime when needed:
 
 ```powershell
@@ -148,6 +150,8 @@ trading:
     candle-lookback: 30
     max-entries-per-scan: 1
     refresh-instruments-on-start: true
+  entry:
+    min-signal-score-percent: 70
 ```
 
 ## Zerodha Manual Login

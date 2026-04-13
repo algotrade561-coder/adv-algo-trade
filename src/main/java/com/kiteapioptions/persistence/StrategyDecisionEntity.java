@@ -22,6 +22,7 @@ public class StrategyDecisionEntity {
     private boolean vwapConditionPassed;
     private BigDecimal imbalance;
     private boolean volumeSpike;
+    private BigDecimal confidenceScore;
     private String reasons;
 
     protected StrategyDecisionEntity() {
@@ -30,7 +31,7 @@ public class StrategyDecisionEntity {
     public StrategyDecisionEntity(Instant timestamp, String underlying, String signalType, BigDecimal underlyingPrice,
                                   String selectedInstrumentKey, BigDecimal selectedStrike, String optionType,
                                   boolean vwapConditionPassed, BigDecimal imbalance, boolean volumeSpike,
-                                  String reasons) {
+                                  BigDecimal confidenceScore, String reasons) {
         this.timestamp = timestamp;
         this.underlying = underlying;
         this.signalType = signalType;
@@ -41,7 +42,16 @@ public class StrategyDecisionEntity {
         this.vwapConditionPassed = vwapConditionPassed;
         this.imbalance = imbalance;
         this.volumeSpike = volumeSpike;
+        this.confidenceScore = confidenceScore;
         this.reasons = reasons;
+    }
+
+    public StrategyDecisionEntity(Instant timestamp, String underlying, String signalType, BigDecimal underlyingPrice,
+                                  String selectedInstrumentKey, BigDecimal selectedStrike, String optionType,
+                                  boolean vwapConditionPassed, BigDecimal imbalance, boolean volumeSpike,
+                                  String reasons) {
+        this(timestamp, underlying, signalType, underlyingPrice, selectedInstrumentKey, selectedStrike, optionType,
+                vwapConditionPassed, imbalance, volumeSpike, BigDecimal.ZERO, reasons);
     }
 
     public Long getId() { return id; }
@@ -55,5 +65,6 @@ public class StrategyDecisionEntity {
     public boolean isVwapConditionPassed() { return vwapConditionPassed; }
     public BigDecimal getImbalance() { return imbalance; }
     public boolean isVolumeSpike() { return volumeSpike; }
+    public BigDecimal getConfidenceScore() { return confidenceScore; }
     public String getReasons() { return reasons; }
 }

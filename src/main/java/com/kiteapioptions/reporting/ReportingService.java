@@ -77,6 +77,12 @@ public class ReportingService {
         return decision;
     }
 
+    public List<StrategyDecisionEntity> recentDecisions() {
+        List<StrategyDecisionEntity> decisions = decisionRepository.findTop20ByOrderByTimestampDesc();
+        log.debug("Reporting recent decisions completed: count={}", decisions.size());
+        return decisions;
+    }
+
     public String tradeJournalCsv() {
         log.debug("Reporting trade journal CSV generation started");
         StringBuilder csv = new StringBuilder("tradeId,instrumentKey,underlying,optionType,status,quantity,entryPrice,exitPrice,entryTime,exitTime,realizedPnl,entryReason,exitReason\n");
