@@ -1,6 +1,7 @@
 package com.kiteapioptions.execution;
 
 import com.kiteapioptions.broker.BrokerClient;
+import com.kiteapioptions.config.TradingProperties;
 import com.kiteapioptions.domain.OrderRequest;
 import com.kiteapioptions.domain.OrderResponse;
 import com.kiteapioptions.domain.OrderSide;
@@ -15,12 +16,15 @@ import com.kiteapioptions.persistence.StrategyDecisionEntity;
 import com.kiteapioptions.persistence.StrategyDecisionRepository;
 import com.kiteapioptions.persistence.TradeEntity;
 import com.kiteapioptions.persistence.TradeRepository;
+import com.kiteapioptions.notification.TelegramAlertService;
 import com.kiteapioptions.risk.RiskEngine;
 import java.math.BigDecimal;
+import java.math.MathContext;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -36,33 +40,43 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class ExecutionEngine {
 
+    private static final MathContext MATH_CONTEXT = MathContext.DECIMAL64;
     private static final Logger log = LoggerFactory.getLogger(ExecutionEngine.class);
 
+    private final TradingProperties properties;
     private final BrokerClient brokerClient;
     private final RiskEngine riskEngine;
     private final TradingStateService tradingStateService;
     private final TradeRepository tradeRepository;
     private final OrderRepository orderRepository;
     private final StrategyDecisionRepository decisionRepository;
+    private final ExecutionOutcomeCsvRecorder executionOutcomeCsvRecorder;
+    private final TelegramAlertService telegramAlertService;
     private final Clock clock;
 
     @Autowired
-    public ExecutionEngine(BrokerClient brokerClient, RiskEngine riskEngine, TradingStateService tradingStateService,
+    public ExecutionEngine(TradingProperties properties, BrokerClient brokerClient, RiskEngine riskEngine, TradingStateService tradingStateService,
                            TradeRepository tradeRepository, OrderRepository orderRepository,
-                           StrategyDecisionRepository decisionRepository) {
-        this(brokerClient, riskEngine, tradingStateService, tradeRepository, orderRepository, decisionRepository,
-                Clock.systemUTC());
+                           StrategyDecisionRepository decisionRepository,
+                           ExecutionOutcomeCsvRecorder executionOutcomeCsvRecorder,
+                           TelegramAlertService telegramAlertService) {
+        this(properties, brokerClient, riskEngine, tradingStateService, tradeRepository, orderRepository, decisionRepository,
+                executionOutcomeCsvRecorder, telegramAlertService, Clock.systemUTC());
     }
 
-    ExecutionEngine(BrokerClient brokerClient, RiskEngine riskEngine, TradingStateService tradingStateService,
+    ExecutionEngine(TradingProperties properties, BrokerClient brokerClient, RiskEngine riskEngine, TradingStateService tradingStateService,
                     TradeRepository tradeRepository, OrderRepository orderRepository,
-                    StrategyDecisionRepository decisionRepository, Clock clock) {
+                    StrategyDecisionRepository decisionRepository, ExecutionOutcomeCsvRecorder executionOutcomeCsvRecorder,
+                    TelegramAlertService telegramAlertService, Clock clock) {
+        this.properties = properties;
         this.brokerClient = brokerClient;
         this.riskEngine = riskEngine;
         this.tradingStateService = tradingStateService;
         this.tradeRepository = tradeRepository;
         this.orderRepository = orderRepository;
         this.decisionRepository = decisionRepository;
+        this.executionOutcomeCsvRecorder = executionOutcomeCsvRecorder;
+        this.telegramAlertService = telegramAlertService;
         this.clock = clock;
     }
 
@@ -80,7 +94,19 @@ public class ExecutionEngine {
         persistDecision(decision);
         if (!tradingStateService.running()) {
             log.warn("Entry execution rejected: trading engine is stopped");
-            return ExecutionResult.rejected(List.of("Trading engine is stopped"));
+            List<String> reasons = List.of("Trading engine is stopped");
+            executionOutcomeCsvRecorder.recordEntry(decision, optionPremium, lotSize, "TRADING_STOPPED", false,
+                    null, null, null, null, reasons);
+            telegramAlertService.entryRejected(decision, optionPremium, "TRADING_STOPPED", reasons);
+            return ExecutionResult.rejected(reasons);
+        }
+        List<String> orderGuardRejections = orderGuardRejections(decision, optionPremium);
+        if (!orderGuardRejections.isEmpty()) {
+            log.warn("Entry execution rejected by order guard: reasons={}", orderGuardRejections);
+            executionOutcomeCsvRecorder.recordEntry(decision, optionPremium, lotSize, "ORDER_GUARD_REJECTED", false,
+                    null, null, null, null, orderGuardRejections);
+            telegramAlertService.entryRejected(decision, optionPremium, "ORDER_GUARD_REJECTED", orderGuardRejections);
+            return ExecutionResult.rejected(orderGuardRejections);
         }
 
         int openTradeCount = openTradeCount();
@@ -93,6 +119,9 @@ public class ExecutionEngine {
                 consecutiveLosses, tradingStateService.killSwitchEnabled());
         if (!risk.allowed()) {
             log.warn("Entry execution rejected by risk engine: reasons={}", risk.reasons());
+            executionOutcomeCsvRecorder.recordEntry(decision, optionPremium, lotSize, "RISK_REJECTED", false,
+                    null, null, null, null, risk.reasons());
+            telegramAlertService.entryRejected(decision, optionPremium, "RISK_REJECTED", risk.reasons());
             return ExecutionResult.rejected(risk.reasons());
         }
 
@@ -100,7 +129,11 @@ public class ExecutionEngine {
         if (!sizing.allowed()) {
             log.warn("Entry execution rejected by position sizing: reason={}, riskAmount={}, estimatedCost={}",
                     sizing.reason(), sizing.riskAmount(), sizing.estimatedCost());
-            return ExecutionResult.rejected(List.of(sizing.reason()));
+            List<String> reasons = List.of(sizing.reason());
+            executionOutcomeCsvRecorder.recordEntry(decision, optionPremium, lotSize, "SIZING_REJECTED", false,
+                    sizing.quantity(), sizing.riskAmount(), sizing.estimatedCost(), null, reasons);
+            telegramAlertService.entryRejected(decision, optionPremium, "SIZING_REJECTED", reasons);
+            return ExecutionResult.rejected(reasons);
         }
         log.info("Entry sizing accepted: quantity={}, riskAmount={}, estimatedCost={}, reason={}",
                 sizing.quantity(), sizing.riskAmount(), sizing.estimatedCost(), sizing.reason());
@@ -125,11 +158,19 @@ public class ExecutionEngine {
                     order.filledQuantity(), fillPrice, Instant.now(clock), String.join("; ", decision.reasons())));
             log.info("Entry trade opened: tradeId={}, instrument={}, quantity={}, entryPrice={}",
                     tradeId, order.instrumentKey(), order.filledQuantity(), fillPrice);
-            return ExecutionResult.accepted(order, List.of("Entry order filled and trade journal updated"));
+            List<String> reasons = List.of("Entry order filled and trade journal updated");
+            executionOutcomeCsvRecorder.recordEntry(decision, optionPremium, lotSize, "ORDER_FILLED", true,
+                    sizing.quantity(), sizing.riskAmount(), sizing.estimatedCost(), order, reasons);
+            telegramAlertService.entryOrderFilled(decision, optionPremium, sizing.quantity(), sizing.estimatedCost(), order);
+            return ExecutionResult.accepted(order, reasons);
         }
         log.warn("Entry order not filled: clientOrderId={}, status={}, reason={}",
                 order.clientOrderId(), order.status(), order.rejectionReason().orElse("Entry order was not filled"));
-        return ExecutionResult.rejected(List.of(order.rejectionReason().orElse("Entry order was not filled")));
+        List<String> reasons = List.of(order.rejectionReason().orElse("Entry order was not filled"));
+        executionOutcomeCsvRecorder.recordEntry(decision, optionPremium, lotSize, "ORDER_NOT_FILLED", false,
+                sizing.quantity(), sizing.riskAmount(), sizing.estimatedCost(), order, reasons);
+        telegramAlertService.orderNotFilled(decision, optionPremium, sizing.quantity(), order, reasons);
+        return ExecutionResult.rejected(reasons);
     }
 
     @Transactional
@@ -189,17 +230,11 @@ public class ExecutionEngine {
     }
 
     private int tradesToday() {
-        ZoneId zoneId = ZoneId.systemDefault();
-        LocalDate today = LocalDate.now(clock);
-        return tradeRepository.findByEntryTimeBetween(today.atStartOfDay(zoneId).toInstant(),
-                today.plusDays(1).atStartOfDay(zoneId).toInstant()).size();
+        return tradeRepository.findByEntryTimeBetween(todayStart(), tomorrowStart()).size();
     }
 
     private BigDecimal dailyPnl() {
-        ZoneId zoneId = ZoneId.systemDefault();
-        LocalDate today = LocalDate.now(clock);
-        return tradeRepository.findByEntryTimeBetween(today.atStartOfDay(zoneId).toInstant(),
-                        today.plusDays(1).atStartOfDay(zoneId).toInstant()).stream()
+        return tradeRepository.findByEntryTimeBetween(todayStart(), tomorrowStart()).stream()
                 .map(TradeEntity::getRealizedPnl)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
     }
@@ -218,5 +253,63 @@ public class ExecutionEngine {
             }
         }
         return losses;
+    }
+
+    private List<String> orderGuardRejections(StrategyDecision decision, BigDecimal optionPremium) {
+        List<String> rejections = new ArrayList<>();
+        String instrumentKey = decision.selectedInstrumentKey().orElse("");
+        if (instrumentKey.isBlank()) {
+            return rejections;
+        }
+
+        int buyOrdersToday = buyOrdersToday();
+        if (buyOrdersToday >= properties.risk().maxOrdersPerDay()) {
+            rejections.add("Max buy orders per day reached");
+        }
+
+        boolean existingOpenBuyOrder = !orderRepository.findByInstrumentKeyAndSideAndStatusIn(
+                instrumentKey,
+                OrderSide.BUY.name(),
+                List.of(OrderStatus.NEW, OrderStatus.OPEN)
+        ).isEmpty();
+        if (existingOpenBuyOrder) {
+            rejections.add("Open buy order already exists for instrument: " + instrumentKey);
+        }
+
+        boolean existingOpenTrade = !tradeRepository.findByInstrumentKeyAndStatus(instrumentKey, TradeStatus.OPEN).isEmpty();
+        if (existingOpenTrade) {
+            rejections.add("Open trade already exists for instrument: " + instrumentKey);
+        }
+
+        tradeRepository.findByInstrumentKeyAndEntryTimeBetween(instrumentKey, todayStart(), tomorrowStart()).stream()
+                .map(TradeEntity::getEntryPrice)
+                .filter(previousPrice -> previousPrice != null && previousPrice.signum() > 0 && optionPremium != null)
+                .filter(previousPrice -> priceMovePercent(previousPrice, optionPremium)
+                        .compareTo(properties.risk().sameInstrumentReentryMinPriceMovePercent()) < 0)
+                .findFirst()
+                .ifPresent(previousPrice -> rejections.add("Same instrument already traded today without required price move: "
+                        + instrumentKey));
+
+        return rejections;
+    }
+
+    private int buyOrdersToday() {
+        return orderRepository.findBySideAndUpdatedAtBetween(OrderSide.BUY.name(), todayStart(), tomorrowStart()).size();
+    }
+
+    private BigDecimal priceMovePercent(BigDecimal previousPrice, BigDecimal currentPrice) {
+        return currentPrice.subtract(previousPrice).abs()
+                .multiply(BigDecimal.valueOf(100), MATH_CONTEXT)
+                .divide(previousPrice, MATH_CONTEXT);
+    }
+
+    private Instant todayStart() {
+        ZoneId zoneId = properties.timezone();
+        return LocalDate.ofInstant(clock.instant(), zoneId).atStartOfDay(zoneId).toInstant();
+    }
+
+    private Instant tomorrowStart() {
+        ZoneId zoneId = properties.timezone();
+        return LocalDate.ofInstant(clock.instant(), zoneId).plusDays(1).atStartOfDay(zoneId).toInstant();
     }
 }

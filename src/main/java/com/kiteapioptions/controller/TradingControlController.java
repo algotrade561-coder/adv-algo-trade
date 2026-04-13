@@ -4,6 +4,7 @@ import com.kiteapioptions.config.TradingProperties;
 import com.kiteapioptions.domain.TradingMode;
 import com.kiteapioptions.domain.UnderlyingSymbol;
 import com.kiteapioptions.execution.TradingStateService;
+import com.kiteapioptions.notification.TelegramAlertService;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -21,10 +22,16 @@ public class TradingControlController {
 
     private final TradingProperties tradingProperties;
     private final TradingStateService tradingStateService;
+    private final TelegramAlertService telegramAlertService;
 
-    public TradingControlController(TradingProperties tradingProperties, TradingStateService tradingStateService) {
+    public TradingControlController(
+            TradingProperties tradingProperties,
+            TradingStateService tradingStateService,
+            TelegramAlertService telegramAlertService
+    ) {
         this.tradingProperties = tradingProperties;
         this.tradingStateService = tradingStateService;
+        this.telegramAlertService = telegramAlertService;
     }
 
     @GetMapping("/config")
@@ -44,6 +51,7 @@ public class TradingControlController {
                 request.mode(), tradingProperties.mode(), tradingProperties.liveTradingEnabled());
         if (request.mode() == TradingMode.LIVE && !tradingProperties.liveTradingEnabled()) {
             log.warn("Mode change rejected: LIVE mode requires trading.live-trading-enabled=true");
+            telegramAlertService.tradingStateChanged("Mode change rejected: LIVE requires live trading enabled", status());
             return ResponseEntity.badRequest().body(Map.of(
                     "accepted", false,
                     "reason", "LIVE mode requires trading.live-trading-enabled=true"
@@ -51,6 +59,7 @@ public class TradingControlController {
         }
         tradingStateService.setRequestedMode(request.mode());
         log.info("Mode change accepted: {}", status());
+        telegramAlertService.tradingStateChanged("Mode changed to " + request.mode(), status());
         return ResponseEntity.ok(status());
     }
 
@@ -63,6 +72,7 @@ public class TradingControlController {
                 tradingStateService.killSwitchEnabled());
         tradingStateService.start();
         log.info("Trading state after start: {}", status());
+        telegramAlertService.tradingStateChanged("Scanner started", status());
         return status();
     }
 
@@ -72,6 +82,7 @@ public class TradingControlController {
                 tradingStateService.running(), tradingStateService.requestedMode());
         tradingStateService.stop();
         log.info("Trading state after stop: {}", status());
+        telegramAlertService.tradingStateChanged("Scanner stopped", status());
         return status();
     }
 
@@ -84,6 +95,7 @@ public class TradingControlController {
             tradingStateService.clearKillSwitch();
         }
         log.warn("Trading state after kill switch update: {}", status());
+        telegramAlertService.tradingStateChanged("Kill switch set to " + request.enabled(), status());
         return status();
     }
 
@@ -101,6 +113,7 @@ public class TradingControlController {
         log.info("Scan underlying update requested: underlying={}, enabled={}", underlying, request.enabled());
         tradingStateService.setUnderlyingScanEnabled(underlying, request.enabled());
         log.info("Trading state after scan underlying update: {}", status());
+        telegramAlertService.tradingStateChanged("Scan toggle " + underlying + "=" + request.enabled(), status());
         return status();
     }
 

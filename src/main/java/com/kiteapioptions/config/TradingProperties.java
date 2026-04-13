@@ -18,6 +18,7 @@ import java.time.ZoneId;
 import java.util.List;
 import java.util.Map;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.bind.ConstructorBinding;
 import org.springframework.validation.annotation.Validated;
 
 /**
@@ -37,10 +38,12 @@ public record TradingProperties(
         @Valid @NotNull Risk risk,
         @Valid @NotNull Paper paper,
         @Valid @NotNull Safety safety,
+        @Valid @NotNull Telegram telegram,
         @Valid @NotNull Algo algo,
         @Valid @NotNull Backtest backtest
 ) {
 
+    @ConstructorBinding
     public TradingProperties {
         if (mode == null) {
             mode = TradingMode.PAPER;
@@ -56,8 +59,46 @@ public record TradingProperties(
         risk = risk == null ? Risk.defaults() : risk;
         paper = paper == null ? Paper.defaults() : paper;
         safety = safety == null ? Safety.defaults() : safety;
+        telegram = telegram == null ? Telegram.defaults() : telegram;
         algo = algo == null ? Algo.defaults() : algo;
         backtest = backtest == null ? Backtest.defaults() : backtest;
+    }
+
+    public TradingProperties(
+            TradingMode mode,
+            boolean liveTradingEnabled,
+            ZoneId timezone,
+            Broker broker,
+            Symbols symbols,
+            Strike strike,
+            Entry entry,
+            Exit exit,
+            Risk risk,
+            Paper paper,
+            Safety safety,
+            Algo algo
+    ) {
+        this(mode, liveTradingEnabled, timezone, broker, symbols, strike, entry, exit, risk, paper, safety,
+                null, algo, null);
+    }
+
+    public TradingProperties(
+            TradingMode mode,
+            boolean liveTradingEnabled,
+            ZoneId timezone,
+            Broker broker,
+            Symbols symbols,
+            Strike strike,
+            Entry entry,
+            Exit exit,
+            Risk risk,
+            Paper paper,
+            Safety safety,
+            Algo algo,
+            Backtest backtest
+    ) {
+        this(mode, liveTradingEnabled, timezone, broker, symbols, strike, entry, exit, risk, paper, safety,
+                null, algo, backtest);
     }
 
     public record Broker(
@@ -172,13 +213,15 @@ public record TradingProperties(
             @DecimalMin("0.0") BigDecimal maxRiskPerTradePercent,
             @DecimalMin("0.0") BigDecimal maxDailyLossPercent,
             @Min(1) int maxTradesPerDay,
+            @Min(1) int maxOrdersPerDay,
             @Min(1) int maxConsecutiveLosses,
             boolean oneOpenTradeAtATime,
+            @DecimalMin("0.0") BigDecimal sameInstrumentReentryMinPriceMovePercent,
             @Min(0) int cooldownMinutes
     ) {
         public static Risk defaults() {
             return new Risk(BigDecimal.valueOf(300_000), BigDecimal.ONE, BigDecimal.valueOf(3),
-                    2, 2, true, 10);
+                    6, 6, 2, true, BigDecimal.TEN, 10);
         }
     }
 
@@ -199,6 +242,17 @@ public record TradingProperties(
     ) {
         public static Safety defaults() {
             return new Safety(false, Duration.ofSeconds(10), 2, Duration.ofMillis(500));
+        }
+    }
+
+    public record Telegram(
+            boolean enabled,
+            String botToken,
+            String chatId,
+            @NotNull Duration requestTimeout
+    ) {
+        public static Telegram defaults() {
+            return new Telegram(false, "", "", Duration.ofSeconds(5));
         }
     }
 

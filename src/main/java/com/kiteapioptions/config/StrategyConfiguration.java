@@ -54,6 +54,7 @@ public class StrategyConfiguration {
     RuleBasedOptionsStrategy ruleBasedOptionsStrategy(
             TradingProperties properties,
             VwapIndicator vwapIndicator,
+            EmaIndicator emaIndicator,
             VolumeSpikeDetector volumeSpikeDetector,
             BreakoutDetector breakoutDetector,
             VolatilityFilter volatilityFilter,
@@ -61,7 +62,7 @@ public class StrategyConfiguration {
             OptionChainAnalyzer optionChainAnalyzer,
             StrategySignalCsvRecorder signalCsvRecorder
     ) {
-        return new RuleBasedOptionsStrategy(properties, vwapIndicator, volumeSpikeDetector, breakoutDetector,
+        return new RuleBasedOptionsStrategy(properties, vwapIndicator, emaIndicator, volumeSpikeDetector, breakoutDetector,
                 volatilityFilter, oiChangeTracker, optionChainAnalyzer, signalCsvRecorder);
     }
 }

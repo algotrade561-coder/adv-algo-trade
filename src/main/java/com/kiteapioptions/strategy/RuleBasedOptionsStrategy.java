@@ -6,6 +6,7 @@ import com.kiteapioptions.domain.OptionType;
 import com.kiteapioptions.domain.SignalType;
 import com.kiteapioptions.domain.StrategyDecision;
 import com.kiteapioptions.indicator.BreakoutDetector;
+import com.kiteapioptions.indicator.EmaIndicator;
 import com.kiteapioptions.indicator.OiChangeTracker;
 import com.kiteapioptions.indicator.VolatilityFilter;
 import com.kiteapioptions.indicator.VolumeSpikeDetector;
@@ -27,6 +28,7 @@ public class RuleBasedOptionsStrategy {
 
     private final TradingProperties properties;
     private final VwapIndicator vwapIndicator;
+    private final EmaIndicator emaIndicator;
     private final VolumeSpikeDetector volumeSpikeDetector;
     private final BreakoutDetector breakoutDetector;
     private final VolatilityFilter volatilityFilter;
@@ -37,6 +39,7 @@ public class RuleBasedOptionsStrategy {
     public RuleBasedOptionsStrategy(
             TradingProperties properties,
             VwapIndicator vwapIndicator,
+            EmaIndicator emaIndicator,
             VolumeSpikeDetector volumeSpikeDetector,
             BreakoutDetector breakoutDetector,
             VolatilityFilter volatilityFilter,
@@ -46,6 +49,7 @@ public class RuleBasedOptionsStrategy {
     ) {
         this.properties = properties;
         this.vwapIndicator = vwapIndicator;
+        this.emaIndicator = emaIndicator;
         this.volumeSpikeDetector = volumeSpikeDetector;
         this.breakoutDetector = breakoutDetector;
         this.volatilityFilter = volatilityFilter;
@@ -63,7 +67,7 @@ public class RuleBasedOptionsStrategy {
             OiChangeTracker oiChangeTracker,
             OptionChainAnalyzer optionChainAnalyzer
     ) {
-        this(properties, vwapIndicator, volumeSpikeDetector, breakoutDetector, volatilityFilter, oiChangeTracker,
+        this(properties, vwapIndicator, new EmaIndicator(), volumeSpikeDetector, breakoutDetector, volatilityFilter, oiChangeTracker,
                 optionChainAnalyzer, null);
     }
 
@@ -84,9 +88,9 @@ public class RuleBasedOptionsStrategy {
         OptionChainAnalysis chain = optionChainAnalyzer.analyze(request.optionChainSnapshot(),
                 properties.strike().nearbyStrikes());
         BigDecimal underlyingPrice = request.underlyingCandles().getLast().close();
-        BigDecimal vwap = vwapIndicator.calculate(request.underlyingCandles());
+        BigDecimal trendReference = trendReference(request.underlyingCandles());
         boolean vwapPassed = !properties.entry().vwapFilterEnabled()
-                || vwapConditionPassed(request.optionType(), underlyingPrice, vwap);
+                || vwapConditionPassed(request.optionType(), underlyingPrice, trendReference);
         boolean breakoutPassed = breakoutPassed(request, chain);
         boolean volumeSpike = volumeSpikeDetector.hasSpike(request.selectedOptionCandles(),
                 properties.entry().volumeLookback(),
@@ -100,7 +104,7 @@ public class RuleBasedOptionsStrategy {
                 ivPassed, liquidityPassed);
 
         List<String> reasons = new ArrayList<>();
-        addReason(reasons, vwapPassed, "VWAP condition passed", "VWAP condition failed");
+        addReason(reasons, vwapPassed, "Trend condition passed", "Trend condition failed");
         addReason(reasons, breakoutPassed, "Breakout condition passed", "Breakout condition failed");
         addReason(reasons, volumeSpike, "Volume spike confirmed", "Volume spike missing");
         addReason(reasons, oiPassed, "OI behavior supports entry", "OI behavior does not support entry");
@@ -117,15 +121,15 @@ public class RuleBasedOptionsStrategy {
                 ? (request.optionType() == OptionType.CE ? SignalType.BUY_CE : SignalType.BUY_PE)
                 : SignalType.NO_TRADE;
 
-        log.info("Strategy evaluation completed: signalType={}, underlyingPrice={}, vwap={}, vwapPassed={}, breakoutPassed={}, volumeSpike={}, oiPassed={}, ivPassed={}, liquidityPassed={}, timePassed={}, confidenceScore={}, minSignalScore={}, imbalance={}, reasons={}",
-                signalType, underlyingPrice, vwap, vwapPassed, breakoutPassed, volumeSpike, oiPassed, ivPassed,
+        log.info("Strategy evaluation completed: signalType={}, underlyingPrice={}, trendReference={}, vwapPassed={}, breakoutPassed={}, volumeSpike={}, oiPassed={}, ivPassed={}, liquidityPassed={}, timePassed={}, confidenceScore={}, minSignalScore={}, imbalance={}, reasons={}",
+                signalType, underlyingPrice, trendReference, vwapPassed, breakoutPassed, volumeSpike, oiPassed, ivPassed,
                 liquidityPassed, timePassed, confidenceScore, properties.entry().minSignalScorePercent(),
                 chain.nearbyPutCallOiImbalance(), reasons);
         StrategyDecision decision = new StrategyDecision(request.timestamp(), request.underlying(), signalType, underlyingPrice,
                 Optional.ofNullable(request.selectedInstrumentKey()), Optional.ofNullable(request.selectedStrike()),
                 Optional.ofNullable(request.optionType()), vwapPassed, Optional.of(chain.nearbyPutCallOiImbalance()),
                 volumeSpike, confidenceScore, reasons);
-        recordSignal(request, decision, chain, vwap, breakoutPassed, oiPassed, ivPassed, liquidityPassed, timePassed);
+        recordSignal(request, decision, chain, trendReference, breakoutPassed, oiPassed, ivPassed, liquidityPassed, timePassed);
         return decision;
     }
 
@@ -164,6 +168,15 @@ public class RuleBasedOptionsStrategy {
 
     private boolean vwapConditionPassed(OptionType optionType, BigDecimal price, BigDecimal vwap) {
         return optionType == OptionType.CE ? price.compareTo(vwap) > 0 : price.compareTo(vwap) < 0;
+    }
+
+    private BigDecimal trendReference(List<Candle> candles) {
+        boolean hasVolume = candles.stream().anyMatch(candle -> candle.volume() > 0);
+        if (hasVolume) {
+            return vwapIndicator.calculate(candles);
+        }
+        List<BigDecimal> closes = candles.stream().map(Candle::close).toList();
+        return emaIndicator.calculate(closes, Math.min(properties.entry().breakoutLookback(), closes.size()));
     }
 
     private boolean withinEntryWindow(LocalTime marketTime) {

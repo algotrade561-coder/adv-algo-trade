@@ -122,7 +122,9 @@ curl.exe -X POST http://localhost:8080/start
 
 It then runs on the configured interval, refreshes instruments if needed, fetches spot and option market data, builds a near-ATM option-chain snapshot, evaluates CE/PE entries, and routes accepted signals through risk checks and execution. A `NO_TRADE` decision is still a valid scan result when strategy filters do not pass.
 
-Every entry evaluation is appended to `reports/entry-signals/entry-signals.csv` with the raw candle/quote inputs, option-chain context, pass/fail flags, confidence score, and final reasons for later strategy tuning.
+Every entry evaluation is appended to `reports/entry-signals/entry-signals.csv` with the raw candle/quote inputs, option-chain context, pass/fail flags, confidence score, and final reasons for later strategy tuning. New runs also write normalized analysis files under `reports/entry-signals/`: `entry-evaluations.csv` for one row per strategy decision, `entry-candles.csv` for the underlying and selected option candle history used by that decision, `option-chain-levels.csv` for the full option-chain snapshot levels available during the evaluation, and `entry-execution-outcomes.csv` for BUY decisions that reach risk checks, sizing, and order placement.
+
+The trend condition uses VWAP when the underlying candles include volume. If the underlying candle volume is zero, as seen with NIFTY index historical candles from Zerodha, it falls back to an EMA of recent closes.
 
 By default, the scanner only scans NIFTY. Enable BANKNIFTY at runtime when needed:
 
@@ -152,7 +154,18 @@ trading:
     refresh-instruments-on-start: true
   entry:
     min-signal-score-percent: 70
+  risk:
+    max-trades-per-day: 6
+    max-orders-per-day: 6
+    same-instrument-reentry-min-price-move-percent: 10
+  telegram:
+    enabled: ${TELEGRAM_ALERTS_ENABLED:false}
+    bot-token: ${TELEGRAM_BOT_TOKEN:}
+    chat-id: ${TELEGRAM_CHAT_ID:}
+    request-timeout: 5s
 ```
+
+Telegram alerts are disabled by default. When enabled, the app sends alerts for scanner start/stop, kill switch changes, scan toggles, entry rejections after BUY signals, filled entry orders, and broker/order non-fill outcomes.
 
 ## Zerodha Manual Login
 
