@@ -80,6 +80,7 @@ Phase 4 adds execution as a separate service. `ExecutionEngine` consumes `Strate
 - `GET /trades/journal.csv`
 - `GET /pnl`
 - `GET /signals/latest`
+- `POST /reports/entry-signals/archive`
 - `POST /backtest/run`
 - `GET /backtest/results/{id}`
 

@@ -1,0 +1,334 @@
+{
+  "info": {
+    "name": "Kite API Options",
+    "description": "Postman collection for the Kite API Options local REST API.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "backtestId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "kiteRequestToken",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/health"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Trading Control",
+      "item": [
+        {
+          "name": "Get Config",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/config"
+          }
+        },
+        {
+          "name": "Set Mode - PAPER",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mode\": \"PAPER\"\n}"
+            },
+            "url": "{{baseUrl}}/mode"
+          }
+        },
+        {
+          "name": "Set Mode - LIVE",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"mode\": \"LIVE\"\n}"
+            },
+            "url": "{{baseUrl}}/mode"
+          }
+        },
+        {
+          "name": "Start Scanner",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}/start"
+          }
+        },
+        {
+          "name": "Stop Scanner",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}/stop"
+          }
+        },
+        {
+          "name": "Enable Kill Switch",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"enabled\": true\n}"
+            },
+            "url": "{{baseUrl}}/kill-switch"
+          }
+        },
+        {
+          "name": "Disable Kill Switch",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"enabled\": false\n}"
+            },
+            "url": "{{baseUrl}}/kill-switch"
+          }
+        },
+        {
+          "name": "Get Scan Underlyings",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/scan/underlyings"
+          }
+        },
+        {
+          "name": "Enable BANKNIFTY Scan",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"enabled\": true\n}"
+            },
+            "url": "{{baseUrl}}/scan/underlyings/BANKNIFTY"
+          }
+        },
+        {
+          "name": "Disable BANKNIFTY Scan",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"enabled\": false\n}"
+            },
+            "url": "{{baseUrl}}/scan/underlyings/BANKNIFTY"
+          }
+        },
+        {
+          "name": "Enable NIFTY Scan",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"enabled\": true\n}"
+            },
+            "url": "{{baseUrl}}/scan/underlyings/NIFTY"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Kite Auth",
+      "item": [
+        {
+          "name": "Kite Login URL",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/auth/kite/login"
+          }
+        },
+        {
+          "name": "Kite Session",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/auth/kite/session"
+          }
+        },
+        {
+          "name": "Kite Callback",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/auth/kite/callback?status=success&request_token={{kiteRequestToken}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "kite",
+                "callback"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "success"
+                },
+                {
+                  "key": "request_token",
+                  "value": "{{kiteRequestToken}}"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Monitoring",
+      "item": [
+        {
+          "name": "Positions",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/positions"
+          }
+        },
+        {
+          "name": "Orders",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/orders"
+          }
+        },
+        {
+          "name": "Trades",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/trades"
+          }
+        },
+        {
+          "name": "PnL",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/pnl"
+          }
+        },
+        {
+          "name": "Latest Signal",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/signals/latest"
+          }
+        },
+        {
+          "name": "Recent Signals",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/signals/recent"
+          }
+        },
+        {
+          "name": "Trade Journal CSV",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/trades/journal.csv"
+          }
+        },
+        {
+          "name": "Archive Entry Signal Reports",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}/reports/entry-signals/archive"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Backtest",
+      "item": [
+        {
+          "name": "Run Backtest",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{baseUrl}}/backtest/run"
+          }
+        },
+        {
+          "name": "Get Backtest Result",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/backtest/results/{{backtestId}}"
+          }
+        }
+      ]
+    }
+  ]
+}

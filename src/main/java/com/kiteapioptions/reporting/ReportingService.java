@@ -10,9 +10,19 @@ import com.kiteapioptions.persistence.StrategyDecisionRepository;
 import com.kiteapioptions.persistence.TradeEntity;
 import com.kiteapioptions.persistence.TradeRepository;
 import java.math.BigDecimal;
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
+import java.util.stream.Stream;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -24,6 +34,10 @@ import org.springframework.stereotype.Service;
 public class ReportingService {
 
     private static final Logger log = LoggerFactory.getLogger(ReportingService.class);
+    private static final Path ENTRY_SIGNALS_DIR = Path.of("reports", "entry-signals");
+    private static final Path ARCHIVE_DIR = Path.of("reports", "archive");
+    private static final DateTimeFormatter ARCHIVE_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")
+            .withZone(ZoneId.systemDefault());
 
     private final BrokerClient brokerClient;
     private final TradeRepository tradeRepository;
@@ -105,10 +119,64 @@ public class ReportingService {
         return csv.toString();
     }
 
+    public synchronized ReportArchiveResult archiveEntrySignalReports() {
+        log.info("Entry signal report archive requested: sourceDir={}", ENTRY_SIGNALS_DIR);
+        if (Files.notExists(ENTRY_SIGNALS_DIR)) {
+            return new ReportArchiveResult(false, "", 0, 0, "No entry signal report directory found");
+        }
+
+        try {
+            Files.createDirectories(ARCHIVE_DIR);
+            List<Path> files;
+            try (Stream<Path> paths = Files.list(ENTRY_SIGNALS_DIR)) {
+                files = paths
+                        .filter(Files::isRegularFile)
+                        .filter(path -> path.getFileName().toString().endsWith(".csv"))
+                        .sorted(Comparator.comparing(path -> path.getFileName().toString()))
+                        .toList();
+            }
+            if (files.isEmpty()) {
+                return new ReportArchiveResult(false, "", 0, 0, "No entry signal CSV files found");
+            }
+
+            Path archive = ARCHIVE_DIR.resolve("entry-signals-" + ARCHIVE_FORMAT.format(Instant.now()) + ".zip");
+            long bytes = writeZip(files, archive);
+            for (Path file : files) {
+                Files.deleteIfExists(file);
+            }
+            log.info("Entry signal reports archived: archive={}, files={}, bytes={}", archive, files.size(), bytes);
+            return new ReportArchiveResult(true, archive.toString(), files.size(), bytes, "Archived and cleared active report files");
+        } catch (IOException ex) {
+            log.warn("Entry signal report archive failed: {}", ex.getMessage(), ex);
+            throw new UncheckedIOException("Failed to archive entry signal reports", ex);
+        }
+    }
+
+    private long writeZip(List<Path> files, Path archive) throws IOException {
+        try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(archive))) {
+            for (Path file : files) {
+                ZipEntry entry = new ZipEntry(file.getFileName().toString());
+                zip.putNextEntry(entry);
+                Files.copy(file, zip);
+                zip.closeEntry();
+            }
+        }
+        return Files.size(archive);
+    }
+
     private String escape(String value) {
         if (value == null) {
             return "";
         }
         return '"' + value.replace("\"", "\"\"") + '"';
+    }
+
+    public record ReportArchiveResult(
+            boolean archived,
+            String archivePath,
+            int fileCount,
+            long archiveBytes,
+            String message
+    ) {
     }
 }

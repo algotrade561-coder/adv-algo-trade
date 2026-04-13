@@ -6,10 +6,12 @@ import com.kiteapioptions.persistence.OrderEntity;
 import com.kiteapioptions.persistence.StrategyDecisionEntity;
 import com.kiteapioptions.persistence.TradeEntity;
 import com.kiteapioptions.reporting.ReportingService;
+import com.kiteapioptions.reporting.ReportingService.ReportArchiveResult;
 import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -78,5 +80,14 @@ public class MonitoringController {
         String csv = reportingService.tradeJournalCsv();
         log.info("Trade journal CSV endpoint completed: bytes={}", csv.length());
         return csv;
+    }
+
+    @PostMapping("/reports/entry-signals/archive")
+    public ReportArchiveResult archiveEntrySignalReports() {
+        log.info("Entry signal report archive endpoint called");
+        ReportArchiveResult result = reportingService.archiveEntrySignalReports();
+        log.info("Entry signal report archive endpoint completed: archived={}, archivePath={}, fileCount={}, archiveBytes={}",
+                result.archived(), result.archivePath(), result.fileCount(), result.archiveBytes());
+        return result;
     }
 }
