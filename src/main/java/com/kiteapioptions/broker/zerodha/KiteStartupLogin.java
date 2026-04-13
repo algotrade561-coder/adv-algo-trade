@@ -41,12 +41,18 @@ public class KiteStartupLogin implements ApplicationRunner {
             return;
         }
         if (tokenStore.authenticated()) {
-            log.info("Kite startup login skipped: access token already present");
-            return;
+            if (kiteAuthService.validateCurrentSession()) {
+                log.info("Kite startup login skipped: persisted/configured access token is valid");
+                return;
+            }
+            log.info("Kite startup login will continue: persisted/configured access token is not valid");
         }
 
         log.info("Kite startup login started. Application startup will wait until the access token is captured.");
         KiteLoginResult result = kiteAuthService.login();
+        if (result == null) {
+            throw new IllegalStateException("Kite startup login did not return a session");
+        }
         log.info("Kite startup login completed: userId={}", result.userId());
     }
 }

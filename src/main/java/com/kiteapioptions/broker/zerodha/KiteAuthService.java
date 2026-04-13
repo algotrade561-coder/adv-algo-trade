@@ -21,12 +21,14 @@ import java.util.HexFormat;
 import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import org.springframework.http.HttpHeaders;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientException;
 import org.springframework.web.util.UriComponentsBuilder;
 
 /**
@@ -56,10 +58,13 @@ public class KiteAuthService {
     public KiteLoginResult login()  {
          printStartupDiagnostics();
         if (tokenStore.authenticated()) {
-            String userId = tokenStore.userId().orElse(properties.broker().userId());
-            log.info("Using configured/runtime Kite access token: userId={}", valueOrMissing(userId));
-            return new KiteLoginResult(true, userId, tokenStore.accessToken().orElse(""),
-                    tokenStore.publicToken().orElse(""), tokenStore.updatedAt().orElse(Instant.now()));
+            if (validateCurrentSession()) {
+                String userId = tokenStore.userId().orElse(properties.broker().userId());
+                log.info("Using configured/runtime Kite access token: userId={}", valueOrMissing(userId));
+                return new KiteLoginResult(true, userId, tokenStore.accessToken().orElse(""),
+                        tokenStore.publicToken().orElse(""), tokenStore.updatedAt().orElse(Instant.now()));
+            }
+            log.info("Configured/runtime Kite access token is invalid. Starting manual login.");
         }
 
         URI loginUrl = loginUrl();
@@ -70,12 +75,11 @@ public class KiteAuthService {
             openBrowser(loginUrl);
             return awaitLoginResult(loginUrl);
         } catch (Exception e) {
-            System.err.println("Fatal error: " + e.getMessage());
-            e.printStackTrace();
+            log.warn("Kite login failed: {}", e.getMessage(), e);
+            throw new BrokerException("Kite login failed", e);
         } finally {
             stopCallbackListener();
         }
-        return null;
     }
 
     public synchronized void startCallbackListener() throws IOException {
@@ -152,6 +156,26 @@ public class KiteAuthService {
         } catch (Exception ex) {
             log.warn("Kite request token exchange failed: {}", ex.getMessage());
             throw new BrokerException("Failed to generate Kite access token from request_token", ex);
+        }
+    }
+
+    public boolean validateCurrentSession() {
+        if (!tokenStore.authenticated()) {
+            return false;
+        }
+        try {
+            restClient.get()
+                    .uri("/user/profile")
+                    .headers(this::applyAuthHeaders)
+                    .retrieve()
+                    .body(String.class);
+            log.info("Kite access token validation succeeded: userId={}",
+                    valueOrMissing(tokenStore.userId().orElse(properties.broker().userId())));
+            return true;
+        } catch (RestClientException ex) {
+            log.warn("Kite access token validation failed. Clearing persisted token: {}", ex.getMessage());
+            tokenStore.clear();
+            return false;
         }
     }
 
@@ -302,6 +326,12 @@ public class KiteAuthService {
                 tokenStore.authenticated(),
                 properties.broker().redirectUrl(),
                 "Fresh manual login/access token is typically required each trading day");
+    }
+
+    private void applyAuthHeaders(HttpHeaders headers) {
+        headers.set("X-Kite-Version", "3");
+        headers.set(HttpHeaders.AUTHORIZATION,
+                "token " + properties.broker().apiKey() + ":" + tokenStore.accessToken().orElseThrow());
     }
 
     private String checksum(String requestToken) throws Exception {

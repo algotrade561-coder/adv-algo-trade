@@ -201,6 +201,8 @@ http://localhost:8080/auth/kite/login
 
 Copy/open the returned `loginUrl`, complete Kite login manually, and Zerodha will redirect to the ngrok callback. The callback exchanges `request_token` for `access_token` and stores it in memory for this app run. If you already have a daily access token, you can also set `KITE_ACCESS_TOKEN`.
 
+After a successful Kite login, the app stores the access token metadata in `data/kite-access-token.properties` with a 06:00 Asia/Kolkata expiry. On the next startup the app loads and validates that same-day token before prompting for login again. If validation fails, the persisted token file is cleared and the normal manual login flow is used. The `data/` directory is ignored by Git because it contains local runtime state.
+
 For the blocking login-manager flow, call:
 
 ```text
