@@ -272,10 +272,11 @@ public record TradingProperties(
             @Min(0) long initialDelayMs,
             @Min(6) int candleLookback,
             @Min(1) int maxEntriesPerScan,
-            boolean refreshInstrumentsOnStart
+            boolean refreshInstrumentsOnStart,
+            boolean autoStartScannerAfterLogin
     ) {
         public static Algo defaults() {
-            return new Algo(true, 60_000, 5_000, 30, 1, true);
+            return new Algo(true, 60_000, 5_000, 30, 1, true, false);
         }
     }
 

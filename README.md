@@ -157,6 +157,7 @@ trading:
     candle-lookback: 30
     max-entries-per-scan: 1
     refresh-instruments-on-start: true
+    auto-start-scanner-after-login: false
   entry:
     min-signal-score-percent: 70
   risk:
@@ -171,6 +172,8 @@ trading:
 ```
 
 Telegram alerts are disabled by default. When enabled, the app sends alerts for scanner start/stop, kill switch changes, scan toggles, entry rejections after BUY signals, filled entry orders, and broker/order non-fill outcomes.
+
+Set `trading.algo.auto-start-scanner-after-login=true` to automatically start the scanner after the startup Kite access token is loaded and validated.
 
 ## Zerodha Manual Login
 

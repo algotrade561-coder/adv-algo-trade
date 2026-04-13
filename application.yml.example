@@ -77,6 +77,7 @@ trading:
     candle-lookback: 30
     max-entries-per-scan: 1
     refresh-instruments-on-start: true
+    auto-start-scanner-after-login: false
   backtest:
     from: 2025-01-01
     to: 2025-01-31

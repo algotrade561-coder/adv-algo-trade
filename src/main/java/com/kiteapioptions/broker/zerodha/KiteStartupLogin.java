@@ -4,6 +4,7 @@ import com.kiteapioptions.config.TradingProperties;
 import com.kiteapioptions.domain.ExecutionMode;
 import com.kiteapioptions.domain.MarketDataMode;
 import com.kiteapioptions.domain.TradingMode;
+import com.kiteapioptions.execution.TradingStateService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationArguments;
@@ -21,15 +22,18 @@ public class KiteStartupLogin implements ApplicationRunner {
     private final TradingProperties properties;
     private final KiteAccessTokenStore tokenStore;
     private final KiteAuthService kiteAuthService;
+    private final TradingStateService tradingStateService;
 
     public KiteStartupLogin(
             TradingProperties properties,
             KiteAccessTokenStore tokenStore,
-            KiteAuthService kiteAuthService
+            KiteAuthService kiteAuthService,
+            TradingStateService tradingStateService
     ) {
         this.properties = properties;
         this.tokenStore = tokenStore;
         this.kiteAuthService = kiteAuthService;
+        this.tradingStateService = tradingStateService;
     }
 
     @Override
@@ -49,6 +53,7 @@ public class KiteStartupLogin implements ApplicationRunner {
         if (tokenStore.authenticated()) {
             if (kiteAuthService.validateCurrentSession()) {
                 log.info("Kite startup login skipped: persisted/configured access token is valid");
+                startScannerAfterLoginIfConfigured();
                 return;
             }
             log.info("Kite startup login will continue: persisted/configured access token is not valid");
@@ -60,5 +65,27 @@ public class KiteStartupLogin implements ApplicationRunner {
             throw new IllegalStateException("Kite startup login did not return a session");
         }
         log.info("Kite startup login completed: userId={}", result.userId());
+        startScannerAfterLoginIfConfigured();
+    }
+
+    private void startScannerAfterLoginIfConfigured() {
+        if (!properties.algo().autoStartScannerAfterLogin()) {
+            log.info("Scanner auto-start skipped: trading.algo.auto-start-scanner-after-login=false");
+            return;
+        }
+        if (!properties.algo().schedulerEnabled()) {
+            log.info("Scanner auto-start skipped: scheduler is disabled");
+            return;
+        }
+        if (properties.mode() == TradingMode.BACKTEST) {
+            log.info("Scanner auto-start skipped: mode=BACKTEST");
+            return;
+        }
+        if (tradingStateService.killSwitchEnabled()) {
+            log.info("Scanner auto-start skipped: kill switch is enabled");
+            return;
+        }
+        tradingStateService.start();
+        log.info("Scanner auto-started after Kite access token was validated");
     }
 }
