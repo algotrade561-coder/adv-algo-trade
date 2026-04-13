@@ -54,7 +54,7 @@ public class KiteAuthService {
     }
 
     public KiteLoginResult login()  {
-        printStartupDiagnostics();
+         printStartupDiagnostics();
         if (tokenStore.authenticated()) {
             String userId = tokenStore.userId().orElse(properties.broker().userId());
             log.info("Using configured/runtime Kite access token: userId={}", valueOrMissing(userId));

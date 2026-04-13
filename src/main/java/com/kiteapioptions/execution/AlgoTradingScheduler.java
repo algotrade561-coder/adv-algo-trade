@@ -326,8 +326,7 @@ public class AlgoTradingScheduler {
                 continue;
             }
 
-            List<Candle> underlyingCandles = candles(properties.symbols().spotHistoricalKeys().get(underlying),
-                    properties.entry().timeframe());
+            List<Candle> underlyingCandles = candles(underlyingHistoricalKey(underlying), properties.entry().timeframe());
             List<Candle> optionCandles = candles(historicalKey(selectedInstrument), properties.entry().timeframe());
             if (underlyingCandles.isEmpty() || optionCandles.isEmpty()) {
                 log.warn("Strategy evaluation skipped: missing candles, underlying={}, instrument={}, underlyingCandles={}, optionCandles={}",
@@ -383,6 +382,23 @@ public class AlgoTradingScheduler {
             return String.valueOf(instrument.instrumentToken());
         }
         return instrument.instrumentKey();
+    }
+
+    private String underlyingHistoricalKey(UnderlyingSymbol underlying) {
+        String configuredKey = properties.symbols().spotHistoricalKeys().get(underlying);
+        if (configuredKey == null || configuredKey.isBlank() || properties.mode() != TradingMode.LIVE) {
+            return configuredKey;
+        }
+        if (configuredKey.chars().allMatch(Character::isDigit)) {
+            return configuredKey;
+        }
+        Optional<Instrument> instrument = instrumentCache.findByKey(configuredKey);
+        if (instrument.isEmpty()) {
+            log.warn("Underlying historical key could not be resolved to an instrument token: underlying={}, configuredKey={}",
+                    underlying, configuredKey);
+            return configuredKey;
+        }
+        return String.valueOf(instrument.get().instrumentToken());
     }
 
     private BigDecimal nearestStrike(List<BigDecimal> strikes, BigDecimal price) {
