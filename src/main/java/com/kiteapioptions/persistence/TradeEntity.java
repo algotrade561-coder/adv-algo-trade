@@ -4,12 +4,19 @@ import com.kiteapioptions.domain.TradeStatus;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
+import jakarta.persistence.Index;
 import jakarta.persistence.Id;
+import jakarta.persistence.Table;
 import jakarta.persistence.Version;
 import java.math.BigDecimal;
 import java.time.Instant;
 
 @Entity
+@Table(indexes = {
+        @Index(name = "idx_trade_status", columnList = "status"),
+        @Index(name = "idx_trade_instrument", columnList = "instrumentKey"),
+        @Index(name = "idx_trade_entry_time", columnList = "entryTime")
+})
 public class TradeEntity {
 
     @Id

@@ -31,6 +31,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.Callable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
@@ -84,11 +85,11 @@ public class ZerodhaBrokerClient implements BrokerClient {
     public List<Instrument> downloadInstruments() {
         try {
             log.info("Zerodha instrument download requested");
-            String csv = restClient.get()
+            String csv = retryWithBackoff("downloadInstruments", () -> restClient.get()
                     .uri("/instruments")
                     .headers(this::applyAuthHeaders)
                     .retrieve()
-                    .body(String.class);
+                    .body(String.class));
             List<Instrument> instruments = instrumentCsvParser.parse(csv);
             log.info("Zerodha instrument download completed: instrumentCount={}", instruments.size());
             return instruments;
@@ -118,11 +119,11 @@ public class ZerodhaBrokerClient implements BrokerClient {
                 .toUri();
 
         try {
-            String body = restClient.get()
+            String body = retryWithBackoff("quotes", () -> restClient.get()
                     .uri(uri)
                     .headers(this::applyAuthHeaders)
                     .retrieve()
-                    .body(String.class);
+                    .body(String.class));
             JsonNode data = objectMapper.readTree(body).path("data");
             Map<String, Quote> quotes = new LinkedHashMap<>();
             data.fields().forEachRemaining(entry -> quotes.put(entry.getKey(), quoteFromJson(entry.getKey(), entry.getValue())));
@@ -150,11 +151,11 @@ public class ZerodhaBrokerClient implements BrokerClient {
                 .build(token, kiteInterval(request.timeframe()));
 
         try {
-            String body = restClient.get()
+            String body = retryWithBackoff("historicalCandles", () -> restClient.get()
                     .uri(uri)
                     .headers(this::applyAuthHeaders)
                     .retrieve()
-                    .body(String.class);
+                    .body(String.class));
             JsonNode candles = objectMapper.readTree(body).path("data").path("candles");
             List<Candle> parsed = parseCandles(request.instrumentKey(), request.timeframe(), candles);
             log.info("Zerodha historical candles completed: instrumentKey={}, count={}", request.instrumentKey(), parsed.size());
@@ -190,13 +191,13 @@ public class ZerodhaBrokerClient implements BrokerClient {
         body.add("tag", request.tag());
 
         try {
-            String responseBody = restClient.post()
+            String responseBody = retryWithBackoff("placeOrder", () -> restClient.post()
                     .uri("/orders/regular")
                     .headers(this::applyAuthHeaders)
                     .contentType(MediaType.APPLICATION_FORM_URLENCODED)
                     .body(body)
                     .retrieve()
-                    .body(String.class);
+                    .body(String.class));
             //JsonNode data = objectMapper.readTree(responseBody).path("data");
             //Optional<String> orderId = Optional.ofNullable(data.path("order_id").textValue());
             // Tese Execution ---------
@@ -236,11 +237,11 @@ public class ZerodhaBrokerClient implements BrokerClient {
     public List<OrderResponse> orders() {
         try {
             log.debug("Zerodha orders requested");
-            String body = restClient.get()
+            String body = retryWithBackoff("orders", () -> restClient.get()
                     .uri("/orders")
                     .headers(this::applyAuthHeaders)
                     .retrieve()
-                    .body(String.class);
+                    .body(String.class));
             JsonNode data = objectMapper.readTree(body).path("data");
             List<OrderResponse> orders = parseOrders(data);
             log.debug("Zerodha orders completed: count={}", orders.size());
@@ -255,11 +256,11 @@ public class ZerodhaBrokerClient implements BrokerClient {
     public List<Position> positions() {
         try {
             log.debug("Zerodha positions requested");
-            String body = restClient.get()
+            String body = retryWithBackoff("positions", () -> restClient.get()
                     .uri("/portfolio/positions")
                     .headers(this::applyAuthHeaders)
                     .retrieve()
-                    .body(String.class);
+                    .body(String.class));
             JsonNode net = objectMapper.readTree(body).path("data").path("net");
             List<Position> positions = parsePositions(net);
             log.debug("Zerodha positions completed: count={}", positions.size());
@@ -291,6 +292,37 @@ public class ZerodhaBrokerClient implements BrokerClient {
                     hasText(properties.broker().apiKey()), tokenStore.accessToken().isPresent());
             throw new BrokerException("Zerodha api-key and access-token are required for live broker calls. "
                     + "Set KITE_ACCESS_TOKEN or call /auth/kite/session and complete the Kite login callback first.");
+        }
+    }
+
+    private <T> T retryWithBackoff(String operationName, Callable<T> operation) {
+        int retries = properties.safety().brokerRetryCount();
+        long backoffMs = properties.safety().brokerRetryBackoff().toMillis();
+        for (int attempt = 0; attempt <= retries; attempt++) {
+            try {
+                return operation.call();
+            } catch (Exception ex) {
+                if (!(ex instanceof RestClientException)) {
+                    throw new BrokerException("Zerodha operation failed: " + operationName, ex);
+                }
+                if (attempt >= retries) {
+                    throw (RestClientException) ex;
+                }
+                long sleepMs = backoffMs * (1L << attempt);
+                log.warn("Zerodha operation failed; retrying: operation={}, attempt={}, maxRetries={}, backoffMs={}, message={}",
+                        operationName, attempt + 1, retries, sleepMs, ex.getMessage());
+                sleep(sleepMs);
+            }
+        }
+        throw new IllegalStateException("Retry loop exited unexpectedly for operation: " + operationName);
+    }
+
+    private void sleep(long sleepMs) {
+        try {
+            Thread.sleep(sleepMs);
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            throw new BrokerException("Interrupted during Zerodha retry backoff", ex);
         }
     }
 

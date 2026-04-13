@@ -21,6 +21,7 @@ import com.kiteapioptions.risk.RiskEngine;
 import java.math.BigDecimal;
 import java.math.MathContext;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
@@ -289,6 +290,13 @@ public class ExecutionEngine {
                 .findFirst()
                 .ifPresent(previousPrice -> rejections.add("Same instrument already traded today without required price move: "
                         + instrumentKey));
+
+        if (properties.risk().cooldownMinutes() > 0) {
+            Instant cooldownStart = clock.instant().minus(Duration.ofMinutes(properties.risk().cooldownMinutes()));
+            if (!tradeRepository.findByInstrumentKeyAndEntryTimeBetween(instrumentKey, cooldownStart, clock.instant()).isEmpty()) {
+                rejections.add("Cooldown period not elapsed for instrument: " + instrumentKey);
+            }
+        }
 
         return rejections;
     }

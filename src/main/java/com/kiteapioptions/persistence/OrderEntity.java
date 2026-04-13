@@ -5,6 +5,7 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
+import jakarta.persistence.Version;
 import java.math.BigDecimal;
 import java.time.Instant;
 
@@ -13,6 +14,8 @@ public class OrderEntity {
 
     @Id
     private String clientOrderId;
+    @Version
+    private Long version;
     private String brokerOrderId;
     private String instrumentKey;
     private String side;
@@ -43,6 +46,7 @@ public class OrderEntity {
     }
 
     public String getClientOrderId() { return clientOrderId; }
+    public Long getVersion() { return version; }
     public String getBrokerOrderId() { return brokerOrderId; }
     public String getInstrumentKey() { return instrumentKey; }
     public String getSide() { return side; }
