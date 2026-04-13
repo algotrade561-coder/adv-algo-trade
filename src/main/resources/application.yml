@@ -2,7 +2,7 @@ trading:
   mode: PAPER
   market-data-mode: ZERODHA
   execution-mode: PAPER
-  live-trading-enabled: true
+  live-trading-enabled: false
   timezone: Asia/Kolkata
   broker:
     name: ZERODHA
