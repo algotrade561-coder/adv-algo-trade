@@ -1,6 +1,8 @@
 package com.kiteapioptions.execution;
 
 import com.kiteapioptions.config.TradingProperties;
+import com.kiteapioptions.domain.ExecutionMode;
+import com.kiteapioptions.domain.MarketDataMode;
 import com.kiteapioptions.domain.TradingMode;
 import com.kiteapioptions.domain.UnderlyingSymbol;
 import java.time.Instant;
@@ -22,7 +24,9 @@ public class TradingStateService {
 
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicBoolean killSwitch = new AtomicBoolean(false);
-    private final AtomicReference<TradingMode> requestedMode = new AtomicReference<>(TradingMode.PAPER);
+    private final AtomicReference<TradingMode> requestedMode;
+    private final AtomicReference<MarketDataMode> marketDataMode;
+    private final AtomicReference<ExecutionMode> executionMode;
     private final AtomicReference<EnumSet<UnderlyingSymbol>> enabledUnderlyings;
     private final AtomicReference<Instant> updatedAt = new AtomicReference<>(Instant.now());
 
@@ -31,6 +35,9 @@ public class TradingStateService {
                 ? EnumSet.of(UnderlyingSymbol.NIFTY)
                 : EnumSet.copyOf(properties.symbols().underlyings());
         this.enabledUnderlyings = new AtomicReference<>(configuredUnderlyings);
+        this.requestedMode = new AtomicReference<>(properties.mode());
+        this.marketDataMode = new AtomicReference<>(properties.marketDataMode());
+        this.executionMode = new AtomicReference<>(properties.executionMode());
     }
 
     public void start() {
@@ -93,9 +100,26 @@ public class TradingStateService {
                 underlying, enabled, updatedUnderlyings, timestamp);
     }
 
+    public void setRoutingModes(MarketDataMode marketDataMode, ExecutionMode executionMode) {
+        MarketDataMode previousMarketDataMode = this.marketDataMode.get();
+        ExecutionMode previousExecutionMode = this.executionMode.get();
+        if (marketDataMode != null) {
+            this.marketDataMode.set(marketDataMode);
+        }
+        if (executionMode != null) {
+            this.executionMode.set(executionMode);
+        }
+        Instant timestamp = Instant.now();
+        updatedAt.set(timestamp);
+        log.info("Broker routing modes changed: previousMarketDataMode={}, marketDataMode={}, previousExecutionMode={}, executionMode={}, updatedAt={}",
+                previousMarketDataMode, this.marketDataMode.get(), previousExecutionMode, this.executionMode.get(), timestamp);
+    }
+
     public boolean running() { return running.get(); }
     public boolean killSwitchEnabled() { return killSwitch.get(); }
     public TradingMode requestedMode() { return requestedMode.get(); }
+    public MarketDataMode marketDataMode() { return marketDataMode.get(); }
+    public ExecutionMode executionMode() { return executionMode.get(); }
     public List<UnderlyingSymbol> enabledUnderlyings() { return List.copyOf(enabledUnderlyings.get()); }
     public Instant updatedAt() { return updatedAt.get(); }
 }

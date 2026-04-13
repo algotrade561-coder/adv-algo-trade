@@ -5,6 +5,7 @@ import com.kiteapioptions.broker.zerodha.KiteAccessTokenStore;
 import com.kiteapioptions.domain.Candle;
 import com.kiteapioptions.domain.HistoricalDataRequest;
 import com.kiteapioptions.domain.Instrument;
+import com.kiteapioptions.domain.MarketDataMode;
 import com.kiteapioptions.domain.OptionChainLevel;
 import com.kiteapioptions.domain.OptionChainSnapshot;
 import com.kiteapioptions.domain.OptionType;
@@ -97,7 +98,7 @@ public class AlgoTradingScheduler {
             log.info("Algo scan skipped: configured mode is BACKTEST");
             return;
         }
-        if (properties.mode() == TradingMode.LIVE && !tokenStore.authenticated()) {
+        if (tradingStateService.marketDataMode() == MarketDataMode.ZERODHA && !tokenStore.authenticated()) {
             log.info("Algo scan skipped: Zerodha access token is missing. Set KITE_ACCESS_TOKEN or call /auth/kite/session before /start.");
             return;
         }
@@ -397,7 +398,7 @@ public class AlgoTradingScheduler {
     }
 
     private String historicalKey(Instrument instrument) {
-        if (properties.mode() == TradingMode.LIVE) {
+        if (tradingStateService.marketDataMode() == MarketDataMode.ZERODHA) {
             return String.valueOf(instrument.instrumentToken());
         }
         return instrument.instrumentKey();
@@ -405,7 +406,7 @@ public class AlgoTradingScheduler {
 
     private String underlyingHistoricalKey(UnderlyingSymbol underlying) {
         String configuredKey = properties.symbols().spotHistoricalKeys().get(underlying);
-        if (configuredKey == null || configuredKey.isBlank() || properties.mode() != TradingMode.LIVE) {
+        if (configuredKey == null || configuredKey.isBlank() || tradingStateService.marketDataMode() != MarketDataMode.ZERODHA) {
             return configuredKey;
         }
         if (configuredKey.chars().allMatch(Character::isDigit)) {

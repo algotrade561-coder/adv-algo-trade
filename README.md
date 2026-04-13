@@ -72,6 +72,8 @@ Phase 4 adds execution as a separate service. `ExecutionEngine` consumes `Strate
 - `POST /start`
 - `POST /stop`
 - `POST /kill-switch`
+- `GET /routing`
+- `POST /routing`
 - `GET /scan/underlyings`
 - `POST /scan/underlyings/{underlying}`
 - `GET /positions`
@@ -87,6 +89,8 @@ Phase 4 adds execution as a separate service. `ExecutionEngine` consumes `Strate
 ## Configuration
 
 Runtime defaults live in `src/main/resources/application.yml`. Use `application.yml.example` as a shareable template. Do not commit secrets or access tokens. Zerodha expects a fresh manual login/access token each trading day.
+
+Local broker and Telegram secrets are loaded from `data/trading-secrets.properties`, which is ignored by Git. Use `docs/trading-secrets.properties.example` as the template for that local file.
 
 The important safety defaults are:
 
@@ -182,15 +186,15 @@ Example:
 https://your-ngrok-domain.ngrok-free.app/auth/kite/callback
 ```
 
-Set credentials through environment variables or `src/main/resources/application.yml`:
+Set credentials through environment variables or `data/trading-secrets.properties`:
 
-```yaml
-trading:
-  broker:
-    api-key: ${KITE_API_KEY:}
-    api-secret: ${KITE_API_SECRET:}
-    redirect-url: ${KITE_REDIRECT_URL:http://localhost:8081/auth/kite/callback}
-    auto-login-on-startup: true
+```properties
+trading.broker.api-key=${KITE_API_KEY:}
+trading.broker.api-secret=${KITE_API_SECRET:}
+trading.broker.user-id=
+trading.telegram.enabled=false
+trading.telegram.bot-token=
+trading.telegram.chat-id=
 ```
 
 With `trading.mode=LIVE` and no access token present, startup starts a temporary callback listener on the configured redirect port, opens/logs the Kite login URL automatically, and blocks until the callback captures the access token. Use a redirect URL on a different port from Spring Boot, for example `http://localhost:8081/auth/kite/callback`. If the login callback is not received within the configured login timeout, startup fails instead of continuing without a token. You can also open:
@@ -258,6 +262,8 @@ Example paper settings:
 ```yaml
 trading:
   mode: PAPER
+  market-data-mode: ZERODHA
+  execution-mode: PAPER
   live-trading-enabled: false
   paper:
     slippage-percent: 0.05
@@ -274,7 +280,13 @@ trading:
     slippage-percent: 0.05
 ```
 
-Only set `mode: LIVE` together with `live-trading-enabled: true` after deliberate review.
+Use `market-data-mode: ZERODHA` with `execution-mode: PAPER` to scan live Zerodha market data while keeping order placement simulated. Paper execution fills use the active market-data route, so this setup simulates fills from live Zerodha quotes instead of mock prices. Only set `execution-mode: ZERODHA` together with `live-trading-enabled: true` after deliberate review.
+
+Runtime routing can also be changed without restart:
+
+```powershell
+curl.exe -X POST http://localhost:8080/routing -H "Content-Type: application/json" -d "{\"marketDataMode\":\"ZERODHA\",\"executionMode\":\"PAPER\"}"
+```
 
 ## Live Deployment Precautions
 

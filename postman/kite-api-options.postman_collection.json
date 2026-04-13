@@ -89,6 +89,31 @@
           }
         },
         {
+          "name": "Get Routing",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/routing"
+          }
+        },
+        {
+          "name": "Set Live Data Paper Execution",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"marketDataMode\": \"ZERODHA\",\n  \"executionMode\": \"PAPER\"\n}"
+            },
+            "url": "{{baseUrl}}/routing"
+          }
+        },
+        {
           "name": "Stop Scanner",
           "request": {
             "method": "POST",

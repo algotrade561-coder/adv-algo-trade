@@ -1,9 +1,13 @@
 package com.kiteapioptions.controller;
 
 import com.kiteapioptions.config.TradingProperties;
+import com.kiteapioptions.domain.ExecutionMode;
+import com.kiteapioptions.domain.MarketDataMode;
 import com.kiteapioptions.domain.TradingMode;
 import com.kiteapioptions.domain.UnderlyingSymbol;
+import com.kiteapioptions.broker.zerodha.KiteAccessTokenStore;
 import com.kiteapioptions.execution.TradingStateService;
+import com.kiteapioptions.marketdata.InstrumentCache;
 import com.kiteapioptions.notification.TelegramAlertService;
 import java.util.Map;
 import org.slf4j.Logger;
@@ -23,15 +27,21 @@ public class TradingControlController {
     private final TradingProperties tradingProperties;
     private final TradingStateService tradingStateService;
     private final TelegramAlertService telegramAlertService;
+    private final InstrumentCache instrumentCache;
+    private final KiteAccessTokenStore tokenStore;
 
     public TradingControlController(
             TradingProperties tradingProperties,
             TradingStateService tradingStateService,
-            TelegramAlertService telegramAlertService
+            TelegramAlertService telegramAlertService,
+            InstrumentCache instrumentCache,
+            KiteAccessTokenStore tokenStore
     ) {
         this.tradingProperties = tradingProperties;
         this.tradingStateService = tradingStateService;
         this.telegramAlertService = telegramAlertService;
+        this.instrumentCache = instrumentCache;
+        this.tokenStore = tokenStore;
     }
 
     @GetMapping("/config")
@@ -117,12 +127,47 @@ public class TradingControlController {
         return status();
     }
 
+    @GetMapping("/routing")
+    public Map<String, Object> routing() {
+        log.info("Broker routing requested: marketDataMode={}, executionMode={}",
+                tradingStateService.marketDataMode(), tradingStateService.executionMode());
+        return status();
+    }
+
+    @PostMapping("/routing")
+    public ResponseEntity<Map<String, Object>> routing(@RequestBody RoutingRequest request) {
+        log.info("Broker routing update requested: marketDataMode={}, executionMode={}",
+                request.marketDataMode(), request.executionMode());
+        if (request.executionMode() == ExecutionMode.ZERODHA && !tradingProperties.liveTradingEnabled()) {
+            log.warn("Broker routing update rejected: ZERODHA execution requires trading.live-trading-enabled=true");
+            return ResponseEntity.badRequest().body(Map.of(
+                    "accepted", false,
+                    "reason", "ZERODHA execution requires trading.live-trading-enabled=true"
+            ));
+        }
+        if (request.marketDataMode() == MarketDataMode.ZERODHA && !tokenStore.authenticated()) {
+            log.warn("Broker routing update rejected: ZERODHA market data requires a Kite access token");
+            return ResponseEntity.badRequest().body(Map.of(
+                    "accepted", false,
+                    "reason", "ZERODHA market data requires a Kite access token. Call /auth/kite/session first."
+            ));
+        }
+        tradingStateService.setRoutingModes(request.marketDataMode(), request.executionMode());
+        if (request.marketDataMode() != null) {
+            instrumentCache.refresh();
+        }
+        telegramAlertService.tradingStateChanged("Routing changed", status());
+        return ResponseEntity.ok(status());
+    }
+
     private Map<String, Object> status() {
         return Map.of(
                 "running", tradingStateService.running(),
                 "killSwitch", tradingStateService.killSwitchEnabled(),
                 "requestedMode", tradingStateService.requestedMode(),
                 "configuredMode", tradingProperties.mode(),
+                "marketDataMode", tradingStateService.marketDataMode(),
+                "executionMode", tradingStateService.executionMode(),
                 "liveTradingEnabled", tradingProperties.liveTradingEnabled(),
                 "enabledUnderlyings", tradingStateService.enabledUnderlyings(),
                 "updatedAt", tradingStateService.updatedAt()
@@ -136,5 +181,8 @@ public class TradingControlController {
     }
 
     public record ScanUnderlyingRequest(boolean enabled) {
+    }
+
+    public record RoutingRequest(MarketDataMode marketDataMode, ExecutionMode executionMode) {
     }
 }

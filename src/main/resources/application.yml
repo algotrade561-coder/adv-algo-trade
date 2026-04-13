@@ -1,13 +1,11 @@
 trading:
   mode: LIVE
+  market-data-mode: ZERODHA
+  execution-mode: PAPER
   live-trading-enabled: true
   timezone: Asia/Kolkata
   broker:
     name: ZERODHA
-    api-key: y105mksfn9anm0am
-    api-secret: u9fxj514jgmb0d9ew9lbr6jszwsi7y5s
-    access-token: ${KITE_ACCESS_TOKEN:}
-    user-id: SX0602
     base-url: https://api.kite.trade
     login-url: https://kite.zerodha.com/connect/login
     redirect-url: ${KITE_REDIRECT_URL:http://localhost:8081}
@@ -71,9 +69,6 @@ trading:
     broker-retry-count: 2
     broker-retry-backoff: 500ms
   telegram:
-    enabled: ${TELEGRAM_ALERTS_ENABLED:true}
-    bot-token: ${TELEGRAM_BOT_TOKEN:8774342575:AAHmYbl8KOT1ykeVwEr3xjtN8mcUPCezOwM}
-    chat-id: ${TELEGRAM_CHAT_ID:1341584397}
     request-timeout: 5s
   algo:
     scheduler-enabled: true
@@ -93,6 +88,8 @@ trading:
     lot-size: 75
 
 spring:
+  config:
+    import: optional:file:./data/trading-secrets.properties
   datasource:
     url: jdbc:h2:file:./data/kite-api-options;MODE=PostgreSQL;AUTO_SERVER=TRUE
     driver-class-name: org.h2.Driver

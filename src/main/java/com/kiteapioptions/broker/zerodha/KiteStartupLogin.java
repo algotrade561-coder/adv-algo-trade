@@ -1,6 +1,8 @@
 package com.kiteapioptions.broker.zerodha;
 
 import com.kiteapioptions.config.TradingProperties;
+import com.kiteapioptions.domain.ExecutionMode;
+import com.kiteapioptions.domain.MarketDataMode;
 import com.kiteapioptions.domain.TradingMode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -36,8 +38,12 @@ public class KiteStartupLogin implements ApplicationRunner {
             log.info("Kite startup login skipped: trading.broker.auto-login-on-startup=false");
             return;
         }
-        if (properties.mode() != TradingMode.LIVE) {
-            log.info("Kite startup login skipped: mode={}", properties.mode());
+        boolean zerodhaRequired = properties.mode() == TradingMode.LIVE
+                || properties.marketDataMode() == MarketDataMode.ZERODHA
+                || properties.executionMode() == ExecutionMode.ZERODHA;
+        if (!zerodhaRequired) {
+            log.info("Kite startup login skipped: mode={}, marketDataMode={}, executionMode={}",
+                    properties.mode(), properties.marketDataMode(), properties.executionMode());
             return;
         }
         if (tokenStore.authenticated()) {

@@ -1,6 +1,8 @@
 package com.kiteapioptions.config;
 
 import com.kiteapioptions.domain.BrokerName;
+import com.kiteapioptions.domain.ExecutionMode;
+import com.kiteapioptions.domain.MarketDataMode;
 import com.kiteapioptions.domain.StrikeSelectionMode;
 import com.kiteapioptions.domain.Timeframe;
 import com.kiteapioptions.domain.TradingMode;
@@ -28,6 +30,8 @@ import org.springframework.validation.annotation.Validated;
 @ConfigurationProperties(prefix = "trading")
 public record TradingProperties(
         @NotNull TradingMode mode,
+        @NotNull MarketDataMode marketDataMode,
+        @NotNull ExecutionMode executionMode,
         boolean liveTradingEnabled,
         @NotNull ZoneId timezone,
         @Valid @NotNull Broker broker,
@@ -47,6 +51,12 @@ public record TradingProperties(
     public TradingProperties {
         if (mode == null) {
             mode = TradingMode.PAPER;
+        }
+        if (marketDataMode == null) {
+            marketDataMode = mode == TradingMode.LIVE ? MarketDataMode.ZERODHA : MarketDataMode.MOCK;
+        }
+        if (executionMode == null) {
+            executionMode = mode == TradingMode.LIVE ? ExecutionMode.ZERODHA : ExecutionMode.PAPER;
         }
         if (timezone == null) {
             timezone = ZoneId.of("Asia/Kolkata");
@@ -78,7 +88,7 @@ public record TradingProperties(
             Safety safety,
             Algo algo
     ) {
-        this(mode, liveTradingEnabled, timezone, broker, symbols, strike, entry, exit, risk, paper, safety,
+        this(mode, null, null, liveTradingEnabled, timezone, broker, symbols, strike, entry, exit, risk, paper, safety,
                 null, algo, null);
     }
 
@@ -97,7 +107,7 @@ public record TradingProperties(
             Algo algo,
             Backtest backtest
     ) {
-        this(mode, liveTradingEnabled, timezone, broker, symbols, strike, entry, exit, risk, paper, safety,
+        this(mode, null, null, liveTradingEnabled, timezone, broker, symbols, strike, entry, exit, risk, paper, safety,
                 null, algo, backtest);
     }
 

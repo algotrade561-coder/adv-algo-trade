@@ -1,10 +1,11 @@
 package com.kiteapioptions.config;
 
 import com.kiteapioptions.broker.BrokerClient;
+import com.kiteapioptions.broker.RoutingBrokerClient;
 import com.kiteapioptions.broker.paper.PaperBrokerClient;
 import com.kiteapioptions.broker.zerodha.KiteAccessTokenStore;
 import com.kiteapioptions.broker.zerodha.ZerodhaBrokerClient;
-import com.kiteapioptions.domain.TradingMode;
+import com.kiteapioptions.execution.TradingStateService;
 import com.kiteapioptions.marketdata.InstrumentCache;
 import com.kiteapioptions.marketdata.KiteInstrumentCsvParser;
 import com.kiteapioptions.marketdata.MarketDataService;
@@ -55,17 +56,15 @@ public class BrokerConfiguration {
             ObjectMapper objectMapper,
             KiteInstrumentCsvParser instrumentCsvParser,
             MockMarketDataGenerator mockMarketDataGenerator,
-            KiteAccessTokenStore tokenStore
+            KiteAccessTokenStore tokenStore,
+            TradingStateService tradingStateService
     ) {
-        log.info("Selecting broker client: configuredMode={}, liveTradingEnabled={}, brokerName={}",
-                properties.mode(), properties.liveTradingEnabled(), properties.broker().name());
-        if (properties.mode() == TradingMode.LIVE) {
-            log.warn("LIVE broker client selected. Order placement is still gated by liveTradingEnabled={}",
-                    properties.liveTradingEnabled());
-            return new ZerodhaBrokerClient(properties, zerodhaRestClient, objectMapper, instrumentCsvParser, tokenStore);
-        }
-        log.info("Paper broker client selected: startingCash={}, slippagePercent={}",
-                properties.paper().startingCash(), properties.paper().slippagePercent());
-        return new PaperBrokerClient(properties, mockMarketDataGenerator);
+        log.info("Configuring routing broker client: configuredMode={}, marketDataMode={}, executionMode={}, liveTradingEnabled={}, brokerName={}",
+                properties.mode(), properties.marketDataMode(), properties.executionMode(),
+                properties.liveTradingEnabled(), properties.broker().name());
+        BrokerClient zerodhaClient = new ZerodhaBrokerClient(properties, zerodhaRestClient, objectMapper,
+                instrumentCsvParser, tokenStore);
+        BrokerClient paperClient = new PaperBrokerClient(properties, mockMarketDataGenerator);
+        return new RoutingBrokerClient(properties, zerodhaClient, paperClient, tradingStateService);
     }
 }
