@@ -32,20 +32,6 @@ public class TelegramAlertService {
         this.restClientBuilder = restClientBuilder;
     }
 
-    @EventListener(ApplicationReadyEvent.class)
-    public void applicationReady() {
-        send("Application started"
-                + System.lineSeparator() + "Mode: " + properties.mode()
-                + System.lineSeparator() + "Live trading enabled: " + properties.liveTradingEnabled());
-    }
-
-    @EventListener(ContextClosedEvent.class)
-    public void applicationShutdown() {
-        send("Application shutting down"
-                + System.lineSeparator() + "Mode: " + properties.mode()
-                + System.lineSeparator() + "Live trading enabled: " + properties.liveTradingEnabled());
-    }
-
     public void tradingStateChanged(String event, Object status) {
         send("Trading event: " + event + System.lineSeparator() + status);
     }

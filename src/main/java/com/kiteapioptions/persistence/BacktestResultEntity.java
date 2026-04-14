@@ -2,6 +2,7 @@ package com.kiteapioptions.persistence;
 
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
+import jakarta.persistence.Column;
 import java.math.BigDecimal;
 import java.time.Instant;
 
@@ -16,6 +17,7 @@ public class BacktestResultEntity {
     private BigDecimal expectancy;
     private BigDecimal maxDrawdown;
     private BigDecimal cumulativePnl;
+    @Column(length = 1024)
     private String outputPath;
 
     protected BacktestResultEntity() {

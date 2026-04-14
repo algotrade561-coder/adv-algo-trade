@@ -371,7 +371,15 @@ public class ZerodhaBrokerClient implements BrokerClient {
         if (instrumentKey.chars().allMatch(Character::isDigit)) {
             return instrumentKey;
         }
-        throw new BrokerException("Zerodha historical candles require an instrument token as instrumentKey");
+        // Accept "EXCHANGE:TOKEN" format where TOKEN is numeric, e.g. "NSE:256265"
+        String[] parts = instrumentKey.split(":", 2);
+        if (parts.length == 2 && parts[1].chars().allMatch(Character::isDigit)) {
+            return parts[1];
+        }
+        throw new BrokerException(
+                "Zerodha historical candles require a numeric instrument token. " +
+                "Pass the token directly (e.g. \"256265\") or as \"EXCHANGE:TOKEN\" (e.g. \"NSE:256265\"). " +
+                "Find tokens in the Zerodha instrument master CSV.");
     }
 
     private String[] splitInstrumentKey(String instrumentKey) {

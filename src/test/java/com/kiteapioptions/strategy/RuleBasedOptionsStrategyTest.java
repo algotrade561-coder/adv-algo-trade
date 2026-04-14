@@ -60,6 +60,20 @@ class RuleBasedOptionsStrategyTest {
         assertThat(decision.reasons()).contains("IV filter failed");
     }
 
+    @Test
+    void blocksPutEntryWhenUnderlyingTrendIsNotBearish() {
+        var strategy = strategy();
+        var request = new StrategyEvaluationRequest(Instant.parse("2026-04-12T10:00:00Z"), LocalTime.of(10, 0),
+                UnderlyingSymbol.NIFTY, bullishUnderlyingCandles(), optionCandles(), optionChain(),
+                "NFO:NIFTY24APR24000PE", BigDecimal.valueOf(24_000), OptionType.PE, selectedQuote(140, 20_000,
+                130_000, 20), Optional.of(selectedQuote(120, 10_000, 100_000, 20)));
+
+        var decision = strategy.evaluateEntry(request);
+
+        assertThat(decision.signalType()).isEqualTo(SignalType.NO_TRADE);
+        assertThat(decision.reasons()).contains("Side-specific entry filter failed");
+    }
+
     private RuleBasedOptionsStrategy strategy() {
         return new RuleBasedOptionsStrategy(new TradingProperties(null, false, null, null, null, null, null,
                 null, null, null, null, null, null), new VwapIndicator(), new VolumeSpikeDetector(),

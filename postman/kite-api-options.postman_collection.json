@@ -338,19 +338,281 @@
       "name": "Backtest",
       "item": [
         {
-          "name": "Run Backtest",
+          "name": "⭐ Download + Run Full Suite (Single Call)",
           "request": {
             "method": "POST",
-            "header": [],
-            "url": "{{baseUrl}}/backtest/run"
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"underlying\": \"NIFTY\",\n  \"optionTypes\": [\"CE\", \"PE\"],\n  \"timeframes\": [\"ONE_MINUTE\", \"FIVE_MINUTE\"],\n  \"to\": \"2026-04-13\",\n  \"windows\": [\n    { \"name\": \"1-day\",   \"from\": \"2026-04-13\", \"to\": \"2026-04-13\" },\n    { \"name\": \"1-week\",  \"from\": \"2026-04-06\", \"to\": \"2026-04-13\" },\n    { \"name\": \"1-month\", \"from\": \"2026-03-13\", \"to\": \"2026-04-13\" },\n    { \"name\": \"3-month\", \"from\": \"2026-01-13\", \"to\": \"2026-04-13\" },\n    { \"name\": \"6-month\", \"from\": \"2025-10-13\", \"to\": \"2026-04-13\" }\n  ]\n}"
+            },
+            "url": "{{baseUrl}}/backtest/download-and-run-suite",
+            "description": "Single endpoint that downloads ATM option candle data for all requested option types and timeframes, then immediately runs all 26 default variants across all windows. No separate download step needed.\n\nWhen no 'variants' field is sent, the server uses all 26 default variants automatically:\n\nCapital: baseline, cap-30k-risk-1, cap-30k-risk-1-5, cap-50k-risk-1, cap-60k-risk-1, cap-60k-risk-2\nTarget: target-15, target-16, target-18, target-25\nStop: stop-6-target-12, stop-8-target-16, stop-12-target-24\nTrailing: trail-act-10-gap-5, trail-act-15-gap-7\nScore: score-75, score-80\nBreakout: breakout-strict, breakout-loose\nLiquidity: liquidity-2x\nCutoff: cutoff-1400, cutoff-1330\nCombos: cap-60k-target-18, cap-60k-target-20-score-75, cap-60k-stop-8-target-16, cap-60k-trail-act-10-gap-5\n\nTotal runs = 26 variants x 5 windows x 2 timeframes x 2 option types = 520 runs.\nResults in backtest/results/suites/<suite-id>/suite-variant-ranking.csv"
           }
+        },
+        {
+          "name": "⭐ Download + Run Suite - Minimal (All Defaults)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            },
+            "url": "{{baseUrl}}/backtest/download-and-run-suite",
+            "description": "Runs with all defaults: NIFTY, CE+PE, ONE_MINUTE+FIVE_MINUTE, today as to-date, 1-day/1-week/1-month/3-month/6-month windows, all default variants. Requires a valid Kite access token."
+          }
+        },
+        {
+          "name": "⭐ Download + Run Suite - PE Only 5-min (Faster)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"underlying\": \"NIFTY\",\n  \"optionTypes\": [\"PE\"],\n  \"timeframes\": [\"FIVE_MINUTE\"],\n  \"to\": \"2026-04-13\",\n  \"windows\": [\n    { \"name\": \"1-week\",  \"from\": \"2026-04-06\", \"to\": \"2026-04-13\" },\n    { \"name\": \"1-month\", \"from\": \"2026-03-13\", \"to\": \"2026-04-13\" },\n    { \"name\": \"3-month\", \"from\": \"2026-01-13\", \"to\": \"2026-04-13\" },\n    { \"name\": \"6-month\", \"from\": \"2025-10-13\", \"to\": \"2026-04-13\" }\n  ]\n}"
+            },
+            "url": "{{baseUrl}}/backtest/download-and-run-suite",
+            "description": "Faster run — PE only, 5-min only, skips 1-day window. Good for quick strategy tuning iterations. Based on suite analysis showing PE runs consistently produced results while CE runs failed due to index price data."
+          }
+        },
+        {
+          "name": "⭐ Download + Run Suite - Custom Variants",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"underlying\": \"NIFTY\",\n  \"optionTypes\": [\"CE\", \"PE\"],\n  \"timeframes\": [\"ONE_MINUTE\", \"FIVE_MINUTE\"],\n  \"to\": \"2026-04-13\",\n  \"windows\": [\n    { \"name\": \"1-month\", \"from\": \"2026-03-13\", \"to\": \"2026-04-13\" },\n    { \"name\": \"3-month\", \"from\": \"2026-01-13\", \"to\": \"2026-04-13\" },\n    { \"name\": \"6-month\", \"from\": \"2025-10-13\", \"to\": \"2026-04-13\" }\n  ],\n  \"variants\": [\n    { \"name\": \"baseline\" },\n    { \"name\": \"cap-60k-target-20\", \"totalCapital\": 60000, \"maxRiskPerTradePercent\": 1, \"targetPercent\": 20 },\n    { \"name\": \"cap-60k-target-18\", \"totalCapital\": 60000, \"maxRiskPerTradePercent\": 1, \"targetPercent\": 18 },\n    { \"name\": \"cap-60k-stop-8-target-16\", \"totalCapital\": 60000, \"maxRiskPerTradePercent\": 1, \"stopLossPercent\": 8, \"targetPercent\": 16 },\n    { \"name\": \"cap-60k-score-75\", \"totalCapital\": 60000, \"maxRiskPerTradePercent\": 1, \"minSignalScorePercent\": 75 },\n    { \"name\": \"cap-60k-trail-10-5\", \"totalCapital\": 60000, \"maxRiskPerTradePercent\": 1, \"trailingStopActivationPercent\": 10, \"trailingGapPercent\": 5 },\n    { \"name\": \"cap-60k-cutoff-1400\", \"totalCapital\": 60000, \"maxRiskPerTradePercent\": 1, \"entryCutoffTime\": \"14:00\" }\n  ]\n}"
+            },
+            "url": "{{baseUrl}}/backtest/download-and-run-suite",
+            "description": "Custom variant suite focused on the best-performing cap-60k combinations from prior analysis. Runs 1-month, 3-month, and 6-month windows only for meaningful sample size."
+          }
+        },
+        {
+          "name": "Run Full Comparison Suite",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"underlying\": \"NIFTY\",\n  \"to\": \"2026-04-13\"\n}"
+            },
+            "url": "{{baseUrl}}/backtest/run-suite",
+            "description": "Runs the full default comparison suite in one request. The current default suite covers baseline, capital variants, lower-target variants, stricter filter variants, and tighter-stop variants across 1-day, 1-week, 1-month, and 3-month windows for CE/PE and 1-minute/5-minute. Output is written under backtest/results/suites/<suite-id>/ with compact v-*/w-* folders plus suite-summary.csv and suite-variant-ranking.csv."
+          }
+        },
+        {
+          "name": "Run Custom Backtest Suite",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"underlying\": \"NIFTY\",\n  \"windows\": [\n    { \"name\": \"1-day\", \"from\": \"2026-04-13\", \"to\": \"2026-04-13\" },\n    { \"name\": \"1-week\", \"from\": \"2026-04-06\", \"to\": \"2026-04-13\" },\n    { \"name\": \"1-month\", \"from\": \"2026-03-13\", \"to\": \"2026-04-13\" },\n    { \"name\": \"3-month\", \"from\": \"2026-01-13\", \"to\": \"2026-04-13\" }\n  ],\n  \"optionTypes\": [\"CE\", \"PE\"],\n  \"timeframes\": [\"ONE_MINUTE\", \"FIVE_MINUTE\"],\n  \"variants\": [\n    { \"name\": \"baseline\" },\n    { \"name\": \"capital-50000-risk-1-baseline\", \"totalCapital\": 50000, \"maxRiskPerTradePercent\": 1 },\n    { \"name\": \"capital-60000-risk-1-baseline\", \"totalCapital\": 60000, \"maxRiskPerTradePercent\": 1 },\n    { \"name\": \"capital-30000-risk-1-5-baseline\", \"totalCapital\": 30000, \"maxRiskPerTradePercent\": 1.5 },\n    { \"name\": \"target-18\", \"targetPercent\": 18 },\n    { \"name\": \"target-16\", \"targetPercent\": 16 },\n    { \"name\": \"target-15\", \"targetPercent\": 15 },\n    { \"name\": \"score-75\", \"minSignalScorePercent\": 75 },\n    { \"name\": \"strict-breakout\", \"volumeSpikeMultiplier\": 1.5, \"breakoutBufferPercent\": 0.10, \"breakoutLookback\": 7, \"volumeLookback\": 7 },\n    { \"name\": \"strict-liquidity\", \"minLiquidityVolume\": 10000 },\n    { \"name\": \"stop-8-target-16\", \"stopLossPercent\": 8, \"targetPercent\": 16 },\n    { \"name\": \"stop-6-target-12\", \"stopLossPercent\": 6, \"targetPercent\": 12 },\n    { \"name\": \"capital-60000-risk-1-target-18\", \"totalCapital\": 60000, \"maxRiskPerTradePercent\": 1, \"targetPercent\": 18 },\n    { \"name\": \"capital-60000-risk-1-target-16\", \"totalCapital\": 60000, \"maxRiskPerTradePercent\": 1, \"targetPercent\": 16 },\n    { \"name\": \"capital-60000-risk-1-target-15\", \"totalCapital\": 60000, \"maxRiskPerTradePercent\": 1, \"targetPercent\": 15 },\n    { \"name\": \"capital-60000-risk-1-score-75\", \"totalCapital\": 60000, \"maxRiskPerTradePercent\": 1, \"minSignalScorePercent\": 75 },\n    { \"name\": \"capital-60000-risk-1-strict-breakout\", \"totalCapital\": 60000, \"maxRiskPerTradePercent\": 1, \"volumeSpikeMultiplier\": 1.5, \"breakoutBufferPercent\": 0.10, \"breakoutLookback\": 7, \"volumeLookback\": 7 },\n    { \"name\": \"capital-60000-risk-1-strict-liquidity\", \"totalCapital\": 60000, \"maxRiskPerTradePercent\": 1, \"minLiquidityVolume\": 10000 }\n  ]\n}"
+            },
+            "url": "{{baseUrl}}/backtest/run-suite",
+            "description": "Runs a fully explicit comparison suite. Use this if you want complete control over windows, sides, timeframes, and every variant in one request. Capital and risk overrides now affect both backtest execution and option-selection feasibility during the suite download step."
+          }
+        },
+        {
+          "name": "Test 1 - NIFTY CE 1-minute",
+          "item": [
+            {
+              "name": "1. Download CE 1-minute data",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"underlying\": \"NIFTY\",\n  \"optionType\": \"CE\",\n  \"from\": \"2026-04-13\",\n  \"to\": \"2026-04-13\",\n  \"timeframe\": \"ONE_MINUTE\"\n}"
+                },
+                "url": "{{baseUrl}}/backtest/download-option-data",
+                "description": "Downloads option-premium candles to backtest/input-nifty-ce-one-minute.csv."
+              }
+            },
+            {
+              "name": "2. Run CE 1-minute backtest",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"underlying\": \"NIFTY\",\n  \"timeframe\": \"ONE_MINUTE\",\n  \"optionType\": \"CE\",\n  \"from\": \"2026-04-13\",\n  \"to\": \"2026-04-13\"\n}"
+                },
+                "url": "{{baseUrl}}/backtest/run",
+                "description": "Runs against backtest/input-nifty-ce-one-minute.csv."
+              }
+            }
+          ]
+        },
+        {
+          "name": "Test 2 - NIFTY PE 1-minute",
+          "item": [
+            {
+              "name": "1. Download PE 1-minute data",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"underlying\": \"NIFTY\",\n  \"optionType\": \"PE\",\n  \"from\": \"2026-04-13\",\n  \"to\": \"2026-04-13\",\n  \"timeframe\": \"ONE_MINUTE\"\n}"
+                },
+                "url": "{{baseUrl}}/backtest/download-option-data",
+                "description": "Downloads option-premium candles to backtest/input-nifty-pe-one-minute.csv."
+              }
+            },
+            {
+              "name": "2. Run PE 1-minute backtest",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"underlying\": \"NIFTY\",\n  \"timeframe\": \"ONE_MINUTE\",\n  \"optionType\": \"PE\",\n  \"from\": \"2026-04-13\",\n  \"to\": \"2026-04-13\"\n}"
+                },
+                "url": "{{baseUrl}}/backtest/run",
+                "description": "Runs against backtest/input-nifty-pe-one-minute.csv."
+              }
+            }
+          ]
+        },
+        {
+          "name": "Test 3 - NIFTY CE 5-minute",
+          "item": [
+            {
+              "name": "1. Download CE 5-minute data",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"underlying\": \"NIFTY\",\n  \"optionType\": \"CE\",\n  \"from\": \"2026-04-13\",\n  \"to\": \"2026-04-13\",\n  \"timeframe\": \"FIVE_MINUTE\"\n}"
+                },
+                "url": "{{baseUrl}}/backtest/download-option-data",
+                "description": "Downloads option-premium candles to backtest/input-nifty-ce-five-minute.csv."
+              }
+            },
+            {
+              "name": "2. Run CE 5-minute backtest",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"underlying\": \"NIFTY\",\n  \"timeframe\": \"FIVE_MINUTE\",\n  \"optionType\": \"CE\",\n  \"from\": \"2026-04-13\",\n  \"to\": \"2026-04-13\"\n}"
+                },
+                "url": "{{baseUrl}}/backtest/run",
+                "description": "Runs against backtest/input-nifty-ce-five-minute.csv."
+              }
+            }
+          ]
+        },
+        {
+          "name": "Test 4 - NIFTY PE 5-minute",
+          "item": [
+            {
+              "name": "1. Download PE 5-minute data",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"underlying\": \"NIFTY\",\n  \"optionType\": \"PE\",\n  \"from\": \"2026-04-13\",\n  \"to\": \"2026-04-13\",\n  \"timeframe\": \"FIVE_MINUTE\"\n}"
+                },
+                "url": "{{baseUrl}}/backtest/download-option-data",
+                "description": "Downloads option-premium candles to backtest/input-nifty-pe-five-minute.csv."
+              }
+            },
+            {
+              "name": "2. Run PE 5-minute backtest",
+              "request": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "body": {
+                  "mode": "raw",
+                  "raw": "{\n  \"underlying\": \"NIFTY\",\n  \"timeframe\": \"FIVE_MINUTE\",\n  \"optionType\": \"PE\",\n  \"from\": \"2026-04-13\",\n  \"to\": \"2026-04-13\"\n}"
+                },
+                "url": "{{baseUrl}}/backtest/run",
+                "description": "Runs against backtest/input-nifty-pe-five-minute.csv."
+              }
+            }
+          ]
         },
         {
           "name": "Get Backtest Result",
           "request": {
             "method": "GET",
             "header": [],
-            "url": "{{baseUrl}}/backtest/results/{{backtestId}}"
+            "url": "{{baseUrl}}/backtest/results/{{backtestId}}",
+            "description": "Fetches a saved backtest result by ID. Set the backtestId collection variable to the id returned by Run Backtest."
+          }
+        },
+        {
+          "name": "View Backtest HTML Report",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{baseUrl}}/backtest/results/{{backtestId}}/report",
+            "description": "Opens the HTML report for a backtest run. Contains metrics summary cards, equity curve chart, daily PnL table, and full trades table. Open this URL directly in a browser for best results."
           }
         }
       ]

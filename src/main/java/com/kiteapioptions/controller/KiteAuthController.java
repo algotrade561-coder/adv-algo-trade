@@ -62,6 +62,6 @@ public class KiteAuthController {
         KiteLoginResult result = kiteAuthService.exchangeRequestToken(requestToken);
         log.info("Kite callback completed: userId={}", result.userId());
         return "Kite login completed for user " + result.userId()
-                + ". Access token captured in memory for this application run. You can close this tab.";
+                + ". Access token captured for this run and persisted to local token storage. You can close this tab.";
     }
 }

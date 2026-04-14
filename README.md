@@ -84,6 +84,7 @@ Phase 4 adds execution as a separate service. `ExecutionEngine` consumes `Strate
 - `GET /signals/latest`
 - `POST /reports/entry-signals/archive`
 - `POST /backtest/run`
+- `POST /backtest/run-suite`
 - `GET /backtest/results/{id}`
 
 ## Configuration
@@ -127,7 +128,7 @@ curl.exe -X POST http://localhost:8080/start
 
 It then runs on the configured interval, refreshes instruments if needed, fetches spot and option market data, builds a near-ATM option-chain snapshot, evaluates CE/PE entries, and routes accepted signals through risk checks and execution. A `NO_TRADE` decision is still a valid scan result when strategy filters do not pass.
 
-Every entry evaluation is appended to `reports/entry-signals/entry-signals.csv` with the raw candle/quote inputs, option-chain context, pass/fail flags, confidence score, and final reasons for later strategy tuning. New runs also write normalized analysis files under `reports/entry-signals/`: `entry-evaluations.csv` for one row per strategy decision, `entry-candles.csv` for the underlying and selected option candle history used by that decision, `option-chain-levels.csv` for the full option-chain snapshot levels available during the evaluation, and `entry-execution-outcomes.csv` for BUY decisions that reach risk checks, sizing, and order placement.
+Every entry evaluation is appended to `reports/entry-signals/entry-signals.csv` with the raw candle/quote inputs, option-chain context, pass/fail flags, confidence score, config snapshot fields, and final reasons for later strategy tuning. New runs also write normalized analysis files under `reports/entry-signals/`: `entry-evaluations.csv` for one row per strategy decision, `entry-candles.csv` for the underlying and selected option candle history used by that decision, `option-chain-levels.csv` for the full option-chain snapshot levels available during the evaluation, and `entry-execution-outcomes.csv` for BUY decisions that reach risk checks, sizing, and order placement. All of these files now include a shared `decisionKey` so live signal quality can be joined with execution outcomes later.
 
 The trend condition uses VWAP when the underlying candles include volume. If the underlying candle volume is zero, as seen with NIFTY index historical candles from Zerodha, it falls back to an EMA of recent closes.
 
@@ -228,11 +229,11 @@ trading:
     from: 2025-01-01
     to: 2025-01-31
     candle-timeframe: ONE_MINUTE
-    csv-import-path: data/backtest/input.csv
-    output-directory: reports/backtest
+    csv-import-path: backtest/input.csv
+    output-directory: backtest/results
     mock-instrument-key: NFO:NIFTY-MOCK-ATM-CE
     mock-candle-count: 180
-    lot-size: 75
+    lot-size: 65
 ```
 
 CSV input format:
@@ -248,7 +249,38 @@ Run:
 curl -X POST http://localhost:8080/backtest/run
 ```
 
-If `trading.backtest.csv-import-path` does not exist, the engine uses generated mock candles so the endpoint remains runnable locally. Outputs are written under `reports/backtest/{id}/`:
+Run a comparative suite:
+
+```powershell
+curl -X POST http://localhost:8080/backtest/run-suite
+```
+
+The suite endpoint now creates a dated suite folder under `backtest/results/suites/` and stores:
+
+- `suite-request.json`
+- `suite-summary.csv`
+- `suite-summary.json`
+- `suite-variant-ranking.csv`
+- separate run directories grouped by `variant=<name>/window=<name>/...`
+
+Default suite variants now run a broad comparison matrix: baseline, capital variants, lower-target variants, stricter filter variants, tighter-stop variants, and focused `60000 / 1%` follow-up variants.
+
+Custom variants can also be sent in the request body:
+
+```json
+{
+  "underlying": "NIFTY",
+  "timeframes": ["ONE_MINUTE"],
+  "optionTypes": ["PE"],
+  "variants": [
+    { "name": "baseline" },
+    { "name": "target-16", "targetPercent": 16 },
+    { "name": "strict-score", "minSignalScorePercent": 75, "volumeSpikeMultiplier": 1.5 }
+  ]
+}
+```
+
+If `trading.backtest.csv-import-path` does not exist, the engine uses generated mock candles so the endpoint remains runnable locally. Outputs are written under `backtest/results/{id}/`:
 
 - `metrics.csv`
 - `trades.csv`

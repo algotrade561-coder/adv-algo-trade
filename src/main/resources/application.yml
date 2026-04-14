@@ -1,8 +1,8 @@
 trading:
-  mode: PAPER
+  mode: LIVE
   market-data-mode: ZERODHA
   execution-mode: PAPER
-  live-trading-enabled: false
+  live-trading-enabled: true
   timezone: Asia/Kolkata
   broker:
     name: ZERODHA
@@ -28,6 +28,9 @@ trading:
   entry:
     timeframe: ONE_MINUTE
     trend-timeframe: FIVE_MINUTE
+    enabled-option-types:
+      - CE
+      - PE
     vwap-filter-enabled: true
     trend-filter-enabled: false
     volume-spike-multiplier: 1.2
@@ -79,14 +82,14 @@ trading:
     refresh-instruments-on-start: true
     auto-start-scanner-after-login: true
   backtest:
-    from: 2025-01-01
-    to: 2025-01-31
+    from: 2024-01-01
+    to: 2025-01-01
     candle-timeframe: ONE_MINUTE
-    csv-import-path: data/backtest/input.csv
-    output-directory: reports/backtest
+    csv-import-path: backtest/input.csv
+    output-directory: backtest/results
     mock-instrument-key: NFO:NIFTY-MOCK-ATM-CE
     mock-candle-count: 180
-    lot-size: 75
+    lot-size: 65
 
 spring:
   config:

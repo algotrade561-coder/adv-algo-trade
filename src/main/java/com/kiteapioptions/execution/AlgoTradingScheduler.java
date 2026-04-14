@@ -327,6 +327,11 @@ public class AlgoTradingScheduler {
         int entriesSubmitted = 0;
         List<EntryCandidate> candidates = new ArrayList<>();
         for (Map.Entry<OptionType, Instrument> entry : context.selectedOptions().entrySet()) {
+            if (!optionTypeEnabled(properties, entry.getKey())) {
+                log.info("Strategy evaluation skipped: option type disabled for live execution, underlying={}, optionType={}, enabledOptionTypes={}",
+                        underlying, entry.getKey(), properties.entry().enabledOptionTypes());
+                continue;
+            }
             Instrument selectedInstrument = entry.getValue();
             Quote selectedQuote = context.quotes().get(selectedInstrument.instrumentKey());
             if (selectedQuote == null) {
@@ -389,6 +394,10 @@ public class AlgoTradingScheduler {
             entriesSubmitted++;
         }
         return entriesSubmitted;
+    }
+
+    static boolean optionTypeEnabled(TradingProperties properties, OptionType optionType) {
+        return properties.entry().enabledOptionTypes().contains(optionType);
     }
 
     private List<Candle> candles(String instrumentKey, Timeframe timeframe) {

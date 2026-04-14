@@ -72,17 +72,25 @@ public class RuleBasedOptionsStrategy {
     }
 
     public StrategyDecision evaluateEntry(StrategyEvaluationRequest request) {
+        return evaluateEntry(request, true);
+    }
+
+    public StrategyDecision evaluateEntryWithoutRecording(StrategyEvaluationRequest request) {
+        return evaluateEntry(request, false);
+    }
+
+    private StrategyDecision evaluateEntry(StrategyEvaluationRequest request, boolean recordSignal) {
         log.info("Strategy evaluation started: timestamp={}, marketTime={}, underlying={}, optionType={}, selectedInstrument={}, selectedStrike={}, underlyingCandles={}, optionCandles={}",
                 request.timestamp(), request.marketTime(), request.underlying(), request.optionType(),
                 request.selectedInstrumentKey(), request.selectedStrike(), request.underlyingCandles().size(),
                 request.selectedOptionCandles().size());
         if (request.underlyingCandles().isEmpty()) {
             log.warn("Strategy evaluation rejected: no underlying candles available");
-            return noTrade(request, Optional.empty(), false, "No underlying candles available");
+            return noTrade(request, Optional.empty(), false, "No underlying candles available", recordSignal);
         }
         if (request.selectedOptionCandles().isEmpty()) {
             log.warn("Strategy evaluation rejected: no selected option candles available");
-            return noTrade(request, Optional.empty(), false, "No selected option candles available");
+            return noTrade(request, Optional.empty(), false, "No selected option candles available", recordSignal);
         }
 
         OptionChainAnalysis chain = optionChainAnalyzer.analyze(request.optionChainSnapshot(),
@@ -114,9 +122,13 @@ public class RuleBasedOptionsStrategy {
         addReason(reasons, confidenceScore.compareTo(properties.entry().minSignalScorePercent()) >= 0,
                 "Signal score passed: " + confidenceScore + "%",
                 "Signal score failed: " + confidenceScore + "%");
+        boolean sideFilterPassed = sideFilterPassed(request.optionType(), vwapPassed, breakoutPassed, volumeSpike);
+        addReason(reasons, sideFilterPassed, "Side-specific entry filter passed",
+                "Side-specific entry filter failed");
 
         boolean entry = timePassed && ivPassed && liquidityPassed
-                && confidenceScore.compareTo(properties.entry().minSignalScorePercent()) >= 0;
+                && confidenceScore.compareTo(properties.entry().minSignalScorePercent()) >= 0
+                && sideFilterPassed;
         SignalType signalType = entry
                 ? (request.optionType() == OptionType.CE ? SignalType.BUY_CE : SignalType.BUY_PE)
                 : SignalType.NO_TRADE;
@@ -129,7 +141,10 @@ public class RuleBasedOptionsStrategy {
                 Optional.ofNullable(request.selectedInstrumentKey()), Optional.ofNullable(request.selectedStrike()),
                 Optional.ofNullable(request.optionType()), vwapPassed, Optional.of(chain.nearbyPutCallOiImbalance()),
                 volumeSpike, confidenceScore, reasons);
-        recordSignal(request, decision, chain, trendReference, breakoutPassed, oiPassed, ivPassed, liquidityPassed, timePassed);
+        if (recordSignal) {
+            recordSignal(request, decision, chain, trendReference, breakoutPassed, oiPassed, ivPassed, liquidityPassed,
+                    timePassed);
+        }
         return decision;
     }
 
@@ -170,6 +185,14 @@ public class RuleBasedOptionsStrategy {
         return optionType == OptionType.CE ? price.compareTo(vwap) > 0 : price.compareTo(vwap) < 0;
     }
 
+    private boolean sideFilterPassed(OptionType optionType, boolean vwapPassed, boolean breakoutPassed,
+                                     boolean volumeSpike) {
+        if (optionType == OptionType.CE) {
+            return vwapPassed && breakoutPassed && volumeSpike;
+        }
+        return vwapPassed;
+    }
+
     private BigDecimal trendReference(List<Candle> candles) {
         boolean hasVolume = candles.stream().anyMatch(candle -> candle.volume() > 0);
         if (hasVolume) {
@@ -185,12 +208,14 @@ public class RuleBasedOptionsStrategy {
     }
 
     private StrategyDecision noTrade(StrategyEvaluationRequest request, Optional<BigDecimal> imbalance,
-                                     boolean volumeSpike, String reason) {
+                                     boolean volumeSpike, String reason, boolean recordSignal) {
         StrategyDecision decision = new StrategyDecision(request.timestamp(), request.underlying(), SignalType.NO_TRADE,
                 request.underlyingCandles().isEmpty() ? BigDecimal.ZERO : request.underlyingCandles().getLast().close(),
                 Optional.ofNullable(request.selectedInstrumentKey()), Optional.ofNullable(request.selectedStrike()),
                 Optional.ofNullable(request.optionType()), false, imbalance, volumeSpike, BigDecimal.ZERO, List.of(reason));
-        recordSignal(request, decision, null, BigDecimal.ZERO, false, false, false, false, false);
+        if (recordSignal) {
+            recordSignal(request, decision, null, BigDecimal.ZERO, false, false, false, false, false);
+        }
         return decision;
     }
 

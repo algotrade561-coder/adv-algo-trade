@@ -1,5 +1,6 @@
 package com.kiteapioptions.execution;
 
+import com.kiteapioptions.config.TradingProperties;
 import com.kiteapioptions.domain.OrderResponse;
 import com.kiteapioptions.domain.StrategyDecision;
 import java.io.IOException;
@@ -19,12 +20,21 @@ public class ExecutionOutcomeCsvRecorder {
     private static final Logger log = LoggerFactory.getLogger(ExecutionOutcomeCsvRecorder.class);
     private static final Path OUTPUT = Path.of("reports", "entry-signals", "entry-execution-outcomes.csv");
     private static final String HEADER = String.join(",",
+            "decisionKey",
             "timestamp",
             "stage",
             "accepted",
             "signalType",
             "underlying",
             "optionType",
+            "marketDataMode",
+            "executionMode",
+            "stopLossPercent",
+            "targetPercent",
+            "trailingStopActivationPercent",
+            "trailingGapPercent",
+            "maxRiskPerTradePercent",
+            "minSignalScorePercent",
             "selectedInstrumentKey",
             "selectedStrike",
             "underlyingPrice",
@@ -42,6 +52,11 @@ public class ExecutionOutcomeCsvRecorder {
             "brokerRejectionReason",
             "reasons"
     ) + System.lineSeparator();
+    private final TradingProperties properties;
+
+    public ExecutionOutcomeCsvRecorder(TradingProperties properties) {
+        this.properties = properties;
+    }
 
     public synchronized void recordEntry(
             StrategyDecision decision,
@@ -80,12 +95,21 @@ public class ExecutionOutcomeCsvRecorder {
             List<String> reasons
     ) {
         return String.join(",",
+                csv(decisionKey(decision)),
                 csv(Instant.now()),
                 csv(stage),
                 csv(accepted),
                 csv(decision.signalType()),
                 csv(decision.underlying()),
                 csv(decision.optionType().map(Enum::name).orElse(null)),
+                csv(properties.marketDataMode()),
+                csv(properties.executionMode()),
+                csv(properties.exit().stopLossPercent()),
+                csv(properties.exit().targetPercent()),
+                csv(properties.exit().trailingStopActivationPercent()),
+                csv(properties.exit().trailingGapPercent()),
+                csv(properties.risk().maxRiskPerTradePercent()),
+                csv(properties.entry().minSignalScorePercent()),
                 csv(decision.selectedInstrumentKey().orElse(null)),
                 csv(decision.selectedStrike().orElse(null)),
                 csv(decision.underlyingPrice()),
@@ -103,6 +127,13 @@ public class ExecutionOutcomeCsvRecorder {
                 csv(order == null ? null : order.rejectionReason().orElse(null)),
                 csv(String.join("; ", reasons))
         ) + System.lineSeparator();
+    }
+
+    private String decisionKey(StrategyDecision decision) {
+        String raw = decision.timestamp() + "|" + decision.underlying() + "|"
+                + decision.optionType().map(Enum::name).orElse("") + "|"
+                + decision.selectedInstrumentKey().orElse("");
+        return Integer.toUnsignedString(raw.hashCode(), 16);
     }
 
     private String csv(Object value) {

@@ -22,6 +22,8 @@ public class KiteAccessTokenStore {
 
     private static final Logger log = LoggerFactory.getLogger(KiteAccessTokenStore.class);
     private static final Path TOKEN_FILE = Path.of("data", "kite-access-token.properties");
+    private static final Path TRADING_SECRETS_FILE = Path.of("data", "trading-secrets.properties");
+    private static final String ACCESS_TOKEN_PROPERTY = "trading.broker.access-token";
     private static final LocalTime DAILY_EXPIRY_TIME = LocalTime.of(6, 0);
 
     private final TradingProperties properties;
@@ -53,6 +55,7 @@ public class KiteAccessTokenStore {
         this.updatedAt.set(null);
         try {
             Files.deleteIfExists(TOKEN_FILE);
+            syncTradingSecrets(null);
         } catch (IOException ex) {
             throw new UncheckedIOException("Failed to clear Kite access token file", ex);
         }
@@ -123,6 +126,7 @@ public class KiteAccessTokenStore {
             try (var output = Files.newOutputStream(TOKEN_FILE)) {
                 token.store(output, "Kite access token cache. Do not commit this file.");
             }
+            syncTradingSecrets(currentAccessToken);
             log.info("Persisted Kite access token metadata: file={}, userId={}, authenticatedAt={}, expiresAt={}",
                     TOKEN_FILE, valueOrMissing(userId.get()), authenticatedAt, expiresAt);
         } catch (IOException ex) {
@@ -153,5 +157,28 @@ public class KiteAccessTokenStore {
 
     private String valueOrMissing(String value) {
         return value == null || value.isBlank() ? "<missing>" : value;
+    }
+
+    private void syncTradingSecrets(String currentAccessToken) throws IOException {
+        Properties secrets = new Properties();
+        if (Files.exists(TRADING_SECRETS_FILE)) {
+            try (var input = Files.newInputStream(TRADING_SECRETS_FILE)) {
+                secrets.load(input);
+            }
+        } else {
+            Files.createDirectories(TRADING_SECRETS_FILE.getParent());
+        }
+
+        if (currentAccessToken == null || currentAccessToken.isBlank()) {
+            secrets.remove(ACCESS_TOKEN_PROPERTY);
+        } else {
+            secrets.setProperty(ACCESS_TOKEN_PROPERTY, currentAccessToken);
+        }
+
+        try (var output = Files.newOutputStream(TRADING_SECRETS_FILE)) {
+            secrets.store(output, "Local trading secrets. Do not commit this file.");
+        }
+        log.info("Synchronized Kite access token into trading secrets: file={}, updated={}",
+                TRADING_SECRETS_FILE, currentAccessToken != null && !currentAccessToken.isBlank());
     }
 }

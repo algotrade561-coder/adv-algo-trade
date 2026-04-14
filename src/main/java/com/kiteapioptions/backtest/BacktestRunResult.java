@@ -13,6 +13,7 @@ public record BacktestRunResult(
         Path outputDirectory,
         Path tradesCsv,
         Path metricsCsv,
-        Path equityCurveCsv
+        Path equityCurveCsv,
+        Path reportHtml
 ) {
 }

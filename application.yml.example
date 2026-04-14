@@ -82,11 +82,11 @@ trading:
     from: 2025-01-01
     to: 2025-01-31
     candle-timeframe: ONE_MINUTE
-    csv-import-path: data/backtest/input.csv
-    output-directory: reports/backtest
+    csv-import-path: backtest/input.csv
+    output-directory: backtest/results
     mock-instrument-key: NFO:NIFTY-MOCK-ATM-CE
     mock-candle-count: 180
-    lot-size: 75
+    lot-size: 65
 
 spring:
   config:

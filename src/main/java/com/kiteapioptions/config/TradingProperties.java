@@ -3,6 +3,7 @@ package com.kiteapioptions.config;
 import com.kiteapioptions.domain.BrokerName;
 import com.kiteapioptions.domain.ExecutionMode;
 import com.kiteapioptions.domain.MarketDataMode;
+import com.kiteapioptions.domain.OptionType;
 import com.kiteapioptions.domain.StrikeSelectionMode;
 import com.kiteapioptions.domain.Timeframe;
 import com.kiteapioptions.domain.TradingMode;
@@ -165,6 +166,7 @@ public record TradingProperties(
     public record Entry(
             @NotNull Timeframe timeframe,
             @NotNull Timeframe trendTimeframe,
+            @NotEmpty List<OptionType> enabledOptionTypes,
             boolean vwapFilterEnabled,
             boolean trendFilterEnabled,
             @DecimalMin("1.0") BigDecimal volumeSpikeMultiplier,
@@ -185,6 +187,7 @@ public record TradingProperties(
             return new Entry(
                     Timeframe.ONE_MINUTE,
                     Timeframe.FIVE_MINUTE,
+                    List.of(OptionType.PE),
                     true,
                     false,
                     BigDecimal.valueOf(1.5),
@@ -292,8 +295,8 @@ public record TradingProperties(
     ) {
         public static Backtest defaults() {
             return new Backtest(LocalDate.of(2025, 1, 1), LocalDate.of(2025, 1, 31),
-                    Timeframe.ONE_MINUTE, "data/backtest/input.csv", "reports/backtest",
-                    "NFO:NIFTY-MOCK-ATM-CE", 180, 75);
+                    Timeframe.ONE_MINUTE, "backtest/input.csv", "backtest/results",
+                    "NFO:NIFTY-MOCK-ATM-CE", 180, 65);
         }
     }
 }

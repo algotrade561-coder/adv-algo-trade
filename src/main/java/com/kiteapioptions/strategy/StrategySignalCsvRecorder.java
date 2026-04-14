@@ -1,5 +1,6 @@
 package com.kiteapioptions.strategy;
 
+import com.kiteapioptions.config.TradingProperties;
 import com.kiteapioptions.domain.Candle;
 import com.kiteapioptions.domain.Quote;
 import com.kiteapioptions.domain.StrategyDecision;
@@ -24,11 +25,26 @@ public class StrategySignalCsvRecorder {
     private static final Path CANDLES = Path.of("reports", "entry-signals", "entry-candles.csv");
     private static final Path OPTION_CHAIN_LEVELS = Path.of("reports", "entry-signals", "option-chain-levels.csv");
     private static final String HEADER = String.join(",",
+            "decisionKey",
             "timestamp",
             "marketTime",
             "underlying",
             "signalType",
             "optionType",
+            "marketDataMode",
+            "executionMode",
+            "stopLossPercent",
+            "targetPercent",
+            "trailingStopActivationPercent",
+            "trailingGapPercent",
+            "maxRiskPerTradePercent",
+            "minSignalScorePercent",
+            "volumeSpikeMultiplier",
+            "breakoutBufferPercent",
+            "breakoutLookback",
+            "volumeLookback",
+            "minLiquidityVolume",
+            "maxIvPercent",
             "selectedInstrumentKey",
             "selectedStrike",
             "underlyingPrice",
@@ -69,12 +85,26 @@ public class StrategySignalCsvRecorder {
             "reasons"
     ) + System.lineSeparator();
     private static final String EVALUATIONS_HEADER = String.join(",",
-            "evaluationId",
+            "decisionKey",
             "timestamp",
             "marketTime",
             "underlying",
             "signalType",
             "optionType",
+            "marketDataMode",
+            "executionMode",
+            "stopLossPercent",
+            "targetPercent",
+            "trailingStopActivationPercent",
+            "trailingGapPercent",
+            "maxRiskPerTradePercent",
+            "minSignalScorePercent",
+            "volumeSpikeMultiplier",
+            "breakoutBufferPercent",
+            "breakoutLookback",
+            "volumeLookback",
+            "minLiquidityVolume",
+            "maxIvPercent",
             "selectedInstrumentKey",
             "selectedStrike",
             "underlyingPrice",
@@ -105,7 +135,7 @@ public class StrategySignalCsvRecorder {
             "reasons"
     ) + System.lineSeparator();
     private static final String CANDLES_HEADER = String.join(",",
-            "evaluationId",
+            "decisionKey",
             "evaluationTimestamp",
             "underlying",
             "optionType",
@@ -121,7 +151,7 @@ public class StrategySignalCsvRecorder {
             "openInterest"
     ) + System.lineSeparator();
     private static final String OPTION_CHAIN_LEVELS_HEADER = String.join(",",
-            "evaluationId",
+            "decisionKey",
             "evaluationTimestamp",
             "underlying",
             "optionType",
@@ -135,6 +165,11 @@ public class StrategySignalCsvRecorder {
             "callLastPrice",
             "putLastPrice"
     ) + System.lineSeparator();
+    private final TradingProperties properties;
+
+    public StrategySignalCsvRecorder(TradingProperties properties) {
+        this.properties = properties;
+    }
 
     public synchronized void record(
             StrategyEvaluationRequest request,
@@ -149,13 +184,13 @@ public class StrategySignalCsvRecorder {
     ) {
         try {
             Files.createDirectories(OUTPUT.getParent());
-            String evaluationId = evaluationId(request);
+            String decisionKey = decisionKey(request);
             append(OUTPUT, HEADER, row(request, decision, chain, vwap, breakoutPassed, oiPassed, ivPassed,
                     liquidityPassed, timePassed));
-            append(EVALUATIONS, EVALUATIONS_HEADER, evaluationRow(evaluationId, request, decision, chain, vwap,
+            append(EVALUATIONS, EVALUATIONS_HEADER, evaluationRow(decisionKey, request, decision, chain, vwap,
                     breakoutPassed, oiPassed, ivPassed, liquidityPassed, timePassed));
-            append(CANDLES, CANDLES_HEADER, candleRows(evaluationId, request));
-            append(OPTION_CHAIN_LEVELS, OPTION_CHAIN_LEVELS_HEADER, optionChainRows(evaluationId, request));
+            append(CANDLES, CANDLES_HEADER, candleRows(decisionKey, request));
+            append(OPTION_CHAIN_LEVELS, OPTION_CHAIN_LEVELS_HEADER, optionChainRows(decisionKey, request));
         } catch (IOException ex) {
             log.warn("Strategy signal CSV write failed: directory={}, message={}", OUTPUT.getParent(), ex.getMessage());
         }
@@ -187,11 +222,26 @@ public class StrategySignalCsvRecorder {
         Quote quote = request.selectedOptionQuote();
         Quote previousQuote = request.previousSelectedOptionQuote().orElse(null);
         return String.join(",",
+                csv(decisionKey(request)),
                 csv(request.timestamp()),
                 csv(request.marketTime()),
                 csv(request.underlying()),
                 csv(decision.signalType()),
                 csv(request.optionType()),
+                csv(properties.marketDataMode()),
+                csv(properties.executionMode()),
+                csv(properties.exit().stopLossPercent()),
+                csv(properties.exit().targetPercent()),
+                csv(properties.exit().trailingStopActivationPercent()),
+                csv(properties.exit().trailingGapPercent()),
+                csv(properties.risk().maxRiskPerTradePercent()),
+                csv(properties.entry().minSignalScorePercent()),
+                csv(properties.entry().volumeSpikeMultiplier()),
+                csv(properties.entry().breakoutBufferPercent()),
+                csv(properties.entry().breakoutLookback()),
+                csv(properties.entry().volumeLookback()),
+                csv(properties.entry().minLiquidityVolume()),
+                csv(properties.entry().maxIvPercent()),
                 csv(request.selectedInstrumentKey()),
                 csv(request.selectedStrike()),
                 csv(decision.underlyingPrice()),
@@ -234,7 +284,7 @@ public class StrategySignalCsvRecorder {
     }
 
     private String evaluationRow(
-            String evaluationId,
+            String decisionKey,
             StrategyEvaluationRequest request,
             StrategyDecision decision,
             OptionChainAnalysis chain,
@@ -248,12 +298,26 @@ public class StrategySignalCsvRecorder {
         Quote quote = request.selectedOptionQuote();
         Quote previousQuote = request.previousSelectedOptionQuote().orElse(null);
         return String.join(",",
-                csv(evaluationId),
+                csv(decisionKey),
                 csv(request.timestamp()),
                 csv(request.marketTime()),
                 csv(request.underlying()),
                 csv(decision.signalType()),
                 csv(request.optionType()),
+                csv(properties.marketDataMode()),
+                csv(properties.executionMode()),
+                csv(properties.exit().stopLossPercent()),
+                csv(properties.exit().targetPercent()),
+                csv(properties.exit().trailingStopActivationPercent()),
+                csv(properties.exit().trailingGapPercent()),
+                csv(properties.risk().maxRiskPerTradePercent()),
+                csv(properties.entry().minSignalScorePercent()),
+                csv(properties.entry().volumeSpikeMultiplier()),
+                csv(properties.entry().breakoutBufferPercent()),
+                csv(properties.entry().breakoutLookback()),
+                csv(properties.entry().volumeLookback()),
+                csv(properties.entry().minLiquidityVolume()),
+                csv(properties.entry().maxIvPercent()),
                 csv(request.selectedInstrumentKey()),
                 csv(request.selectedStrike()),
                 csv(decision.underlyingPrice()),
@@ -285,23 +349,23 @@ public class StrategySignalCsvRecorder {
         ) + System.lineSeparator();
     }
 
-    private String candleRows(String evaluationId, StrategyEvaluationRequest request) {
+    private String candleRows(String decisionKey, StrategyEvaluationRequest request) {
         StringBuilder rows = new StringBuilder();
-        appendCandleRows(rows, evaluationId, request, "UNDERLYING", request.underlyingCandles());
-        appendCandleRows(rows, evaluationId, request, "OPTION", request.selectedOptionCandles());
+        appendCandleRows(rows, decisionKey, request, "UNDERLYING", request.underlyingCandles());
+        appendCandleRows(rows, decisionKey, request, "OPTION", request.selectedOptionCandles());
         return rows.toString();
     }
 
     private void appendCandleRows(
             StringBuilder rows,
-            String evaluationId,
+            String decisionKey,
             StrategyEvaluationRequest request,
             String candleRole,
             Iterable<Candle> candles
     ) {
         for (Candle candle : candles) {
             rows.append(String.join(",",
-                    csv(evaluationId),
+                    csv(decisionKey),
                     csv(request.timestamp()),
                     csv(request.underlying()),
                     csv(request.optionType()),
@@ -319,14 +383,14 @@ public class StrategySignalCsvRecorder {
         }
     }
 
-    private String optionChainRows(String evaluationId, StrategyEvaluationRequest request) {
+    private String optionChainRows(String decisionKey, StrategyEvaluationRequest request) {
         if (request.optionChainSnapshot() == null || request.optionChainSnapshot().levels().isEmpty()) {
             return "";
         }
         StringBuilder rows = new StringBuilder();
         for (var level : request.optionChainSnapshot().levels()) {
             rows.append(String.join(",",
-                    csv(evaluationId),
+                    csv(decisionKey),
                     csv(request.timestamp()),
                     csv(request.underlying()),
                     csv(request.optionType()),
@@ -344,7 +408,7 @@ public class StrategySignalCsvRecorder {
         return rows.toString();
     }
 
-    private String evaluationId(StrategyEvaluationRequest request) {
+    private String decisionKey(StrategyEvaluationRequest request) {
         String raw = request.timestamp() + "|" + request.underlying() + "|" + request.optionType() + "|"
                 + request.selectedInstrumentKey();
         return Integer.toUnsignedString(raw.hashCode(), 16);
