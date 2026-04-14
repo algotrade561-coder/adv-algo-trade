@@ -181,28 +181,36 @@ public record TradingProperties(
             @NotNull LocalTime entryStartTime,
             @NotNull LocalTime entryCutoffTime,
             boolean allowFirstMinutesEntry,
-            @Min(0) int noEntryFirstMinutes
+            @Min(0) int noEntryFirstMinutes,
+            boolean rsiFilterEnabled,
+            @Min(2) int rsiPeriod,
+            @DecimalMin("0.0") BigDecimal rsiCeBuyThreshold,
+            @DecimalMin("0.0") BigDecimal rsiPeSellThreshold
     ) {
         public static Entry defaults() {
             return new Entry(
                     Timeframe.ONE_MINUTE,
                     Timeframe.FIVE_MINUTE,
-                    List.of(OptionType.PE),
+                    List.of(OptionType.CE, OptionType.PE),
                     true,
                     false,
                     BigDecimal.valueOf(1.5),
                     BigDecimal.valueOf(0.1),
+                    15,
                     5,
-                    5,
-                    BigDecimal.valueOf(1.05),
-                    BigDecimal.valueOf(0.95),
+                    BigDecimal.valueOf(1.2),
+                    BigDecimal.valueOf(0.8),
                     10_000,
                     BigDecimal.valueOf(80),
                     BigDecimal.valueOf(70),
                     LocalTime.of(9, 25),
                     LocalTime.of(14, 45),
                     false,
-                    10
+                    10,
+                    false,
+                    14,
+                    BigDecimal.valueOf(55),
+                    BigDecimal.valueOf(45)
             );
         }
     }
@@ -213,11 +221,12 @@ public record TradingProperties(
             @DecimalMin("0.0") BigDecimal trailingStopActivationPercent,
             @DecimalMin("0.0") BigDecimal trailingGapPercent,
             @NotNull LocalTime forcedExitTime,
-            boolean partialProfitBookingEnabled
+            boolean partialProfitBookingEnabled,
+            @Min(0) int maxHoldMinutes
     ) {
         public static Exit defaults() {
             return new Exit(BigDecimal.TEN, BigDecimal.valueOf(20), BigDecimal.valueOf(12),
-                    BigDecimal.valueOf(6), LocalTime.of(15, 15), false);
+                    BigDecimal.valueOf(6), LocalTime.of(15, 15), false, 0);
         }
     }
 

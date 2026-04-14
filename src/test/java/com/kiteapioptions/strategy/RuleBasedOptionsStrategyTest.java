@@ -76,8 +76,10 @@ class RuleBasedOptionsStrategyTest {
 
     private RuleBasedOptionsStrategy strategy() {
         return new RuleBasedOptionsStrategy(new TradingProperties(null, false, null, null, null, null, null,
-                null, null, null, null, null, null), new VwapIndicator(), new VolumeSpikeDetector(),
-                new BreakoutDetector(), new VolatilityFilter(), new OiChangeTracker(), new OptionChainAnalyzer());
+                null, null, null, null, null, null), new VwapIndicator(),
+                new com.kiteapioptions.indicator.EmaIndicator(),
+                new VolumeSpikeDetector(), new BreakoutDetector(), new VolatilityFilter(),
+                new OiChangeTracker(), new OptionChainAnalyzer(), null);
     }
 
     private StrategyEvaluationRequest bullishRequest(LocalTime marketTime, Quote selectedQuote) {

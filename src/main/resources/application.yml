@@ -26,7 +26,7 @@ trading:
     selection-mode: ATM
     nearby-strikes: 5
   entry:
-    timeframe: ONE_MINUTE
+    timeframe: FIVE_MINUTE
     trend-timeframe: FIVE_MINUTE
     enabled-option-types:
       - CE
@@ -35,10 +35,10 @@ trading:
     trend-filter-enabled: false
     volume-spike-multiplier: 1.2
     breakout-buffer-percent: 0.05
-    breakout-lookback: 5
+    breakout-lookback: 15
     volume-lookback: 5
-    bullish-imbalance-threshold: 1.0
-    bearish-imbalance-threshold: 1.0
+    bullish-imbalance-threshold: 1.2
+    bearish-imbalance-threshold: 0.8
     min-liquidity-volume: 5000
     max-iv-percent: 80
     min-signal-score-percent: 70
@@ -46,6 +46,10 @@ trading:
     entry-cutoff-time: "14:45"
     allow-first-minutes-entry: false
     no-entry-first-minutes: 10
+    rsi-filter-enabled: false
+    rsi-period: 14
+    rsi-ce-buy-threshold: 55
+    rsi-pe-sell-threshold: 45
   exit:
     stop-loss-percent: 10
     target-percent: 20
@@ -53,6 +57,7 @@ trading:
     trailing-gap-percent: 6
     forced-exit-time: "15:15"
     partial-profit-booking-enabled: false
+    max-hold-minutes: 0
   risk:
     total-capital: 30000
     max-risk-per-trade-percent: 1
@@ -65,7 +70,7 @@ trading:
     cooldown-minutes: 10
   paper:
     slippage-percent: 0.05
-    starting-cash: 300000
+    starting-cash: 30000
   safety:
     kill-switch-enabled: false
     stale-market-data-threshold: 10s

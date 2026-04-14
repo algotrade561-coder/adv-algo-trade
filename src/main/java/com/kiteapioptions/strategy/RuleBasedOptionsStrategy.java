@@ -8,6 +8,7 @@ import com.kiteapioptions.domain.StrategyDecision;
 import com.kiteapioptions.indicator.BreakoutDetector;
 import com.kiteapioptions.indicator.EmaIndicator;
 import com.kiteapioptions.indicator.OiChangeTracker;
+import com.kiteapioptions.indicator.RsiIndicator;
 import com.kiteapioptions.indicator.VolatilityFilter;
 import com.kiteapioptions.indicator.VolumeSpikeDetector;
 import com.kiteapioptions.indicator.VwapIndicator;
@@ -35,6 +36,7 @@ public class RuleBasedOptionsStrategy {
     private final OiChangeTracker oiChangeTracker;
     private final OptionChainAnalyzer optionChainAnalyzer;
     private final StrategySignalCsvRecorder signalCsvRecorder;
+    private final RsiIndicator rsiIndicator;
 
     public RuleBasedOptionsStrategy(
             TradingProperties properties,
@@ -56,6 +58,7 @@ public class RuleBasedOptionsStrategy {
         this.oiChangeTracker = oiChangeTracker;
         this.optionChainAnalyzer = optionChainAnalyzer;
         this.signalCsvRecorder = signalCsvRecorder;
+        this.rsiIndicator = new RsiIndicator();
     }
 
     public RuleBasedOptionsStrategy(
@@ -108,6 +111,7 @@ public class RuleBasedOptionsStrategy {
                 properties.entry().maxIvPercent());
         boolean liquidityPassed = request.selectedOptionQuote().volume() >= properties.entry().minLiquidityVolume();
         boolean timePassed = withinEntryWindow(request.marketTime());
+        boolean rsiPassed = rsiConditionPassed(request);
         BigDecimal confidenceScore = confidenceScore(vwapPassed, breakoutPassed, volumeSpike, oiPassed,
                 ivPassed, liquidityPassed);
 
@@ -119,6 +123,7 @@ public class RuleBasedOptionsStrategy {
         addReason(reasons, ivPassed, "IV filter passed", "IV filter failed");
         addReason(reasons, liquidityPassed, "Liquidity filter passed", "Liquidity filter failed");
         addReason(reasons, timePassed, "Entry time window passed", "Entry time window failed");
+        addReason(reasons, rsiPassed, "RSI momentum gate passed", "RSI momentum gate failed");
         addReason(reasons, confidenceScore.compareTo(properties.entry().minSignalScorePercent()) >= 0,
                 "Signal score passed: " + confidenceScore + "%",
                 "Signal score failed: " + confidenceScore + "%");
@@ -126,7 +131,7 @@ public class RuleBasedOptionsStrategy {
         addReason(reasons, sideFilterPassed, "Side-specific entry filter passed",
                 "Side-specific entry filter failed");
 
-        boolean entry = timePassed && ivPassed && liquidityPassed
+        boolean entry = timePassed && ivPassed && liquidityPassed && rsiPassed
                 && confidenceScore.compareTo(properties.entry().minSignalScorePercent()) >= 0
                 && sideFilterPassed;
         SignalType signalType = entry
@@ -185,21 +190,38 @@ public class RuleBasedOptionsStrategy {
         return optionType == OptionType.CE ? price.compareTo(vwap) > 0 : price.compareTo(vwap) < 0;
     }
 
+    // Fix: symmetric side filter — both CE and PE require VWAP + breakout + volume spike
     private boolean sideFilterPassed(OptionType optionType, boolean vwapPassed, boolean breakoutPassed,
                                      boolean volumeSpike) {
-        if (optionType == OptionType.CE) {
-            return vwapPassed && breakoutPassed && volumeSpike;
-        }
-        return vwapPassed;
+        return vwapPassed && breakoutPassed && volumeSpike;
     }
 
     private BigDecimal trendReference(List<Candle> candles) {
         boolean hasVolume = candles.stream().anyMatch(candle -> candle.volume() > 0);
         if (hasVolume) {
-            return vwapIndicator.calculate(candles);
+            // Session-anchored VWAP: resets at 9:15 each day
+            return vwapIndicator.calculateSessionAnchored(candles, properties.timezone());
         }
         List<BigDecimal> closes = candles.stream().map(Candle::close).toList();
         return emaIndicator.calculate(closes, Math.min(properties.entry().breakoutLookback(), closes.size()));
+    }
+
+    private boolean rsiConditionPassed(StrategyEvaluationRequest request) {
+        if (!properties.entry().rsiFilterEnabled()) {
+            return true;
+        }
+        List<BigDecimal> closes = request.underlyingCandles().stream().map(Candle::close).toList();
+        BigDecimal rsi = rsiIndicator.calculate(closes, properties.entry().rsiPeriod());
+        boolean passed = request.optionType() == OptionType.CE
+                ? rsi.compareTo(properties.entry().rsiCeBuyThreshold()) > 0
+                : rsi.compareTo(properties.entry().rsiPeSellThreshold()) < 0;
+        log.debug("RSI gate: optionType={}, rsi={}, threshold={}, passed={}",
+                request.optionType(), rsi.setScale(2, java.math.RoundingMode.HALF_UP),
+                request.optionType() == OptionType.CE
+                        ? properties.entry().rsiCeBuyThreshold()
+                        : properties.entry().rsiPeSellThreshold(),
+                passed);
+        return passed;
     }
 
     private boolean withinEntryWindow(LocalTime marketTime) {

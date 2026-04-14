@@ -48,8 +48,9 @@ class BacktestEngineTest {
                 2026-04-12T03:56:00Z,NFO:NIFTY-MOCK-ATM-CE,ONE_MINUTE,105,107,104,106,5200,1000
                 """);
         RuleBasedOptionsStrategy strategy = new RuleBasedOptionsStrategy(properties, new VwapIndicator(),
-                new VolumeSpikeDetector(), new BreakoutDetector(), new VolatilityFilter(), new OiChangeTracker(),
-                new OptionChainAnalyzer());
+                new com.kiteapioptions.indicator.EmaIndicator(),
+                new VolumeSpikeDetector(), new BreakoutDetector(), new VolatilityFilter(),
+                new OiChangeTracker(), new OptionChainAnalyzer(), null);
         BacktestEngine engine = new BacktestEngine(properties, strategy, new TrailingStopService(properties));
 
         BacktestRunResult result = engine.run();

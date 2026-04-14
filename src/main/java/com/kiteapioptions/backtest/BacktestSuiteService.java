@@ -150,6 +150,8 @@ public class BacktestSuiteService {
                 variantProperties.risk().totalCapital(),
                 variantProperties.risk().maxRiskPerTradePercent(),
                 variantProperties.backtest().lotSize(),
+                variantProperties.entry().rsiFilterEnabled(),
+                variantProperties.exit().maxHoldMinutes(),
                 download.instrumentToken(),
                 download.tradingSymbol(),
                 download.expiry(),
@@ -199,6 +201,8 @@ public class BacktestSuiteService {
                 variantProperties.risk().totalCapital(),
                 variantProperties.risk().maxRiskPerTradePercent(),
                 variantProperties.backtest().lotSize(),
+                variantProperties.entry().rsiFilterEnabled(),
+                variantProperties.exit().maxHoldMinutes(),
                 0L,
                 null,
                 null,
@@ -267,6 +271,7 @@ public class BacktestSuiteService {
                 .append("stopLossPercent,targetPercent,trailingStopActivationPercent,trailingGapPercent,")
                 .append("minSignalScorePercent,volumeSpikeMultiplier,breakoutBufferPercent,breakoutLookback,")
                 .append("volumeLookback,minLiquidityVolume,maxIvPercent,totalCapital,maxRiskPerTradePercent,lotSize,")
+                .append("rsiFilterEnabled,maxHoldMinutes,")
                 .append("totalTrades,winRatePercent,averageWin,averageLoss,expectancy,maxDrawdown,cumulativePnl,")
                 .append("downloadedInputPath,outputDirectory,reportHtml,manifestPath")
                 .append(System.lineSeparator());
@@ -296,6 +301,8 @@ public class BacktestSuiteService {
                     .append(csv(run.totalCapital())).append(',')
                     .append(csv(run.maxRiskPerTradePercent())).append(',')
                     .append(csv(run.lotSize())).append(',')
+                    .append(csv(run.rsiFilterEnabled())).append(',')
+                    .append(csv(run.maxHoldMinutes())).append(',')
                     .append(csv(metric(run, MetricSelector.TOTAL_TRADES))).append(',')
                     .append(csv(metric(run, MetricSelector.WIN_RATE))).append(',')
                     .append(csv(metric(run, MetricSelector.AVERAGE_WIN))).append(',')
@@ -419,7 +426,11 @@ public class BacktestSuiteService {
                         baseEntry.entryStartTime(),
                         firstNonNull(variant.entryCutoffTime(), baseEntry.entryCutoffTime()),
                         baseEntry.allowFirstMinutesEntry(),
-                        baseEntry.noEntryFirstMinutes()
+                        baseEntry.noEntryFirstMinutes(),
+                        firstNonNull(variant.rsiFilterEnabled(), baseEntry.rsiFilterEnabled()),
+                        firstNonNull(variant.rsiPeriod(), baseEntry.rsiPeriod()),
+                        firstNonNull(variant.rsiCeBuyThreshold(), baseEntry.rsiCeBuyThreshold()),
+                        firstNonNull(variant.rsiPeSellThreshold(), baseEntry.rsiPeSellThreshold())
                 ),
                 new TradingProperties.Exit(
                         firstNonNull(variant.stopLossPercent(), baseExit.stopLossPercent()),
@@ -427,7 +438,8 @@ public class BacktestSuiteService {
                         firstNonNull(variant.trailingStopActivationPercent(), baseExit.trailingStopActivationPercent()),
                         firstNonNull(variant.trailingGapPercent(), baseExit.trailingGapPercent()),
                         baseExit.forcedExitTime(),
-                        baseExit.partialProfitBookingEnabled()
+                        baseExit.partialProfitBookingEnabled(),
+                        firstNonNull(variant.maxHoldMinutes(), baseExit.maxHoldMinutes())
                 ),
                 new TradingProperties.Risk(
                         firstNonNull(variant.totalCapital(), baseRisk.totalCapital()),
@@ -489,80 +501,113 @@ public class BacktestSuiteService {
         long liq2x = properties.entry().minLiquidityVolume() * 2;
         return List.of(
                 // --- Baseline ---
-                new SuiteVariant("baseline", null, null, null, null, null, null, null, null, null,
+                variant("baseline", null, null, null, null, null, null, null, null, null,
                         null, null, null, null, null, null),
 
                 // --- Capital variants ---
-                new SuiteVariant("cap-30k-risk-1", null, null, null, null, null, null, null, null, null,
+                variant("cap-30k-risk-1", null, null, null, null, null, null, null, null, null,
                         null, null, BigDecimal.valueOf(30_000), BigDecimal.ONE, null, null),
-                new SuiteVariant("cap-30k-risk-1-5", null, null, null, null, null, null, null, null, null,
+                variant("cap-30k-risk-1-5", null, null, null, null, null, null, null, null, null,
                         null, null, BigDecimal.valueOf(30_000), new BigDecimal("1.5"), null, null),
-                new SuiteVariant("cap-50k-risk-1", null, null, null, null, null, null, null, null, null,
+                variant("cap-50k-risk-1", null, null, null, null, null, null, null, null, null,
                         null, null, BigDecimal.valueOf(50_000), BigDecimal.ONE, null, null),
-                new SuiteVariant("cap-60k-risk-1", null, null, null, null, null, null, null, null, null,
+                variant("cap-60k-risk-1", null, null, null, null, null, null, null, null, null,
                         null, null, BigDecimal.valueOf(60_000), BigDecimal.ONE, null, null),
-                new SuiteVariant("cap-60k-risk-2", null, null, null, null, null, null, null, null, null,
+                variant("cap-60k-risk-2", null, null, null, null, null, null, null, null, null,
                         null, null, BigDecimal.valueOf(60_000), BigDecimal.valueOf(2), null, null),
 
                 // --- Target variants ---
-                new SuiteVariant("target-15", null, BigDecimal.valueOf(15), null, null, null, null, null, null, null,
+                variant("target-15", null, BigDecimal.valueOf(15), null, null, null, null, null, null, null,
                         null, null, null, null, null, null),
-                new SuiteVariant("target-16", null, BigDecimal.valueOf(16), null, null, null, null, null, null, null,
+                variant("target-16", null, BigDecimal.valueOf(16), null, null, null, null, null, null, null,
                         null, null, null, null, null, null),
-                new SuiteVariant("target-18", null, BigDecimal.valueOf(18), null, null, null, null, null, null, null,
+                variant("target-18", null, BigDecimal.valueOf(18), null, null, null, null, null, null, null,
                         null, null, null, null, null, null),
-                new SuiteVariant("target-25", null, BigDecimal.valueOf(25), null, null, null, null, null, null, null,
+                variant("target-25", null, BigDecimal.valueOf(25), null, null, null, null, null, null, null,
                         null, null, null, null, null, null),
 
                 // --- Stop variants ---
-                new SuiteVariant("stop-6-target-12", BigDecimal.valueOf(6), BigDecimal.valueOf(12), null, null, null,
+                variant("stop-6-target-12", BigDecimal.valueOf(6), BigDecimal.valueOf(12), null, null, null,
                         null, null, null, null, null, null, null, null, null, null),
-                new SuiteVariant("stop-8-target-16", BigDecimal.valueOf(8), BigDecimal.valueOf(16), null, null, null,
+                variant("stop-8-target-16", BigDecimal.valueOf(8), BigDecimal.valueOf(16), null, null, null,
                         null, null, null, null, null, null, null, null, null, null),
-                new SuiteVariant("stop-12-target-24", BigDecimal.valueOf(12), BigDecimal.valueOf(24), null, null, null,
+                variant("stop-12-target-24", BigDecimal.valueOf(12), BigDecimal.valueOf(24), null, null, null,
                         null, null, null, null, null, null, null, null, null, null),
 
                 // --- Trailing stop variants ---
-                new SuiteVariant("trail-act-10-gap-5", null, null, BigDecimal.valueOf(10), BigDecimal.valueOf(5),
+                variant("trail-act-10-gap-5", null, null, BigDecimal.valueOf(10), BigDecimal.valueOf(5),
                         null, null, null, null, null, null, null, null, null, null, null),
-                new SuiteVariant("trail-act-15-gap-7", null, null, BigDecimal.valueOf(15), BigDecimal.valueOf(7),
+                variant("trail-act-15-gap-7", null, null, BigDecimal.valueOf(15), BigDecimal.valueOf(7),
                         null, null, null, null, null, null, null, null, null, null, null),
 
                 // --- Signal score variants ---
-                new SuiteVariant("score-75", null, null, null, null, BigDecimal.valueOf(75), null, null, null, null,
+                variant("score-75", null, null, null, null, BigDecimal.valueOf(75), null, null, null, null,
                         null, null, null, null, null, null),
-                new SuiteVariant("score-80", null, null, null, null, BigDecimal.valueOf(80), null, null, null, null,
+                variant("score-80", null, null, null, null, BigDecimal.valueOf(80), null, null, null, null,
                         null, null, null, null, null, null),
 
                 // --- Breakout filter variants ---
-                new SuiteVariant("breakout-strict", null, null, null, null, null, new BigDecimal("1.5"),
+                variant("breakout-strict", null, null, null, null, null, new BigDecimal("1.5"),
                         new BigDecimal("0.10"), 7, 7, null, null, null, null, null, null),
-                new SuiteVariant("breakout-loose", null, null, null, null, null, new BigDecimal("1.1"),
+                variant("breakout-loose", null, null, null, null, null, new BigDecimal("1.1"),
                         new BigDecimal("0.03"), 3, 3, null, null, null, null, null, null),
 
                 // --- Liquidity variants ---
-                new SuiteVariant("liquidity-2x", null, null, null, null, null, null, null, null, null,
+                variant("liquidity-2x", null, null, null, null, null, null, null, null, null,
                         liq2x, null, null, null, null, null),
 
                 // --- Entry cutoff variants ---
-                new SuiteVariant("cutoff-1400", null, null, null, null, null, null, null, null, null,
+                variant("cutoff-1400", null, null, null, null, null, null, null, null, null,
                         null, null, null, null, null, LocalTime.of(14, 0)),
-                new SuiteVariant("cutoff-1330", null, null, null, null, null, null, null, null, null,
+                variant("cutoff-1330", null, null, null, null, null, null, null, null, null,
                         null, null, null, null, null, LocalTime.of(13, 30)),
 
                 // --- Best combos from suite analysis (cap-60k + tuned params) ---
-                new SuiteVariant("cap-60k-target-18", null, BigDecimal.valueOf(18), null, null, null,
+                variant("cap-60k-target-18", null, BigDecimal.valueOf(18), null, null, null,
                         null, null, null, null, null, null, BigDecimal.valueOf(60_000), BigDecimal.ONE, null, null),
-                new SuiteVariant("cap-60k-target-20-score-75", null, BigDecimal.valueOf(20), null, null,
+                variant("cap-60k-target-20-score-75", null, BigDecimal.valueOf(20), null, null,
                         BigDecimal.valueOf(75), null, null, null, null, null, null,
                         BigDecimal.valueOf(60_000), BigDecimal.ONE, null, null),
-                new SuiteVariant("cap-60k-stop-8-target-16", BigDecimal.valueOf(8), BigDecimal.valueOf(16), null, null,
+                variant("cap-60k-stop-8-target-16", BigDecimal.valueOf(8), BigDecimal.valueOf(16), null, null,
                         null, null, null, null, null, null, null,
                         BigDecimal.valueOf(60_000), BigDecimal.ONE, null, null),
-                new SuiteVariant("cap-60k-trail-act-10-gap-5", null, null, BigDecimal.valueOf(10), BigDecimal.valueOf(5),
+                variant("cap-60k-trail-act-10-gap-5", null, null, BigDecimal.valueOf(10), BigDecimal.valueOf(5),
                         null, null, null, null, null, null, null,
-                        BigDecimal.valueOf(60_000), BigDecimal.ONE, null, null)
+                        BigDecimal.valueOf(60_000), BigDecimal.ONE, null, null),
+                new SuiteVariant("cap-60k-rsi-on", null, null, null, null, null, null, null, null, null,
+                        null, null, BigDecimal.valueOf(60_000), BigDecimal.ONE, null, null,
+                        true, 14, BigDecimal.valueOf(55), BigDecimal.valueOf(45), null),
+                new SuiteVariant("cap-60k-hold-60", null, null, null, null, null, null, null, null, null,
+                        null, null, BigDecimal.valueOf(60_000), BigDecimal.ONE, null, null,
+                        null, null, null, null, 60),
+                new SuiteVariant("cap-60k-rsi-hold-60", null, null, null, null, null, null, null, null, null,
+                        null, null, BigDecimal.valueOf(60_000), BigDecimal.ONE, null, null,
+                        true, 14, BigDecimal.valueOf(55), BigDecimal.valueOf(45), 60)
         );
+    }
+
+    private SuiteVariant variant(
+            String name,
+            BigDecimal stopLossPercent,
+            BigDecimal targetPercent,
+            BigDecimal trailingStopActivationPercent,
+            BigDecimal trailingGapPercent,
+            BigDecimal minSignalScorePercent,
+            BigDecimal volumeSpikeMultiplier,
+            BigDecimal breakoutBufferPercent,
+            Integer breakoutLookback,
+            Integer volumeLookback,
+            Long minLiquidityVolume,
+            BigDecimal maxIvPercent,
+            BigDecimal totalCapital,
+            BigDecimal maxRiskPerTradePercent,
+            Integer lotSize,
+            LocalTime entryCutoffTime
+    ) {
+        return new SuiteVariant(name, stopLossPercent, targetPercent, trailingStopActivationPercent,
+                trailingGapPercent, minSignalScorePercent, volumeSpikeMultiplier, breakoutBufferPercent,
+                breakoutLookback, volumeLookback, minLiquidityVolume, maxIvPercent, totalCapital,
+                maxRiskPerTradePercent, lotSize, entryCutoffTime, null, null, null, null, null);
     }
 
     private String suiteId(UnderlyingSymbol underlying) {
@@ -672,7 +717,12 @@ public class BacktestSuiteService {
             BigDecimal totalCapital,
             BigDecimal maxRiskPerTradePercent,
             Integer lotSize,
-            LocalTime entryCutoffTime
+            LocalTime entryCutoffTime,
+            Boolean rsiFilterEnabled,
+            Integer rsiPeriod,
+            BigDecimal rsiCeBuyThreshold,
+            BigDecimal rsiPeSellThreshold,
+            Integer maxHoldMinutes
     ) {
         public String slug() {
             String value = name == null || name.isBlank() ? "variant" : name;
@@ -723,6 +773,8 @@ public class BacktestSuiteService {
             BigDecimal totalCapital,
             BigDecimal maxRiskPerTradePercent,
             int lotSize,
+            boolean rsiFilterEnabled,
+            int maxHoldMinutes,
             long instrumentToken,
             String tradingSymbol,
             LocalDate expiry,

@@ -261,6 +261,8 @@ public class BacktestEngine {
                         openTrade.highestPrice(), openTrade.trailingStop()));
                 Optional<String> exitReason = forcedExitDue(activeProperties, candle)
                         ? Optional.of("Configured forced square-off")
+                        : maxHoldExceeded(activeProperties, openTrade, candle)
+                        ? Optional.of("Max hold time exceeded")
                         : exitReason(activeProperties, activeTrailingStopService, openTrade, candle);
                 if (exitReason.isPresent()) {
                     log.info("Backtest trade closed: instrument={}, entryTime={}, exitTime={}, exitPrice={}, reason={}",
@@ -407,6 +409,14 @@ public class BacktestEngine {
         return !marketTime.isBefore(activeProperties.exit().forcedExitTime());
     }
 
+    private boolean maxHoldExceeded(TradingProperties activeProperties, OpenTrade openTrade, Candle candle) {
+        int maxHold = activeProperties.exit().maxHoldMinutes();
+        if (maxHold <= 0) {
+            return false;
+        }
+        return java.time.Duration.between(openTrade.entryTime(), candle.timestamp()).toMinutes() >= maxHold;
+    }
+
     private int lookback(TradingProperties activeProperties) {
         return Math.max(activeProperties.entry().breakoutLookback(), activeProperties.entry().volumeLookback());
     }
@@ -486,10 +496,14 @@ public class BacktestEngine {
     }
 
     private RuleBasedOptionsStrategy strategyFor(TradingProperties activeProperties) {
-        return new RuleBasedOptionsStrategy(activeProperties, new com.kiteapioptions.indicator.VwapIndicator(),
-                new com.kiteapioptions.indicator.EmaIndicator(), new com.kiteapioptions.indicator.VolumeSpikeDetector(),
-                new com.kiteapioptions.indicator.BreakoutDetector(), new com.kiteapioptions.indicator.VolatilityFilter(),
-                new com.kiteapioptions.indicator.OiChangeTracker(), new com.kiteapioptions.strategy.OptionChainAnalyzer(),
+        return new RuleBasedOptionsStrategy(activeProperties,
+                new com.kiteapioptions.indicator.VwapIndicator(),
+                new com.kiteapioptions.indicator.EmaIndicator(),
+                new com.kiteapioptions.indicator.VolumeSpikeDetector(),
+                new com.kiteapioptions.indicator.BreakoutDetector(),
+                new com.kiteapioptions.indicator.VolatilityFilter(),
+                new com.kiteapioptions.indicator.OiChangeTracker(),
+                new com.kiteapioptions.strategy.OptionChainAnalyzer(),
                 null);
     }
 
