@@ -341,17 +341,20 @@ public class AlgoTradingScheduler {
             }
 
             List<Candle> underlyingCandles = candles(underlyingHistoricalKey(underlying), properties.entry().timeframe());
+            List<Candle> trendUnderlyingCandles = trendCandles(underlying);
             List<Candle> optionCandles = candles(historicalKey(selectedInstrument), properties.entry().timeframe());
-            if (underlyingCandles.isEmpty() || optionCandles.isEmpty()) {
-                log.warn("Strategy evaluation skipped: missing candles, underlying={}, instrument={}, underlyingCandles={}, optionCandles={}",
-                        underlying, selectedInstrument.instrumentKey(), underlyingCandles.size(), optionCandles.size());
+            if (underlyingCandles.isEmpty() || trendUnderlyingCandles.isEmpty() || optionCandles.isEmpty()) {
+                log.warn("Strategy evaluation skipped: missing candles, underlying={}, instrument={}, underlyingCandles={}, trendUnderlyingCandles={}, optionCandles={}",
+                        underlying, selectedInstrument.instrumentKey(), underlyingCandles.size(),
+                        trendUnderlyingCandles.size(), optionCandles.size());
                 continue;
             }
             if (!freshQuote(context.spotQuote()) || !freshQuote(selectedQuote)
-                    || !freshCandles(underlyingCandles) || !freshCandles(optionCandles)) {
-                log.warn("Strategy evaluation skipped: stale market data, underlying={}, instrument={}, spotQuoteTime={}, optionQuoteTime={}, latestUnderlyingCandleTime={}, latestOptionCandleTime={}, threshold={}",
+                    || !freshCandles(underlyingCandles) || !freshCandles(trendUnderlyingCandles) || !freshCandles(optionCandles)) {
+                log.warn("Strategy evaluation skipped: stale market data, underlying={}, instrument={}, spotQuoteTime={}, optionQuoteTime={}, latestUnderlyingCandleTime={}, latestTrendCandleTime={}, latestOptionCandleTime={}, threshold={}",
                         underlying, selectedInstrument.instrumentKey(), context.spotQuote().timestamp(),
                         selectedQuote.timestamp(), latestCandleTimestamp(underlyingCandles).orElse(null),
+                        latestCandleTimestamp(trendUnderlyingCandles).orElse(null),
                         latestCandleTimestamp(optionCandles).orElse(null), properties.safety().staleMarketDataThreshold());
                 continue;
             }
@@ -361,6 +364,7 @@ public class AlgoTradingScheduler {
                     marketTime,
                     underlying,
                     underlyingCandles,
+                    trendUnderlyingCandles,
                     optionCandles,
                     context.optionChainSnapshot(),
                     selectedInstrument.instrumentKey(),
@@ -413,6 +417,14 @@ public class AlgoTradingScheduler {
                     instrumentKey, timeframe, ex.getMessage());
             return List.of();
         }
+    }
+
+    private List<Candle> trendCandles(UnderlyingSymbol underlying) {
+        Timeframe trendTimeframe = properties.entry().trendTimeframe();
+        if (!properties.entry().trendFilterEnabled() || trendTimeframe == properties.entry().timeframe()) {
+            return candles(underlyingHistoricalKey(underlying), properties.entry().timeframe());
+        }
+        return candles(underlyingHistoricalKey(underlying), trendTimeframe);
     }
 
     private boolean freshQuote(Quote quote) {

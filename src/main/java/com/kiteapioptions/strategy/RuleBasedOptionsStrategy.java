@@ -99,27 +99,32 @@ public class RuleBasedOptionsStrategy {
         OptionChainAnalysis chain = optionChainAnalyzer.analyze(request.optionChainSnapshot(),
                 properties.strike().nearbyStrikes());
         BigDecimal underlyingPrice = request.underlyingCandles().getLast().close();
-        BigDecimal trendReference = trendReference(request.underlyingCandles());
+        List<Candle> trendCandles = trendCandles(request);
+        BigDecimal trendReference = trendReference(trendCandles);
         boolean vwapPassed = !properties.entry().vwapFilterEnabled()
                 || vwapConditionPassed(request.optionType(), underlyingPrice, trendReference);
         boolean breakoutPassed = breakoutPassed(request, chain);
         boolean volumeSpike = volumeSpikeDetector.hasSpike(request.selectedOptionCandles(),
                 properties.entry().volumeLookback(),
                 properties.entry().volumeSpikeMultiplier());
-        boolean oiPassed = oiConditionPassed(request, chain);
+        OiEvaluation oiEvaluation = oiEvaluation(request, chain);
+        boolean oiPassed = oiEvaluation.passed();
         boolean ivPassed = volatilityFilter.isAcceptable(request.selectedOptionQuote().impliedVolatility(),
                 properties.entry().maxIvPercent());
         boolean liquidityPassed = request.selectedOptionQuote().volume() >= properties.entry().minLiquidityVolume();
         boolean timePassed = withinEntryWindow(request.marketTime());
         boolean rsiPassed = rsiConditionPassed(request);
         BigDecimal confidenceScore = confidenceScore(vwapPassed, breakoutPassed, volumeSpike, oiPassed,
-                ivPassed, liquidityPassed);
+                ivPassed, liquidityPassed, rsiPassed);
 
         List<String> reasons = new ArrayList<>();
         addReason(reasons, vwapPassed, "Trend condition passed", "Trend condition failed");
         addReason(reasons, breakoutPassed, "Breakout condition passed", "Breakout condition failed");
         addReason(reasons, volumeSpike, "Volume spike confirmed", "Volume spike missing");
         addReason(reasons, oiPassed, "OI behavior supports entry", "OI behavior does not support entry");
+        reasons.add("OI detail: priceOiBuildUp=" + oiEvaluation.priceOiBuildUp()
+                + ", chainBuildUp=" + oiEvaluation.chainBuildUp()
+                + ", imbalanceSupports=" + oiEvaluation.imbalanceSupports());
         addReason(reasons, ivPassed, "IV filter passed", "IV filter failed");
         addReason(reasons, liquidityPassed, "Liquidity filter passed", "Liquidity filter failed");
         addReason(reasons, timePassed, "Entry time window passed", "Entry time window failed");
@@ -171,7 +176,7 @@ public class RuleBasedOptionsStrategy {
                 properties.entry().breakoutLookback(), buffer);
     }
 
-    private boolean oiConditionPassed(StrategyEvaluationRequest request, OptionChainAnalysis chain) {
+    private OiEvaluation oiEvaluation(StrategyEvaluationRequest request, OptionChainAnalysis chain) {
         boolean priceOiBuildUp = request.previousSelectedOptionQuote()
                 .map(previous -> request.optionType() == OptionType.CE
                         ? oiChangeTracker.priceAndOiRising(previous, request.selectedOptionQuote())
@@ -183,7 +188,7 @@ public class RuleBasedOptionsStrategy {
         boolean imbalanceSupports = request.optionType() == OptionType.CE
                 ? chain.nearbyPutCallOiImbalance().compareTo(properties.entry().bullishImbalanceThreshold()) >= 0
                 : chain.nearbyPutCallOiImbalance().compareTo(properties.entry().bearishImbalanceThreshold()) <= 0;
-        return priceOiBuildUp || chainBuildUp || imbalanceSupports;
+        return new OiEvaluation(priceOiBuildUp, chainBuildUp, imbalanceSupports);
     }
 
     private boolean vwapConditionPassed(OptionType optionType, BigDecimal price, BigDecimal vwap) {
@@ -194,6 +199,12 @@ public class RuleBasedOptionsStrategy {
     private boolean sideFilterPassed(OptionType optionType, boolean vwapPassed, boolean breakoutPassed,
                                      boolean volumeSpike) {
         return vwapPassed && breakoutPassed && volumeSpike;
+    }
+
+    private List<Candle> trendCandles(StrategyEvaluationRequest request) {
+        return properties.entry().trendFilterEnabled()
+                ? request.trendUnderlyingCandles()
+                : request.underlyingCandles();
     }
 
     private BigDecimal trendReference(List<Candle> candles) {
@@ -251,7 +262,8 @@ public class RuleBasedOptionsStrategy {
             boolean volumeSpike,
             boolean oiPassed,
             boolean ivPassed,
-            boolean liquidityPassed
+            boolean liquidityPassed,
+            boolean rsiPassed
     ) {
         int score = 0;
         score += vwapPassed ? 15 : 0;
@@ -260,6 +272,7 @@ public class RuleBasedOptionsStrategy {
         score += oiPassed ? 25 : 0;
         score += liquidityPassed ? 10 : 0;
         score += ivPassed ? 5 : 0;
+        score += properties.entry().rsiFilterEnabled() && rsiPassed ? 10 : 0;
         return BigDecimal.valueOf(score);
     }
 
@@ -287,5 +300,15 @@ public class RuleBasedOptionsStrategy {
         }
         signalCsvRecorder.record(request, decision, chain, vwap, breakoutPassed, oiPassed, ivPassed, liquidityPassed,
                 timePassed);
+    }
+
+    private record OiEvaluation(
+            boolean priceOiBuildUp,
+            boolean chainBuildUp,
+            boolean imbalanceSupports
+    ) {
+        boolean passed() {
+            return priceOiBuildUp || chainBuildUp || imbalanceSupports;
+        }
     }
 }

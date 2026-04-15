@@ -302,10 +302,11 @@ public class BacktestEngine {
         Quote syntheticQuote = new Quote(candle.instrumentKey(), candle.timestamp(), candle.close(),
                 syntheticVolume, candle.openInterest(), Optional.empty(), Optional.empty(), Optional.empty());
         List<Candle> adjustedHistory = hasRealVolume ? history : syntheticVolumeHistory(activeProperties, history);
+        List<Candle> trendHistory = trendHistory(activeProperties, adjustedHistory);
         OptionChainSnapshot neutralChain = neutralOptionChain(activeProperties, underlying, candle);
         StrategyEvaluationRequest request = new StrategyEvaluationRequest(
                 candle.timestamp(), marketTime, underlying,
-                adjustedHistory, adjustedHistory,
+                adjustedHistory, trendHistory, adjustedHistory,
                 neutralChain,
                 candle.instrumentKey(), null,
                 optionType,
@@ -330,6 +331,60 @@ public class BacktestEngine {
                     c.close(), i == latestIndex ? latestVolume : 1L, c.openInterest()));
         }
         return List.copyOf(adjusted);
+    }
+
+    private List<Candle> trendHistory(TradingProperties activeProperties, List<Candle> history) {
+        Timeframe trendTimeframe = activeProperties.entry().trendTimeframe();
+        if (!activeProperties.entry().trendFilterEnabled()
+                || history.isEmpty()
+                || history.getFirst().timeframe() == trendTimeframe) {
+            return history;
+        }
+        return aggregateCandles(history, trendTimeframe);
+    }
+
+    private List<Candle> aggregateCandles(List<Candle> candles, Timeframe targetTimeframe) {
+        List<Candle> aggregated = new ArrayList<>();
+        long targetSeconds = targetTimeframe.duration().toSeconds();
+        String instrumentKey = null;
+        Instant bucketStart = null;
+        BigDecimal open = null;
+        BigDecimal high = null;
+        BigDecimal low = null;
+        BigDecimal close = null;
+        long volume = 0L;
+        long openInterest = 0L;
+
+        for (Candle candle : candles) {
+            long bucketEpoch = (candle.timestamp().getEpochSecond() / targetSeconds) * targetSeconds;
+            Instant currentBucket = Instant.ofEpochSecond(bucketEpoch);
+            if (bucketStart == null || !bucketStart.equals(currentBucket)) {
+                if (bucketStart != null) {
+                    aggregated.add(new Candle(instrumentKey, bucketStart, targetTimeframe, open, high, low, close,
+                            volume, openInterest));
+                }
+                instrumentKey = candle.instrumentKey();
+                bucketStart = currentBucket;
+                open = candle.open();
+                high = candle.high();
+                low = candle.low();
+                close = candle.close();
+                volume = candle.volume();
+                openInterest = candle.openInterest();
+                continue;
+            }
+            high = high.max(candle.high());
+            low = low.min(candle.low());
+            close = candle.close();
+            volume += candle.volume();
+            openInterest = candle.openInterest();
+        }
+
+        if (bucketStart != null) {
+            aggregated.add(new Candle(instrumentKey, bucketStart, targetTimeframe, open, high, low, close, volume,
+                    openInterest));
+        }
+        return List.copyOf(aggregated);
     }
 
     private OptionChainSnapshot neutralOptionChain(TradingProperties activeProperties, UnderlyingSymbol underlying,

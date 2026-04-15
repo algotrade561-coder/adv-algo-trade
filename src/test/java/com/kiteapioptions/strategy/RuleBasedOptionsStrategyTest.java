@@ -64,7 +64,7 @@ class RuleBasedOptionsStrategyTest {
     void blocksPutEntryWhenUnderlyingTrendIsNotBearish() {
         var strategy = strategy();
         var request = new StrategyEvaluationRequest(Instant.parse("2026-04-12T10:00:00Z"), LocalTime.of(10, 0),
-                UnderlyingSymbol.NIFTY, bullishUnderlyingCandles(), optionCandles(), optionChain(),
+                UnderlyingSymbol.NIFTY, bullishUnderlyingCandles(), bullishUnderlyingCandles(), optionCandles(), optionChain(),
                 "NFO:NIFTY24APR24000PE", BigDecimal.valueOf(24_000), OptionType.PE, selectedQuote(140, 20_000,
                 130_000, 20), Optional.of(selectedQuote(120, 10_000, 100_000, 20)));
 
@@ -84,7 +84,7 @@ class RuleBasedOptionsStrategyTest {
 
     private StrategyEvaluationRequest bullishRequest(LocalTime marketTime, Quote selectedQuote) {
         return new StrategyEvaluationRequest(Instant.parse("2026-04-12T10:00:00Z"), marketTime,
-                UnderlyingSymbol.NIFTY, bullishUnderlyingCandles(), optionCandles(), optionChain(),
+                UnderlyingSymbol.NIFTY, bullishUnderlyingCandles(), bullishUnderlyingCandles(), optionCandles(), optionChain(),
                 "NFO:NIFTY24APR24000CE", BigDecimal.valueOf(24_000), OptionType.CE, selectedQuote,
                 Optional.of(selectedQuote(120, 10_000, 100_000, 20)));
     }

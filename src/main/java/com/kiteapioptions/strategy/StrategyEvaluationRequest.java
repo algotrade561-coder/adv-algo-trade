@@ -19,6 +19,7 @@ public record StrategyEvaluationRequest(
         LocalTime marketTime,
         UnderlyingSymbol underlying,
         List<Candle> underlyingCandles,
+        List<Candle> trendUnderlyingCandles,
         List<Candle> selectedOptionCandles,
         OptionChainSnapshot optionChainSnapshot,
         String selectedInstrumentKey,
@@ -29,6 +30,7 @@ public record StrategyEvaluationRequest(
 ) {
     public StrategyEvaluationRequest {
         underlyingCandles = List.copyOf(underlyingCandles == null ? List.of() : underlyingCandles);
+        trendUnderlyingCandles = List.copyOf(trendUnderlyingCandles == null ? underlyingCandles : trendUnderlyingCandles);
         selectedOptionCandles = List.copyOf(selectedOptionCandles == null ? List.of() : selectedOptionCandles);
         previousSelectedOptionQuote = previousSelectedOptionQuote == null ? Optional.empty() : previousSelectedOptionQuote;
     }
