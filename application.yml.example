@@ -51,15 +51,15 @@ trading:
     rsi-ce-buy-threshold: 55
     rsi-pe-sell-threshold: 45
   exit:
-    stop-loss-percent: 10
-    target-percent: 20
+    stop-loss-percent: 12
+    target-percent: 24
     trailing-stop-activation-percent: 12
     trailing-gap-percent: 6
     forced-exit-time: "15:15"
     partial-profit-booking-enabled: false
     max-hold-minutes: 0
   risk:
-    total-capital: 300000
+    total-capital: 60000
     max-risk-per-trade-percent: 1
     max-daily-loss-percent: 3
     max-trades-per-day: 6
@@ -90,8 +90,8 @@ trading:
     from: 2025-01-01
     to: 2025-01-31
     candle-timeframe: ONE_MINUTE
-    csv-import-path: backtest/input.csv
-    output-directory: backtest/results
+    csv-import-path: C:/data/backtest/imports/input.csv
+    output-directory: C:/data/backtest/results
     mock-instrument-key: NFO:NIFTY-MOCK-ATM-CE
     mock-candle-count: 180
     lot-size: 65

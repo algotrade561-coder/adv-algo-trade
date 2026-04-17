@@ -16,6 +16,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDate;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -218,15 +219,16 @@ public class BacktestController {
     }
 
     /**
-     * Single endpoint: downloads option candle data for all requested option types and timeframes,
-     * then immediately runs the full variant suite. No separate download step needed.
+     * Single endpoint: prepares option candle data for all requested option types and timeframes,
+     * then immediately runs the full variant suite. Local Global Datafeeds imports are used first,
+     * with Zerodha download as a fallback. No separate trigger is needed.
      *
      * Minimal example (uses all defaults — NIFTY, CE+PE, 1-min+5-min, today's ATM, all default variants):
-     * POST /backtest/download-and-run-suite
+     * POST /backtest/analyze-variants
      * {}
      *
      * Full example with explicit option selection:
-     * POST /backtest/download-and-run-suite
+     * POST /backtest/analyze-variants
      * {
      *   "underlying": "NIFTY",
      *   "optionTypes": ["CE", "PE"],
@@ -241,34 +243,203 @@ public class BacktestController {
      *   "underlyingPrice": 23850
      * }
      */
-    @PostMapping("/backtest/download-and-run-suite")
+    @PostMapping({"/backtest/analyze-variants", "/backtest/download-and-run-suite"})
     public ResponseEntity<?> downloadAndRunSuite(
             @RequestBody(required = false) BacktestSuiteService.SuiteRequest request) {
         BacktestSuiteService.SuiteRequest effectiveRequest = request == null
                 ? new BacktestSuiteService.SuiteRequest(null, null, null, null, null, null, null, null, null)
                 : request;
-        log.info("Backtest download-and-run-suite called: underlying={}, to={}, optionTypes={}, timeframes={}",
+        log.info("Backtest analyze-variants called: underlying={}, to={}, optionTypes={}, timeframes={}",
                 effectiveRequest.underlying(), effectiveRequest.to(),
                 effectiveRequest.optionTypes(), effectiveRequest.timeframes());
         try {
             BacktestSuiteService.SuiteResult result = suiteService.run(effectiveRequest);
-            log.info("Backtest download-and-run-suite completed: suiteId={}, runs={}",
+            log.info("Backtest analyze-variants completed: suiteId={}, runs={}",
                     result.suiteId(), result.runs().size());
             return ResponseEntity.ok(result);
         } catch (IllegalStateException ex) {
-            log.warn("Backtest download-and-run-suite rejected: {}", ex.getMessage());
+            log.warn("Backtest analyze-variants rejected: {}", ex.getMessage());
             return ResponseEntity.badRequest()
                     .body(Map.of("status", "error", "message", ex.getMessage()));
         } catch (IllegalArgumentException ex) {
-            log.warn("Backtest download-and-run-suite rejected: {}", ex.getMessage());
+            log.warn("Backtest analyze-variants rejected: {}", ex.getMessage());
             return ResponseEntity.badRequest()
                     .body(Map.of("status", "error", "message", ex.getMessage()));
         } catch (IOException ex) {
-            log.warn("Backtest download-and-run-suite failed: {}", ex.getMessage());
+            log.warn("Backtest analyze-variants failed: {}", ex.getMessage());
             return ResponseEntity.internalServerError()
                     .body(Map.of("status", "error", "message", ex.getMessage()));
         } catch (RuntimeException ex) {
-            log.warn("Backtest download-and-run-suite failed: {}", ex.getMessage());
+            log.warn("Backtest analyze-variants failed: {}", ex.getMessage());
+            return ResponseEntity.internalServerError()
+                    .body(Map.of("status", "error", "message", ex.getMessage()));
+        }
+    }
+
+    @PostMapping("/backtest/analyze-quick")
+    public ResponseEntity<?> analyzeQuick(
+            @RequestBody(required = false) BacktestSuiteService.SuiteRequest request) {
+        BacktestSuiteService.SuiteRequest baseRequest = request == null
+                ? new BacktestSuiteService.SuiteRequest(null, null, null, null, null, null, null, null, null)
+                : request;
+        BacktestSuiteService.SuiteRequest effectiveRequest = new BacktestSuiteService.SuiteRequest(
+                baseRequest.underlying(),
+                baseRequest.to(),
+                baseRequest.windows(),
+                baseRequest.optionTypes(),
+                baseRequest.timeframes(),
+                List.of(new BacktestSuiteService.SuiteVariant("baseline", null, null, null, null, null, null, null,
+                        null, null, null, null, null, null, null, null, null, null, null, null, null)),
+                baseRequest.expiry(),
+                baseRequest.strike(),
+                baseRequest.underlyingPrice()
+        );
+        log.info("Backtest analyze-quick called: underlying={}, to={}, windows={}, optionTypes={}, timeframes={}",
+                effectiveRequest.underlying(), effectiveRequest.to(), effectiveRequest.windows(),
+                effectiveRequest.optionTypes(), effectiveRequest.timeframes());
+        try {
+            BacktestSuiteService.SuiteResult result = suiteService.run(effectiveRequest);
+            log.info("Backtest analyze-quick completed: suiteId={}, runs={}",
+                    result.suiteId(), result.runs().size());
+            return ResponseEntity.ok(result);
+        } catch (IllegalStateException ex) {
+            log.warn("Backtest analyze-quick rejected: {}", ex.getMessage());
+            return ResponseEntity.badRequest()
+                    .body(Map.of("status", "error", "message", ex.getMessage()));
+        } catch (IllegalArgumentException ex) {
+            log.warn("Backtest analyze-quick rejected: {}", ex.getMessage());
+            return ResponseEntity.badRequest()
+                    .body(Map.of("status", "error", "message", ex.getMessage()));
+        } catch (IOException ex) {
+            log.warn("Backtest analyze-quick failed: {}", ex.getMessage());
+            return ResponseEntity.internalServerError()
+                    .body(Map.of("status", "error", "message", ex.getMessage()));
+        } catch (RuntimeException ex) {
+            log.warn("Backtest analyze-quick failed: {}", ex.getMessage());
+            return ResponseEntity.internalServerError()
+                    .body(Map.of("status", "error", "message", ex.getMessage()));
+        }
+    }
+
+    @PostMapping("/backtest/analyze-pruned")
+    public ResponseEntity<?> analyzePruned(
+            @RequestBody(required = false) BacktestSuiteService.SuiteRequest request) {
+        BacktestSuiteService.SuiteRequest baseRequest = request == null
+                ? new BacktestSuiteService.SuiteRequest(null, null, null, null, null, null, null, null, null)
+                : request;
+        BacktestSuiteService.SuiteRequest effectiveRequest = new BacktestSuiteService.SuiteRequest(
+                baseRequest.underlying(),
+                baseRequest.to(),
+                baseRequest.windows(),
+                baseRequest.optionTypes(),
+                baseRequest.timeframes(),
+                suiteService.recommendedPrunedVariants(),
+                baseRequest.expiry(),
+                baseRequest.strike(),
+                baseRequest.underlyingPrice()
+        );
+        log.info("Backtest analyze-pruned called: underlying={}, to={}, windows={}, optionTypes={}, timeframes={}, variants={}",
+                effectiveRequest.underlying(), effectiveRequest.to(), effectiveRequest.windows(),
+                effectiveRequest.optionTypes(), effectiveRequest.timeframes(), effectiveRequest.variants().size());
+        try {
+            BacktestSuiteService.SuiteResult result = suiteService.run(effectiveRequest);
+            log.info("Backtest analyze-pruned completed: suiteId={}, runs={}",
+                    result.suiteId(), result.runs().size());
+            return ResponseEntity.ok(result);
+        } catch (IllegalStateException ex) {
+            log.warn("Backtest analyze-pruned rejected: {}", ex.getMessage());
+            return ResponseEntity.badRequest()
+                    .body(Map.of("status", "error", "message", ex.getMessage()));
+        } catch (IllegalArgumentException ex) {
+            log.warn("Backtest analyze-pruned rejected: {}", ex.getMessage());
+            return ResponseEntity.badRequest()
+                    .body(Map.of("status", "error", "message", ex.getMessage()));
+        } catch (IOException ex) {
+            log.warn("Backtest analyze-pruned failed: {}", ex.getMessage());
+            return ResponseEntity.internalServerError()
+                    .body(Map.of("status", "error", "message", ex.getMessage()));
+        } catch (RuntimeException ex) {
+            log.warn("Backtest analyze-pruned failed: {}", ex.getMessage());
+            return ResponseEntity.internalServerError()
+                    .body(Map.of("status", "error", "message", ex.getMessage()));
+        }
+    }
+
+    @PostMapping("/backtest/analyze-pruned-120k")
+    public ResponseEntity<?> analyzePruned120k(
+            @RequestBody(required = false) BacktestSuiteService.SuiteRequest request) {
+        BacktestSuiteService.SuiteRequest baseRequest = request == null
+                ? new BacktestSuiteService.SuiteRequest(null, null, null, null, null, null, null, null, null)
+                : request;
+        BacktestSuiteService.SuiteRequest effectiveRequest = new BacktestSuiteService.SuiteRequest(
+                baseRequest.underlying(),
+                baseRequest.to(),
+                baseRequest.windows(),
+                baseRequest.optionTypes(),
+                baseRequest.timeframes(),
+                suiteService.recommendedPruned120kVariants(),
+                baseRequest.expiry(),
+                baseRequest.strike(),
+                baseRequest.underlyingPrice()
+        );
+        log.info("Backtest analyze-pruned-120k called: underlying={}, to={}, windows={}, optionTypes={}, timeframes={}, variants={}",
+                effectiveRequest.underlying(), effectiveRequest.to(), effectiveRequest.windows(),
+                effectiveRequest.optionTypes(), effectiveRequest.timeframes(), effectiveRequest.variants().size());
+        try {
+            BacktestSuiteService.SuiteResult result = suiteService.run(effectiveRequest);
+            log.info("Backtest analyze-pruned-120k completed: suiteId={}, runs={}",
+                    result.suiteId(), result.runs().size());
+            return ResponseEntity.ok(result);
+        } catch (IllegalStateException ex) {
+            log.warn("Backtest analyze-pruned-120k rejected: {}", ex.getMessage());
+            return ResponseEntity.badRequest()
+                    .body(Map.of("status", "error", "message", ex.getMessage()));
+        } catch (IllegalArgumentException ex) {
+            log.warn("Backtest analyze-pruned-120k rejected: {}", ex.getMessage());
+            return ResponseEntity.badRequest()
+                    .body(Map.of("status", "error", "message", ex.getMessage()));
+        } catch (IOException ex) {
+            log.warn("Backtest analyze-pruned-120k failed: {}", ex.getMessage());
+            return ResponseEntity.internalServerError()
+                    .body(Map.of("status", "error", "message", ex.getMessage()));
+        } catch (RuntimeException ex) {
+            log.warn("Backtest analyze-pruned-120k failed: {}", ex.getMessage());
+            return ResponseEntity.internalServerError()
+                    .body(Map.of("status", "error", "message", ex.getMessage()));
+        }
+    }
+
+    @PostMapping({"/backtest/analyze-weekend-intensive", "/backtest/analyze-everything"})
+    public ResponseEntity<?> analyzeWeekendIntensive(
+            @RequestBody(required = false) BacktestSuiteService.SuiteRequest request) {
+        BacktestSuiteService.SuiteRequest effectiveRequest = suiteService.weekendIntensiveRequest(request);
+        int totalRuns = effectiveRequest.windows().size()
+                * effectiveRequest.variants().size()
+                * effectiveRequest.optionTypes().size()
+                * effectiveRequest.timeframes().size();
+        log.info("Backtest analyze-weekend-intensive called: underlying={}, to={}, windows={}, variants={}, optionTypes={}, timeframes={}, totalRuns={}",
+                effectiveRequest.underlying(), effectiveRequest.to(), effectiveRequest.windows().size(),
+                effectiveRequest.variants().size(), effectiveRequest.optionTypes(), effectiveRequest.timeframes(),
+                totalRuns);
+        try {
+            BacktestSuiteService.SuiteResult result = suiteService.run(effectiveRequest);
+            log.info("Backtest analyze-weekend-intensive completed: suiteId={}, runs={}",
+                    result.suiteId(), result.runs().size());
+            return ResponseEntity.ok(result);
+        } catch (IllegalStateException ex) {
+            log.warn("Backtest analyze-weekend-intensive rejected: {}", ex.getMessage());
+            return ResponseEntity.badRequest()
+                    .body(Map.of("status", "error", "message", ex.getMessage()));
+        } catch (IllegalArgumentException ex) {
+            log.warn("Backtest analyze-weekend-intensive rejected: {}", ex.getMessage());
+            return ResponseEntity.badRequest()
+                    .body(Map.of("status", "error", "message", ex.getMessage()));
+        } catch (IOException ex) {
+            log.warn("Backtest analyze-weekend-intensive failed: {}", ex.getMessage());
+            return ResponseEntity.internalServerError()
+                    .body(Map.of("status", "error", "message", ex.getMessage()));
+        } catch (RuntimeException ex) {
+            log.warn("Backtest analyze-weekend-intensive failed: {}", ex.getMessage());
             return ResponseEntity.internalServerError()
                     .body(Map.of("status", "error", "message", ex.getMessage()));
         }

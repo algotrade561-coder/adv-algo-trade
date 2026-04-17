@@ -21,6 +21,7 @@ import com.kiteapioptions.persistence.StrategyDecisionRepository;
 import com.kiteapioptions.strategy.RuleBasedOptionsStrategy;
 import com.kiteapioptions.strategy.StrategyEvaluationRequest;
 import java.math.BigDecimal;
+import java.math.MathContext;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalTime;
@@ -46,6 +47,7 @@ import org.springframework.stereotype.Service;
 public class AlgoTradingScheduler {
 
     private static final Logger log = LoggerFactory.getLogger(AlgoTradingScheduler.class);
+    private static final MathContext MATH_CONTEXT = MathContext.DECIMAL64;
 
     private final TradingProperties properties;
     private final TradingStateService tradingStateService;
@@ -191,7 +193,7 @@ public class AlgoTradingScheduler {
             return Optional.empty();
         }
 
-        Map<OptionType, Instrument> selectedOptions = selectedOptions(options, underlyingPrice);
+        Map<OptionType, Instrument> selectedOptions = selectedOptions(options, underlyingPrice, optionQuotes);
         if (selectedOptions.isEmpty()) {
             log.warn("Algo scan skipped underlying: no selected option instruments, underlying={}, expiry={}",
                     underlying, expiry.get());
@@ -243,7 +245,8 @@ public class AlgoTradingScheduler {
         return strikes.subList(start, end);
     }
 
-    private Map<OptionType, Instrument> selectedOptions(List<Instrument> options, BigDecimal underlyingPrice) {
+    private Map<OptionType, Instrument> selectedOptions(List<Instrument> options, BigDecimal underlyingPrice,
+                                                        Map<String, Quote> quotes) {
         List<BigDecimal> strikes = options.stream()
                 .flatMap(instrument -> instrument.strike().stream())
                 .distinct()
@@ -254,14 +257,77 @@ public class AlgoTradingScheduler {
         }
 
         Map<OptionType, Instrument> selected = new EnumMap<>(OptionType.class);
-        selected.put(OptionType.CE, findOption(options, selectedStrikeFor(OptionType.CE, strikes, underlyingPrice), OptionType.CE).orElse(null));
-        selected.put(OptionType.PE, findOption(options, selectedStrikeFor(OptionType.PE, strikes, underlyingPrice), OptionType.PE).orElse(null));
+        selected.put(OptionType.CE, selectedAffordableOption(options, strikes, underlyingPrice, OptionType.CE,
+                quotes).orElse(null));
+        selected.put(OptionType.PE, selectedAffordableOption(options, strikes, underlyingPrice, OptionType.PE,
+                quotes).orElse(null));
         selected.values().removeIf(java.util.Objects::isNull);
         selected.forEach((optionType, instrument) -> log.info(
                 "Selected option: optionType={}, instrument={}, token={}, parsedStrike={}, expiry={}, underlyingPrice={}",
                 optionType, instrument.instrumentKey(), instrument.instrumentToken(),
                 instrument.strike().orElse(null), instrument.expiry().orElse(null), underlyingPrice));
         return Map.copyOf(selected);
+    }
+
+    private Optional<Instrument> selectedAffordableOption(List<Instrument> options, List<BigDecimal> strikes,
+                                                          BigDecimal underlyingPrice, OptionType optionType,
+                                                          Map<String, Quote> quotes) {
+        BigDecimal maxPremium = maxTradablePremium();
+        List<BigDecimal> candidateStrikes = candidateStrikes(optionType, strikes, underlyingPrice);
+        for (BigDecimal strike : candidateStrikes) {
+            Optional<Instrument> instrument = findOption(options, strike, optionType);
+            if (instrument.isEmpty()) {
+                continue;
+            }
+            Quote quote = quotes.get(instrument.get().instrumentKey());
+            if (quote == null || quote.lastPrice() == null || quote.lastPrice().signum() <= 0) {
+                log.info("Option selection skipped: missing/invalid quote, optionType={}, instrument={}, strike={}",
+                        optionType, instrument.get().instrumentKey(), strike);
+                continue;
+            }
+            if (quote.lastPrice().compareTo(maxPremium) <= 0) {
+                log.info("Risk-budget option selected: optionType={}, instrument={}, strike={}, premium={}, maxPremium={}",
+                        optionType, instrument.get().instrumentKey(), strike, quote.lastPrice(), maxPremium);
+                return instrument;
+            }
+            log.info("Option selection rejected by premium budget: optionType={}, instrument={}, strike={}, premium={}, maxPremium={}",
+                    optionType, instrument.get().instrumentKey(), strike, quote.lastPrice(), maxPremium);
+        }
+        log.warn("No option fits risk-budget premium: optionType={}, maxPremium={}, candidateStrikes={}",
+                optionType, maxPremium, candidateStrikes);
+        return Optional.empty();
+    }
+
+    private List<BigDecimal> candidateStrikes(OptionType optionType, List<BigDecimal> strikes,
+                                              BigDecimal underlyingPrice) {
+        BigDecimal atm = nearestStrike(strikes, underlyingPrice);
+        int atmIndex = strikes.indexOf(atm);
+        int start = Math.max(0, atmIndex - properties.strike().nearbyStrikes());
+        int end = Math.min(strikes.size(), atmIndex + properties.strike().nearbyStrikes() + 1);
+        List<BigDecimal> nearby = strikes.subList(start, end);
+        if (optionType == OptionType.CE) {
+            return nearby.stream()
+                    .filter(strike -> strike.compareTo(atm) >= 0)
+                    .sorted()
+                    .toList();
+        }
+        return nearby.stream()
+                .filter(strike -> strike.compareTo(atm) <= 0)
+                .sorted(Comparator.reverseOrder())
+                .toList();
+    }
+
+    private BigDecimal maxTradablePremium() {
+        BigDecimal riskAmount = properties.risk().totalCapital()
+                .multiply(properties.risk().maxRiskPerTradePercent(), MATH_CONTEXT)
+                .divide(BigDecimal.valueOf(100), MATH_CONTEXT);
+        BigDecimal riskPerLotPercent = BigDecimal.valueOf(properties.backtest().lotSize())
+                .multiply(properties.exit().stopLossPercent(), MATH_CONTEXT)
+                .divide(BigDecimal.valueOf(100), MATH_CONTEXT);
+        if (riskPerLotPercent.signum() <= 0) {
+            return BigDecimal.ZERO;
+        }
+        return riskAmount.divide(riskPerLotPercent, MATH_CONTEXT);
     }
 
     private BigDecimal selectedStrikeFor(OptionType optionType, List<BigDecimal> strikes, BigDecimal underlyingPrice) {

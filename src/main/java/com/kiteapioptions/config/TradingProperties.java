@@ -304,7 +304,7 @@ public record TradingProperties(
     ) {
         public static Backtest defaults() {
             return new Backtest(LocalDate.of(2025, 1, 1), LocalDate.of(2025, 1, 31),
-                    Timeframe.ONE_MINUTE, "backtest/input.csv", "backtest/results",
+                    Timeframe.ONE_MINUTE, "C:/data/backtest/imports/input.csv", "C:/data/backtest/results",
                     "NFO:NIFTY-MOCK-ATM-CE", 180, 65);
         }
     }

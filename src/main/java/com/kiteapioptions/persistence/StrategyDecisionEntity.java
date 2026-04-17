@@ -3,6 +3,7 @@ package com.kiteapioptions.persistence;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.Id;
+import jakarta.persistence.Lob;
 import java.math.BigDecimal;
 import java.time.Instant;
 
@@ -23,6 +24,7 @@ public class StrategyDecisionEntity {
     private BigDecimal imbalance;
     private boolean volumeSpike;
     private BigDecimal confidenceScore;
+    @Lob
     private String reasons;
 
     protected StrategyDecisionEntity() {

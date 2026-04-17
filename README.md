@@ -85,6 +85,9 @@ Phase 4 adds execution as a separate service. `ExecutionEngine` consumes `Strate
 - `POST /reports/entry-signals/archive`
 - `POST /backtest/run`
 - `POST /backtest/run-suite`
+- `POST /backtest/download-and-run-suite`
+- `POST /backtest/analyze-variants`
+- `POST /backtest/analyze-quick`
 - `GET /backtest/results/{id}`
 
 ## Configuration
@@ -229,8 +232,8 @@ trading:
     from: 2025-01-01
     to: 2025-01-31
     candle-timeframe: ONE_MINUTE
-    csv-import-path: backtest/input.csv
-    output-directory: backtest/results
+    csv-import-path: C:/data/backtest/imports/input.csv
+    output-directory: C:/data/backtest/results
     mock-instrument-key: NFO:NIFTY-MOCK-ATM-CE
     mock-candle-count: 180
     lot-size: 65
@@ -243,27 +246,63 @@ timestamp,instrumentKey,timeframe,open,high,low,close,volume,openInterest
 2026-04-12T03:45:00Z,NFO:NIFTY-MOCK-ATM-CE,ONE_MINUTE,100.00,101.00,99.00,100.50,10000,100000
 ```
 
+Global Datafeeds ZIP conversion:
+
+```powershell
+java com.kiteapioptions.backtest.GlobalDataFeedsOptionConverter `
+  --source "C:\data\Nifty _Option_15.04.2025_to_15.04.2026_1 _Min_data" `
+  --output "C:\data\backtest\imports\global-datafeeds" `
+  --underlying "NIFTY" `
+  --timeframe "ONE_MINUTE"
+```
+
+The converter reads each daily ZIP directly, converts `Ticker,Date,Time,Open,High,Low,Close,Volume,Open Interest`
+into the backtest candle schema above, and writes:
+
+- `C:/data/backtest/imports/global-datafeeds/by-day/YYYY/YYYY-MM-DD.csv`
+- `C:/data/backtest/imports/global-datafeeds/by-contract/<trading-symbol>.csv`
+- `C:/data/backtest/imports/global-datafeeds/manifest.csv`
+
+Those outputs are sorted and normalized for later backtest selection work. The current backtest engine still replays a selected option stream, so the per-contract files are the directly usable artifacts.
+
 Run:
 
 ```powershell
 curl -X POST http://localhost:8080/backtest/run
 ```
 
-Run a comparative suite:
+Run the complete comparative suite from a single endpoint:
 
 ```powershell
-curl -X POST http://localhost:8080/backtest/run-suite
+curl.exe -X POST http://localhost:8080/backtest/analyze-variants -H "Content-Type: application/json" -d "{}"
 ```
 
-The suite endpoint now creates a dated suite folder under `backtest/results/suites/` and stores:
+Run the broader weekend validation matrix in one request:
+
+```powershell
+curl.exe -X POST http://localhost:8080/backtest/analyze-weekend-intensive -H "Content-Type: application/json" -d "{ \"underlying\": \"NIFTY\", \"to\": \"2026-04-17\" }"
+```
+
+That preset uses CE and PE, one-minute and five-minute candles, last-day through one-year windows, a train/validate split, and a broad parameter grid covering capital/risk, stop/target, score, volume, breakout, cutoff, trailing stop, lot size, RSI, and max-hold variants.
+
+Before running the full matrix, use the quick endpoint to run only the baseline variant against PE 5-minute data:
+
+```powershell
+curl.exe -X POST http://localhost:8080/backtest/analyze-quick -H "Content-Type: application/json" -d "{ \"underlying\": \"NIFTY\", \"optionTypes\": [\"PE\"], \"timeframes\": [\"FIVE_MINUTE\"], \"to\": \"2026-04-15\", \"windows\": [{ \"name\": \"1-year\", \"from\": \"2025-04-15\", \"to\": \"2026-04-15\" }] }"
+```
+
+The suite endpoint creates a dated suite folder under `C:/data/backtest/results/suites/` and stores:
 
 - `suite-request.json`
 - `suite-summary.csv`
 - `suite-summary.json`
 - `suite-variant-ranking.csv`
-- separate run directories grouped by `variant=<name>/window=<name>/...`
+- `suite-period-performance.csv`
+- `suite-period-performance.json`
+- `suite-report.html`
+- separate run directories grouped by compact variant/window folders
 
-Default suite variants now run a broad comparison matrix: baseline, capital variants, lower-target variants, stricter filter variants, tighter-stop variants, and focused `60000 / 1%` follow-up variants.
+Default suite variants run a broad comparison matrix: baseline, capital variants, lower-target variants, stricter filter variants, tighter-stop variants, entry cutoff variants, RSI/hold-time variants, and focused `60000 / 1%` follow-up variants. Imported Global Datafeeds year runs are prepared as a rolling daily option stream from `global-datafeeds/by-day`, not as one fixed contract for the full year. The period performance files break each successful run into weekly and monthly PnL rows for strategy analysis.
 
 Custom variants can also be sent in the request body:
 
@@ -280,7 +319,7 @@ Custom variants can also be sent in the request body:
 }
 ```
 
-If `trading.backtest.csv-import-path` does not exist, the engine uses generated mock candles so the endpoint remains runnable locally. Outputs are written under `backtest/results/{id}/`:
+Outputs for single backtest runs are written under `C:/data/backtest/results/{id}/`:
 
 - `metrics.csv`
 - `trades.csv`
