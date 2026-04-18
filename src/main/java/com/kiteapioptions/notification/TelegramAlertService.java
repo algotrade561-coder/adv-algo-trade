@@ -93,6 +93,27 @@ public class TelegramAlertService {
                 + System.lineSeparator() + "Reasons: " + String.join("; ", reasons));
     }
 
+    public void tradeClosed(
+            String tradeId,
+            String instrumentKey,
+            int quantity,
+            BigDecimal entryPrice,
+            BigDecimal exitPrice,
+            BigDecimal realizedPnl,
+            String reason,
+            OrderResponse order
+    ) {
+        send("Trade closed"
+                + System.lineSeparator() + "Trade: " + tradeId
+                + System.lineSeparator() + "Instrument: " + instrumentKey
+                + System.lineSeparator() + "Quantity: " + quantity
+                + System.lineSeparator() + "Entry: " + entryPrice
+                + System.lineSeparator() + "Exit: " + exitPrice
+                + System.lineSeparator() + "PnL: " + realizedPnl
+                + System.lineSeparator() + "Reason: " + reason
+                + System.lineSeparator() + "Broker order: " + order.brokerOrderId().orElse(""));
+    }
+
     private void send(String text) {
         TradingProperties.Telegram telegram = properties.telegram();
         if (!telegram.enabled()) {

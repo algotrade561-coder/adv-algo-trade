@@ -1102,6 +1102,53 @@ public class BacktestSuiteService {
         );
     }
 
+    public SuiteRequest focusedValidationRequest(SuiteRequest request) {
+        SuiteRequest base = request == null
+                ? new SuiteRequest(null, null, null, null, null, null, null, null, null)
+                : request;
+        LocalDate to = base.to() != null ? base.to() : LocalDate.now(properties.timezone());
+        return new SuiteRequest(
+                base.underlying() != null ? base.underlying() : UnderlyingSymbol.NIFTY,
+                to,
+                base.windows() == null || base.windows().isEmpty() ? focusedValidationWindows(to) : base.windows(),
+                base.optionTypes() == null || base.optionTypes().isEmpty()
+                        ? List.of(OptionType.CE, OptionType.PE)
+                        : base.optionTypes(),
+                base.timeframes() == null || base.timeframes().isEmpty()
+                        ? List.of(Timeframe.FIVE_MINUTE)
+                        : base.timeframes(),
+                base.variants() == null || base.variants().isEmpty() ? focusedValidationVariants() : base.variants(),
+                base.expiry(),
+                base.strike(),
+                base.underlyingPrice()
+        );
+    }
+
+    private List<SuiteWindow> focusedValidationWindows(LocalDate to) {
+        return List.of(
+                new SuiteWindow("validate-apr", LocalDate.of(to.getYear(), 4, 1), to),
+                new SuiteWindow("1-month", to.minusMonths(1), to),
+                new SuiteWindow("1-year", LocalDate.of(2025, 4, 15), to)
+        );
+    }
+
+    public List<SuiteVariant> focusedValidationVariants() {
+        return List.of(
+                variant("cap-120k-risk-1-5", null, null, null, null, null, null, null, null, null,
+                        null, null, BigDecimal.valueOf(120_000), new BigDecimal("1.5"), null, null),
+                variant("cap-50k-risk-2", null, null, null, null, null, null, null, null, null,
+                        null, null, BigDecimal.valueOf(50_000), BigDecimal.valueOf(2), null, null),
+                variant("cap-100k-risk-1", null, null, null, null, null, null, null, null, null,
+                        null, null, BigDecimal.valueOf(100_000), BigDecimal.ONE, null, null),
+                variant("trail-act-10-gap-5", null, null, BigDecimal.valueOf(10), BigDecimal.valueOf(5),
+                        null, null, null, null, null, null, null, null, null, null, null),
+                new SuiteVariant("hold-30", null, null, null, null, null, null, null, null, null,
+                        null, null, null, null, null, null, null, null, null, null, 30),
+                variant("breakout-balanced", null, null, null, null, null, new BigDecimal("1.5"),
+                        new BigDecimal("0.10"), 7, 7, null, null, null, null, null, null)
+        );
+    }
+
     private List<SuiteWindow> weekendIntensiveWindows(LocalDate to) {
         return List.of(
                 new SuiteWindow("last-day", to, to),

@@ -121,6 +121,42 @@ class ExecutionEngineTest {
         verify(brokerClient, never()).placeOrder(any());
     }
 
+    @Test
+    void sendsTelegramAlertWhenTradeCloses() {
+        var trade = new TradeEntity("TRD-1", "NFO:NIFTY24APR24000CE", "NIFTY", "CE",
+                TradeStatus.OPEN, 75, BigDecimal.valueOf(100), Instant.now(clock), "entry");
+        var exitOrder = new OrderResponse(
+                "EXIT-1",
+                Optional.of("PAPER-EXIT-1"),
+                "NFO:NIFTY24APR24000CE",
+                OrderSide.SELL,
+                OrderStatus.COMPLETE,
+                75,
+                75,
+                Optional.of(BigDecimal.valueOf(112)),
+                Optional.empty(),
+                Instant.now(clock)
+        );
+        when(tradeRepository.findById("TRD-1")).thenReturn(Optional.of(trade));
+        when(brokerClient.placeOrder(any(OrderRequest.class))).thenReturn(exitOrder);
+
+        ExecutionResult result = executionEngine.closeTrade("TRD-1", BigDecimal.valueOf(111), "trailing stop");
+
+        assertThat(result.accepted()).isTrue();
+        verify(orderRepository).save(any());
+        verify(tradeRepository).save(trade);
+        verify(telegramAlertService).tradeClosed(
+                eq("TRD-1"),
+                eq("NFO:NIFTY24APR24000CE"),
+                eq(75),
+                eq(BigDecimal.valueOf(100)),
+                eq(BigDecimal.valueOf(112)),
+                eq(BigDecimal.valueOf(900)),
+                eq("trailing stop"),
+                eq(exitOrder)
+        );
+    }
+
     private StrategyDecision buyDecision() {
         return new StrategyDecision(Instant.now(clock), UnderlyingSymbol.NIFTY, SignalType.BUY_CE,
                 BigDecimal.valueOf(24_000), Optional.of("NFO:NIFTY24APR24000CE"),

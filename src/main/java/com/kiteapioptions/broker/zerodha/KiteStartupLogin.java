@@ -9,13 +9,14 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
+import org.springframework.core.Ordered;
 import org.springframework.stereotype.Component;
 
 /**
  * Blocks application startup in LIVE mode until Kite auth is ready.
  */
 @Component
-public class KiteStartupLogin implements ApplicationRunner {
+public class KiteStartupLogin implements ApplicationRunner, Ordered {
 
     private static final Logger log = LoggerFactory.getLogger(KiteStartupLogin.class);
 
@@ -34,6 +35,11 @@ public class KiteStartupLogin implements ApplicationRunner {
         this.tokenStore = tokenStore;
         this.kiteAuthService = kiteAuthService;
         this.tradingStateService = tradingStateService;
+    }
+
+    @Override
+    public int getOrder() {
+        return Ordered.HIGHEST_PRECEDENCE + 10;
     }
 
     @Override

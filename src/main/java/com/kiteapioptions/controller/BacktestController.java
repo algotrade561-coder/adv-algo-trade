@@ -445,6 +445,42 @@ public class BacktestController {
         }
     }
 
+    @PostMapping("/backtest/analyze-focused-validation")
+    public ResponseEntity<?> analyzeFocusedValidation(
+            @RequestBody(required = false) BacktestSuiteService.SuiteRequest request) {
+        BacktestSuiteService.SuiteRequest effectiveRequest = suiteService.focusedValidationRequest(request);
+        int totalRuns = effectiveRequest.windows().size()
+                * effectiveRequest.variants().size()
+                * effectiveRequest.optionTypes().size()
+                * effectiveRequest.timeframes().size();
+        log.info("Backtest analyze-focused-validation called: underlying={}, to={}, windows={}, variants={}, optionTypes={}, timeframes={}, totalRuns={}",
+                effectiveRequest.underlying(), effectiveRequest.to(), effectiveRequest.windows().size(),
+                effectiveRequest.variants().size(), effectiveRequest.optionTypes(), effectiveRequest.timeframes(),
+                totalRuns);
+        try {
+            BacktestSuiteService.SuiteResult result = suiteService.run(effectiveRequest);
+            log.info("Backtest analyze-focused-validation completed: suiteId={}, runs={}",
+                    result.suiteId(), result.runs().size());
+            return ResponseEntity.ok(result);
+        } catch (IllegalStateException ex) {
+            log.warn("Backtest analyze-focused-validation rejected: {}", ex.getMessage());
+            return ResponseEntity.badRequest()
+                    .body(Map.of("status", "error", "message", ex.getMessage()));
+        } catch (IllegalArgumentException ex) {
+            log.warn("Backtest analyze-focused-validation rejected: {}", ex.getMessage());
+            return ResponseEntity.badRequest()
+                    .body(Map.of("status", "error", "message", ex.getMessage()));
+        } catch (IOException ex) {
+            log.warn("Backtest analyze-focused-validation failed: {}", ex.getMessage());
+            return ResponseEntity.internalServerError()
+                    .body(Map.of("status", "error", "message", ex.getMessage()));
+        } catch (RuntimeException ex) {
+            log.warn("Backtest analyze-focused-validation failed: {}", ex.getMessage());
+            return ResponseEntity.internalServerError()
+                    .body(Map.of("status", "error", "message", ex.getMessage()));
+        }
+    }
+
     @GetMapping("/backtest/results/{id}")
     public ResponseEntity<BacktestResultEntity> result(@PathVariable String id) {
         log.info("Backtest result requested: id={}", id);

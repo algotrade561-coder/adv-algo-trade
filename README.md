@@ -285,6 +285,14 @@ curl.exe -X POST http://localhost:8080/backtest/analyze-weekend-intensive -H "Co
 
 That preset uses CE and PE, one-minute and five-minute candles, last-day through one-year windows, a train/validate split, and a broad parameter grid covering capital/risk, stop/target, score, volume, breakout, cutoff, trailing stop, lot size, RSI, and max-hold variants.
 
+Run the focused validation suite after reviewing the broad report:
+
+```powershell
+curl.exe -X POST http://localhost:8080/backtest/analyze-focused-validation -H "Content-Type: application/json" -d "{ \"underlying\": \"NIFTY\", \"to\": \"2026-04-17\" }"
+```
+
+That preset runs the finalist variants `cap-120k-risk-1-5`, `cap-50k-risk-2`, `cap-100k-risk-1`, `trail-act-10-gap-5`, `hold-30`, and `breakout-balanced` across `validate-Apr`, `1-month`, and `1-year` windows for CE/PE on `FIVE_MINUTE`. The default planned size is 36 runs.
+
 Before running the full matrix, use the quick endpoint to run only the baseline variant against PE 5-minute data:
 
 ```powershell

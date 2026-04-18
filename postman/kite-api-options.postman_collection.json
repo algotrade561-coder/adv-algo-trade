@@ -485,6 +485,24 @@
                                                   }
                                   },
                                   {
+                                      "name":  "Analyze Focused Validation",
+                                      "request":  {
+                                                      "method":  "POST",
+                                                      "header":  [
+                                                                     {
+                                                                         "key":  "Content-Type",
+                                                                         "value":  "application/json"
+                                                                     }
+                                                                 ],
+                                                      "body":  {
+                                                                   "mode":  "raw",
+                                                                   "raw":  "{\n  \"underlying\": \"NIFTY\",\n  \"to\": \"2026-04-17\"\n}"
+                                                               },
+                                                      "url":  "{{baseUrl}}/backtest/analyze-focused-validation",
+                                                      "description":  "Focused follow-up validation from the completed 1-year FIVE_MINUTE suite. Defaults to validate-Apr, 1-month, and 1-year windows; CE/PE; FIVE_MINUTE; and finalist variants: cap-120k-risk-1-5, cap-50k-risk-2, cap-100k-risk-1, trail-act-10-gap-5, hold-30, and breakout-balanced. Planned default runs: 3 windows x 6 variants x 2 sides x 1 timeframe = 36."
+                                                  }
+                                  },
+                                  {
                                       "name":  "Analyze Whole Year Backtest Variants",
                                       "request":  {
                                                       "method":  "POST",

@@ -123,12 +123,24 @@ public record TradingProperties(
             @NotNull String redirectUrl,
             @NotNull String callbackPath,
             @NotNull Duration requestTimeout,
-            boolean autoLoginOnStartup
+            boolean autoLoginOnStartup,
+            boolean ngrokEnabled,
+            @NotNull String ngrokPath,
+            @Min(1) int ngrokHttpPort
     ) {
+        public Broker {
+            if (ngrokPath == null || ngrokPath.isBlank()) {
+                ngrokPath = "ngrok.exe";
+            }
+            if (ngrokHttpPort <= 0) {
+                ngrokHttpPort = 8081;
+            }
+        }
+
         public static Broker defaults() {
             return new Broker(BrokerName.ZERODHA, "", "", "", "", "https://api.kite.trade",
                     "https://kite.zerodha.com/connect/login", "http://localhost:8081/auth/kite/callback",
-                    "/auth/kite/callback", Duration.ofSeconds(5), true);
+                    "/auth/kite/callback", Duration.ofSeconds(5), true, false, "ngrok.exe", 8081);
         }
     }
 

@@ -205,6 +205,8 @@ public class ExecutionEngine {
         trade.close(exitPrice, Instant.now(clock), realizedPnl, reason);
         tradeRepository.save(trade);
         log.info("Trade closed: tradeId={}, exitPrice={}, realizedPnl={}, reason={}", tradeId, exitPrice, realizedPnl, reason);
+        telegramAlertService.tradeClosed(tradeId, trade.getInstrumentKey(), trade.getQuantity(),
+                trade.getEntryPrice(), exitPrice, realizedPnl, reason, order);
         return ExecutionResult.accepted(order, List.of("Exit order filled and trade journal updated"));
     }
 

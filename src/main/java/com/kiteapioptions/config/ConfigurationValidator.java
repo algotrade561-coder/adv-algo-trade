@@ -20,6 +20,9 @@ public class ConfigurationValidator {
 
     @PostConstruct
     void validate() {
+        if (properties.liveTradingEnabled() && properties.mode() != com.kiteapioptions.domain.TradingMode.LIVE) {
+            throw new IllegalStateException("trading.live-trading-enabled=true requires trading.mode=LIVE");
+        }
         if (properties.executionMode() == ExecutionMode.ZERODHA && !properties.liveTradingEnabled()) {
             throw new IllegalStateException("execution-mode=ZERODHA requires trading.live-trading-enabled=true");
         }
