@@ -1,5 +1,7 @@
 package com.kiteapioptions.controller;
 
+import com.kiteapioptions.config.ConfigDocumentation;
+import com.kiteapioptions.config.ConfigDocumentation.ConfigResponse;
 import com.kiteapioptions.config.TradingProperties;
 import com.kiteapioptions.domain.ExecutionMode;
 import com.kiteapioptions.domain.MarketDataMode;
@@ -45,14 +47,14 @@ public class TradingControlController {
     }
 
     @GetMapping("/config")
-    public TradingProperties config() {
+    public ConfigResponse config() {
         log.info("Configuration requested: configuredMode={}, requestedMode={}, liveTradingEnabled={}, running={}, killSwitch={}",
                 tradingProperties.mode(),
                 tradingStateService.requestedMode(),
                 tradingProperties.liveTradingEnabled(),
                 tradingStateService.running(),
                 tradingStateService.killSwitchEnabled());
-        return tradingProperties;
+        return ConfigDocumentation.from(tradingProperties, status());
     }
 
     @PostMapping("/mode")

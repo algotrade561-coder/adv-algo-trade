@@ -65,9 +65,9 @@ trading:
     total-capital: 60000
     max-risk-per-trade-percent: 2.5
     max-daily-loss-percent: 3
-    max-trades-per-day: 2
-    max-orders-per-day: 2
-    max-consecutive-losses: 1
+    max-trades-per-day: 4
+    max-orders-per-day: 4
+    max-consecutive-losses: 2
     one-open-trade-at-a-time: true
     same-instrument-reentry-min-price-move-percent: 10
     cooldown-minutes: 10
