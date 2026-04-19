@@ -13,11 +13,15 @@ import java.net.InetSocketAddress;
 import java.net.URI;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.time.Duration;
 import java.util.HashMap;
 import java.time.Instant;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -39,27 +43,31 @@ public class KiteAuthService {
 
     private static final Duration LOGIN_TIMEOUT = Duration.ofMinutes(2);
     private static final Logger log = LoggerFactory.getLogger(KiteAuthService.class);
+    private static final Path LOCAL_SECRETS_PATH = Path.of("data", "trading-secrets.properties");
 
     private final TradingProperties properties;
     private final RestClient restClient;
     private final ObjectMapper objectMapper;
     private final KiteAccessTokenStore tokenStore;
+    private final KiteCredentialResolver credentialResolver;
     private final ArrayBlockingQueue<KiteLoginResult> loginResultQueue = new ArrayBlockingQueue<>(1);
     private HttpServer callbackServer;
 
     public KiteAuthService(TradingProperties properties, RestClient zerodhaRestClient,
-                           ObjectMapper objectMapper, KiteAccessTokenStore tokenStore) {
+                           ObjectMapper objectMapper, KiteAccessTokenStore tokenStore,
+                           KiteCredentialResolver credentialResolver) {
         this.properties = properties;
         this.restClient = zerodhaRestClient;
         this.objectMapper = objectMapper;
         this.tokenStore = tokenStore;
+        this.credentialResolver = credentialResolver;
     }
 
     public KiteLoginResult login()  {
          printStartupDiagnostics();
         if (tokenStore.authenticated()) {
             if (validateCurrentSession()) {
-                String userId = tokenStore.userId().orElse(properties.broker().userId());
+                String userId = tokenStore.userId().orElse(credentialResolver.userId());
                 log.info("Using configured/runtime Kite access token: userId={}", valueOrMissing(userId));
                 return new KiteLoginResult(true, userId, tokenStore.accessToken().orElse(""),
                         tokenStore.publicToken().orElse(""), tokenStore.updatedAt().orElse(Instant.now()));
@@ -104,18 +112,110 @@ public class KiteAuthService {
     }
 
     public URI loginUrl() {
-        if (isBlank(properties.broker().apiKey())) {
+        String apiKey = credentialResolver.apiKey();
+        if (isBlank(apiKey)) {
             log.warn("Kite login URL request failed: API key is not configured");
             throw new BrokerException("KITE_API_KEY is required to build the Kite login URL");
         }
         URI uri = UriComponentsBuilder.fromUriString(properties.broker().loginUrl())
                 .queryParam("v", "3")
-                .queryParam("api_key", properties.broker().apiKey())
+                .queryParam("api_key", apiKey)
                 .build()
                 .toUri();
         log.info("Kite login URL generated: loginUrlBase={}, redirectUrl={}",
                 properties.broker().loginUrl(), properties.broker().redirectUrl());
         return uri;
+    }
+
+    public Map<String, Object> initiateLoginFlow() throws IOException {
+        URI loginUrl = loginUrl();
+        loginResultQueue.clear();
+        log.info("Kite login URL prepared for client-side launch: loginUrl={}", loginUrl);
+        return Map.of(
+                "loginUrl", loginUrl.toString(),
+                "launched", false,
+                "message", "Open Kite login in this browser, complete authentication, and allow the callback to refresh the access token.",
+                "diagnostics", diagnostics()
+        );
+    }
+
+    public KiteLoginResult currentSession() {
+        if (tokenStore.authenticated() && validateCurrentSession()) {
+            String userId = tokenStore.userId().orElse(credentialResolver.userId());
+            return new KiteLoginResult(true, userId, tokenStore.accessToken().orElse(""),
+                    tokenStore.publicToken().orElse(""), tokenStore.updatedAt().orElse(Instant.now()));
+        }
+        return new KiteLoginResult(false, "", "", "", Instant.now());
+    }
+
+    public boolean apiKeyConfigured() {
+        return credentialResolver.apiKeyConfigured();
+    }
+
+    public Map<String, Object> firstRunSetup() {
+        ensureLocalSecretsFile();
+        Map<String, Object> response = new LinkedHashMap<>();
+        response.put("loginUrl", "");
+        response.put("setupRequired", true);
+        response.put("message", "Kite API credentials are required before a Kite login URL can be generated.");
+        response.put("secretsFile", LOCAL_SECRETS_PATH.toAbsolutePath().normalize().toString());
+        response.put("requiredProperties", List.of("trading.broker.api-key", "trading.broker.api-secret"));
+        response.put("environmentVariables", List.of("KITE_API_KEY", "KITE_API_SECRET"));
+        response.put("diagnostics", diagnostics());
+        return response;
+    }
+
+    public Map<String, Object> firstRunSessionSetup() {
+        Map<String, Object> response = new LinkedHashMap<>(firstRunSetup());
+        response.put("authenticated", false);
+        response.put("userId", "");
+        response.put("authenticatedAt", "");
+        return response;
+    }
+
+    private void ensureLocalSecretsFile() {
+        try {
+            Files.createDirectories(LOCAL_SECRETS_PATH.getParent());
+            if (!Files.isRegularFile(LOCAL_SECRETS_PATH)) {
+                Files.writeString(LOCAL_SECRETS_PATH, String.join(System.lineSeparator(),
+                        "# Local trading secrets. Do not commit this file.",
+                        "trading.broker.api-key=${KITE_API_KEY:}",
+                        "trading.broker.api-secret=${KITE_API_SECRET:}",
+                        "trading.broker.access-token=${KITE_ACCESS_TOKEN:}",
+                        "trading.broker.user-id=${KITE_USER_ID:}",
+                        ""
+                ), StandardCharsets.UTF_8);
+                log.info("Created first-run Kite secrets template: {}", LOCAL_SECRETS_PATH.toAbsolutePath());
+                return;
+            }
+            String content = Files.readString(LOCAL_SECRETS_PATH, StandardCharsets.UTF_8);
+            StringBuilder missing = new StringBuilder();
+            appendMissingProperty(content, missing, "trading.broker.api-key=${KITE_API_KEY:}");
+            appendMissingProperty(content, missing, "trading.broker.api-secret=${KITE_API_SECRET:}");
+            appendMissingProperty(content, missing, "trading.broker.access-token=${KITE_ACCESS_TOKEN:}");
+            appendMissingProperty(content, missing, "trading.broker.user-id=${KITE_USER_ID:}");
+            if (!missing.isEmpty()) {
+                String separator = content.endsWith(System.lineSeparator()) || content.isEmpty()
+                        ? ""
+                        : System.lineSeparator();
+                Files.writeString(LOCAL_SECRETS_PATH, separator + missing, StandardCharsets.UTF_8,
+                        java.nio.file.StandardOpenOption.APPEND);
+                log.info("Added missing Kite secrets placeholders to {}", LOCAL_SECRETS_PATH.toAbsolutePath());
+            }
+        } catch (IOException ex) {
+            log.warn("Could not create first-run Kite secrets template at {}: {}",
+                    LOCAL_SECRETS_PATH.toAbsolutePath(), ex.getMessage());
+        }
+    }
+
+    private void appendMissingProperty(String content, StringBuilder missing, String propertyLine) {
+        String key = propertyLine.substring(0, propertyLine.indexOf('='));
+        boolean present = content.lines()
+                .map(String::trim)
+                .anyMatch(line -> line.startsWith(key + "="));
+        if (!present) {
+            missing.append(propertyLine).append(System.lineSeparator());
+        }
     }
 
     public KiteLoginResult exchangeRequestToken(String requestToken) {
@@ -124,15 +224,17 @@ public class KiteAuthService {
             log.warn("Kite request token exchange rejected: request_token is blank");
             throw new BrokerException("request_token is required");
         }
-        if (isBlank(properties.broker().apiKey()) || isBlank(properties.broker().apiSecret())) {
+        String apiKey = credentialResolver.apiKey();
+        String apiSecret = credentialResolver.apiSecret();
+        if (isBlank(apiKey) || isBlank(apiSecret)) {
             log.warn("Kite request token exchange rejected: apiKeyConfigured={}, apiSecretConfigured={}",
-                    !isBlank(properties.broker().apiKey()), !isBlank(properties.broker().apiSecret()));
+                    !isBlank(apiKey), !isBlank(apiSecret));
             throw new BrokerException("KITE_API_KEY and KITE_API_SECRET are required to generate a session");
         }
 
         try {
             var form = new LinkedMultiValueMap<String, String>();
-            form.add("api_key", properties.broker().apiKey());
+            form.add("api_key", apiKey);
             form.add("request_token", requestToken);
             form.add("checksum", checksum(requestToken));
 
@@ -146,7 +248,7 @@ public class KiteAuthService {
             JsonNode data = objectMapper.readTree(body).path("data");
             String accessToken = text(data, "access_token");
             String publicToken = text(data, "public_token");
-            String userId = firstNonBlank(properties.broker().userId(), text(data, "user_id"));
+            String userId = firstNonBlank(credentialResolver.userId(), text(data, "user_id"));
             tokenStore.update(accessToken, publicToken, userId);
             log.info("Kite request token exchange completed: userId={}, accessTokenCaptured={}, publicTokenCaptured={}",
                     userId, !isBlank(accessToken), !isBlank(publicToken));
@@ -170,7 +272,7 @@ public class KiteAuthService {
                     .retrieve()
                     .body(String.class);
             log.info("Kite access token validation succeeded: userId={}",
-                    valueOrMissing(tokenStore.userId().orElse(properties.broker().userId())));
+                    valueOrMissing(tokenStore.userId().orElse(credentialResolver.userId())));
             return true;
         } catch (RestClientException ex) {
             log.warn("Kite access token validation failed. Clearing persisted token: {}", ex.getMessage());
@@ -219,11 +321,11 @@ public class KiteAuthService {
 
     public Map<String, Object> diagnostics() {
         log.info("Kite auth diagnostics requested: apiKeyConfigured={}, apiSecretConfigured={}, configuredAccessTokenPresent={}, runtimeAccessTokenPresent={}",
-                !isBlank(properties.broker().apiKey()), !isBlank(properties.broker().apiSecret()),
+                !isBlank(credentialResolver.apiKey()), !isBlank(credentialResolver.apiSecret()),
                 !isBlank(properties.broker().accessToken()), tokenStore.authenticated());
         return Map.of(
-                "apiKeyConfigured", !isBlank(properties.broker().apiKey()),
-                "apiSecretConfigured", !isBlank(properties.broker().apiSecret()),
+                "apiKeyConfigured", !isBlank(credentialResolver.apiKey()),
+                "apiSecretConfigured", !isBlank(credentialResolver.apiSecret()),
                 "configuredAccessTokenPresent", !isBlank(properties.broker().accessToken()),
                 "runtimeAccessTokenPresent", tokenStore.authenticated(),
                 "redirectUrl", properties.broker().redirectUrl(),
@@ -319,9 +421,9 @@ public class KiteAuthService {
 
     private void printStartupDiagnostics() {
         log.info("Kite auth diagnostics: apiKeyConfigured={}, apiSecretConfigured={}, userId={}, accessTokenConfigured={}, runtimeAccessTokenPresent={}, redirectUrl={}, dailyLoginRequirement={}",
-                mask(properties.broker().apiKey()),
-                yesNo(!isBlank(properties.broker().apiSecret())),
-                valueOrMissing(properties.broker().userId()),
+                mask(credentialResolver.apiKey()),
+                yesNo(!isBlank(credentialResolver.apiSecret())),
+                valueOrMissing(credentialResolver.userId()),
                 yesNo(!isBlank(properties.broker().accessToken())),
                 tokenStore.authenticated(),
                 properties.broker().redirectUrl(),
@@ -331,12 +433,12 @@ public class KiteAuthService {
     private void applyAuthHeaders(HttpHeaders headers) {
         headers.set("X-Kite-Version", "3");
         headers.set(HttpHeaders.AUTHORIZATION,
-                "token " + properties.broker().apiKey() + ":" + tokenStore.accessToken().orElseThrow());
+                "token " + credentialResolver.apiKey() + ":" + tokenStore.accessToken().orElseThrow());
     }
 
     private String checksum(String requestToken) throws Exception {
         MessageDigest digest = MessageDigest.getInstance("SHA-256");
-        byte[] hash = digest.digest((properties.broker().apiKey() + requestToken + properties.broker().apiSecret())
+        byte[] hash = digest.digest((credentialResolver.apiKey() + requestToken + credentialResolver.apiSecret())
                 .getBytes(StandardCharsets.UTF_8));
         return HexFormat.of().formatHex(hash);
     }

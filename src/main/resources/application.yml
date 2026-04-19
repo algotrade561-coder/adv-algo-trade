@@ -8,13 +8,18 @@ trading:
     name: ZERODHA
     base-url: https://api.kite.trade
     login-url: https://kite.zerodha.com/connect/login
-    redirect-url: ${KITE_REDIRECT_URL:http://localhost:8081}
+    redirect-url: ${KITE_REDIRECT_URL:http://localhost:8080/auth/kite/callback}
     callback-path: /auth/kite/callback
     request-timeout: 5s
     auto-login-on-startup: true
     ngrok-enabled: true
     ngrok-path: ${NGROK_PATH:ngrok.exe}
-    ngrok-http-port: 8081
+    ngrok-http-port: ${NGROK_HTTP_PORT:8080}
+    ngrok-config-path: ${NGROK_CONFIG_PATH:ngrok.yml}
+    ngrok-callback-tunnel-name: app
+    ngrok-ui-enabled: false
+    ngrok-ui-http-port: ${NGROK_UI_HTTP_PORT:8080}
+    ngrok-ui-tunnel-name: app
   symbols:
     underlyings:
       - NIFTY

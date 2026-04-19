@@ -1,0 +1,8 @@
+version: "3"
+agent:
+  update_channel: stable
+
+tunnels:
+  app:
+    proto: http
+    addr: 8080

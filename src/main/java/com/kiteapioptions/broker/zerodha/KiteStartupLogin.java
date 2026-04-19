@@ -64,6 +64,12 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
             }
             log.info("Kite startup login will continue: persisted/configured access token is not valid");
         }
+        if (!kiteAuthService.apiKeyConfigured()) {
+            kiteAuthService.firstRunSetup();
+            log.warn("Kite startup login skipped: API credentials are not configured. "
+                    + "Use the UI Kite Auth page after adding credentials to data/trading-secrets.properties.");
+            return;
+        }
 
         log.info("Kite startup login started. Application startup will wait until the access token is captured.");
         KiteLoginResult result = kiteAuthService.login();

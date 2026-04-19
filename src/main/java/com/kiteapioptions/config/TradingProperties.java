@@ -126,21 +126,39 @@ public record TradingProperties(
             boolean autoLoginOnStartup,
             boolean ngrokEnabled,
             @NotNull String ngrokPath,
-            @Min(1) int ngrokHttpPort
+            @Min(1) int ngrokHttpPort,
+            @NotNull String ngrokConfigPath,
+            @NotNull String ngrokCallbackTunnelName,
+            boolean ngrokUiEnabled,
+            @Min(1) int ngrokUiHttpPort,
+            @NotNull String ngrokUiTunnelName
     ) {
         public Broker {
             if (ngrokPath == null || ngrokPath.isBlank()) {
                 ngrokPath = "ngrok.exe";
             }
             if (ngrokHttpPort <= 0) {
-                ngrokHttpPort = 8081;
+                ngrokHttpPort = 8080;
+            }
+            if (ngrokConfigPath == null || ngrokConfigPath.isBlank()) {
+                ngrokConfigPath = "ngrok.yml";
+            }
+            if (ngrokCallbackTunnelName == null || ngrokCallbackTunnelName.isBlank()) {
+                ngrokCallbackTunnelName = "app";
+            }
+            if (ngrokUiHttpPort <= 0) {
+                ngrokUiHttpPort = 8080;
+            }
+            if (ngrokUiTunnelName == null || ngrokUiTunnelName.isBlank()) {
+                ngrokUiTunnelName = "app";
             }
         }
 
         public static Broker defaults() {
             return new Broker(BrokerName.ZERODHA, "", "", "", "", "https://api.kite.trade",
-                    "https://kite.zerodha.com/connect/login", "http://localhost:8081/auth/kite/callback",
-                    "/auth/kite/callback", Duration.ofSeconds(5), true, false, "ngrok.exe", 8081);
+                    "https://kite.zerodha.com/connect/login", "http://localhost:8080/auth/kite/callback",
+                    "/auth/kite/callback", Duration.ofSeconds(5), true, false, "ngrok.exe", 8080,
+                    "ngrok.yml", "app", false, 8080, "app");
         }
     }
 

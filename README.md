@@ -113,6 +113,7 @@ Prerequisites:
 
 - Java 21
 - Maven 3.9+
+- Node.js 20+ and npm, only when running the Angular UI locally
 
 Commands:
 
@@ -146,6 +147,81 @@ Check the current scan set:
 ```powershell
 curl.exe http://localhost:8080/scan/underlyings
 ```
+
+## Angular UI
+
+The optional Angular control console lives under `ui/`.
+
+One local application mode:
+
+```powershell
+.\run-local-app.ps1
+```
+
+Or double-click:
+
+```text
+run-local-app.cmd
+```
+
+That script builds the Angular UI into Spring Boot static resources, starts the backend, and serves everything from:
+
+```text
+http://localhost:8080
+```
+
+If the UI has not changed and you only want to restart the backend:
+
+```powershell
+.\run-local-app.ps1 -SkipUiBuild
+```
+
+Run it against the local Spring Boot API:
+
+```powershell
+cd ui
+npm install
+npm start
+```
+
+Open:
+
+```text
+http://localhost:4200
+```
+
+Build it into Spring Boot static resources:
+
+```powershell
+.\build-ui.ps1
+```
+
+Then the Spring Boot app serves the UI from:
+
+```text
+http://localhost:8080
+```
+
+The app can start one ngrok tunnel from the root `ngrok.yml` when Zerodha routing is active:
+
+```text
+app -> http://localhost:8080
+```
+
+That single public host serves both the UI and Kite callback:
+
+```text
+https://your-ngrok-domain.ngrok-free.app/
+https://your-ngrok-domain.ngrok-free.app/auth/kite/callback
+```
+
+The generated public URLs are visible in the ngrok inspector:
+
+```text
+http://localhost:4040
+```
+
+The UI includes dashboard, execution controls, documented config, monitoring tables, reports, Kite login/session flow, backtests, and data maintenance screens. See `ui/README.md` for tunnel and Zerodha callback guidance before exposing it outside localhost.
 
 Scanner config:
 
@@ -204,7 +280,7 @@ trading.telegram.bot-token=
 trading.telegram.chat-id=
 ```
 
-With `trading.mode=LIVE` and no access token present, startup starts a temporary callback listener on the configured redirect port, opens/logs the Kite login URL automatically, and blocks until the callback captures the access token. Use a redirect URL on a different port from Spring Boot, for example `http://localhost:8081/auth/kite/callback`. If the login callback is not received within the configured login timeout, startup fails instead of continuing without a token. You can also open:
+With `trading.mode=LIVE` and no access token present, startup opens/logs the Kite login URL automatically and blocks until the callback captures the access token. With the single ngrok host setup, use this redirect path on your ngrok HTTPS URL: `/auth/kite/callback`. You can also open:
 
 ```text
 http://localhost:8080/auth/kite/login

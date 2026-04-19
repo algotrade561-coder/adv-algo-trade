@@ -57,10 +57,20 @@ public class NgrokTunnelLifecycle implements ApplicationRunner, Ordered {
 
         String ngrokPath = properties.broker().ngrokPath();
         int httpPort = properties.broker().ngrokHttpPort();
+        boolean uiEnabled = properties.broker().ngrokUiEnabled();
         Path logPath = Path.of("target", "ngrok.log");
         try {
             Files.createDirectories(logPath.getParent());
-            ProcessBuilder builder = new ProcessBuilder(ngrokPath, "http", String.valueOf(httpPort));
+            ProcessBuilder builder = uiEnabled
+                    ? new ProcessBuilder(
+                            ngrokPath,
+                            "start",
+                            "--config",
+                            properties.broker().ngrokConfigPath(),
+                            properties.broker().ngrokCallbackTunnelName(),
+                            properties.broker().ngrokUiTunnelName()
+                    )
+                    : new ProcessBuilder(ngrokPath, "http", String.valueOf(httpPort));
             builder.redirectErrorStream(true);
             builder.redirectOutput(ProcessBuilder.Redirect.appendTo(logPath.toFile()));
             process = builder.start();
@@ -71,8 +81,20 @@ public class NgrokTunnelLifecycle implements ApplicationRunner, Ordered {
                 throw new IllegalStateException("ngrok exited during startup with exit code " + exitCode
                         + ". Check " + logPath.toAbsolutePath());
             }
-            log.info("ngrok started: path={}, httpPort={}, pid={}, log={}",
-                    ngrokPath, httpPort, process.pid(), logPath.toAbsolutePath());
+            if (uiEnabled) {
+                log.info("ngrok started: path={}, config={}, callbackTunnel={}, callbackPort={}, uiTunnel={}, uiPort={}, pid={}, log={}",
+                        ngrokPath,
+                        properties.broker().ngrokConfigPath(),
+                        properties.broker().ngrokCallbackTunnelName(),
+                        httpPort,
+                        properties.broker().ngrokUiTunnelName(),
+                        properties.broker().ngrokUiHttpPort(),
+                        process.pid(),
+                        logPath.toAbsolutePath());
+            } else {
+                log.info("ngrok started: path={}, httpPort={}, pid={}, log={}",
+                        ngrokPath, httpPort, process.pid(), logPath.toAbsolutePath());
+            }
         } catch (IOException e) {
             throw new IllegalStateException("Failed to start ngrok using " + ngrokPath
                     + ". Set NGROK_PATH or trading.broker.ngrok-path to the executable path.", e);

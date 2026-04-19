@@ -4,7 +4,6 @@ import com.kiteapioptions.broker.zerodha.KiteAuthService;
 import com.kiteapioptions.broker.zerodha.KiteLoginResult;
 
 import java.io.IOException;
-import java.net.URI;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -27,20 +26,24 @@ public class KiteAuthController {
     @GetMapping("/auth/kite/login")
     public Map<String, Object> login() throws IOException {
         log.info("Kite login endpoint called");
-        kiteAuthService.startCallbackListener();
-        URI loginUrl = kiteAuthService.loginUrl();
-        log.info("Kite login endpoint returning login URL and diagnostics");
-        return Map.of(
-                "loginUrl", loginUrl.toString(),
-                "diagnostics", kiteAuthService.diagnostics()
-        );
+        if (!kiteAuthService.apiKeyConfigured()) {
+            log.info("Kite login endpoint returning first-run setup details");
+            return kiteAuthService.firstRunSetup();
+        }
+        Map<String, Object> response = kiteAuthService.initiateLoginFlow();
+        log.info("Kite login endpoint initiated login flow");
+        return response;
     }
 
     @GetMapping("/auth/kite/session")
     public Map<String, Object> session() {
         log.info("Kite session endpoint called");
-        KiteLoginResult result = kiteAuthService.login();
-        log.info("Kite session endpoint completed: userId={}", result.userId());
+        if (!kiteAuthService.apiKeyConfigured()) {
+            log.info("Kite session endpoint returning first-run setup details");
+            return kiteAuthService.firstRunSessionSetup();
+        }
+        KiteLoginResult result = kiteAuthService.currentSession();
+        log.info("Kite session endpoint completed: authenticated={}, userId={}", result.success(), result.userId());
         return Map.of(
                 "authenticated", result.success(),
                 "userId", result.userId() == null ? "" : result.userId(),
