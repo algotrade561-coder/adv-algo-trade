@@ -24,7 +24,7 @@ For normal local use, run the whole application from the repo root:
 Open:
 
 ```text
-http://localhost:8080
+http://localhost:8089
 ```
 
 This builds the Angular UI into Spring Boot static resources and starts the backend. Only one server is needed for daily use.
@@ -37,7 +37,7 @@ If the UI has not changed:
 
 ## UI Development
 
-Start the Spring Boot backend on port `8080`.
+Start the Spring Boot backend on port `8089`.
 
 Then run the UI:
 
@@ -56,7 +56,7 @@ http://localhost:4200
 The dev server uses `proxy.conf.json` so browser calls like `/config` are forwarded to:
 
 ```text
-http://localhost:8080/config
+http://localhost:8089/config
 ```
 
 ## Production Build
@@ -76,7 +76,7 @@ src/main/resources/static
 After that, start the Spring Boot app and open:
 
 ```text
-http://localhost:8080
+http://localhost:8089
 ```
 
 ## Zerodha Login Flow
@@ -105,19 +105,19 @@ ngrok http 4200
 For the normal single-host setup, build/serve the UI through Spring Boot:
 
 ```powershell
-ngrok http 8080
+ngrok http 8089
 ```
 
 This repo also includes a root `ngrok.yml` with one named tunnel:
 
 ```text
-app -> http://localhost:8080
+app -> http://localhost:8089
 ```
 
 With the default config, the backend starts one tunnel to Spring Boot:
 
 ```powershell
-ngrok http 8080
+ngrok http 8089
 ```
 
 That single public host serves both the UI and Kite callback:

@@ -38,20 +38,30 @@ export class DataTableComponent {
     autoHeight: true,
     minWidth: 140
   };
+  columnDefs: ColDef[] = [];
+  private internalRows: ApiRecord[] = [];
 
-  @Input() rows: ApiRecord[] = [];
-
-  get columnDefs(): ColDef[] {
+  @Input()
+  set rows(value: ApiRecord[]) {
+    this.internalRows = value ?? [];
     const keys = new Set<string>();
-    for (const row of this.rows.slice(0, 20)) {
+    for (const row of this.internalRows.slice(0, 20)) {
       Object.keys(row).forEach((key) => keys.add(key));
     }
-    return Array.from(keys).map((key) => ({
+    this.columnDefs = Array.from(keys).map((key) => ({
       field: key,
       headerName: this.label(key),
+      headerClass: 'table-header-cell',
+      headerStyle: {
+        color: 'var(--ink)',
+        fontWeight: '800'
+      },
       valueFormatter: (params) => this.display(params.value),
       tooltipValueGetter: (params) => this.display(params.value)
     }));
+  }
+  get rows(): ApiRecord[] {
+    return this.internalRows;
   }
 
   display(value: unknown): string {

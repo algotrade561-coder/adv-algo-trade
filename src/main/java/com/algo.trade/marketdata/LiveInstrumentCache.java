@@ -1,0 +1,179 @@
+package com.algo.trade.marketdata;
+
+import com.algo.trade.domain.IndexType;
+import com.algo.trade.domain.Instrument;
+import com.algo.trade.domain.OptionInstrument;
+import com.algo.trade.domain.UnderlyingSymbol;
+import com.algo.trade.indicator.GreeksCalculator;
+import com.algo.trade.indicator.IVRankTracker;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Component;
+
+import java.time.LocalDate;
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
+
+/**
+ * Extends InstrumentCache with live OptionInstrument objects enriched
+ * with real-time price, OI, bid/ask, and Greeks from the WebSocket tick feed.
+ *
+ * Populated when instruments are loaded from Kite master CSV.
+ * Updated on every tick via updateOptionMarketData().
+ */
+@Component
+public class LiveInstrumentCache {
+
+    private static final Logger log = LoggerFactory.getLogger(LiveInstrumentCache.class);
+
+    private final GreeksCalculator greeksCalculator;
+    private final IVRankTracker ivRankTracker;
+
+    // token → OptionInstrument (live enriched)
+    private final Map<Long, OptionInstrument> byToken = new ConcurrentHashMap<>();
+    // symbol → OptionInstrument
+    private final Map<String, OptionInstrument> bySymbol = new ConcurrentHashMap<>();
+    // IndexType → current futures/spot price
+    private final Map<IndexType, Double> futuresPriceCache = new ConcurrentHashMap<>();
+
+    public LiveInstrumentCache(GreeksCalculator greeksCalculator, IVRankTracker ivRankTracker) {
+        this.greeksCalculator = greeksCalculator;
+        this.ivRankTracker = ivRankTracker;
+    }
+
+    // ── Population ────────────────────────────────────────────────────────────
+
+    /** Build OptionInstrument objects from the raw Instrument list after refresh. */
+    public void populate(List<Instrument> instruments) {
+        byToken.clear();
+        bySymbol.clear();
+        int count = 0;
+        for (Instrument inst : instruments) {
+            if (!inst.tradable() || inst.optionType().isEmpty()) continue;
+            IndexType indexType = resolveIndexType(inst);
+            if (indexType == null) continue;
+
+            OptionInstrument opt = new OptionInstrument(
+                    inst.instrumentToken(),
+                    inst.tradingSymbol(),
+                    inst.exchange(),
+                    indexType,
+                    inst.strike().map(s -> s.intValue()).orElse(0),
+                    inst.optionType().get().name(),
+                    inst.expiry().orElse(LocalDate.MAX),
+                    inst.lotSize()
+            );
+            byToken.put(inst.instrumentToken(), opt);
+            bySymbol.put(inst.tradingSymbol(), opt);
+            count++;
+        }
+        log.info("LiveInstrumentCache populated: {} option instruments", count);
+    }
+
+    // ── Live updates from WebSocket ───────────────────────────────────────────
+
+    /** Called on every option tick from KiteWebSocketClient. */
+    public void updateOptionMarketData(long token, double price, long volume,
+                                        long oi, double bestBid, double bestAsk,
+                                        long bidQty, long askQty) {
+        OptionInstrument inst = byToken.get(token);
+        if (inst == null) return;
+
+        inst.setLastPrice(price);
+        if (volume > 0) inst.setVolume(volume);
+        if (oi > 0) {
+            if (inst.getOpenInterest() > 0) inst.setPrevOpenInterest(inst.getOpenInterest());
+            inst.setOpenInterest(oi);
+        }
+        if (bestBid > 0) inst.setBestBid(bestBid);
+        if (bestAsk > 0) inst.setBestAsk(bestAsk);
+        if (bidQty > 0) inst.setBestBidQty(bidQty);
+        if (askQty > 0) inst.setBestAskQty(askQty);
+
+        // Recalculate Greeks on every price update
+        double underlying = futuresPriceCache.getOrDefault(inst.getIndexType(), 0.0);
+        if (underlying > 0) {
+            greeksCalculator.calculateAndUpdate(inst, underlying);
+        }
+    }
+
+    /** Update futures/spot price — called when index spot tick arrives. */
+    public void updateFuturesPrice(IndexType indexType, double price) {
+        futuresPriceCache.put(indexType, price);
+        // Record ATM IV for IV rank tracking
+        try {
+            ExpiryCalendar cal = new ExpiryCalendar();
+            LocalDate expiry = cal.getCurrentWeeklyExpiry(indexType);
+            int atm = indexType.roundToATM(price);
+            getOption(indexType, atm, "CE", expiry).ifPresent(ce -> {
+                if (ce.getImpliedVolatility() > 0) {
+                    ivRankTracker.recordIV(indexType, ce.getImpliedVolatility());
+                }
+            });
+        } catch (Exception ignored) {}
+    }
+
+    // ── Lookups ───────────────────────────────────────────────────────────────
+
+    public Optional<OptionInstrument> getByToken(long token) {
+        return Optional.ofNullable(byToken.get(token));
+    }
+
+    public Optional<OptionInstrument> getBySymbol(String symbol) {
+        return Optional.ofNullable(bySymbol.get(symbol));
+    }
+
+    public Optional<OptionInstrument> getOption(IndexType indexType, int strike,
+                                                  String optionType, LocalDate expiry) {
+        return byToken.values().stream()
+                .filter(o -> o.getIndexType() == indexType)
+                .filter(o -> o.getStrikePrice() == strike)
+                .filter(o -> o.getOptionType().equals(optionType))
+                .filter(o -> o.getExpiry().equals(expiry))
+                .findFirst();
+    }
+
+    /** All options for a given index and expiry, sorted by strike. */
+    public List<OptionInstrument> getStrikeChain(IndexType indexType, LocalDate expiry) {
+        return byToken.values().stream()
+                .filter(o -> o.getIndexType() == indexType)
+                .filter(o -> o.getExpiry().equals(expiry))
+                .sorted(Comparator.comparingInt(OptionInstrument::getStrikePrice))
+                .collect(Collectors.toList());
+    }
+
+    /** All tokens to subscribe for a given index + expiry (ATM ± N strikes). */
+    public List<Long> getSubscriptionTokens(IndexType indexType, LocalDate expiry, int strikesEachSide) {
+        double spot = futuresPriceCache.getOrDefault(indexType, 0.0);
+        if (spot == 0) return List.of();
+        int atm = indexType.roundToATM(spot);
+        int interval = indexType.strikeInterval();
+        List<Long> tokens = new ArrayList<>();
+        for (int i = -strikesEachSide; i <= strikesEachSide; i++) {
+            int strike = atm + (i * interval);
+            getOption(indexType, strike, "CE", expiry).ifPresent(o -> tokens.add(o.getInstrumentToken()));
+            getOption(indexType, strike, "PE", expiry).ifPresent(o -> tokens.add(o.getInstrumentToken()));
+        }
+        return tokens;
+    }
+
+    public double getFuturesPrice(IndexType indexType) {
+        return futuresPriceCache.getOrDefault(indexType, 0.0);
+    }
+
+    public boolean isReady() { return !byToken.isEmpty(); }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private IndexType resolveIndexType(Instrument inst) {
+        String name = inst.name();
+        String exchange = inst.exchange();
+        if ("BFO".equals(exchange) && name.contains("SENSEX")) return IndexType.SENSEX;
+        if (name.equals("BANKNIFTY") || name.startsWith("BANKNIFTY")) return IndexType.BANKNIFTY;
+        if (name.equals("FINNIFTY") || name.startsWith("FINNIFTY")) return IndexType.FINNIFTY;
+        if (name.equals("MIDCPNIFTY") || name.startsWith("MIDCPNIFTY")) return IndexType.MIDCPNIFTY;
+        if (name.equals("NIFTY") || name.startsWith("NIFTY")) return IndexType.NIFTY;
+        return null;
+    }
+}

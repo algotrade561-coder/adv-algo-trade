@@ -356,6 +356,55 @@ a {
   font-size: 12px;
   font-weight: 800;
   text-transform: uppercase;
+  color: var(--ink);
+}
+
+.ag-theme-quartz .ag-header-cell-text,
+.ag-theme-quartz .ag-header-group-text,
+.ag-theme-quartz .ag-floating-filter-button,
+.ag-theme-quartz .ag-icon {
+  color: var(--ink) !important;
+  fill: var(--ink) !important;
+}
+
+.ag-theme-quartz .ag-header {
+  background:
+    linear-gradient(90deg, rgba(23, 38, 58, 0.98), rgba(21, 31, 45, 0.96), rgba(24, 27, 29, 0.96));
+  border-bottom: 1px solid #36506a;
+}
+
+.ag-theme-quartz .ag-header-row-column,
+.ag-theme-quartz .ag-header-row-floating-filter {
+  background: transparent;
+}
+
+.ag-theme-quartz .ag-header-cell,
+.ag-theme-quartz .ag-floating-filter {
+  border-right: 1px solid rgba(155, 202, 255, 0.14);
+}
+
+.ag-theme-quartz .ag-header-cell:last-child,
+.ag-theme-quartz .ag-floating-filter:last-child {
+  border-right: none;
+}
+
+.ag-theme-quartz .table-header-cell {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0)),
+    linear-gradient(90deg, rgba(97, 168, 255, 0.08), rgba(97, 168, 255, 0.02));
+}
+
+.ag-theme-quartz .ag-header-cell:hover {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.01)),
+    linear-gradient(90deg, rgba(97, 168, 255, 0.12), rgba(97, 168, 255, 0.04));
+}
+
+.ag-theme-quartz .ag-floating-filter-body input {
+  background: rgba(10, 18, 25, 0.86);
+  color: var(--text);
+  border: 1px solid rgba(155, 202, 255, 0.22);
+  border-radius: 6px;
 }
 
 .ag-theme-quartz .ag-cell {
@@ -619,6 +668,49 @@ pre {
 
   .grid.two,
   .grid.three,
+  .form-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 768px) {
+  .page {
+    padding: 12px;
+  }
+
+  .page-title {
+    font-size: 24px;
+  }
+
+  .metric-value {
+    font-size: 22px;
+  }
+
+  .metric {
+    min-height: 96px;
+    padding-left: 14px;
+  }
+
+  .action-strip {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .table-wrap {
+    max-height: min(50vh, 480px);
+  }
+
+  .ag-grid-wrap {
+    height: min(50vh, 480px);
+    min-height: 200px;
+  }
+
+  .json-box {
+    max-height: 280px;
+    font-size: 12px;
+  }
+
   .form-grid {
     grid-template-columns: 1fr;
   }

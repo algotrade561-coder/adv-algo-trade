@@ -1,0 +1,345 @@
+package com.algo.trade.controller;
+
+import com.algo.trade.config.ConfigDocumentation;
+import com.algo.trade.config.ConfigDocumentation.ConfigResponse;
+import com.algo.trade.config.TradingProperties;
+import com.algo.trade.domain.ExecutionMode;
+import com.algo.trade.domain.MarketDataMode;
+import com.algo.trade.domain.TradeStatus;
+import com.algo.trade.domain.TradingMode;
+import com.algo.trade.domain.UnderlyingSymbol;
+import com.algo.trade.broker.zerodha.KiteAccessTokenStore;
+import com.algo.trade.broker.zerodha.KiteWebSocketClient;
+import com.algo.trade.broker.BrokerClient;
+import com.algo.trade.execution.TradingStateService;
+import com.algo.trade.marketdata.InstrumentCache;
+import com.algo.trade.notification.TelegramAlertService;
+import com.algo.trade.persistence.TradeRepository;
+import com.algo.trade.reporting.ReportingService;
+import com.algo.trade.risk.MarketGuard;
+import java.math.BigDecimal;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+public class TradingControlController {
+
+    private static final Logger log = LoggerFactory.getLogger(TradingControlController.class);
+
+    private final TradingProperties tradingProperties;
+    private final TradingStateService tradingStateService;
+    private final TelegramAlertService telegramAlertService;
+    private final InstrumentCache instrumentCache;
+    private final KiteAccessTokenStore tokenStore;
+    private final KiteWebSocketClient webSocketClient;
+    private final BrokerClient brokerClient;
+    private final TradeRepository tradeRepository;
+    private final ReportingService reportingService;
+    private final MarketGuard marketGuard;
+
+    public TradingControlController(
+            TradingProperties tradingProperties,
+            TradingStateService tradingStateService,
+            TelegramAlertService telegramAlertService,
+            InstrumentCache instrumentCache,
+            KiteAccessTokenStore tokenStore,
+            KiteWebSocketClient webSocketClient,
+            BrokerClient brokerClient,
+            TradeRepository tradeRepository,
+            ReportingService reportingService,
+            MarketGuard marketGuard
+    ) {
+        this.tradingProperties = tradingProperties;
+        this.tradingStateService = tradingStateService;
+        this.telegramAlertService = telegramAlertService;
+        this.instrumentCache = instrumentCache;
+        this.tokenStore = tokenStore;
+        this.webSocketClient = webSocketClient;
+        this.brokerClient = brokerClient;
+        this.tradeRepository = tradeRepository;
+        this.reportingService = reportingService;
+        this.marketGuard = marketGuard;
+    }
+
+    @GetMapping("/config")
+    public ConfigResponse config() {
+        return ConfigDocumentation.from(tradingProperties, status());
+    }
+
+    /**
+     * Returns all current entry blocking reasons from every layer:
+     * scanner state, halt/approval, risk limits, and market guard.
+     * Empty blockingReasons = all clear.
+     */
+    @GetMapping("/trading/status")
+    public Map<String, Object> tradingStatus() {
+        var pnl = reportingService.pnl();
+        int openTrades = tradeRepository.findByStatus(TradeStatus.OPEN).size();
+        int tradesToday = reportingService.trades().stream()
+                .filter(t -> t.getEntryTime() != null &&
+                        t.getEntryTime().isAfter(java.time.LocalDate.now(
+                                tradingProperties.timezone()).atStartOfDay(
+                                tradingProperties.timezone()).toInstant()))
+                .toList().size();
+        // Consecutive losses
+        var allTrades = reportingService.trades().stream()
+                .filter(t -> t.getStatus() == com.algo.trade.domain.TradeStatus.CLOSED)
+                .sorted((a, b) -> b.getEntryTime().compareTo(a.getEntryTime()))
+                .toList();
+        int consecutiveLosses = 0;
+        for (var t : allTrades) {
+            if (t.getRealizedPnl().signum() < 0) consecutiveLosses++;
+            else break;
+        }
+
+        java.util.List<String> blockingReasons = new java.util.ArrayList<>(
+                tradingStateService.entryBlockReasons(
+                        pnl.realizedPnl(), openTrades, tradesToday, consecutiveLosses,
+                        webSocketClient.isConnected()));
+
+        // Layer 4 — MarketGuard
+        String marketBlock = marketGuard.longPremiumBlockReason();
+        if (marketBlock != null) blockingReasons.add(marketBlock);
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("entryAllowed", blockingReasons.isEmpty());
+        result.put("blockingReasons", blockingReasons);
+        result.put("openTrades", openTrades);
+        result.put("tradesToday", tradesToday);
+        result.put("consecutiveLosses", consecutiveLosses);
+        result.put("dailyPnl", pnl.realizedPnl());
+        result.put("effectiveDailyLossLimit", tradingStateService.dailyLossExtension() > 0
+                ? tradingProperties.risk().totalCapital().doubleValue()
+                    * tradingProperties.risk().maxDailyLossPercent().doubleValue() / 100.0
+                    + tradingStateService.dailyLossExtension()
+                : tradingProperties.risk().totalCapital().doubleValue()
+                    * tradingProperties.risk().maxDailyLossPercent().doubleValue() / 100.0);
+        return result;
+    }
+
+    @PostMapping("/mode")
+    public ResponseEntity<Map<String, Object>> mode(@RequestBody ModeRequest request) {
+        if (request.mode() == TradingMode.LIVE && !tradingProperties.liveTradingEnabled()) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "accepted", false,
+                    "reason", "LIVE mode requires trading.live-trading-enabled=true"
+            ));
+        }
+        tradingStateService.setRequestedMode(request.mode());
+        telegramAlertService.tradingStateChanged("Mode changed to " + request.mode(), status());
+        return ResponseEntity.ok(status());
+    }
+
+    @PostMapping("/start")
+    public Map<String, Object> start() {
+        tradingStateService.start();
+        telegramAlertService.tradingStateChanged("Scanner started", status());
+        return status();
+    }
+
+    @PostMapping("/stop")
+    public Map<String, Object> stop() {
+        tradingStateService.stop();
+        telegramAlertService.tradingStateChanged("Scanner stopped", status());
+        return status();
+    }
+
+    @PostMapping("/kill-switch")
+    public Map<String, Object> killSwitch(@RequestBody KillSwitchRequest request) {
+        if (request.enabled()) {
+            tradingStateService.enableKillSwitch();
+        } else {
+            tradingStateService.clearKillSwitch();
+        }
+        telegramAlertService.tradingStateChanged("Kill switch set to " + request.enabled(), status());
+        return status();
+    }
+
+    // ── Halt mode ─────────────────────────────────────────────────────────────
+
+    @PostMapping("/halt/soft")
+    public Map<String, Object> softHalt(@RequestBody HaltRequest request) {
+        String reason = request.reason() != null ? request.reason() : "Manual soft halt";
+        tradingStateService.softHalt(reason);
+        telegramAlertService.tradingStateChanged("Soft halt: " + reason, status());
+        return status();
+    }
+
+    @PostMapping("/halt/resume")
+    public Map<String, Object> resumeFromHalt() {
+        tradingStateService.resumeFromHalt();
+        telegramAlertService.tradingStateChanged("Halt cleared — trading resumed", status());
+        return status();
+    }
+
+    // ── Daily approval gate ───────────────────────────────────────────────────
+
+    @PostMapping("/daily/approve")
+    public Map<String, Object> approveToday() {
+        tradingStateService.approveToday();
+        telegramAlertService.tradingStateChanged("Daily trading approved", status());
+        return status();
+    }
+
+    @PostMapping("/daily/revoke")
+    public Map<String, Object> revokeApproval() {
+        tradingStateService.revokeApproval();
+        telegramAlertService.tradingStateChanged("Daily approval revoked", status());
+        return status();
+    }
+
+    // ── Daily loss limit extension ────────────────────────────────────────────
+
+    @PostMapping("/daily/extend-limit")
+    public Map<String, Object> extendDailyLimit() {
+        String msg = tradingStateService.extendDailyLimit();
+        telegramAlertService.tradingStateChanged(msg, status());
+        Map<String, Object> resp = new LinkedHashMap<>(status());
+        resp.put("message", msg);
+        return resp;
+    }
+
+    // ── Scan underlyings ──────────────────────────────────────────────────────
+
+    @GetMapping("/scan/underlyings")
+    public Map<String, Object> scanUnderlyings() {
+        return status();
+    }
+
+    @PostMapping("/scan/underlyings/{underlying}")
+    public Map<String, Object> scanUnderlying(
+            @PathVariable UnderlyingSymbol underlying,
+            @RequestBody ScanUnderlyingRequest request
+    ) {
+        tradingStateService.setUnderlyingScanEnabled(underlying, request.enabled());
+        telegramAlertService.tradingStateChanged("Scan toggle " + underlying + "=" + request.enabled(), status());
+        return status();
+    }
+
+    // ── Routing ───────────────────────────────────────────────────────────────
+
+    @GetMapping("/routing")
+    public Map<String, Object> routing() {
+        return status();
+    }
+
+    @PostMapping("/routing")
+    public ResponseEntity<Map<String, Object>> routing(@RequestBody RoutingRequest request) {
+        if (request.executionMode() == ExecutionMode.ZERODHA && !tradingProperties.liveTradingEnabled()) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "accepted", false,
+                    "reason", "ZERODHA execution requires trading.live-trading-enabled=true"
+            ));
+        }
+        if (request.marketDataMode() == MarketDataMode.ZERODHA && !tokenStore.authenticated()) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "accepted", false,
+                    "reason", "ZERODHA market data requires a Kite access token. Call /auth/kite/session first."
+            ));
+        }
+        tradingStateService.setRoutingModes(request.marketDataMode(), request.executionMode());
+        if (request.marketDataMode() != null) instrumentCache.refresh();
+        telegramAlertService.tradingStateChanged("Routing changed", status());
+        return ResponseEntity.ok(status());
+    }
+
+    // ── Scheduler toggle ──────────────────────────────────────────────────────
+
+    @PostMapping("/scheduler")
+    public Map<String, Object> toggleScheduler(@RequestBody SchedulerRequest request) {
+        tradingStateService.setSchedulerEnabled(request.enabled());
+        telegramAlertService.tradingStateChanged("REST poll scheduler " + (request.enabled() ? "enabled" : "disabled"), status());
+        return status();
+    }
+
+    // ── WebSocket control ─────────────────────────────────────────────────────
+
+    @PostMapping("/websocket/reconnect")
+    public Map<String, Object> reconnectWebSocket() {
+        webSocketClient.disconnect();
+        webSocketClient.connect();
+        return status();
+    }
+
+    @PostMapping("/websocket/disconnect")
+    public Map<String, Object> disconnectWebSocket() {
+        webSocketClient.disconnect();
+        return status();
+    }
+
+    // ── Manual order ──────────────────────────────────────────────────────────
+
+    @PostMapping("/orders/place")
+    public ResponseEntity<Map<String, Object>> placeManualOrder(@RequestBody ManualOrderRequest request) {
+        log.info("Manual order requested: instrument={}, side={}, type={}, product={}, qty={}, limit={}, tag={}",
+                request.instrumentKey(), request.side(), request.orderType(), request.productType(),
+                request.quantity(), request.limitPrice(), request.tag());
+        try {
+            var orderRequest = new com.algo.trade.domain.OrderRequest(
+                    "MANUAL-" + java.util.UUID.randomUUID(),
+                    request.instrumentKey(),
+                    com.algo.trade.domain.OrderSide.valueOf(request.side()),
+                    com.algo.trade.domain.OrderType.valueOf(request.orderType()),
+                    com.algo.trade.domain.ProductType.valueOf(request.productType()),
+                    request.quantity(),
+                    request.limitPrice() != null ? java.util.Optional.of(request.limitPrice()) : java.util.Optional.empty(),
+                    request.tag() != null ? request.tag() : "manual-ui"
+            );
+            var response = brokerClient.placeOrder(orderRequest);
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("accepted", true);
+            body.put("clientOrderId", response.clientOrderId());
+            body.put("brokerOrderId", response.brokerOrderId().orElse(null));
+            body.put("status", response.status().name());
+            body.put("filledQuantity", response.filledQuantity());
+            body.put("averageFillPrice", response.averageFillPrice().orElse(null));
+            body.put("rejectionReason", response.rejectionReason().orElse(null));
+            return ResponseEntity.ok(body);
+        } catch (Exception ex) {
+            log.warn("Manual order failed: {}", ex.getMessage());
+            return ResponseEntity.internalServerError().body(Map.of("accepted", false, "reason", ex.getMessage()));
+        }
+    }
+
+    // ── Status ────────────────────────────────────────────────────────────────
+
+    private Map<String, Object> status() {
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("running", tradingStateService.running());
+        map.put("killSwitch", tradingStateService.killSwitchEnabled());
+        map.put("haltMode", tradingStateService.haltMode());
+        map.put("dailyApproved", tradingStateService.isDailyApproved());
+        map.put("extensionsUsedToday", tradingStateService.extensionsUsedToday());
+        map.put("dailyLossExtension", tradingStateService.dailyLossExtension());
+        map.put("requestedMode", tradingStateService.requestedMode());
+        map.put("configuredMode", tradingProperties.mode());
+        map.put("marketDataMode", tradingStateService.marketDataMode());
+        map.put("executionMode", tradingStateService.executionMode());
+        map.put("liveTradingEnabled", tradingProperties.liveTradingEnabled());
+        map.put("enabledUnderlyings", tradingStateService.enabledUnderlyings());
+        map.put("schedulerEnabled", tradingStateService.schedulerEnabled());
+        map.put("webSocketConnected", webSocketClient.isConnected());
+        map.put("updatedAt", tradingStateService.updatedAt());
+        return map;
+    }
+
+    // ── Request records ───────────────────────────────────────────────────────
+
+    public record ModeRequest(TradingMode mode) {}
+    public record KillSwitchRequest(boolean enabled) {}
+    public record SchedulerRequest(boolean enabled) {}
+    public record ScanUnderlyingRequest(boolean enabled) {}
+    public record RoutingRequest(MarketDataMode marketDataMode, ExecutionMode executionMode) {}
+    public record HaltRequest(String reason) {}
+    public record ManualOrderRequest(
+            String instrumentKey, String side, String orderType,
+            String productType, int quantity, BigDecimal limitPrice, String tag) {}
+}

@@ -1,8 +1,9 @@
 version: "3"
 agent:
+  authtoken: 3CZw8TBOqAL1XgYiwGarfxIzgY5_6uAaNr9FUNoYMUA21GQVy
   update_channel: stable
 
 tunnels:
   app:
     proto: http
-    addr: 8080
+    addr: 8089

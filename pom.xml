@@ -11,8 +11,8 @@
         <relativePath/>
     </parent>
 
-    <groupId>com.kiteapioptions</groupId>
-    <artifactId>kite-api-options</artifactId>
+    <groupId>com.algo.trade</groupId>
+    <artifactId>adv-algo-trade</artifactId>
     <version>0.1.0-SNAPSHOT</version>
     <name>Kite API Options</name>
     <description>Semi-automated NIFTY and BANKNIFTY option buying system with paper-first execution.</description>
@@ -34,6 +34,12 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <!-- OkHttp for Kite WebSocket binary protocol -->
+        <dependency>
+            <groupId>com.squareup.okhttp3</groupId>
+            <artifactId>okhttp</artifactId>
+            <version>4.12.0</version>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>

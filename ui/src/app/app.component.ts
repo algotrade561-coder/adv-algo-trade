@@ -1,10 +1,10 @@
-import { Component, Inject } from '@angular/core';
+import { Component, HostListener, Inject, ViewChild } from '@angular/core';
 import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 import { catchError, forkJoin, of } from 'rxjs';
 import { MatButtonModule } from '@angular/material/button';
 import { MAT_DIALOG_DATA, MatDialog, MatDialogModule } from '@angular/material/dialog';
 import { MatIconModule } from '@angular/material/icon';
-import { MatSidenavModule } from '@angular/material/sidenav';
+import { MatSidenav, MatSidenavModule } from '@angular/material/sidenav';
 import { MatToolbarModule } from '@angular/material/toolbar';
 import { MatListModule } from '@angular/material/list';
 import { ApiService } from './core/api.service';
@@ -236,19 +236,21 @@ export class HealthDialogComponent {
   ],
   template: `
     <mat-sidenav-container class="shell">
-      <mat-sidenav mode="side" opened class="nav">
+      <mat-sidenav #sidenav [mode]="mobile ? 'over' : 'side'" [opened]="!mobile" class="nav"
+                   (closedStart)="null">
         <div class="brand">
           <div class="brand-mark">
             <mat-icon>show_chart</mat-icon>
           </div>
-          <div>
+          <div class="brand-text">
             <strong>AlgoTrader Pro</strong>
             <span>Kite control console</span>
           </div>
         </div>
         <mat-nav-list>
           @for (item of navItems; track item.path) {
-            <a mat-list-item [routerLink]="item.path" routerLinkActive="active-link">
+            <a mat-list-item [routerLink]="item.path" routerLinkActive="active-link"
+               (click)="onNavClick()">
               <mat-icon matListItemIcon>{{ item.icon }}</mat-icon>
               <span matListItemTitle>{{ item.label }}</span>
             </a>
@@ -258,14 +260,17 @@ export class HealthDialogComponent {
 
       <mat-sidenav-content>
         <mat-toolbar class="topbar">
+          <button class="menu-toggle" mat-icon-button (click)="sidenav.toggle()">
+            <mat-icon>menu</mat-icon>
+          </button>
           <div>
             <span class="topbar-title">Trading Operations</span>
             <span class="topbar-subtitle">Scanner, execution, auth, and reports</span>
           </div>
           <span class="spacer"></span>
-          <button mat-stroked-button (click)="openHealthDialog()">
+          <button mat-stroked-button (click)="openHealthDialog()" class="health-btn">
             <mat-icon>health_and_safety</mat-icon>
-            API Health
+            <span class="health-label">API Health</span>
           </button>
         </mat-toolbar>
         <router-outlet></router-outlet>
@@ -276,6 +281,10 @@ export class HealthDialogComponent {
     .shell {
       min-height: 100vh;
       background: transparent;
+    }
+
+    .menu-toggle {
+      display: none;
     }
 
     .nav {
@@ -317,6 +326,7 @@ export class HealthDialogComponent {
       border-radius: 8px;
       display: grid;
       place-items: center;
+      flex-shrink: 0;
       background: linear-gradient(135deg, var(--accent), var(--cyan));
       color: #071018;
       box-shadow: 0 12px 22px rgba(0, 0, 0, 0.32);
@@ -384,12 +394,13 @@ export class HealthDialogComponent {
       margin-top: 2px;
     }
 
-    @media (max-width: 900px) {
+    /* ── Tablet: collapse nav to icons only ── */
+    @media (max-width: 900px) and (min-width: 769px) {
       .nav {
         width: 82px;
       }
 
-      .brand div:last-child,
+      .brand-text,
       a span[matListItemTitle],
       .topbar-subtitle {
         display: none;
@@ -399,24 +410,80 @@ export class HealthDialogComponent {
         padding: 0 16px;
       }
     }
+
+    /* ── Mobile: overlay nav + hamburger ── */
+    @media (max-width: 768px) {
+      .menu-toggle {
+        display: inline-flex;
+        margin-right: 8px;
+        color: var(--ink);
+      }
+
+      .nav {
+        width: 280px;
+      }
+
+      .topbar {
+        padding: 0 12px;
+        min-height: 56px;
+      }
+
+      .topbar-title {
+        font-size: 15px;
+      }
+
+      .topbar-subtitle {
+        display: none;
+      }
+
+      .health-label {
+        display: none;
+      }
+
+      .health-btn {
+        min-width: 40px;
+        padding: 0 8px;
+      }
+    }
   `]
 })
 export class AppComponent {
+  @ViewChild('sidenav') sidenav!: MatSidenav;
+  mobile = false;
+
+  private static readonly MOBILE_BREAKPOINT = 768;
+
   constructor(
     private readonly api: ApiService,
     private readonly dialog: MatDialog
   ) {
+    this.checkMobile();
+  }
+
+  @HostListener('window:resize')
+  onResize(): void {
+    this.checkMobile();
+  }
+
+  private checkMobile(): void {
+    this.mobile = window.innerWidth <= AppComponent.MOBILE_BREAKPOINT;
+  }
+
+  onNavClick(): void {
+    if (this.mobile) {
+      this.sidenav.close();
+    }
   }
 
   readonly navItems: NavItem[] = [
-    { label: 'Dashboard', path: '/dashboard', icon: 'dashboard' },
-    { label: 'Execution', path: '/execution', icon: 'play_circle' },
-    { label: 'Config', path: '/config', icon: 'settings' },
-    { label: 'Monitoring', path: '/monitoring', icon: 'monitoring' },
-    { label: 'Reports', path: '/reports', icon: 'description' },
-    { label: 'Kite Auth', path: '/auth', icon: 'lock_open' },
-    { label: 'Backtests', path: '/backtests', icon: 'science' },
-    { label: 'Data', path: '/data-maintenance', icon: 'storage' }
+    { label: 'Dashboard', path: 'dashboard', icon: 'dashboard' },
+    { label: 'Strategies', path: 'strategies', icon: 'auto_awesome' },
+    { label: 'Execution', path: 'execution', icon: 'play_circle' },
+    { label: 'Monitoring', path: 'monitoring', icon: 'monitoring' },
+    { label: 'Reports', path: 'reports', icon: 'description' },
+    { label: 'Backtest', path: 'backtests', icon: 'science' },
+    { label: 'Config', path: 'config', icon: 'settings' },
+    { label: 'Kite Auth', path: 'auth', icon: 'lock_open' }
   ];
 
   openHealthDialog(): void {

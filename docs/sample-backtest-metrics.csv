@@ -1,8 +1,0 @@
-metric,value
-totalTrades,4
-winRatePercent,50.00
-averageWin,1800.00
-averageLoss,-900.00
-expectancy,450.00
-maxDrawdown,900.00
-cumulativePnl,1800.00

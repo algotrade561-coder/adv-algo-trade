@@ -1,4 +1,0 @@
-  mode: LIVE
-  market-data-mode: ZERODHA
-  execution-mode: ZERODHA
-  live-trading-enabled: true

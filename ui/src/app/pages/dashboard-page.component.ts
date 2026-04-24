@@ -1,231 +1,400 @@
-import { ChangeDetectorRef, Component, OnInit } from '@angular/core';
+import { ChangeDetectorRef, Component, OnDestroy, OnInit } from '@angular/core';
 import { DecimalPipe } from '@angular/common';
-import { catchError, forkJoin, of } from 'rxjs';
+import { catchError, forkJoin, of, interval, Subscription } from 'rxjs';
 import { MatButtonModule } from '@angular/material/button';
-import { MatChipsModule } from '@angular/material/chips';
+import { MatIconModule } from '@angular/material/icon';
 import { ApiService } from '../core/api.service';
-import { ConfigResponse, PnlSnapshot, RuntimeStatus, StrategyDecision } from '../core/models';
-import { DataTableComponent } from '../shared/data-table.component';
+import { MarketSnapshot, PnlSnapshot, RuntimeStatus, StrategyDecision, TradingStatus } from '../core/models';
 
 @Component({
   selector: 'app-dashboard-page',
   standalone: true,
-  imports: [DecimalPipe, MatButtonModule, MatChipsModule, DataTableComponent],
+  imports: [DecimalPipe, MatButtonModule, MatIconModule],
   template: `
     <section class="page">
-      <div class="row">
+      <div class="top-row">
         <div>
           <h1 class="page-title">Dashboard</h1>
-          <p class="page-subtitle">Current state, risk posture, latest signal, and PnL.</p>
+          <p class="page-subtitle">System health at a glance.</p>
         </div>
         <span class="spacer"></span>
-        <span class="badge" [class.ok]="!loadError" [class.warn]="loadError">
-          {{ loading ? 'Refreshing' : lastUpdatedAt ? 'Updated ' + lastUpdatedAt : 'Waiting' }}
-        </span>
-        <button class="action-button" mat-flat-button color="primary" (click)="load()">Refresh</button>
+        <span class="ts">{{ lastUpdatedAt ? 'Updated ' + lastUpdatedAt : '' }}</span>
+        <button mat-stroked-button (click)="load()"><mat-icon>refresh</mat-icon> Refresh</button>
       </div>
+
       @if (loadError) {
-        <p class="page-subtitle status-warn" style="margin-top: -12px;">{{ loadError }}</p>
+        <div class="err-bar"><mat-icon>error_outline</mat-icon> {{ loadError }}</div>
       }
 
       @if (!runtime) {
-        <div class="panel metric">
-          <span class="metric-label">Server status</span>
-          <span class="metric-value status-warn">Loading</span>
-          <span class="metric-note">Waiting for runtime status from the server.</span>
-        </div>
+        <div class="loading-card"><mat-icon>hourglass_empty</mat-icon><span>Connecting to server…</span></div>
       } @else {
-        <div class="grid three">
-          <div class="panel metric">
-            <span class="metric-label">Scanner</span>
-            <span class="metric-value" [class.status-ok]="runtime.running" [class.status-warn]="!runtime.running">
-              {{ runtime.running ? 'Running' : 'Stopped' }}
-            </span>
-            <span class="metric-note">{{ runtime.updatedAt || 'Waiting for runtime' }}</span>
+
+        <!-- ── Status Chips ──────────────────────────────────────────── -->
+        <div class="chip-row">
+          <div class="chip" [class.c-ok]="runtime.running" [class.c-warn]="!runtime.running">
+            <mat-icon>{{ runtime.running ? 'play_circle' : 'pause_circle' }}</mat-icon> Scanner {{ runtime.running ? 'Running' : 'Stopped' }}
           </div>
-          <div class="panel metric">
-            <span class="metric-label">Kill switch</span>
-            <span class="metric-value" [class.status-bad]="runtime.killSwitch" [class.status-ok]="!runtime.killSwitch">
-              {{ runtime.killSwitch ? 'Enabled' : 'Clear' }}
-            </span>
-            <span class="metric-note">{{ runtime.killSwitch ? 'Trading is blocked' : 'Risk gate is clear' }}</span>
+          <div class="chip" [class.c-ok]="runtime.webSocketConnected" [class.c-bad]="!runtime.webSocketConnected">
+            <mat-icon>{{ runtime.webSocketConnected ? 'wifi' : 'wifi_off' }}</mat-icon> WebSocket {{ runtime.webSocketConnected ? 'Connected' : 'Disconnected' }}
           </div>
-          <div class="panel metric">
-            <span class="metric-label">Total PnL</span>
-            <span class="metric-value" [class.status-ok]="pnlValue >= 0" [class.status-bad]="pnlValue < 0">
-              {{ pnlValue | number:'1.2-2' }}
-            </span>
-            <span class="metric-note">Realized + unrealized</span>
+          <div class="chip" [class.c-bad]="runtime.killSwitch" [class.c-ok]="!runtime.killSwitch">
+            <mat-icon>{{ runtime.killSwitch ? 'block' : 'verified_user' }}</mat-icon> Kill Switch {{ runtime.killSwitch ? 'ON' : 'Clear' }}
+          </div>
+          <div class="chip" [class.c-bad]="runtime.haltMode === 'HARD'" [class.c-warn]="runtime.haltMode === 'SOFT'" [class.c-ok]="runtime.haltMode === 'NONE'">
+            <mat-icon>pause_circle</mat-icon> {{ runtime.haltMode }}
+          </div>
+          <div class="chip" [class.c-ok]="runtime.dailyApproved" [class.c-warn]="!runtime.dailyApproved">
+            <mat-icon>{{ runtime.dailyApproved ? 'thumb_up' : 'pending' }}</mat-icon> {{ runtime.dailyApproved ? 'Approved' : 'Not Approved' }}
           </div>
         </div>
 
-        <div class="grid two" style="margin-top: 16px;">
-          <div class="panel">
-            <h2>Runtime</h2>
-            <div class="row">
-              <span class="badge">{{ runtime.configuredMode }}</span>
-              <span class="badge">{{ runtime.marketDataMode }} data</span>
-              <span class="badge">{{ runtime.executionMode }} execution</span>
-              <span class="badge" [class.ok]="runtime.liveTradingEnabled" [class.warn]="!runtime.liveTradingEnabled">
-                {{ runtime.liveTradingEnabled ? 'Live enabled' : 'Live blocked' }}
+        <!-- ── Market Indicators ─────────────────────────────────────── -->
+        <div class="market-row">
+
+          <div class="mcard index-card">
+            <div class="mc-top">
+              <span class="mc-label">NIFTY 50</span>
+              <span class="mc-badge badge-muted">SPOT</span>
+            </div>
+            <div class="mc-value">{{ (market?.nifty ?? 0) > 0 ? (market!.nifty | number:'1.2-2') : '—' }}</div>
+            <div class="mc-desc">{{ (market?.nifty ?? 0) > 0 ? 'Live from WebSocket' : 'Waiting for tick' }}</div>
+          </div>
+
+          <div class="mcard index-card">
+            <div class="mc-top">
+              <span class="mc-label">BANK NIFTY</span>
+              <span class="mc-badge badge-muted">SPOT</span>
+            </div>
+            <div class="mc-value">{{ (market?.banknifty ?? 0) > 0 ? (market!.banknifty | number:'1.2-2') : '—' }}</div>
+            <div class="mc-desc">{{ (market?.banknifty ?? 0) > 0 ? 'Live from WebSocket' : 'Waiting for tick' }}</div>
+          </div>
+
+          <div class="mcard"
+            [class.mc-ok]="market?.vixStatus === 'NORMAL'"
+            [class.mc-warn]="market?.vixStatus === 'ELEVATED' || market?.vixStatus === 'LOW'"
+            [class.mc-bad]="market?.vixStatus === 'HIGH'"
+            [class.mc-muted]="!market || market.vixStatus === 'UNKNOWN'">
+            <div class="mc-top">
+              <span class="mc-label">India VIX</span>
+              <span class="mc-badge"
+                [class.badge-ok]="market?.vixStatus === 'NORMAL'"
+                [class.badge-warn]="market?.vixStatus === 'ELEVATED' || market?.vixStatus === 'LOW'"
+                [class.badge-bad]="market?.vixStatus === 'HIGH'"
+                [class.badge-muted]="!market || market.vixStatus === 'UNKNOWN'">
+                {{ market?.vixStatus ?? '—' }}
               </span>
             </div>
-            <div style="margin-top: 14px;"></div>
-            <app-data-table [rows]="runtimeRows"></app-data-table>
+            <div class="mc-value">{{ market ? (market.vix | number:'1.2-2') : '—' }}</div>
+            <div class="mc-desc">
+              @if (market?.vixStatus === 'LOW') { Options cheap — IV may not expand }
+              @else if (market?.vixStatus === 'NORMAL') { Sweet spot — good for buying }
+              @else if (market?.vixStatus === 'ELEVATED') { Getting expensive — be selective }
+              @else if (market?.vixStatus === 'HIGH') { Danger — avoid new entries }
+              @else { Waiting for live VIX tick }
+            </div>
           </div>
-          <div class="panel">
-            <h2>Latest Signal</h2>
-            @if (latestSignal) {
-              <div class="action-strip" style="margin-bottom: 14px;">
-                <span class="badge">{{ latestSignal.underlying || '-' }}</span>
-                <span class="badge">{{ latestSignal.signalType || '-' }}</span>
-                <span class="badge">{{ latestSignal.optionType || '-' }}</span>
-              </div>
+
+          <div class="mcard"
+            [class.mc-ok]="market?.pcrBias === 'BULLISH'"
+            [class.mc-warn]="market?.pcrBias === 'NEUTRAL'"
+            [class.mc-bad]="market?.pcrBias === 'BEARISH'"
+            [class.mc-muted]="!market || market.pcrBias === 'UNKNOWN'">
+            <div class="mc-top">
+              <span class="mc-label">PCR (Put/Call Ratio)</span>
+              <span class="mc-badge"
+                [class.badge-ok]="market?.pcrBias === 'BULLISH'"
+                [class.badge-warn]="market?.pcrBias === 'NEUTRAL'"
+                [class.badge-bad]="market?.pcrBias === 'BEARISH'"
+                [class.badge-muted]="!market || market.pcrBias === 'UNKNOWN'">
+                {{ market?.pcrBias ?? '—' }}
+              </span>
+            </div>
+            <div class="mc-value">{{ market ? (market.pcr | number:'1.2-2') : '—' }}</div>
+            <div class="mc-desc">
+              @if (market?.pcrBias === 'BULLISH') { Heavy put writing — supports CE buying }
+              @else if (market?.pcrBias === 'NEUTRAL') { Balanced OI — no strong bias }
+              @else if (market?.pcrBias === 'BEARISH') { Heavy call writing — supports PE buying }
+              @else { Waiting for option chain data }
+            </div>
+          </div>
+
+          <div class="mcard"
+            [class.mc-ok]="market?.safeForLongPremium === true"
+            [class.mc-bad]="market?.safeForLongPremium === false"
+            [class.mc-muted]="!market">
+            <div class="mc-top">
+              <span class="mc-label">Long Premium</span>
+              <span class="mc-badge"
+                [class.badge-ok]="market?.safeForLongPremium === true"
+                [class.badge-bad]="market?.safeForLongPremium === false"
+                [class.badge-muted]="!market">
+                {{ market ? (market.safeForLongPremium ? 'SAFE' : 'BLOCKED') : '—' }}
+              </span>
+            </div>
+            <div class="mc-value">
+              <mat-icon style="font-size:28px;width:28px;height:28px;vertical-align:middle">
+                {{ !market ? 'help_outline' : market.safeForLongPremium ? 'check_circle' : 'cancel' }}
+              </mat-icon>
+            </div>
+            <div class="mc-desc">
+              @if (market?.safeForLongPremium) { MarketGuard conditions passed }
+              @else if (market?.longPremiumBlockReason) { {{ market!.longPremiumBlockReason }} }
+              @else { Waiting for market data }
+            </div>
+          </div>
+
+        </div>
+
+        <!-- ── PnL Row ───────────────────────────────────────────────── -->
+        @if (tradingStatus) {
+          <div class="entry-status" [class.es-ok]="tradingStatus.entryAllowed" [class.es-bad]="!tradingStatus.entryAllowed">
+            <div class="es-header">
+              <mat-icon>{{ tradingStatus.entryAllowed ? 'check_circle' : 'block' }}</mat-icon>
+              <strong>{{ tradingStatus.entryAllowed ? 'Entries Allowed' : 'Entries Blocked' }}</strong>
+              <span class="es-stats">
+                Open: {{ tradingStatus.openTrades }} &nbsp;|&nbsp;
+                Today: {{ tradingStatus.tradesToday }} &nbsp;|&nbsp;
+                Losses: {{ tradingStatus.consecutiveLosses }} &nbsp;|&nbsp;
+                P&amp;L: <span [class.pos]="tradingStatus.dailyPnl >= 0" [class.neg]="tradingStatus.dailyPnl < 0">₹{{ tradingStatus.dailyPnl | number:'1.0-0' }}</span>
+                / ₹{{ tradingStatus.effectiveDailyLossLimit | number:'1.0-0' }} limit
+              </span>
+            </div>
+            @if (tradingStatus.blockingReasons.length > 0) {
+              <ul class="es-reasons">
+                @for (r of tradingStatus.blockingReasons; track r) {
+                  <li><mat-icon>arrow_right</mat-icon>{{ r }}</li>
+                }
+              </ul>
             }
-            <app-data-table [rows]="latestSignalRows"></app-data-table>
+          </div>
+        }
+
+        <div class="pnl-row">
+          <div class="pnl-card">
+            <mat-icon class="pi">account_balance_wallet</mat-icon>
+            <div><span class="pl">Realized PnL</span><span class="pv" [class.pos]="(pnl?.realizedPnl ?? 0) >= 0" [class.neg]="(pnl?.realizedPnl ?? 0) < 0">₹{{ (pnl?.realizedPnl ?? 0) | number:'1.2-2' }}</span></div>
+          </div>
+          <div class="pnl-card">
+            <mat-icon class="pi">trending_up</mat-icon>
+            <div><span class="pl">Unrealized PnL</span><span class="pv" [class.pos]="(pnl?.unrealizedPnl ?? 0) >= 0" [class.neg]="(pnl?.unrealizedPnl ?? 0) < 0">₹{{ (pnl?.unrealizedPnl ?? 0) | number:'1.2-2' }}</span></div>
+          </div>
+          <div class="pnl-card pnl-total">
+            <mat-icon class="pi pi-accent">assessment</mat-icon>
+            <div><span class="pl">Total PnL</span><span class="pv pv-big" [class.pos]="(pnl?.totalPnl ?? 0) >= 0" [class.neg]="(pnl?.totalPnl ?? 0) < 0">₹{{ (pnl?.totalPnl ?? 0) | number:'1.2-2' }}</span></div>
+          </div>
+        </div>
+
+        <!-- ── Runtime & Signal ───────────────────────────────────────── -->
+        <div class="grid two">
+          <div class="panel">
+            <h2><mat-icon class="hi">settings</mat-icon> Runtime</h2>
+            <div class="detail-grid">
+              <div class="dg"><span>Mode</span><strong>{{ runtime.configuredMode }}</strong></div>
+              <div class="dg"><span>Requested</span><strong>{{ runtime.requestedMode }}</strong></div>
+              <div class="dg"><span>Market Data</span><strong>{{ runtime.marketDataMode }}</strong></div>
+              <div class="dg"><span>Execution</span><strong>{{ runtime.executionMode }}</strong></div>
+              <div class="dg"><span>Live Trading</span><strong [class.pos]="runtime.liveTradingEnabled" [class.neg]="!runtime.liveTradingEnabled">{{ runtime.liveTradingEnabled ? 'Enabled' : 'Blocked' }}</strong></div>
+              <div class="dg"><span>Underlyings</span><strong>{{ runtime.enabledUnderlyings.join(', ') || '-' }}</strong></div>
+              <div class="dg"><span>Halt Mode</span><strong [class.neg]="runtime.haltMode === 'HARD'" [class.warn]="runtime.haltMode === 'SOFT'" [class.pos]="runtime.haltMode === 'NONE'">{{ runtime.haltMode }}</strong></div>
+              <div class="dg"><span>Daily Approved</span><strong [class.pos]="runtime.dailyApproved" [class.warn]="!runtime.dailyApproved">{{ runtime.dailyApproved ? 'Yes' : 'No' }}</strong></div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <h2><mat-icon class="hi">notifications</mat-icon> Latest Signal</h2>
+            @if (!latestSignal) {
+              <div class="empty"><mat-icon>inbox</mat-icon><span>No signal yet</span></div>
+            } @else {
+              <div class="signal-badges">
+                <span class="sb" [class.sb-buy]="latestSignal.signalType?.startsWith('BUY')" [class.sb-no]="latestSignal.signalType === 'NO_TRADE'">{{ latestSignal.signalType }}</span>
+                <span class="sb">{{ latestSignal.underlying }}</span>
+                @if (latestSignal.optionType) { <span class="sb">{{ latestSignal.optionType }}</span> }
+                @if (latestSignal.strategyType) { <span class="sb sb-strat">{{ latestSignal.strategyType }}</span> }
+              </div>
+              <div class="detail-grid" style="margin-top:12px">
+                <div class="dg"><span>Price</span><strong>₹{{ latestSignal.underlyingPrice ?? '-' }}</strong></div>
+                <div class="dg"><span>Strike</span><strong>{{ latestSignal.selectedStrike ?? '-' }}</strong></div>
+                <div class="dg"><span>Confidence</span><strong>{{ latestSignal.confidenceScore ?? '-' }}</strong></div>
+                <div class="dg"><span>Instrument</span><strong>{{ latestSignal.selectedInstrumentKey ?? '-' }}</strong></div>
+              </div>
+              @if (latestSignal.reasons) {
+                <p class="reasons">{{ latestSignal.reasons }}</p>
+              }
+            }
           </div>
         </div>
       }
     </section>
-  `
+  `,
+  styles: [`
+    .page { padding: 24px; max-width: 1200px; }
+    .top-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
+    .spacer { flex: 1; }
+    .page-title { font-size: 22px; font-weight: 800; color: var(--ink); margin: 0 0 4px; }
+    .page-subtitle { color: var(--muted); font-size: 13px; margin: 0; }
+    .ts { font-size: 12px; color: var(--muted); }
+
+    .err-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; padding: 10px 16px; border-radius: 8px; font-size: 13px; background: rgba(255,113,106,.06); border: 1px solid rgba(255,113,106,.25); color: var(--bad); }
+    .err-bar mat-icon { font-size: 16px; width: 16px; height: 16px; }
+    .loading-card { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 60px 0; color: var(--muted); font-size: 15px; }
+    .loading-card mat-icon { font-size: 36px; width: 36px; height: 36px; opacity: .4; }
+
+    /* Chips */
+    .chip-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 20px; }
+    .chip { display: flex; align-items: center; gap: 6px; padding: 7px 14px; border-radius: 20px; font-size: 12px; font-weight: 600; border: 1px solid var(--line); background: var(--panel); }
+    .chip mat-icon { font-size: 15px; width: 15px; height: 15px; }
+    .c-ok   { border-color: rgba(69,209,140,.4);  color: var(--ok);   background: rgba(69,209,140,.05); }
+    .c-warn { border-color: rgba(242,189,75,.4);  color: var(--warn); background: rgba(242,189,75,.05); }
+    .c-bad  { border-color: rgba(255,113,106,.4); color: var(--bad);  background: rgba(255,113,106,.05); }
+    .c-muted { color: var(--muted); }
+
+    /* Entry status */
+    .entry-status { border-radius: 10px; padding: 12px 16px; margin-bottom: 16px; border: 1px solid var(--line); }
+    .es-ok  { background: rgba(69,209,140,.05);  border-color: rgba(69,209,140,.35); }
+    .es-bad { background: rgba(255,113,106,.05); border-color: rgba(255,113,106,.35); }
+    .es-header { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; }
+    .es-header mat-icon { font-size: 18px; width: 18px; height: 18px; }
+    .es-ok  .es-header { color: var(--ok); }
+    .es-bad .es-header { color: var(--bad); }
+    .es-stats { font-size: 12px; color: var(--muted); margin-left: auto; }
+    .es-reasons { margin: 10px 0 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; }
+    .es-reasons li { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--bad); }
+    .es-reasons mat-icon { font-size: 14px; width: 14px; height: 14px; }
+
+    /* Market cards */
+    .market-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-bottom: 20px; }
+    .mcard { padding: 16px 18px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel); }
+    .mc-ok    { border-color: rgba(69,209,140,.35);  background: rgba(69,209,140,.04); }
+    .mc-warn  { border-color: rgba(242,189,75,.35);  background: rgba(242,189,75,.04); }
+    .mc-bad   { border-color: rgba(255,113,106,.35); background: rgba(255,113,106,.04); }
+    .mc-muted { border-color: var(--line); }
+    .index-card { border-color: rgba(97,168,255,.35); background: rgba(97,168,255,.04); }
+    .mc-top   { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+    .mc-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+    .mc-value { font-size: 28px; font-weight: 800; color: var(--ink); margin-bottom: 6px; line-height: 1.2; }
+    .mc-desc  { font-size: 11px; color: var(--muted); line-height: 1.4; }
+    .mc-badge { padding: 2px 8px; border-radius: 20px; font-size: 10px; font-weight: 700; }
+    .badge-ok    { background: rgba(69,209,140,.15);  color: var(--ok); }
+    .badge-warn  { background: rgba(242,189,75,.15);  color: var(--warn); }
+    .badge-bad   { background: rgba(255,113,106,.15); color: var(--bad); }
+    .badge-muted { background: rgba(255,255,255,.05); color: var(--muted); }
+
+    /* PnL */
+    .pnl-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 20px; }
+    .pnl-card { display: flex; align-items: center; gap: 14px; padding: 18px 20px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel); }
+    .pnl-total { border-color: rgba(97,168,255,.3); background: rgba(97,168,255,.04); }
+    .pi { font-size: 24px; width: 24px; height: 24px; color: var(--muted); }
+    .pi-accent { color: var(--accent); }
+    .pl { display: block; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+    .pv { display: block; font-size: 20px; font-weight: 700; color: var(--ink); margin-top: 2px; }
+    .pv-big { font-size: 24px; }
+    .pos  { color: var(--ok)   !important; }
+    .neg  { color: var(--bad)  !important; }
+    .warn { color: var(--warn) !important; }
+
+    /* Panels */
+    .grid.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; }
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 20px; }
+    .panel h2 { font-size: 14px; font-weight: 700; color: var(--ink); margin: 0 0 14px; display: flex; align-items: center; gap: 6px; }
+    .hi { font-size: 18px; width: 18px; height: 18px; color: var(--accent); }
+    .detail-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; }
+    .dg { padding: 10px 12px; border-radius: 8px; background: rgba(255,255,255,.02); border: 1px solid var(--line); }
+    .dg span { display: block; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+    .dg strong { display: block; font-size: 13px; color: var(--ink); margin-top: 3px; word-break: break-all; }
+
+    /* Signal */
+    .signal-badges { display: flex; gap: 6px; flex-wrap: wrap; }
+    .sb { padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; background: rgba(255,255,255,.04); border: 1px solid var(--line); color: var(--muted); }
+    .sb-buy   { background: rgba(69,209,140,.1);  border-color: rgba(69,209,140,.3);  color: var(--ok); }
+    .sb-no    { background: rgba(255,113,106,.08); border-color: rgba(255,113,106,.25); color: var(--bad); }
+    .sb-strat { background: rgba(97,168,255,.1);  border-color: rgba(97,168,255,.3);  color: var(--accent); }
+    .reasons { font-size: 12px; color: var(--muted); margin: 12px 0 0; line-height: 1.5; word-break: break-word; }
+    .empty { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 36px 0; color: var(--muted); font-size: 13px; }
+    .empty mat-icon { font-size: 32px; width: 32px; height: 32px; opacity: .35; }
+  `]
 })
-export class DashboardPageComponent implements OnInit {
+export class DashboardPageComponent implements OnInit, OnDestroy {
   runtime?: RuntimeStatus;
   pnl?: PnlSnapshot;
+  market?: MarketSnapshot;
+  tradingStatus?: TradingStatus;
   latestSignal?: StrategyDecision | null;
   loading = false;
   loadError = '';
   lastUpdatedAt = '';
-  private statusRequestInFlight = false;
-  private supplementalRequestInFlight = false;
+  private inFlight = false;
+  private marketPollSub?: Subscription;
+  private signalPollSub?: Subscription;
 
-  constructor(
-    private readonly api: ApiService,
-    private readonly changeDetector: ChangeDetectorRef
-  ) {
-  }
-
-  get pnlValue(): number {
-    return Number(this.pnl?.totalPnl ?? 0);
-  }
-
-  get runtimeRows(): Array<{ label: string; value: string }> {
-    if (!this.runtime) {
-      return [];
-    }
-    return [
-      { label: 'Scanner', value: this.runtime.running ? 'Running' : 'Stopped' },
-      { label: 'Kill switch', value: this.runtime.killSwitch ? 'Enabled' : 'Clear' },
-      { label: 'Requested mode', value: this.runtime.requestedMode },
-      { label: 'Configured mode', value: this.runtime.configuredMode },
-      { label: 'Market data', value: this.runtime.marketDataMode },
-      { label: 'Execution', value: this.runtime.executionMode },
-      { label: 'Live trading', value: this.runtime.liveTradingEnabled ? 'Enabled' : 'Blocked' },
-      { label: 'Enabled underlyings', value: this.runtime.enabledUnderlyings?.join(', ') || '-' },
-      { label: 'Updated at', value: this.runtime.updatedAt || '-' }
-    ];
-  }
-
-  get latestSignalRows(): Array<{ label: string; value: string }> {
-    if (!this.latestSignal) {
-      return [{ label: 'Status', value: 'No signal available yet' }];
-    }
-    return [
-      { label: 'Timestamp', value: this.display(this.latestSignal.timestamp) },
-      { label: 'Underlying', value: this.display(this.latestSignal.underlying) },
-      { label: 'Signal type', value: this.display(this.latestSignal.signalType) },
-      { label: 'Option type', value: this.display(this.latestSignal.optionType) },
-      { label: 'Underlying price', value: this.display(this.latestSignal.underlyingPrice) },
-      { label: 'Selected strike', value: this.display(this.latestSignal.selectedStrike) },
-      { label: 'Instrument', value: this.display(this.latestSignal.selectedInstrumentKey) },
-      { label: 'Confidence score', value: this.display(this.latestSignal.confidenceScore) },
-      { label: 'Reasons', value: this.display(this.latestSignal.reasons) }
-    ];
-  }
+  constructor(private readonly api: ApiService, private readonly cd: ChangeDetectorRef) {}
 
   ngOnInit(): void {
     setTimeout(() => this.load(), 0);
+    // Poll /market every 5 seconds to keep VIX and PCR live
+    this.marketPollSub = interval(5000).subscribe(() => this.refreshMarket());
+    // Poll latest signal every 10 seconds
+    this.signalPollSub = interval(10000).subscribe(() => this.refreshSignal());
+  }
+
+  ngOnDestroy(): void {
+    this.marketPollSub?.unsubscribe();
+    this.signalPollSub?.unsubscribe();
   }
 
   load(): void {
-    this.loadRuntimeStatus();
-  }
-
-  private loadRuntimeStatus(): void {
-    if (this.statusRequestInFlight) {
-      return;
-    }
-    this.statusRequestInFlight = true;
+    if (this.inFlight) return;
+    this.inFlight = true;
     this.loading = true;
     this.loadError = '';
     this.api.config().subscribe({
-      next: (config) => this.applyRuntimeStatus(config),
-      error: () => this.applyStatusLoadFailure()
+      next: c => {
+        const rt = 'runtime' in c ? c.runtime : ('running' in c ? c as unknown as RuntimeStatus : undefined);
+        if (!rt) { this.fail('No runtime in response'); return; }
+        this.runtime = rt;
+        this.loading = false;
+        this.inFlight = false;
+        this.lastUpdatedAt = new Date().toLocaleTimeString();
+        this.cd.detectChanges();
+        this.loadExtra();
+      },
+      error: () => this.fail()
     });
   }
 
-  private loadSupplementalData(): void {
-    if (this.supplementalRequestInFlight) {
-      return;
-    }
-    this.supplementalRequestInFlight = true;
+  private refreshMarket(): void {
+    this.api.market().pipe(catchError(() => of(null as MarketSnapshot | null)))
+      .subscribe(m => { if (m) { this.market = m; this.cd.detectChanges(); } });
+    this.api.tradingStatus().pipe(catchError(() => of(null as TradingStatus | null)))
+      .subscribe(s => { if (s) { this.tradingStatus = s; this.cd.detectChanges(); } });
+  }
+
+  private refreshSignal(): void {
+    this.api.latestSignal().pipe(catchError(() => of(null as StrategyDecision | null)))
+      .subscribe(sig => { this.latestSignal = sig; this.cd.detectChanges(); });
+    this.api.pnl().pipe(catchError(() => of(null as PnlSnapshot | null)))
+      .subscribe(p => { if (p) { this.pnl = p; this.cd.detectChanges(); } });
+  }
+
+  private loadExtra(): void {
     forkJoin({
-      pnl: this.api.pnl().pipe(catchError(() => of(null as PnlSnapshot | null))),
-      latestSignal: this.api.latestSignal().pipe(catchError(() => of(null as StrategyDecision | null)))
-    }).subscribe(({ pnl, latestSignal }) => {
-      if (pnl) {
-        this.pnl = pnl;
-      }
-      this.latestSignal = latestSignal;
-      if (!pnl && this.runtime) {
-        this.loadError = 'Runtime status loaded. PnL is not available yet.';
-      }
-      this.supplementalRequestInFlight = false;
-      this.changeDetector.detectChanges();
+      pnl:    this.api.pnl().pipe(catchError(() => of(null as PnlSnapshot | null))),
+      sig:    this.api.latestSignal().pipe(catchError(() => of(null as StrategyDecision | null))),
+      market: this.api.market().pipe(catchError(() => of(null as MarketSnapshot | null))),
+      ts:     this.api.tradingStatus().pipe(catchError(() => of(null as TradingStatus | null)))
+    }).subscribe(({ pnl, sig, market, ts }) => {
+      if (pnl)    this.pnl    = pnl;
+      if (market) this.market = market;
+      if (ts)     this.tradingStatus = ts;
+      this.latestSignal = sig;
+      this.cd.detectChanges();
     });
   }
 
-  private applyRuntimeStatus(config: ConfigResponse | RuntimeStatus): void {
-    const runtime = this.runtimeFrom(config);
-    if (!runtime) {
-      this.applyStatusLoadFailure('Server returned /config without runtime status.');
-      return;
-    }
-    this.runtime = runtime;
+  private fail(msg = 'Unable to reach server. Click Refresh.'): void {
     this.loading = false;
-    this.statusRequestInFlight = false;
-    this.lastUpdatedAt = new Date().toLocaleTimeString();
-    this.changeDetector.detectChanges();
-    this.loadSupplementalData();
-  }
-
-  private applyStatusLoadFailure(message = 'Unable to load server runtime status. Click Refresh to try again.'): void {
-    this.loading = false;
-    this.statusRequestInFlight = false;
-    this.loadError = message;
-    this.changeDetector.detectChanges();
-  }
-
-  private runtimeFrom(config: ConfigResponse | RuntimeStatus): RuntimeStatus | undefined {
-    if ('runtime' in config) {
-      return config.runtime;
-    }
-    if ('running' in config && 'killSwitch' in config) {
-      return config;
-    }
-    return undefined;
-  }
-
-  private display(value: unknown): string {
-    if (value === null || value === undefined || value === '') {
-      return '-';
-    }
-    if (Array.isArray(value)) {
-      return value.join(', ');
-    }
-    if (typeof value === 'object') {
-      return JSON.stringify(value);
-    }
-    return String(value);
+    this.inFlight = false;
+    this.loadError = msg;
+    this.cd.detectChanges();
   }
 }

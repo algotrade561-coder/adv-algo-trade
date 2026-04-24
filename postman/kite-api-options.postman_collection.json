@@ -1,526 +1,171 @@
 ﻿{
-    "info":  {
-                 "name":  "Kite API Options",
-                 "description":  "Postman collection for the Kite API Options local REST API.",
-                 "schema":  "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
-             },
-    "variable":  [
-                     {
-                         "key":  "baseUrl",
-                         "value":  "http://localhost:8080",
-                         "type":  "string"
-                     },
-                     {
-                         "key":  "backtestId",
-                         "value":  "",
-                         "type":  "string"
-                     },
-                     {
-                         "key":  "kiteRequestToken",
-                         "value":  "",
-                         "type":  "string"
-                     }
-                 ],
-    "item":  [
-                 {
-                     "name":  "Health",
-                     "item":  [
-                                  {
-                                      "name":  "Health",
-                                      "request":  {
-                                                      "method":  "GET",
-                                                      "header":  [
-
-                                                                 ],
-                                                      "url":  "{{baseUrl}}/health"
-                                                  }
-                                  }
-                              ]
-                 },
-                 {
-                     "name":  "Trading Control",
-                     "item":  [
-                                  {
-                                      "name":  "Get Config",
-                                      "request":  {
-                                                      "method":  "GET",
-                                                      "header":  [
-
-                                                                 ],
-                                                      "url":  "{{baseUrl}}/config"
-                                                  }
-                                  },
-                                  {
-                                      "name":  "Set Mode - PAPER",
-                                      "request":  {
-                                                      "method":  "POST",
-                                                      "header":  [
-                                                                     {
-                                                                         "key":  "Content-Type",
-                                                                         "value":  "application/json"
-                                                                     }
-                                                                 ],
-                                                      "body":  {
-                                                                   "mode":  "raw",
-                                                                   "raw":  "{\n  \"mode\": \"PAPER\"\n}"
-                                                               },
-                                                      "url":  "{{baseUrl}}/mode"
-                                                  }
-                                  },
-                                  {
-                                      "name":  "Set Mode - LIVE",
-                                      "request":  {
-                                                      "method":  "POST",
-                                                      "header":  [
-                                                                     {
-                                                                         "key":  "Content-Type",
-                                                                         "value":  "application/json"
-                                                                     }
-                                                                 ],
-                                                      "body":  {
-                                                                   "mode":  "raw",
-                                                                   "raw":  "{\n  \"mode\": \"LIVE\"\n}"
-                                                               },
-                                                      "url":  "{{baseUrl}}/mode"
-                                                  }
-                                  },
-                                  {
-                                      "name":  "Start Scanner",
-                                      "request":  {
-                                                      "method":  "POST",
-                                                      "header":  [
-
-                                                                 ],
-                                                      "url":  "{{baseUrl}}/start"
-                                                  }
-                                  },
-                                  {
-                                      "name":  "Get Routing",
-                                      "request":  {
-                                                      "method":  "GET",
-                                                      "header":  [
-
-                                                                 ],
-                                                      "url":  "{{baseUrl}}/routing"
-                                                  }
-                                  },
-                                  {
-                                      "name":  "Set Live Data Paper Execution",
-                                      "request":  {
-                                                      "method":  "POST",
-                                                      "header":  [
-                                                                     {
-                                                                         "key":  "Content-Type",
-                                                                         "value":  "application/json"
-                                                                     }
-                                                                 ],
-                                                      "body":  {
-                                                                   "mode":  "raw",
-                                                                   "raw":  "{\n  \"marketDataMode\": \"ZERODHA\",\n  \"executionMode\": \"PAPER\"\n}"
-                                                               },
-                                                      "url":  "{{baseUrl}}/routing"
-                                                  }
-                                  },
-                                  {
-                                      "name":  "Stop Scanner",
-                                      "request":  {
-                                                      "method":  "POST",
-                                                      "header":  [
-
-                                                                 ],
-                                                      "url":  "{{baseUrl}}/stop"
-                                                  }
-                                  },
-                                  {
-                                      "name":  "Enable Kill Switch",
-                                      "request":  {
-                                                      "method":  "POST",
-                                                      "header":  [
-                                                                     {
-                                                                         "key":  "Content-Type",
-                                                                         "value":  "application/json"
-                                                                     }
-                                                                 ],
-                                                      "body":  {
-                                                                   "mode":  "raw",
-                                                                   "raw":  "{\n  \"enabled\": true\n}"
-                                                               },
-                                                      "url":  "{{baseUrl}}/kill-switch"
-                                                  }
-                                  },
-                                  {
-                                      "name":  "Disable Kill Switch",
-                                      "request":  {
-                                                      "method":  "POST",
-                                                      "header":  [
-                                                                     {
-                                                                         "key":  "Content-Type",
-                                                                         "value":  "application/json"
-                                                                     }
-                                                                 ],
-                                                      "body":  {
-                                                                   "mode":  "raw",
-                                                                   "raw":  "{\n  \"enabled\": false\n}"
-                                                               },
-                                                      "url":  "{{baseUrl}}/kill-switch"
-                                                  }
-                                  },
-                                  {
-                                      "name":  "Get Scan Underlyings",
-                                      "request":  {
-                                                      "method":  "GET",
-                                                      "header":  [
-
-                                                                 ],
-                                                      "url":  "{{baseUrl}}/scan/underlyings"
-                                                  }
-                                  },
-                                  {
-                                      "name":  "Enable BANKNIFTY Scan",
-                                      "request":  {
-                                                      "method":  "POST",
-                                                      "header":  [
-                                                                     {
-                                                                         "key":  "Content-Type",
-                                                                         "value":  "application/json"
-                                                                     }
-                                                                 ],
-                                                      "body":  {
-                                                                   "mode":  "raw",
-                                                                   "raw":  "{\n  \"enabled\": true\n}"
-                                                               },
-                                                      "url":  "{{baseUrl}}/scan/underlyings/BANKNIFTY"
-                                                  }
-                                  },
-                                  {
-                                      "name":  "Disable BANKNIFTY Scan",
-                                      "request":  {
-                                                      "method":  "POST",
-                                                      "header":  [
-                                                                     {
-                                                                         "key":  "Content-Type",
-                                                                         "value":  "application/json"
-                                                                     }
-                                                                 ],
-                                                      "body":  {
-                                                                   "mode":  "raw",
-                                                                   "raw":  "{\n  \"enabled\": false\n}"
-                                                               },
-                                                      "url":  "{{baseUrl}}/scan/underlyings/BANKNIFTY"
-                                                  }
-                                  },
-                                  {
-                                      "name":  "Enable NIFTY Scan",
-                                      "request":  {
-                                                      "method":  "POST",
-                                                      "header":  [
-                                                                     {
-                                                                         "key":  "Content-Type",
-                                                                         "value":  "application/json"
-                                                                     }
-                                                                 ],
-                                                      "body":  {
-                                                                   "mode":  "raw",
-                                                                   "raw":  "{\n  \"enabled\": true\n}"
-                                                               },
-                                                      "url":  "{{baseUrl}}/scan/underlyings/NIFTY"
-                                                  }
-                                  }
-                              ]
-                 },
-                 {
-                     "name":  "Kite Auth",
-                     "item":  [
-                                  {
-                                      "name":  "Kite Login URL",
-                                      "request":  {
-                                                      "method":  "GET",
-                                                      "header":  [
-
-                                                                 ],
-                                                      "url":  "{{baseUrl}}/auth/kite/login"
-                                                  }
-                                  },
-                                  {
-                                      "name":  "Kite Session",
-                                      "request":  {
-                                                      "method":  "GET",
-                                                      "header":  [
-
-                                                                 ],
-                                                      "url":  "{{baseUrl}}/auth/kite/session"
-                                                  }
-                                  },
-                                  {
-                                      "name":  "Kite Callback",
-                                      "request":  {
-                                                      "method":  "GET",
-                                                      "header":  [
-
-                                                                 ],
-                                                      "url":  {
-                                                                  "raw":  "{{baseUrl}}/auth/kite/callback?status=success\u0026request_token={{kiteRequestToken}}",
-                                                                  "host":  [
-                                                                               "{{baseUrl}}"
-                                                                           ],
-                                                                  "path":  [
-                                                                               "auth",
-                                                                               "kite",
-                                                                               "callback"
-                                                                           ],
-                                                                  "query":  [
-                                                                                {
-                                                                                    "key":  "status",
-                                                                                    "value":  "success"
-                                                                                },
-                                                                                {
-                                                                                    "key":  "request_token",
-                                                                                    "value":  "{{kiteRequestToken}}"
-                                                                                }
-                                                                            ]
-                                                              }
-                                                  }
-                                  }
-                              ]
-                 },
-                 {
-                     "name":  "Monitoring",
-                     "item":  [
-                                  {
-                                      "name":  "Positions",
-                                      "request":  {
-                                                      "method":  "GET",
-                                                      "header":  [
-
-                                                                 ],
-                                                      "url":  "{{baseUrl}}/positions"
-                                                  }
-                                  },
-                                  {
-                                      "name":  "Orders",
-                                      "request":  {
-                                                      "method":  "GET",
-                                                      "header":  [
-
-                                                                 ],
-                                                      "url":  "{{baseUrl}}/orders"
-                                                  }
-                                  },
-                                  {
-                                      "name":  "Trades",
-                                      "request":  {
-                                                      "method":  "GET",
-                                                      "header":  [
-
-                                                                 ],
-                                                      "url":  "{{baseUrl}}/trades"
-                                                  }
-                                  },
-                                  {
-                                      "name":  "PnL",
-                                      "request":  {
-                                                      "method":  "GET",
-                                                      "header":  [
-
-                                                                 ],
-                                                      "url":  "{{baseUrl}}/pnl"
-                                                  }
-                                  },
-                                  {
-                                      "name":  "Latest Signal",
-                                      "request":  {
-                                                      "method":  "GET",
-                                                      "header":  [
-
-                                                                 ],
-                                                      "url":  "{{baseUrl}}/signals/latest"
-                                                  }
-                                  },
-                                  {
-                                      "name":  "Recent Signals",
-                                      "request":  {
-                                                      "method":  "GET",
-                                                      "header":  [
-
-                                                                 ],
-                                                      "url":  "{{baseUrl}}/signals/recent"
-                                                  }
-                                  },
-                                  {
-                                      "name":  "Trade Journal CSV",
-                                      "request":  {
-                                                      "method":  "GET",
-                                                      "header":  [
-
-                                                                 ],
-                                                      "url":  "{{baseUrl}}/trades/journal.csv"
-                                                  }
-                                  },
-                                  {
-                                      "name":  "Archive Entry Signal Reports",
-                                      "request":  {
-                                                      "method":  "POST",
-                                                      "header":  [
-
-                                                                 ],
-                                                      "url":  "{{baseUrl}}/reports/entry-signals/archive"
-                                                  }
-                                  }
-                              ]
-                 },
-                 {
-                     "name":  "Data Maintenance",
-                     "item":  [
-                                  {
-                                      "name":  "Append Zerodha Options To Global Dataset - Dry Run",
-                                      "request":  {
-                                                      "method":  "POST",
-                                                      "header":  [
-                                                                     {
-                                                                         "key":  "Content-Type",
-                                                                         "value":  "application/json"
-                                                                     }
-                                                                 ],
-                                                      "body":  {
-                                                                   "mode":  "raw",
-                                                                  "raw":  "{\n  \"underlying\": \"NIFTY\",\n  \"timeframe\": \"ONE_MINUTE\",\n  \"outputRoot\": \"C:/data/backtest/imports/global-datafeeds\",\n  \"from\": \"2026-04-16\",\n  \"to\": \"2026-04-17\",\n  \"optionTypes\": [\"CE\", \"PE\"],\n  \"dryRun\": true\n}"
-                                                               },
-                                                      "url":  "{{baseUrl}}/data-maintenance/append-zerodha-options",
-                                                      "description":  "Resolves the missing append date range and nearest-expiry NIFTY CE/PE option instruments without downloading Zerodha historical candles or writing files. Strike bounds are intentionally omitted so the maintenance run accumulates the full selected expiry chain, similar to the converted Global Datafeeds dataset."
-                                                  }
-                                  },
-                                  {
-                                      "name":  "Append Zerodha Options To Global Dataset",
-                                      "request":  {
-                                                      "method":  "POST",
-                                                      "header":  [
-                                                                     {
-                                                                         "key":  "Content-Type",
-                                                                         "value":  "application/json"
-                                                                     }
-                                                                 ],
-                                                      "body":  {
-                                                                   "mode":  "raw",
-                                                                  "raw":  "{\n  \"underlying\": \"NIFTY\",\n  \"timeframe\": \"ONE_MINUTE\",\n  \"outputRoot\": \"C:/data/backtest/imports/global-datafeeds\",\n  \"from\": \"2026-04-16\",\n  \"to\": \"2026-04-17\",\n  \"optionTypes\": [\"CE\", \"PE\"],\n  \"dryRun\": false\n}"
-                                                               },
-                                                      "url":  "{{baseUrl}}/data-maintenance/append-zerodha-options",
-                                                      "description":  "Explicit maintenance call to append Zerodha historical option candles after the latest existing Global Datafeeds by-day file. Writes to by-day and by-contract with duplicate timestamp/instrument protection. Strike bounds are intentionally omitted so the maintenance run accumulates the full selected expiry chain, similar to the converted Global Datafeeds dataset."
-                                                  }
-                                  }
-                              ]
-                 },
-                 {
-                     "name":  "Backtest",
-                     "item":  [
-                                  {
-                                      "name":  "Quick Validate Rolling Backtest",
-                                      "request":  {
-                                                      "method":  "POST",
-                                                      "header":  [
-                                                                     {
-                                                                         "key":  "Content-Type",
-                                                                         "value":  "application/json"
-                                                                     }
-                                                                 ],
-                                                      "body":  {
-                                                                   "mode":  "raw",
-                                                                   "raw":  "{\n  \"underlying\": \"NIFTY\",\n  \"optionTypes\": [\"PE\"],\n  \"timeframes\": [\"FIVE_MINUTE\"],\n  \"to\": \"2026-04-15\",\n  \"windows\": [\n    { \"name\": \"1-year\", \"from\": \"2025-04-15\", \"to\": \"2026-04-15\" }\n  ]\n}"
-                                                               },
-                                                      "url":  "{{baseUrl}}/backtest/analyze-quick",
-                                                      "description":  "Fast validation run. Runs the baseline variant only, PE only, FIVE_MINUTE only, using rolling daily imported option selection across the 1-year window. Use this before launching the full variant matrix."
-                                                  }
-                                  },
-                                  {
-                                      "name":  "Analyze Pruned Recommended Variants",
-                                      "request":  {
-                                                      "method":  "POST",
-                                                      "header":  [
-                                                                     {
-                                                                         "key":  "Content-Type",
-                                                                         "value":  "application/json"
-                                                                     }
-                                                                 ],
-                                                      "body":  {
-                                                                   "mode":  "raw",
-                                                                   "raw":  "{\n  \"underlying\": \"NIFTY\",\n  \"optionTypes\": [\"CE\", \"PE\"],\n  \"timeframes\": [\"ONE_MINUTE\", \"FIVE_MINUTE\"],\n  \"to\": \"2026-04-15\",\n  \"windows\": [\n    { \"name\": \"1-year\", \"from\": \"2025-04-15\", \"to\": \"2026-04-15\" }\n  ]\n}"
-                                                               },
-                                                      "url":  "{{baseUrl}}/backtest/analyze-pruned",
-                                                      "description":  "Recommended next run. Uses the final pruned variant list from the completed suite analysis: stop-12-target-24, cap-30k-risk-1-5, and target-25. Produces the final suite-report.html with recommendations, bucket health, all variant details, settings, and weekly/monthly performance."
-                                                  }
-                                  },
-                                  {
-                                      "name":  "Analyze Pruned 120k Validation",
-                                      "request":  {
-                                                      "method":  "POST",
-                                                      "header":  [
-                                                                     {
-                                                                         "key":  "Content-Type",
-                                                                         "value":  "application/json"
-                                                                     }
-                                                                 ],
-                                                      "body":  {
-                                                                   "mode":  "raw",
-                                                                   "raw":  "{\n  \"underlying\": \"NIFTY\",\n  \"optionTypes\": [\"CE\", \"PE\"],\n  \"timeframes\": [\"ONE_MINUTE\", \"FIVE_MINUTE\"],\n  \"to\": \"2026-04-15\",\n  \"windows\": [\n    { \"name\": \"1-year\", \"from\": \"2025-04-15\", \"to\": \"2026-04-15\" }\n  ]\n}"
-                                                               },
-                                                      "url":  "{{baseUrl}}/backtest/analyze-pruned-120k",
-                                                      "description":  "Parallel 120k validation run. Uses totalCapital 120000 variants for stop-12-target-24, target-25, and risk-1.5 across the same one-year CE/PE and 1m/5m buckets. This does not change the live 60k config."
-                                                  }
-                                  },
-                                  {
-                                      "name":  "Analyze Weekend Intensive Matrix",
-                                      "request":  {
-                                                      "method":  "POST",
-                                                      "header":  [
-                                                                     {
-                                                                         "key":  "Content-Type",
-                                                                         "value":  "application/json"
-                                                                     }
-                                                                 ],
-                                                      "body":  {
-                                                                   "mode":  "raw",
-                                                                   "raw":  "{\n  \"underlying\": \"NIFTY\",\n  \"to\": \"2026-04-17\"\n}"
-                                                               },
-                                                      "url":  "{{baseUrl}}/backtest/analyze-weekend-intensive",
-                                                      "description":  "Broad weekend validation matrix for the last clean trading date before Monday. Uses NIFTY CE/PE, ONE_MINUTE/FIVE_MINUTE, last-day through one-year windows, train-to-Mar31 and validate-Apr windows, and the full intensive variant set. The generated suite-report.html includes filterable and sortable tables plus all individual run rows."
-                                                  }
-                                  },
-                                  {
-                                      "name":  "Analyze Focused Validation",
-                                      "request":  {
-                                                      "method":  "POST",
-                                                      "header":  [
-                                                                     {
-                                                                         "key":  "Content-Type",
-                                                                         "value":  "application/json"
-                                                                     }
-                                                                 ],
-                                                      "body":  {
-                                                                   "mode":  "raw",
-                                                                   "raw":  "{\n  \"underlying\": \"NIFTY\",\n  \"to\": \"2026-04-17\"\n}"
-                                                               },
-                                                      "url":  "{{baseUrl}}/backtest/analyze-focused-validation",
-                                                      "description":  "Focused follow-up validation from the completed 1-year FIVE_MINUTE suite. Defaults to validate-Apr, 1-month, and 1-year windows; CE/PE; FIVE_MINUTE; and finalist variants: cap-120k-risk-1-5, cap-50k-risk-2, cap-100k-risk-1, trail-act-10-gap-5, hold-30, and breakout-balanced. Planned default runs: 3 windows x 6 variants x 2 sides x 1 timeframe = 36."
-                                                  }
-                                  },
-                                  {
-                                      "name":  "Analyze Whole Year Backtest Variants",
-                                      "request":  {
-                                                      "method":  "POST",
-                                                      "header":  [
-                                                                     {
-                                                                         "key":  "Content-Type",
-                                                                         "value":  "application/json"
-                                                                     }
-                                                                 ],
-                                                      "body":  {
-                                                                   "mode":  "raw",
-                                                                   "raw":  "{\n  \"underlying\": \"NIFTY\",\n  \"optionTypes\": [\"CE\", \"PE\"],\n  \"timeframes\": [\"ONE_MINUTE\", \"FIVE_MINUTE\"],\n  \"to\": \"2026-04-15\",\n  \"windows\": [\n    { \"name\": \"1-year\", \"from\": \"2025-04-15\", \"to\": \"2026-04-15\" }\n  ]\n}"
-                                                               },
-                                                      "url":  "{{baseUrl}}/backtest/download-and-run-suite",
-                                                      "description":  "Full-year strategy analysis. Omitting variants makes the server run every default variant combination for the 1-year window. The response includes suite-summary.csv, suite-variant-ranking.csv, suite-period-performance.csv/json, and suite-report.html under C:/data/backtest/results/suites/\u003csuite-id\u003e."
-                                                  }
-                                  }
-                              ]
-                 }
-             ]
+  "info": {
+    "name": "AlgoTrader Pro",
+    "description": "Complete Postman collection for AlgoTrader Pro — trading control, strategies, signals, and backtesting.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:8089/advalgotrade", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "1. Health & Config",
+      "item": [
+        { "name": "Health", "request": { "method": "GET", "url": "{{baseUrl}}/health" } },
+        { "name": "Broker Health", "request": { "method": "GET", "url": "{{baseUrl}}/health/broker" } },
+        { "name": "Database Health", "request": { "method": "GET", "url": "{{baseUrl}}/health/database" } },
+        { "name": "Config", "request": { "method": "GET", "url": "{{baseUrl}}/config" } }
+      ]
+    },
+    {
+      "name": "2. Trading Control",
+      "item": [
+        { "name": "Start Scanner", "request": { "method": "POST", "url": "{{baseUrl}}/start" } },
+        { "name": "Stop Scanner", "request": { "method": "POST", "url": "{{baseUrl}}/stop" } },
+        { "name": "Enable Kill Switch", "request": { "method": "POST", "url": "{{baseUrl}}/kill-switch", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"enabled\": true}" } } },
+        { "name": "Clear Kill Switch", "request": { "method": "POST", "url": "{{baseUrl}}/kill-switch", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"enabled\": false}" } } },
+        { "name": "Enable REST Poll Scheduler", "request": { "method": "POST", "url": "{{baseUrl}}/scheduler", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"enabled\": true}" } } },
+        { "name": "Disable REST Poll Scheduler", "request": { "method": "POST", "url": "{{baseUrl}}/scheduler", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"enabled\": false}" } } },
+        { "name": "Reconnect WebSocket", "request": { "method": "POST", "url": "{{baseUrl}}/websocket/reconnect" } },
+        { "name": "Disconnect WebSocket", "request": { "method": "POST", "url": "{{baseUrl}}/websocket/disconnect" } },
+        { "name": "Set Mode PAPER", "request": { "method": "POST", "url": "{{baseUrl}}/mode", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"mode\": \"PAPER\"}" } } },
+        { "name": "Set Mode LIVE", "request": { "method": "POST", "url": "{{baseUrl}}/mode", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"mode\": \"LIVE\"}" } } },
+        { "name": "Set Routing (Zerodha data, Paper exec)", "request": { "method": "POST", "url": "{{baseUrl}}/routing", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"marketDataMode\": \"ZERODHA\", \"executionMode\": \"PAPER\"}" } } }
+      ]
+    },
+    {
+      "name": "3. Strategies",
+      "item": [
+        { "name": "Get All Strategies", "request": { "method": "GET", "url": "{{baseUrl}}/strategies" } },
+        { "name": "Enable Scalping", "request": { "method": "POST", "url": "{{baseUrl}}/strategies/SCALPING/enable" } },
+        { "name": "Disable Scalping", "request": { "method": "POST", "url": "{{baseUrl}}/strategies/SCALPING/disable" } },
+        { "name": "Update Directional Buy Params", "request": { "method": "PUT", "url": "{{baseUrl}}/strategies/DIRECTIONAL_BUY", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\"stopLossPercent\": 12, \"targetPercent\": 25, \"trailingStopActivationPercent\": 10, \"trailingGapPercent\": 5, \"maxHoldMinutes\": 30}" } } }
+      ]
+    },
+    {
+      "name": "4. Monitoring & Signals",
+      "item": [
+        { "name": "Positions", "request": { "method": "GET", "url": "{{baseUrl}}/positions" } },
+        { "name": "Orders", "request": { "method": "GET", "url": "{{baseUrl}}/orders" } },
+        { "name": "Trades", "request": { "method": "GET", "url": "{{baseUrl}}/trades" } },
+        { "name": "PnL", "request": { "method": "GET", "url": "{{baseUrl}}/pnl" } },
+        { "name": "Latest Signal", "request": { "method": "GET", "url": "{{baseUrl}}/signals/latest" } },
+        { "name": "Entry Signals (page 0)", "request": { "method": "GET", "url": "{{baseUrl}}/signals/entries/paged?page=0&size=50" } },
+        { "name": "Rejected Signals (page 0)", "request": { "method": "GET", "url": "{{baseUrl}}/signals/rejected/paged?page=0&size=50" } },
+        { "name": "Signal Summary", "request": { "method": "GET", "url": "{{baseUrl}}/signals/summary" } },
+        { "name": "Signals by Strategy (Directional)", "request": { "method": "GET", "url": "{{baseUrl}}/signals/by-strategy/DIRECTIONAL_BUY" } }
+      ]
+    },
+    {
+      "name": "5. Manual Orders",
+      "item": [
+        { "name": "Place BUY Order (Market)", "request": { "method": "POST", "url": "{{baseUrl}}/orders/place", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"instrumentKey\": \"NFO:NIFTY24APR24000CE\",\n  \"side\": \"BUY\",\n  \"orderType\": \"MARKET\",\n  \"productType\": \"MIS\",\n  \"quantity\": 65,\n  \"tag\": \"manual-postman\"\n}" } } }
+      ]
+    },
+    {
+      "name": "6. Kite Auth",
+      "item": [
+        { "name": "Login", "request": { "method": "GET", "url": "{{baseUrl}}/auth/kite/login" } },
+        { "name": "Session", "request": { "method": "GET", "url": "{{baseUrl}}/auth/kite/session" } }
+      ]
+    },
+    {
+      "name": "7. Reports",
+      "item": [
+        { "name": "Trade Journal CSV", "request": { "method": "GET", "url": "{{baseUrl}}/trades/journal.csv", "header": [{ "key": "Accept", "value": "text/csv" }] } },
+        { "name": "Archive Entry Signals", "request": { "method": "POST", "url": "{{baseUrl}}/reports/entry-signals/archive" } },
+        { "name": "Replay Entry Signals", "request": { "method": "POST", "url": "{{baseUrl}}/reports/entry-signals/replay" } }
+      ]
+    },
+    {
+      "name": "8. Backtest — Run All Strategies",
+      "description": "Runs Directional Buy + Scalping + Volatility Breakout across CE+PE in one call. The primary backtest endpoint.",
+      "item": [
+        {
+          "name": "Run All — NIFTY 5min (3 months)",
+          "request": { "method": "POST", "url": "{{baseUrl}}/backtest/run-all", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"underlying\": \"NIFTY\",\n  \"timeframe\": \"FIVE_MINUTE\",\n  \"from\": \"2026-01-15\",\n  \"to\": \"2026-04-15\"\n}" } }
+        },
+        {
+          "name": "Run All — NIFTY 5min (full year)",
+          "request": { "method": "POST", "url": "{{baseUrl}}/backtest/run-all", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"underlying\": \"NIFTY\",\n  \"timeframe\": \"FIVE_MINUTE\",\n  \"from\": \"2025-04-15\",\n  \"to\": \"2026-04-15\"\n}" } }
+        },
+        {
+          "name": "Run All — NIFTY 1min (1 month)",
+          "request": { "method": "POST", "url": "{{baseUrl}}/backtest/run-all", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"underlying\": \"NIFTY\",\n  \"timeframe\": \"ONE_MINUTE\",\n  \"from\": \"2026-03-15\",\n  \"to\": \"2026-04-15\"\n}" } }
+        },
+        {
+          "name": "Run Only Scalping",
+          "request": { "method": "POST", "url": "{{baseUrl}}/backtest/run-all", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"underlying\": \"NIFTY\",\n  \"timeframe\": \"FIVE_MINUTE\",\n  \"from\": \"2026-01-15\",\n  \"to\": \"2026-04-15\",\n  \"strategies\": [\"SCALPING\"]\n}" } }
+        },
+        {
+          "name": "Run Only Volatility Breakout",
+          "request": { "method": "POST", "url": "{{baseUrl}}/backtest/run-all", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"underlying\": \"NIFTY\",\n  \"timeframe\": \"FIVE_MINUTE\",\n  \"from\": \"2026-01-15\",\n  \"to\": \"2026-04-15\",\n  \"strategies\": [\"VOLATILITY_BREAKOUT\"]\n}" } }
+        }
+      ]
+    },
+    {
+      "name": "9. Backtest — Single Run",
+      "description": "Run a single backtest against Global Data Feeds CSV data.",
+      "item": [
+        {
+          "name": "Run — NIFTY CE 5min (default dates)",
+          "request": { "method": "POST", "url": "{{baseUrl}}/backtest/run", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"underlying\": \"NIFTY\",\n  \"optionType\": \"CE\",\n  \"timeframe\": \"FIVE_MINUTE\"\n}" } }
+        },
+        {
+          "name": "Run — NIFTY PE 5min (default dates)",
+          "request": { "method": "POST", "url": "{{baseUrl}}/backtest/run", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"underlying\": \"NIFTY\",\n  \"optionType\": \"PE\",\n  \"timeframe\": \"FIVE_MINUTE\"\n}" } }
+        },
+        {
+          "name": "Run — NIFTY CE 1min (custom dates)",
+          "request": { "method": "POST", "url": "{{baseUrl}}/backtest/run", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"underlying\": \"NIFTY\",\n  \"optionType\": \"CE\",\n  \"timeframe\": \"ONE_MINUTE\",\n  \"from\": \"2026-01-01\",\n  \"to\": \"2026-04-15\"\n}" } }
+        }
+      ]
+    },
+    {
+      "name": "10. Backtest — Suite (HTML Reports)",
+      "description": "Multi-variant parameter sweep suites. Results include HTML reports in C:\\data\\backtest\\results\\suites\\. Use these to compare strategy parameters and find the best configuration.",
+      "item": [
+        {
+          "name": "Quick Smoke Test (1 variant, PE 5min, 1 month)",
+          "description": "Fast sanity check — runs baseline only against PE 5-minute data for the last month. Takes ~30 seconds.",
+          "request": { "method": "POST", "url": "{{baseUrl}}/backtest/run-suite", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"underlying\": \"NIFTY\",\n  \"to\": \"2026-04-15\",\n  \"optionTypes\": [\"PE\"],\n  \"timeframes\": [\"FIVE_MINUTE\"],\n  \"windows\": [\n    { \"name\": \"1-month\", \"from\": \"2026-03-15\", \"to\": \"2026-04-15\" }\n  ]\n}" } }
+        },
+        {
+          "name": "Stop-Loss & Target Sweep (find optimal exit)",
+          "description": "Tests different stop-loss and target combinations to find the best risk:reward ratio. 8 variants × CE+PE × 5min × 3 windows = 48 runs.",
+          "request": { "method": "POST", "url": "{{baseUrl}}/backtest/run-suite", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"underlying\": \"NIFTY\",\n  \"to\": \"2026-04-15\",\n  \"optionTypes\": [\"CE\", \"PE\"],\n  \"timeframes\": [\"FIVE_MINUTE\"],\n  \"windows\": [\n    { \"name\": \"1-month\", \"from\": \"2026-03-15\", \"to\": \"2026-04-15\" },\n    { \"name\": \"3-month\", \"from\": \"2026-01-15\", \"to\": \"2026-04-15\" },\n    { \"name\": \"1-year\", \"from\": \"2025-04-15\", \"to\": \"2026-04-15\" }\n  ],\n  \"variants\": [\n    { \"name\": \"baseline\" },\n    { \"name\": \"sl-8-tgt-16\", \"stopLossPercent\": 8, \"targetPercent\": 16 },\n    { \"name\": \"sl-10-tgt-20\", \"stopLossPercent\": 10, \"targetPercent\": 20 },\n    { \"name\": \"sl-12-tgt-24\", \"stopLossPercent\": 12, \"targetPercent\": 24 },\n    { \"name\": \"sl-12-tgt-30\", \"stopLossPercent\": 12, \"targetPercent\": 30 },\n    { \"name\": \"sl-15-tgt-30\", \"stopLossPercent\": 15, \"targetPercent\": 30 },\n    { \"name\": \"sl-15-tgt-45\", \"stopLossPercent\": 15, \"targetPercent\": 45 },\n    { \"name\": \"sl-20-tgt-40\", \"stopLossPercent\": 20, \"targetPercent\": 40 }\n  ]\n}" } }
+        },
+        {
+          "name": "Trailing Stop Sweep (optimize profit capture)",
+          "description": "Tests trailing stop activation and gap percentages. Helps find the sweet spot between locking profits and giving room to run.",
+          "request": { "method": "POST", "url": "{{baseUrl}}/backtest/run-suite", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"underlying\": \"NIFTY\",\n  \"to\": \"2026-04-15\",\n  \"optionTypes\": [\"CE\", \"PE\"],\n  \"timeframes\": [\"FIVE_MINUTE\"],\n  \"windows\": [\n    { \"name\": \"3-month\", \"from\": \"2026-01-15\", \"to\": \"2026-04-15\" },\n    { \"name\": \"1-year\", \"from\": \"2025-04-15\", \"to\": \"2026-04-15\" }\n  ],\n  \"variants\": [\n    { \"name\": \"baseline\" },\n    { \"name\": \"trail-8-4\", \"trailingStopActivationPercent\": 8, \"trailingGapPercent\": 4 },\n    { \"name\": \"trail-10-5\", \"trailingStopActivationPercent\": 10, \"trailingGapPercent\": 5 },\n    { \"name\": \"trail-12-6\", \"trailingStopActivationPercent\": 12, \"trailingGapPercent\": 6 },\n    { \"name\": \"trail-15-5\", \"trailingStopActivationPercent\": 15, \"trailingGapPercent\": 5 },\n    { \"name\": \"trail-20-8\", \"trailingStopActivationPercent\": 20, \"trailingGapPercent\": 8 }\n  ]\n}" } }
+        },
+        {
+          "name": "Signal Score & Volume Sweep (filter quality)",
+          "description": "Tests different minimum confidence scores and volume spike thresholds to filter out weak signals.",
+          "request": { "method": "POST", "url": "{{baseUrl}}/backtest/run-suite", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"underlying\": \"NIFTY\",\n  \"to\": \"2026-04-15\",\n  \"optionTypes\": [\"CE\", \"PE\"],\n  \"timeframes\": [\"FIVE_MINUTE\"],\n  \"windows\": [\n    { \"name\": \"3-month\", \"from\": \"2026-01-15\", \"to\": \"2026-04-15\" },\n    { \"name\": \"1-year\", \"from\": \"2025-04-15\", \"to\": \"2026-04-15\" }\n  ],\n  \"variants\": [\n    { \"name\": \"baseline\" },\n    { \"name\": \"score-60\", \"minSignalScorePercent\": 60 },\n    { \"name\": \"score-75\", \"minSignalScorePercent\": 75 },\n    { \"name\": \"score-80\", \"minSignalScorePercent\": 80 },\n    { \"name\": \"vol-1.5x\", \"volumeSpikeMultiplier\": 1.5 },\n    { \"name\": \"vol-2x\", \"volumeSpikeMultiplier\": 2.0 },\n    { \"name\": \"score-75-vol-1.5\", \"minSignalScorePercent\": 75, \"volumeSpikeMultiplier\": 1.5 }\n  ]\n}" } }
+        },
+        {
+          "name": "Capital & Risk Sweep (position sizing)",
+          "description": "Tests different capital and risk-per-trade combinations to find the optimal position sizing for your account.",
+          "request": { "method": "POST", "url": "{{baseUrl}}/backtest/run-suite", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"underlying\": \"NIFTY\",\n  \"to\": \"2026-04-15\",\n  \"optionTypes\": [\"CE\", \"PE\"],\n  \"timeframes\": [\"FIVE_MINUTE\"],\n  \"windows\": [\n    { \"name\": \"3-month\", \"from\": \"2026-01-15\", \"to\": \"2026-04-15\" },\n    { \"name\": \"1-year\", \"from\": \"2025-04-15\", \"to\": \"2026-04-15\" }\n  ],\n  \"variants\": [\n    { \"name\": \"baseline\" },\n    { \"name\": \"cap-60k-risk-5\", \"totalCapital\": 60000, \"maxRiskPerTradePercent\": 5 },\n    { \"name\": \"cap-60k-risk-3\", \"totalCapital\": 60000, \"maxRiskPerTradePercent\": 3 },\n    { \"name\": \"cap-100k-risk-2\", \"totalCapital\": 100000, \"maxRiskPerTradePercent\": 2 },\n    { \"name\": \"cap-120k-risk-1.5\", \"totalCapital\": 120000, \"maxRiskPerTradePercent\": 1.5 }\n  ]\n}" } }
+        },
+        {
+          "name": "Max Hold & Entry Cutoff Sweep (time management)",
+          "description": "Tests different max hold durations and entry cutoff times to optimize trade duration.",
+          "request": { "method": "POST", "url": "{{baseUrl}}/backtest/run-suite", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"underlying\": \"NIFTY\",\n  \"to\": \"2026-04-15\",\n  \"optionTypes\": [\"CE\", \"PE\"],\n  \"timeframes\": [\"FIVE_MINUTE\"],\n  \"windows\": [\n    { \"name\": \"3-month\", \"from\": \"2026-01-15\", \"to\": \"2026-04-15\" },\n    { \"name\": \"1-year\", \"from\": \"2025-04-15\", \"to\": \"2026-04-15\" }\n  ],\n  \"variants\": [\n    { \"name\": \"baseline\" },\n    { \"name\": \"hold-15\", \"maxHoldMinutes\": 15 },\n    { \"name\": \"hold-30\", \"maxHoldMinutes\": 30 },\n    { \"name\": \"hold-45\", \"maxHoldMinutes\": 45 },\n    { \"name\": \"hold-60\", \"maxHoldMinutes\": 60 },\n    { \"name\": \"cutoff-1400\", \"entryCutoffTime\": \"14:00\" },\n    { \"name\": \"cutoff-1430\", \"entryCutoffTime\": \"14:30\" }\n  ]\n}" } }
+        },
+        {
+          "name": "Full Year Comprehensive (all dimensions)",
+          "description": "Runs the top-performing variants from each sweep against the full year of data. Use this after narrowing down from individual sweeps. ~30 runs.",
+          "request": { "method": "POST", "url": "{{baseUrl}}/backtest/run-suite", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"underlying\": \"NIFTY\",\n  \"to\": \"2026-04-15\",\n  \"optionTypes\": [\"CE\", \"PE\"],\n  \"timeframes\": [\"ONE_MINUTE\", \"FIVE_MINUTE\"],\n  \"windows\": [\n    { \"name\": \"1-year\", \"from\": \"2025-04-15\", \"to\": \"2026-04-15\" }\n  ],\n  \"variants\": [\n    { \"name\": \"baseline\" },\n    { \"name\": \"sl-12-tgt-25-trail-10-5\", \"stopLossPercent\": 12, \"targetPercent\": 25, \"trailingStopActivationPercent\": 10, \"trailingGapPercent\": 5 },\n    { \"name\": \"sl-10-tgt-20-hold-30\", \"stopLossPercent\": 10, \"targetPercent\": 20, \"maxHoldMinutes\": 30 },\n    { \"name\": \"sl-15-tgt-30-score-75\", \"stopLossPercent\": 15, \"targetPercent\": 30, \"minSignalScorePercent\": 75 },\n    { \"name\": \"cap-60k-risk-5-hold-30\", \"totalCapital\": 60000, \"maxRiskPerTradePercent\": 5, \"maxHoldMinutes\": 30 },\n    { \"name\": \"aggressive\", \"stopLossPercent\": 8, \"targetPercent\": 16, \"maxHoldMinutes\": 15, \"minSignalScorePercent\": 75 },\n    { \"name\": \"conservative\", \"stopLossPercent\": 15, \"targetPercent\": 45, \"trailingStopActivationPercent\": 15, \"trailingGapPercent\": 5, \"maxHoldMinutes\": 60 }\n  ]\n}" } }
+        },
+        {
+          "name": "1-Minute vs 5-Minute Timeframe Comparison",
+          "description": "Compares strategy performance on 1-minute vs 5-minute candles to determine optimal timeframe.",
+          "request": { "method": "POST", "url": "{{baseUrl}}/backtest/run-suite", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"underlying\": \"NIFTY\",\n  \"to\": \"2026-04-15\",\n  \"optionTypes\": [\"CE\", \"PE\"],\n  \"timeframes\": [\"ONE_MINUTE\", \"FIVE_MINUTE\"],\n  \"windows\": [\n    { \"name\": \"1-month\", \"from\": \"2026-03-15\", \"to\": \"2026-04-15\" },\n    { \"name\": \"3-month\", \"from\": \"2026-01-15\", \"to\": \"2026-04-15\" }\n  ]\n}" } }
+        }
+      ]
+    }
+  ]
 }
