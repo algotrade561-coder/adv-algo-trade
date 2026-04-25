@@ -122,7 +122,59 @@
       ]
     },
     {
-      "name": "10. Backtest — Suite (HTML Reports)",
+      "name": "10. Backtest — Verify All (16 Strategies)",
+      "description": "Comprehensive verification of ALL 16 strategies (buying + spreads + selling) against real Global DataFeeds data. Produces HTML report + JSON summary with per-strategy metrics, execution flow coverage, and config snapshot.",
+      "item": [
+        {
+          "name": "Verify All — NIFTY 3 months (defaults)",
+          "description": "Runs all 16 strategies with default date range (last 3 months). Produces verify-report.html and verify-summary.json in suites/VERIFY-ALL-{timestamp}/.",
+          "request": { "method": "POST", "url": "{{baseUrl}}/backtest/verify-all", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{}" } }
+        },
+        {
+          "name": "Verify All — NIFTY custom range (Jan-Apr 2026)",
+          "description": "Runs all 16 strategies for a specific date range. Good for testing against known market conditions.",
+          "request": { "method": "POST", "url": "{{baseUrl}}/backtest/verify-all", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"from\": \"2026-01-15\",\n  \"to\": \"2026-04-15\",\n  \"underlying\": \"NIFTY\"\n}" } }
+        },
+        {
+          "name": "Verify All — NIFTY full year",
+          "description": "Full year backtest across all strategies. Takes longer but gives the most comprehensive view for live trading decisions.",
+          "request": { "method": "POST", "url": "{{baseUrl}}/backtest/verify-all", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"from\": \"2025-04-15\",\n  \"to\": \"2026-04-15\",\n  \"underlying\": \"NIFTY\"\n}" } }
+        },
+        {
+          "name": "Verify All — BANKNIFTY 3 months",
+          "description": "Runs all 16 strategies against BANKNIFTY data. Useful for comparing NIFTY vs BANKNIFTY strategy performance.",
+          "request": { "method": "POST", "url": "{{baseUrl}}/backtest/verify-all", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"from\": \"2026-01-15\",\n  \"to\": \"2026-04-15\",\n  \"underlying\": \"BANKNIFTY\"\n}" } }
+        },
+        {
+          "name": "Verify All — No body (pure defaults)",
+          "description": "Calls verify-all with no request body at all. Uses defaults: last 3 months, NIFTY.",
+          "request": { "method": "POST", "url": "{{baseUrl}}/backtest/verify-all", "header": [{ "key": "Content-Type", "value": "application/json" }] }
+        }
+      ]
+    },
+    {
+      "name": "10b. Backtest — Verify Today (Single Day)",
+      "description": "Runs all 16 strategies for a single day — shows what each strategy would have signaled. Great for forward-testing before going live.",
+      "item": [
+        {
+          "name": "Verify Today — defaults (most recent trading day)",
+          "description": "Runs all strategies for the most recent trading day (auto-detects, skips weekends). Returns per-strategy signals, trades, and PnL.",
+          "request": { "method": "POST", "url": "{{baseUrl}}/backtest/verify-today", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{}" } }
+        },
+        {
+          "name": "Verify Today — specific date",
+          "description": "Runs all strategies for a specific date. Useful for replaying a known trading day.",
+          "request": { "method": "POST", "url": "{{baseUrl}}/backtest/verify-today", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"date\": \"2026-04-24\",\n  \"underlying\": \"NIFTY\"\n}" } }
+        },
+        {
+          "name": "Verify Today — BANKNIFTY",
+          "description": "Runs all strategies for the most recent trading day against BANKNIFTY.",
+          "request": { "method": "POST", "url": "{{baseUrl}}/backtest/verify-today", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"underlying\": \"BANKNIFTY\"\n}" } }
+        }
+      ]
+    },
+    {
+      "name": "11. Backtest — Suite (HTML Reports)",
       "description": "Multi-variant parameter sweep suites. Results include HTML reports in C:\\data\\backtest\\results\\suites\\. Use these to compare strategy parameters and find the best configuration.",
       "item": [
         {
@@ -164,6 +216,32 @@
           "name": "1-Minute vs 5-Minute Timeframe Comparison",
           "description": "Compares strategy performance on 1-minute vs 5-minute candles to determine optimal timeframe.",
           "request": { "method": "POST", "url": "{{baseUrl}}/backtest/run-suite", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"underlying\": \"NIFTY\",\n  \"to\": \"2026-04-15\",\n  \"optionTypes\": [\"CE\", \"PE\"],\n  \"timeframes\": [\"ONE_MINUTE\", \"FIVE_MINUTE\"],\n  \"windows\": [\n    { \"name\": \"1-month\", \"from\": \"2026-03-15\", \"to\": \"2026-04-15\" },\n    { \"name\": \"3-month\", \"from\": \"2026-01-15\", \"to\": \"2026-04-15\" }\n  ]\n}" } }
+        }
+      ]
+    },
+    {
+      "name": "12. Data Maintenance",
+      "description": "Endpoints for maintaining and updating historical option data used in backtesting.",
+      "item": [
+        {
+          "name": "Append Zerodha Options (defaults)",
+          "description": "Fetches and appends latest Zerodha option candle data to the backtest CSV files. Uses default underlying/timeframe from config.",
+          "request": { "method": "POST", "url": "{{baseUrl}}/data-maintenance/append-zerodha-options", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{}" } }
+        },
+        {
+          "name": "Append Zerodha Options — NIFTY 5min",
+          "description": "Appends NIFTY 5-minute option candles.",
+          "request": { "method": "POST", "url": "{{baseUrl}}/data-maintenance/append-zerodha-options", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"underlying\": \"NIFTY\",\n  \"timeframe\": \"FIVE_MINUTE\"\n}" } }
+        },
+        {
+          "name": "Append Zerodha Options — NIFTY 1min",
+          "description": "Appends NIFTY 1-minute option candles.",
+          "request": { "method": "POST", "url": "{{baseUrl}}/data-maintenance/append-zerodha-options", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"underlying\": \"NIFTY\",\n  \"timeframe\": \"ONE_MINUTE\"\n}" } }
+        },
+        {
+          "name": "Append Zerodha Options — BANKNIFTY 5min",
+          "description": "Appends BANKNIFTY 5-minute option candles.",
+          "request": { "method": "POST", "url": "{{baseUrl}}/data-maintenance/append-zerodha-options", "header": [{ "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"underlying\": \"BANKNIFTY\",\n  \"timeframe\": \"FIVE_MINUTE\"\n}" } }
         }
       ]
     }

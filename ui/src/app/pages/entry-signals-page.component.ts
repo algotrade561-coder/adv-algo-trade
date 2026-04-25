@@ -79,6 +79,7 @@ import { ApiRecord, StrategyDecision } from '../core/models';
                 @if (s['vwapConditionPassed'] != null) { <div class="f"><span>VWAP</span><strong [class.pos]="s['vwapConditionPassed']" [class.neg]="!s['vwapConditionPassed']">{{ s['vwapConditionPassed'] ? 'Passed' : 'Failed' }}</strong></div> }
                 @if (s['volumeSpike'] != null) { <div class="f"><span>Vol Spike</span><strong [class.pos]="s['volumeSpike']">{{ s['volumeSpike'] ? 'Yes' : 'No' }}</strong></div> }
                 @if (s['imbalance'] != null) { <div class="f"><span>OI Imbalance</span><strong>{{ s['imbalance'] }}</strong></div> }
+                @if (s['executionStage']) { <div class="f"><span>Exec Stage</span><strong>{{ s['executionStage'] }}</strong></div> }
               </div>
             }
             @if (s['reasons']) { <div class="reasons">{{ s['reasons'] }}</div> }
@@ -134,7 +135,7 @@ import { ApiRecord, StrategyDecision } from '../core/models';
 })
 export class EntrySignalsPageComponent implements OnInit {
   readonly signalOpts = ['BUY_CE', 'BUY_PE'];
-  readonly strategyOpts = ['DIRECTIONAL_BUY','SCALPING','VOLATILITY_BREAKOUT','EVENT_DRIVEN_BUY','BULL_CALL_SPREAD','BEAR_PUT_SPREAD','LONG_STRADDLE','LONG_STRANGLE','SHORT_STRADDLE','SHORT_STRANGLE','IRON_CONDOR','BUTTERFLY','CALENDAR_SPREAD'];
+  readonly strategyOpts = ['DIRECTIONAL_BUY','SCALPING','VOLATILITY_BREAKOUT','EVENT_DRIVEN_BUY','BULL_CALL_SPREAD','BEAR_PUT_SPREAD','LONG_STRADDLE','LONG_STRANGLE','SHORT_STRADDLE','SHORT_STRANGLE','IRON_CONDOR','BUTTERFLY','CALENDAR_SPREAD','DIAGONAL_SPREAD','JADE_LIZARD','SYNTHETIC_FUTURES'];
   readonly selTypes = new Set<string>(this.signalOpts);
   selectedStrategy = 'ALL';
   signals: ApiRecord[] = [];

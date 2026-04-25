@@ -1,5 +1,6 @@
 package com.algo.trade.backtest;
 
+import com.algo.trade.config.GlobalConfigService;
 import com.algo.trade.config.TradingProperties;
 import com.algo.trade.domain.Candle;
 import com.algo.trade.domain.OptionChainSnapshot;
@@ -11,7 +12,10 @@ import com.algo.trade.domain.Timeframe;
 import com.algo.trade.domain.UnderlyingSymbol;
 import com.algo.trade.execution.TrailingStopService;
 import com.algo.trade.strategy.RuleBasedOptionsStrategy;
+import com.algo.trade.strategy.StrategyConfig;
+import com.algo.trade.strategy.StrategyConfigService;
 import com.algo.trade.strategy.StrategyEvaluationRequest;
+import com.algo.trade.strategy.StrategyType;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.MathContext;
@@ -43,6 +47,8 @@ public class BacktestEngine {
     private static final DateTimeFormatter RUN_TIMESTAMP_FORMAT = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
     private static final Logger log = LoggerFactory.getLogger(BacktestEngine.class);
     private final TradingProperties properties;
+    private final GlobalConfigService globalConfigService;
+    private final StrategyConfigService strategyConfigService;
     private final CandleCsvReader candleCsvReader;
     private final BacktestCsvExporter csvExporter;
     private final RuleBasedOptionsStrategy strategy;
@@ -50,11 +56,15 @@ public class BacktestEngine {
     private final com.algo.trade.strategy.ScalpingStrategy scalpingStrategy;
     private final com.algo.trade.strategy.VolatilityBreakoutStrategy volatilityBreakoutStrategy;
 
-    public BacktestEngine(TradingProperties properties, RuleBasedOptionsStrategy strategy,
+    public BacktestEngine(TradingProperties properties, GlobalConfigService globalConfigService,
+                          StrategyConfigService strategyConfigService,
+                          RuleBasedOptionsStrategy strategy,
                           TrailingStopService trailingStopService,
                           com.algo.trade.strategy.ScalpingStrategy scalpingStrategy,
                           com.algo.trade.strategy.VolatilityBreakoutStrategy volatilityBreakoutStrategy) {
         this.properties = properties;
+        this.globalConfigService = globalConfigService;
+        this.strategyConfigService = strategyConfigService;
         this.candleCsvReader = new CandleCsvReader();
         this.csvExporter = new BacktestCsvExporter();
         this.strategy = strategy;
@@ -101,7 +111,11 @@ public class BacktestEngine {
                                  LocalDate fromDate, LocalDate toDate, RunOptions options) {
         TradingProperties activeProperties = options != null && options.properties() != null
                 ? options.properties()
-                : properties;
+                : propertiesFromGlobalConfig();
+
+        // Override exit params with per-strategy StrategyConfig values
+        activeProperties = overrideExitParams(activeProperties, resolveStrategyConfig(options));
+
         RuleBasedOptionsStrategy activeStrategy = options != null && options.properties() != null
                 ? strategyFor(activeProperties)
                 : strategy;
@@ -408,8 +422,7 @@ public class BacktestEngine {
     /** Volatility Breakout: Bollinger Band squeeze on underlying 15-min candles. */
     private boolean volatilityBreakoutEntrySignal(UnderlyingSymbol underlying, List<Candle> underlyingHistory,
                                                    Candle candle, OptionType optionType) {
-        var config = new com.algo.trade.strategy.StrategyConfig(
-                com.algo.trade.strategy.StrategyType.VOLATILITY_BREAKOUT);
+        var config = resolveStrategyConfigByType(com.algo.trade.strategy.StrategyType.VOLATILITY_BREAKOUT);
         // IV rank approximation — use 30 (neutral-low) for backtest since we don't have live IV
         Optional<StrategyDecision> signal = volatilityBreakoutStrategy.evaluate(underlyingHistory, 30.0, config, underlying);
         if (signal.isEmpty()) return false;
@@ -688,6 +701,103 @@ public class BacktestEngine {
         OpenTrade withTrailingStop(Optional<BigDecimal> stop) {
             return new OpenTrade(instrumentKey, entryTime, entryPrice, quantity, highestPrice, stop, entryReason);
         }
+    }
+
+    /**
+     * Resolves the per-strategy {@link StrategyConfig} for the given run options.
+     * Falls back to DIRECTIONAL_BUY when strategyType is null.
+     */
+    private StrategyConfig resolveStrategyConfig(RunOptions options) {
+        if (strategyConfigService == null) {
+            // Test/backtest path without DB — return defaults
+            StrategyType type = options != null && options.strategyType() != null
+                    ? StrategyType.valueOf(options.strategyType())
+                    : StrategyType.DIRECTIONAL_BUY;
+            return new StrategyConfig(type);
+        }
+        StrategyType type = options != null && options.strategyType() != null
+                ? StrategyType.valueOf(options.strategyType())
+                : StrategyType.DIRECTIONAL_BUY;
+        return strategyConfigService.getAll().stream()
+                .filter(c -> c.getStrategyType() == type)
+                .findFirst()
+                .orElse(new StrategyConfig(type));
+    }
+
+    /** Resolve a StrategyConfig by explicit type — loads from DB if available, else defaults. */
+    private StrategyConfig resolveStrategyConfigByType(StrategyType type) {
+        if (strategyConfigService == null) {
+            return new StrategyConfig(type);
+        }
+        return strategyConfigService.getAll().stream()
+                .filter(c -> c.getStrategyType() == type)
+                .findFirst()
+                .orElse(new StrategyConfig(type));
+    }
+
+    /**
+     * Creates a new {@link TradingProperties} with exit params (SL, target, maxHold, trailing,
+     * forced exit time) overridden from the per-strategy {@link StrategyConfig}.
+     */
+    private TradingProperties overrideExitParams(TradingProperties base, StrategyConfig config) {
+        // Use per-strategy squareoff time instead of GlobalConfig forcedExitTime
+        LocalTime squareoffTime = LocalTime.of(config.getSquareoffHour(), config.getSquareoffMinute());
+        var exit = new TradingProperties.Exit(
+                config.getStopLossPercent(),
+                config.getTargetPercent(),
+                config.getTrailingStopActivationPercent(),
+                config.getTrailingGapPercent(),
+                squareoffTime,
+                base.exit().partialProfitBookingEnabled(),
+                config.getMaxHoldMinutes());
+        return new TradingProperties(
+                base.mode(), base.marketDataMode(), base.executionMode(),
+                base.liveTradingEnabled(), base.timezone(),
+                base.broker(), base.symbols(), base.strike(),
+                base.entry(), exit, base.risk(),
+                base.paper(), base.safety(), base.telegram(),
+                base.algo(), base.backtest());
+    }
+
+    /**
+     * Builds a {@link TradingProperties} that uses entry/exit/risk values from the DB-backed
+     * {@link GlobalConfigService} while keeping infrastructure config (broker, symbols, paths, etc.)
+     * from the YAML-bound {@code properties}. Used for the default backtest path (no RunOptions overrides).
+     */
+    private TradingProperties propertiesFromGlobalConfig() {
+        var gc = globalConfigService.getCached();
+        var entry = new TradingProperties.Entry(
+                gc.getTimeframe(), gc.getTrendTimeframe(), gc.getEnabledOptionTypesAsList(),
+                gc.isVwapFilterEnabled(), gc.isTrendFilterEnabled(),
+                gc.getVolumeSpikeMultiplier(), gc.getBreakoutBufferPercent(),
+                gc.getBreakoutLookback(), gc.getVolumeLookback(),
+                gc.getBullishImbalanceThreshold(), gc.getBearishImbalanceThreshold(),
+                gc.getMinLiquidityVolume(), gc.getMaxIvPercent(), gc.getMinSignalScorePercent(),
+                gc.isCeOiSupportRequired(), gc.isPeOiSupportRequired(),
+                gc.isCeOiDivergenceFilterEnabled(), gc.isPeOiDivergenceFilterEnabled(),
+                gc.getOiDivergenceMultiplier(), gc.getOiDivergenceMinChange(),
+                gc.getCeBreakoutConfirmationCandles(), gc.getPeBreakoutConfirmationCandles(),
+                gc.getEntryStartTimeAsLocalTime(), gc.getEntryCutoffTimeAsLocalTime(),
+                gc.isAllowFirstMinutesEntry(), gc.getNoEntryFirstMinutes(),
+                gc.isRsiFilterEnabled(), gc.getRsiPeriod(),
+                gc.getRsiCeBuyThreshold(), gc.getRsiPeSellThreshold());
+        var exit = new TradingProperties.Exit(
+                gc.getStopLossPercent(), gc.getTargetPercent(),
+                gc.getTrailingStopActivationPercent(), gc.getTrailingGapPercent(),
+                gc.getForcedExitTimeAsLocalTime(), gc.isPartialProfitBookingEnabled(),
+                gc.getMaxHoldMinutes());
+        var risk = new TradingProperties.Risk(
+                gc.getTotalCapital(), gc.getMaxRiskPerTradePercent(), gc.getMaxDailyLossPercent(),
+                gc.getMaxTradesPerDay(), gc.getMaxOrdersPerDay(), gc.getMaxConsecutiveLosses(),
+                gc.getMaxOpenTrades(), gc.getSameInstrumentReentryMinPriceMovePercent(),
+                gc.getCooldownMinutes(), gc.getDailyProfitTarget());
+        return new TradingProperties(
+                properties.mode(), properties.marketDataMode(), properties.executionMode(),
+                properties.liveTradingEnabled(), properties.timezone(),
+                properties.broker(), properties.symbols(), properties.strike(),
+                entry, exit, risk,
+                properties.paper(), properties.safety(), properties.telegram(),
+                properties.algo(), properties.backtest());
     }
 
     public record RunOptions(

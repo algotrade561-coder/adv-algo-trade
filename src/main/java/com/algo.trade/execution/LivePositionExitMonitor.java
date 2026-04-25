@@ -1,8 +1,10 @@
 package com.algo.trade.execution;
 
 import com.algo.trade.domain.CandleClosedEvent;
+import com.algo.trade.domain.IndexType;
 import com.algo.trade.domain.Quote;
 import com.algo.trade.domain.TradeStatus;
+import com.algo.trade.marketdata.ExpiryCalendar;
 import com.algo.trade.marketdata.MarketDataService;
 import com.algo.trade.notification.TelegramAlertService;
 import com.algo.trade.persistence.TradeEntity;
@@ -11,6 +13,7 @@ import com.algo.trade.strategy.StrategyConfig;
 import com.algo.trade.strategy.StrategyConfigService;
 import java.math.BigDecimal;
 import java.math.MathContext;
+import java.time.LocalTime;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -44,6 +47,7 @@ public class LivePositionExitMonitor {
     private final StrategyConfigService strategyConfigService;
     private final TrailingStopService trailingStopService;
     private final TelegramAlertService telegramAlertService;
+    private final ExpiryCalendar expiryCalendar;
 
     // tradeId → highest price seen since entry
     private final Map<String, BigDecimal> peakPrices = new ConcurrentHashMap<>();
@@ -55,13 +59,15 @@ public class LivePositionExitMonitor {
                                     MarketDataService marketDataService,
                                     StrategyConfigService strategyConfigService,
                                     TrailingStopService trailingStopService,
-                                    TelegramAlertService telegramAlertService) {
+                                    TelegramAlertService telegramAlertService,
+                                    ExpiryCalendar expiryCalendar) {
         this.tradeRepository = tradeRepository;
         this.executionEngine = executionEngine;
         this.marketDataService = marketDataService;
         this.strategyConfigService = strategyConfigService;
         this.trailingStopService = trailingStopService;
         this.telegramAlertService = telegramAlertService;
+        this.expiryCalendar = expiryCalendar;
     }
 
     @EventListener
@@ -86,8 +92,54 @@ public class LivePositionExitMonitor {
         BigDecimal currentPrice = quoteOpt.get().lastPrice();
         if (currentPrice == null || currentPrice.signum() <= 0) return;
 
+        // Expiry danger zone: force-exit all positions after 3 PM on expiry day
+        IndexType indexType = trade.getInstrumentKey().contains("BANKNIFTY")
+                ? IndexType.BANKNIFTY : IndexType.NIFTY;
+        if (expiryCalendar.isExpiryDangerZone(indexType)) {
+            log.warn("[ExitMonitor] EXPIRY DANGER ZONE — force-closing: tradeId={} instrument={}",
+                    trade.getTradeId(), trade.getInstrumentKey());
+            telegramAlertService.systemAlert(String.format(
+                    "⚠️ Expiry Danger Zone — force-closing: %s | Current ₹%.2f",
+                    trade.getInstrumentKey(), currentPrice.doubleValue()));
+            close(trade, currentPrice, "EXPIRY_DANGER_ZONE");
+            return;
+        }
+
+        // Expiry afternoon: force-exit after 2 PM on expiry day (gamma risk escalates)
+        if (expiryCalendar.isExpiryAfternoon(indexType)) {
+            log.warn("[ExitMonitor] EXPIRY AFTERNOON — force-closing: tradeId={} instrument={}",
+                    trade.getTradeId(), trade.getInstrumentKey());
+            telegramAlertService.systemAlert(String.format(
+                    "⚠️ Expiry Afternoon Exit — force-closing: %s | Current ₹%.2f",
+                    trade.getInstrumentKey(), currentPrice.doubleValue()));
+            close(trade, currentPrice, "EXPIRY_AFTERNOON_EXIT");
+            return;
+        }
+
         BigDecimal entryPrice = trade.getEntryPrice();
         StrategyConfig config = resolveConfig(trade);
+
+        // Per-strategy squareoff time check (non-expiry days)
+        LocalTime now = LocalTime.now(java.time.ZoneId.of("Asia/Kolkata"));
+        LocalTime squareoffTime = LocalTime.of(config.getSquareoffHour(), config.getSquareoffMinute());
+        if (now.isAfter(squareoffTime) || now.equals(squareoffTime)) {
+            log.info("[ExitMonitor] SQUAREOFF TIME reached: tradeId={} instrument={} squareoff={}",
+                    trade.getTradeId(), trade.getInstrumentKey(), squareoffTime);
+            telegramAlertService.systemAlert(String.format(
+                    "⏰ Squareoff Time: %s | Current ₹%.2f | Time %s",
+                    trade.getInstrumentKey(), currentPrice.doubleValue(), squareoffTime));
+            close(trade, currentPrice, "SQUAREOFF_TIME");
+            return;
+        }
+
+        // Days-to-expiry SL scaling: tighter SL as expiry approaches
+        long daysToExpiry = expiryCalendar.daysToExpiry(indexType);
+        double slMultiplier = switch ((int) Math.min(daysToExpiry, 3)) {
+            case 0 -> 0.5;   // expiry day: very tight
+            case 1 -> 0.7;   // day before expiry
+            case 2 -> 0.85;  // 2 days before
+            default -> 1.0;  // normal
+        };
 
         // Track peak price
         BigDecimal peak = peakPrices.merge(trade.getTradeId(), currentPrice,
@@ -102,11 +154,12 @@ public class LivePositionExitMonitor {
                 config.getStopLossPercent(), config.getTargetPercent());
 
         // ── 1. Stop Loss ──────────────────────────────────────────────────────
-        double slPct = config.getStopLossPercent().doubleValue();
+        double slPct = config.getStopLossPercent().doubleValue() * slMultiplier;
         if (profitPct <= -slPct) {
-            log.warn("[ExitMonitor] STOP LOSS hit: tradeId={} instrument={} entry={} current={} profit={}% sl={}%",
+            log.warn("[ExitMonitor] STOP LOSS hit: tradeId={} instrument={} entry={} current={} profit={}% sl={}%{}",
                     trade.getTradeId(), trade.getInstrumentKey(), entryPrice, currentPrice,
-                    String.format("%.1f", profitPct), slPct);
+                    String.format("%.1f", profitPct), String.format("%.1f", slPct),
+                    slMultiplier < 1.0 ? " (expiry-day tightened)" : "");
             telegramAlertService.systemAlert(String.format(
                     "\uD83D\uDD34 SL Hit: %s | Entry \u20B9%.2f \u2192 \u20B9%.2f | P&L %.1f%%",
                     trade.getInstrumentKey(), entryPrice.doubleValue(), currentPrice.doubleValue(), profitPct));
@@ -129,7 +182,8 @@ public class LivePositionExitMonitor {
 
         // ── 3. Trailing Stop ──────────────────────────────────────────────────
         Optional<BigDecimal> currentStop = Optional.ofNullable(trailingStops.get(trade.getTradeId()));
-        Optional<BigDecimal> updatedStop = trailingStopService.nextStop(entryPrice, peak, currentStop);
+        Optional<BigDecimal> updatedStop = trailingStopService.nextStop(entryPrice, peak, currentStop,
+                config.getTrailingStopActivationPercent(), config.getTrailingGapPercent());
 
         if (updatedStop.isPresent()) {
             trailingStops.put(trade.getTradeId(), updatedStop.get());

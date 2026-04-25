@@ -1,5 +1,6 @@
 package com.algo.trade.execution;
 
+import com.algo.trade.config.GlobalConfigService;
 import com.algo.trade.config.TradingProperties;
 import com.algo.trade.domain.TradeStatus;
 import com.algo.trade.marketdata.MarketDataService;
@@ -33,6 +34,7 @@ public class MaxHoldExitMonitor {
     private final StrategyConfigService strategyConfigService;
     private final MarketDataService marketDataService;
     private final TradingProperties properties;
+    private final GlobalConfigService globalConfigService;
     private final Clock clock;
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -40,8 +42,9 @@ public class MaxHoldExitMonitor {
                                ExecutionEngine executionEngine,
                                StrategyConfigService strategyConfigService,
                                MarketDataService marketDataService,
-                               TradingProperties properties) {
-        this(tradeRepository, executionEngine, strategyConfigService, marketDataService, properties, Clock.systemUTC());
+                               TradingProperties properties,
+                               GlobalConfigService globalConfigService) {
+        this(tradeRepository, executionEngine, strategyConfigService, marketDataService, properties, globalConfigService, Clock.systemUTC());
     }
 
     MaxHoldExitMonitor(TradeRepository tradeRepository,
@@ -49,12 +52,14 @@ public class MaxHoldExitMonitor {
                        StrategyConfigService strategyConfigService,
                        MarketDataService marketDataService,
                        TradingProperties properties,
+                       GlobalConfigService globalConfigService,
                        Clock clock) {
         this.tradeRepository = tradeRepository;
         this.executionEngine = executionEngine;
         this.strategyConfigService = strategyConfigService;
         this.marketDataService = marketDataService;
         this.properties = properties;
+        this.globalConfigService = globalConfigService;
         this.clock = clock;
     }
 
@@ -90,22 +95,15 @@ public class MaxHoldExitMonitor {
     }
 
     private int resolveMaxHoldMinutes(TradeEntity trade) {
-        // Try to match the trade's underlying to an enabled strategy config
-        for (StrategyType type : StrategyType.values()) {
-            try {
-                StrategyConfig config = strategyConfigService.getAll().stream()
-                        .filter(c -> c.getStrategyType() == type)
-                        .filter(c -> trade.getUnderlying() != null
-                                && trade.getUnderlying().equalsIgnoreCase(c.getUnderlying()))
-                        .findFirst()
-                        .orElse(null);
-                if (config != null && config.getMaxHoldMinutes() > 0) {
-                    return config.getMaxHoldMinutes();
-                }
-            } catch (Exception ignored) {}
+        // Match strategy type from the trade's entry reason
+        String entryReason = trade.getEntryReason() != null ? trade.getEntryReason().toUpperCase() : "";
+        for (StrategyConfig config : strategyConfigService.getAll()) {
+            if (entryReason.contains(config.getStrategyType().name()) && config.getMaxHoldMinutes() > 0) {
+                return config.getMaxHoldMinutes();
+            }
         }
         // Fall back to directional buy config
         int fallback = strategyConfigService.getDirectionalBuyConfig().getMaxHoldMinutes();
-        return fallback > 0 ? fallback : properties.exit().maxHoldMinutes();
+        return fallback > 0 ? fallback : globalConfigService.getMaxHoldMinutes();
     }
 }

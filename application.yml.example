@@ -93,7 +93,7 @@ trading:
     max-trades-per-day: 4
     max-orders-per-day: 4
     max-consecutive-losses: 2
-    one-open-trade-at-a-time: true
+    max-open-trades: 1
     same-instrument-reentry-min-price-move-percent: 10
     cooldown-minutes: 10
 

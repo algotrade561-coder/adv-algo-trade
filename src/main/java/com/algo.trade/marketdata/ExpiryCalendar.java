@@ -75,6 +75,16 @@ public class ExpiryCalendar {
         return isExpiryDay(indexType) && LocalTime.now().isAfter(LocalTime.of(14, 0));
     }
 
+    /** After 15:00 on expiry day — last 30 mins, extreme gamma, exit all positions. */
+    public boolean isExpiryDangerZone(IndexType indexType) {
+        return isExpiryDay(indexType) && LocalTime.now().isAfter(LocalTime.of(15, 0));
+    }
+
+    /** Within 2 days of expiry but not expiry day itself — consider rolling to next expiry. */
+    public boolean shouldRollToNextExpiry(IndexType indexType) {
+        return isNearExpiry(indexType, 2) && !isExpiryDay(indexType);
+    }
+
     public boolean isNearExpiry(IndexType indexType, int daysThreshold) {
         long days = ChronoUnit.DAYS.between(LocalDate.now(), getCurrentWeeklyExpiry(indexType));
         return days <= daysThreshold;

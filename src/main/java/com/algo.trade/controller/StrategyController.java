@@ -110,6 +110,9 @@ public class StrategyController {
         m.put("minCombinedPremium", c.getMinCombinedPremium());
         m.put("trailingStopActivationPercent", c.getTrailingStopActivationPercent());
         m.put("trailingGapPercent", c.getTrailingGapPercent());
+        m.put("scanTimeframe", c.getScanTimeframe());
+        m.put("candleTimeframe", c.getCandleTimeframe());
+        m.put("trendTimeframe", c.getTrendTimeframe());
         return m;
     }
 }

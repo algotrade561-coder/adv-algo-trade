@@ -47,65 +47,18 @@ trading:
     selection-mode: ATM          # ATM | ONE_STRIKE_ITM | ONE_STRIKE_OTM
     nearby-strikes: 5
 
-  # ── Entry Rules (Directional Buy — YAML config) ─────────────────────────
-  # Note: Stop-loss, target, trailing, max-hold for directional buy are now
-  # in the DB-backed StrategyConfig (editable from Strategies UI page).
-  # These YAML entry rules control signal generation filters only.
-  entry:
-    timeframe: ONE_MINUTE
-    trend-timeframe: FIVE_MINUTE
-    enabled-option-types:
-      - CE
-      - PE
-    vwap-filter-enabled: true
-    trend-filter-enabled: true
-    volume-spike-multiplier: 1.2
-    breakout-buffer-percent: 0.05
-    breakout-lookback: 15
-    volume-lookback: 5
-    bullish-imbalance-threshold: 1.2
-    bearish-imbalance-threshold: 0.8
-    min-liquidity-volume: 5000
-    max-iv-percent: 80
-    min-signal-score-percent: 70
-    ce-oi-support-required: false
-    pe-oi-support-required: false
-    ce-oi-divergence-filter-enabled: true
-    pe-oi-divergence-filter-enabled: true
-    oi-divergence-multiplier: 2.0
-    oi-divergence-min-change: 100000
-    ce-breakout-confirmation-candles: 1
-    pe-breakout-confirmation-candles: 2
-    entry-start-time: "09:25"
-    entry-cutoff-time: "15:10"
-    allow-first-minutes-entry: false
-    no-entry-first-minutes: 10
-    rsi-filter-enabled: false
-    rsi-period: 14
-    rsi-ce-buy-threshold: 55
-    rsi-pe-sell-threshold: 45
-
-  # ── Exit Rules (used by backtest engine; live uses DB StrategyConfig) ───
-  exit:
-    stop-loss-percent: 12
-    target-percent: 24
-    trailing-stop-activation-percent: 10
-    trailing-gap-percent: 5
-    forced-exit-time: "15:15"
-    partial-profit-booking-enabled: false
-    max-hold-minutes: 0
-
-  # ── Risk ────────────────────────────────────────────────────────────────
-  risk:
-    total-capital: 60000
-    max-risk-per-trade-percent: 5
-    max-daily-loss-percent: 5
-    max-trades-per-day: 4
-    max-orders-per-day: 4
-    max-consecutive-losses: 2
-    max-open-trades: 1
-    same-instrument-reentry-min-price-move-percent: 10
-    cooldown-minutes: 10
+  # ══════════════════════════════════════════════════════════════════════════
+  # Entry / Exit / Risk — NOW IN DATABASE
+  # ══════════════════════════════════════════════════════════════════════════
+  # All entry filters, exit rules, and risk limits are stored in the H2
+  # database (global_config table) and editable at runtime via:
+  #   - Settings page in the UI
+  #   - GET/PUT /advalgotrade/global-config
+  #   - POST /advalgotrade/global-config/reset (restores hardcoded defaults)
+  #
+  # On first startup, defaults are seeded from TradingProperties.defaults().
+  # No YAML configuration needed for entry/exit/risk.
+  # ══════════════════════════════════════════════════════════════════════════
 
   # ── Paper Trading ───────────────────────────────────────────────────────
   paper:
@@ -170,6 +123,28 @@ spring:
 logging:
   level:
     com.algo.trade: INFO
+
+# ── Tail Hedge ────────────────────────────────────────────────────────────
+tail-hedge:
+  enabled: false
+  min-position-value: 5000
+  otm-strikes: 5
+  max-hedge-cost-percent: 10
+  price-buffer-percent: 5
+  tick-size: 0.05
+
+# ── Regime Filter ─────────────────────────────────────────────────────────
+regime-filter:
+  enabled: true
+  check-interval-seconds: 30
+
+# ── ATR Indicator ─────────────────────────────────────────────────────────
+atr:
+  default-period: 14
+  sl-atr-multiplier: 2.0
+  trail-atr-multiplier: 1.5
+  min-sl-percent: 15
+  max-sl-percent: 60
 
 server:
   port: 8089

@@ -41,7 +41,8 @@ class RuleBasedOptionsStrategyTest {
     @Test
     void blocksEntryAfterCutoffTime() {
         var strategy = strategy();
-        var request = bullishRequest(LocalTime.of(15, 0), selectedQuote(140, 20_000, 130_000, 20));
+        // Default entryCutoffTime is 15:10, so 15:15 is after cutoff
+        var request = bullishRequest(LocalTime.of(15, 15), selectedQuote(140, 20_000, 130_000, 20));
 
         var decision = strategy.evaluateEntry(request);
 

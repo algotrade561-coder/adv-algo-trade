@@ -26,6 +26,9 @@ public class OrderEntity {
     private BigDecimal averageFillPrice;
     private String rejectionReason;
     private Instant updatedAt;
+    private Instant signalTimestamp;
+    private Instant orderPlacedAt;
+    private java.math.BigDecimal slippage;
 
     protected OrderEntity() {
     }
@@ -61,4 +64,22 @@ public class OrderEntity {
     public void setFilledQuantity(int filledQuantity) { this.filledQuantity = filledQuantity; }
     public void setAverageFillPrice(BigDecimal averageFillPrice) { this.averageFillPrice = averageFillPrice; }
     public void setUpdatedAt(Instant updatedAt) { this.updatedAt = updatedAt; }
+    public Instant getSignalTimestamp() { return signalTimestamp; }
+    public void setSignalTimestamp(Instant v) { this.signalTimestamp = v; }
+    public Instant getOrderPlacedAt() { return orderPlacedAt; }
+    public void setOrderPlacedAt(Instant v) { this.orderPlacedAt = v; }
+    public java.math.BigDecimal getSlippage() { return slippage; }
+    public void setSlippage(java.math.BigDecimal v) { this.slippage = v; }
+
+    /** Signal-to-order latency in milliseconds. */
+    public Long getSignalToOrderMs() {
+        if (signalTimestamp == null || orderPlacedAt == null) return null;
+        return java.time.Duration.between(signalTimestamp, orderPlacedAt).toMillis();
+    }
+
+    /** Order-to-fill latency in milliseconds. */
+    public Long getOrderToFillMs() {
+        if (orderPlacedAt == null || updatedAt == null || status != OrderStatus.COMPLETE) return null;
+        return java.time.Duration.between(orderPlacedAt, updatedAt).toMillis();
+    }
 }

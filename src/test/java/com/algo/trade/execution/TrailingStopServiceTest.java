@@ -17,7 +17,10 @@ class TrailingStopServiceTest {
         Optional<BigDecimal> stop = trailingStopService.nextStop(BigDecimal.valueOf(100),
                 BigDecimal.valueOf(112), Optional.empty());
 
-        assertThat(stop).hasValueSatisfying(value -> assertThat(value).isEqualByComparingTo("105.28"));
+        // With defaults: activation=10%, gap=5%
+        // activationPrice = 100 * 1.10 = 110; 112 > 110 → activated
+        // candidate = 112 * (1 - 0.05) = 106.40
+        assertThat(stop).hasValueSatisfying(value -> assertThat(value).isEqualByComparingTo("106.40"));
     }
 
     @Test

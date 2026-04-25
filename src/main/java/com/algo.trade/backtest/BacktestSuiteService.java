@@ -980,7 +980,8 @@ public class BacktestSuiteService {
                         baseRisk.maxConsecutiveLosses(),
                         baseRisk.maxOpenTrades(),
                         baseRisk.sameInstrumentReentryMinPriceMovePercent(),
-                        baseRisk.cooldownMinutes()
+                        baseRisk.cooldownMinutes(),
+                        baseRisk.dailyProfitTarget()
                 ),
                 properties.paper(),
                 properties.safety(),

@@ -3,6 +3,8 @@ package com.algo.trade.backtest;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.algo.trade.config.GlobalConfig;
+import com.algo.trade.config.GlobalConfigService;
 import com.algo.trade.config.TradingProperties;
 import com.algo.trade.execution.TrailingStopService;
 import com.algo.trade.indicator.BreakoutDetector;
@@ -13,6 +15,9 @@ import com.algo.trade.indicator.VolumeSpikeDetector;
 import com.algo.trade.indicator.VwapIndicator;
 import com.algo.trade.strategy.OptionChainAnalyzer;
 import com.algo.trade.strategy.RuleBasedOptionsStrategy;
+import com.algo.trade.strategy.StrategyConfig;
+import com.algo.trade.strategy.StrategyConfigService;
+import com.algo.trade.strategy.StrategyType;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -66,7 +71,11 @@ class BacktestEngineTest {
                 new VolumeSpikeDetector(), new BreakoutDetector(), new VolatilityFilter(),
                 new OiChangeTracker(), new OptionChainAnalyzer(), null);
         var ema = new EmaIndicator();
-        BacktestEngine engine = new BacktestEngine(properties, strategy, new TrailingStopService(properties),
+        GlobalConfigService gcs = org.mockito.Mockito.mock(GlobalConfigService.class);
+        org.mockito.Mockito.when(gcs.getCached()).thenReturn(new GlobalConfig(properties));
+        StrategyConfigService scs = org.mockito.Mockito.mock(StrategyConfigService.class);
+        org.mockito.Mockito.when(scs.getAll()).thenReturn(java.util.List.of(new StrategyConfig(StrategyType.DIRECTIONAL_BUY)));
+        BacktestEngine engine = new BacktestEngine(properties, gcs, scs, strategy, new TrailingStopService(properties),
                 new com.algo.trade.strategy.ScalpingStrategy(ema),
                 new com.algo.trade.strategy.VolatilityBreakoutStrategy());
 
@@ -104,7 +113,11 @@ class BacktestEngineTest {
                 new VolumeSpikeDetector(), new BreakoutDetector(), new VolatilityFilter(),
                 new OiChangeTracker(), new OptionChainAnalyzer(), null);
         var ema2 = new EmaIndicator();
-        BacktestEngine engine = new BacktestEngine(properties, strategy, new TrailingStopService(properties),
+        GlobalConfigService gcs2 = org.mockito.Mockito.mock(GlobalConfigService.class);
+        org.mockito.Mockito.when(gcs2.getCached()).thenReturn(new GlobalConfig(properties));
+        StrategyConfigService scs2 = org.mockito.Mockito.mock(StrategyConfigService.class);
+        org.mockito.Mockito.when(scs2.getAll()).thenReturn(java.util.List.of(new StrategyConfig(StrategyType.DIRECTIONAL_BUY)));
+        BacktestEngine engine = new BacktestEngine(properties, gcs2, scs2, strategy, new TrailingStopService(properties),
                 new com.algo.trade.strategy.ScalpingStrategy(ema2),
                 new com.algo.trade.strategy.VolatilityBreakoutStrategy());
 

@@ -2,11 +2,16 @@ package com.algo.trade.controller;
 
 import com.algo.trade.backtest.BacktestDataFileResolver;
 import com.algo.trade.backtest.BacktestEngine;
+import com.algo.trade.backtest.BacktestMetrics;
 import com.algo.trade.backtest.GlobalDataFeedsOptionConverter;
 import com.algo.trade.backtest.BacktestMonthDiagnosticsService;
 import com.algo.trade.backtest.BacktestRunResult;
 import com.algo.trade.backtest.BacktestSuiteService;
 import com.algo.trade.backtest.HistoricalDataDownloadService;
+import com.algo.trade.backtest.StrategyVerificationResult;
+import com.algo.trade.backtest.VerifyAllRequest;
+import com.algo.trade.backtest.VerifyAllResult;
+import com.algo.trade.backtest.VerifyAllService;
 import com.algo.trade.config.TradingProperties;
 import com.algo.trade.domain.Instrument;
 import com.algo.trade.domain.OptionType;
@@ -20,6 +25,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.YearMonth;
 import java.util.ArrayList;
@@ -48,10 +54,12 @@ public class BacktestController {
     private final TradingProperties properties;
     private final BacktestSuiteService suiteService;
     private final InstrumentCache instrumentCache;
+    private final VerifyAllService verifyAllService;
 
     public BacktestController(BacktestResultRepository backtestResultRepository, BacktestEngine backtestEngine,
                                HistoricalDataDownloadService downloadService, BacktestMonthDiagnosticsService diagnosticsService, TradingProperties properties,
-                               BacktestSuiteService suiteService, InstrumentCache instrumentCache) {
+                               BacktestSuiteService suiteService, InstrumentCache instrumentCache,
+                               VerifyAllService verifyAllService) {
         this.backtestResultRepository = backtestResultRepository;
         this.backtestEngine = backtestEngine;
         this.downloadService = downloadService;
@@ -59,6 +67,7 @@ public class BacktestController {
         this.properties = properties;
         this.suiteService = suiteService;
         this.instrumentCache = instrumentCache;
+        this.verifyAllService = verifyAllService;
     }
 
     @PostMapping("/backtest/run")
@@ -1040,6 +1049,230 @@ public class BacktestController {
                     .body(Map.of("status", "error", "message", ex.getMessage()));
         }
     }
+
+    // ── Verify-All Endpoint ──────────────────────────────────────────────
+
+    @PostMapping("/backtest/verify-all")
+    public ResponseEntity<?> verifyAll(@RequestBody(required = false) VerifyAllRequest request) {
+        VerifyAllRequest req = request != null ? request.withDefaults() : VerifyAllRequest.defaults();
+        log.info("Verify-all called: underlying={}, from={}, to={}", req.underlying(), req.from(), req.to());
+
+        // Validate global-datafeeds directory exists
+        Path globalDatafeedsDir = resolveGlobalDatafeedsByDayDir();
+        if (!Files.isDirectory(globalDatafeedsDir)) {
+            log.warn("Verify-all rejected: global-datafeeds directory not found at {}", globalDatafeedsDir);
+            return ResponseEntity.badRequest().body(Map.of(
+                    "status", "error",
+                    "message", "Global-datafeeds directory not found: " + globalDatafeedsDir
+                            + ". Run GlobalDataFeedsOptionConverter first to populate by-day CSVs."));
+        }
+
+        // Validate date range has at least one trading day (weekday)
+        if (!hasTradingDays(req.from(), req.to())) {
+            log.warn("Verify-all rejected: no trading days in range {} to {}", req.from(), req.to());
+            return ResponseEntity.badRequest().body(Map.of(
+                    "status", "error",
+                    "message", "No trading days in date range " + req.from() + " to " + req.to()));
+        }
+
+        try {
+            long startMs = System.currentTimeMillis();
+            VerifyAllResult result = verifyAllService.verifyAll(req);
+            long timeTakenMs = System.currentTimeMillis() - startMs;
+
+            // Build a clean JSON response (no Path fields)
+            Map<String, Object> response = new LinkedHashMap<>();
+            response.put("status", "ok");
+            response.put("verifyId", result.verifyId());
+            response.put("underlying", result.underlying());
+            response.put("from", result.from());
+            response.put("to", result.to());
+            response.put("reportPath", result.reportHtml() != null ? result.reportHtml().toString() : null);
+            response.put("summaryPath", result.summaryJson() != null ? result.summaryJson().toString() : null);
+
+            // Inline summary stats
+            int totalStrategies = result.strategyResults().size();
+            int totalTrades = 0;
+            BigDecimal totalPnl = BigDecimal.ZERO;
+            int totalWins = 0;
+            int strategiesOk = 0;
+            int strategiesError = 0;
+            int strategiesNoData = 0;
+
+            for (StrategyVerificationResult sr : result.strategyResults()) {
+                BacktestMetrics m = sr.metrics();
+                if (m != null) {
+                    totalTrades += m.totalTrades();
+                    totalPnl = totalPnl.add(m.cumulativePnl());
+                    // Approximate wins from winRate and totalTrades
+                    if (m.totalTrades() > 0 && m.winRatePercent() != null) {
+                        totalWins += m.winRatePercent().multiply(BigDecimal.valueOf(m.totalTrades()))
+                                .divide(BigDecimal.valueOf(100), 0, RoundingMode.HALF_UP).intValue();
+                    }
+                }
+                switch (sr.status()) {
+                    case "ok" -> strategiesOk++;
+                    case "error" -> strategiesError++;
+                    case "no-data" -> strategiesNoData++;
+                }
+            }
+
+            BigDecimal overallWinRate = totalTrades > 0
+                    ? BigDecimal.valueOf(totalWins).multiply(BigDecimal.valueOf(100))
+                    .divide(BigDecimal.valueOf(totalTrades), 2, RoundingMode.HALF_UP)
+                    : BigDecimal.ZERO;
+
+            response.put("totalStrategies", totalStrategies);
+            response.put("strategiesOk", strategiesOk);
+            response.put("strategiesError", strategiesError);
+            response.put("strategiesNoData", strategiesNoData);
+            response.put("totalTrades", totalTrades);
+            response.put("totalPnl", totalPnl);
+            response.put("overallWinRate", overallWinRate);
+            response.put("timeTakenMs", timeTakenMs);
+
+            log.info("Verify-all completed: id={}, strategies={}, trades={}, pnl={}, time={}ms",
+                    result.verifyId(), totalStrategies, totalTrades, totalPnl, timeTakenMs);
+            return ResponseEntity.ok(response);
+        } catch (Exception ex) {
+            log.error("Verify-all failed: {}", ex.getMessage(), ex);
+            return ResponseEntity.internalServerError().body(Map.of(
+                    "status", "error",
+                    "message", ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName()));
+        }
+    }
+
+    /** Resolve the global-datafeeds by-day directory from backtest config. */
+    private Path resolveGlobalDatafeedsByDayDir() {
+        Path importDir = Path.of(properties.backtest().csvImportPath()).getParent();
+        if (importDir == null) {
+            importDir = Path.of("C:/data/backtest/imports");
+        }
+        return importDir.resolve("global-datafeeds").resolve("by-day");
+    }
+
+    /** Check if the date range contains at least one weekday (trading day). */
+    private static boolean hasTradingDays(LocalDate from, LocalDate to) {
+        if (from == null || to == null || from.isAfter(to)) {
+            return false;
+        }
+        LocalDate date = from;
+        while (!date.isAfter(to)) {
+            DayOfWeek dow = date.getDayOfWeek();
+            if (dow != DayOfWeek.SATURDAY && dow != DayOfWeek.SUNDAY) {
+                return true;
+            }
+            date = date.plusDays(1);
+        }
+        return false;
+    }
+
+    // ── Verify-Today Endpoint ─────────────────────────────────────────────
+
+    /**
+     * Runs all 16 strategies for a single day (today or the most recent trading day).
+     * Shows what each strategy would have signaled — useful for forward-testing before going live.
+     */
+    @PostMapping("/backtest/verify-today")
+    public ResponseEntity<?> verifyToday(@RequestBody(required = false) VerifyTodayRequest request) {
+        UnderlyingSymbol underlying = request != null && request.underlying() != null
+                ? request.underlying() : UnderlyingSymbol.NIFTY;
+        LocalDate targetDate = request != null && request.date() != null
+                ? request.date() : mostRecentTradingDay(LocalDate.now());
+
+        log.info("Verify-today called: date={}, underlying={}", targetDate, underlying);
+
+        // Validate data exists for the target date
+        Path byDayDir = resolveGlobalDatafeedsByDayDir();
+        Path dayFile = byDayDir.resolve(String.valueOf(targetDate.getYear()))
+                .resolve(targetDate + ".csv");
+        if (!Files.exists(dayFile)) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "status", "error",
+                    "message", "No by-day CSV found for " + targetDate + " at " + dayFile
+                            + ". Run GlobalDataFeedsOptionConverter for this date first."));
+        }
+
+        try {
+            // Run verify-all for just this single day
+            VerifyAllRequest verifyRequest = new VerifyAllRequest(targetDate, targetDate, underlying);
+            long startMs = System.currentTimeMillis();
+            VerifyAllResult result = verifyAllService.verifyAll(verifyRequest);
+            long timeTakenMs = System.currentTimeMillis() - startMs;
+
+            // Build compact response focused on signals
+            Map<String, Object> response = new LinkedHashMap<>();
+            response.put("status", "ok");
+            response.put("date", targetDate.toString());
+            response.put("dayOfWeek", targetDate.getDayOfWeek().toString());
+            response.put("underlying", underlying);
+            response.put("verifyId", result.verifyId());
+            response.put("timeTakenMs", timeTakenMs);
+
+            // Per-strategy signal summary
+            List<Map<String, Object>> strategies = new ArrayList<>();
+            for (StrategyVerificationResult sr : result.strategyResults()) {
+                Map<String, Object> s = new LinkedHashMap<>();
+                s.put("strategy", sr.strategyType().displayName());
+                s.put("strategyType", sr.strategyType().name());
+                s.put("status", sr.status());
+                s.put("signals", sr.entrySignals());
+                s.put("rejected", sr.rejectedSignals());
+                s.put("trades", sr.metrics() != null ? sr.metrics().totalTrades() : 0);
+                s.put("pnl", sr.metrics() != null ? sr.metrics().cumulativePnl() : BigDecimal.ZERO);
+                if (!sr.rejectionReasons().isEmpty()) {
+                    s.put("rejectionReasons", sr.rejectionReasons());
+                }
+                if (!sr.strategySpecificMetrics().isEmpty()) {
+                    s.put("metrics", sr.strategySpecificMetrics());
+                }
+                if (sr.sampleTrades() != null && !sr.sampleTrades().isEmpty()) {
+                    s.put("sampleTrade", Map.of(
+                            "entry", sr.sampleTrades().getFirst().entryPrice(),
+                            "exit", sr.sampleTrades().getFirst().exitPrice(),
+                            "pnl", sr.sampleTrades().getFirst().pnl(),
+                            "exitReason", sr.sampleTrades().getFirst().exitReason()));
+                }
+                strategies.add(s);
+            }
+            response.put("strategies", strategies);
+
+            // Quick totals
+            int totalSignals = result.strategyResults().stream().mapToInt(StrategyVerificationResult::entrySignals).sum();
+            int totalTrades = result.strategyResults().stream()
+                    .filter(r -> r.metrics() != null).mapToInt(r -> r.metrics().totalTrades()).sum();
+            BigDecimal totalPnl = result.strategyResults().stream()
+                    .filter(r -> r.metrics() != null).map(r -> r.metrics().cumulativePnl())
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+            response.put("totalSignals", totalSignals);
+            response.put("totalTrades", totalTrades);
+            response.put("totalPnl", totalPnl);
+
+            if (result.reportHtml() != null) {
+                response.put("reportPath", result.reportHtml().toString());
+            }
+
+            log.info("Verify-today completed: date={}, signals={}, trades={}, pnl={}, time={}ms",
+                    targetDate, totalSignals, totalTrades, totalPnl, timeTakenMs);
+            return ResponseEntity.ok(response);
+        } catch (Exception ex) {
+            log.error("Verify-today failed: {}", ex.getMessage(), ex);
+            return ResponseEntity.internalServerError().body(Map.of(
+                    "status", "error",
+                    "message", ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName()));
+        }
+    }
+
+    /** Find the most recent trading day (weekday) on or before the given date. */
+    private static LocalDate mostRecentTradingDay(LocalDate date) {
+        LocalDate d = date;
+        while (d.getDayOfWeek() == DayOfWeek.SATURDAY || d.getDayOfWeek() == DayOfWeek.SUNDAY) {
+            d = d.minusDays(1);
+        }
+        return d;
+    }
+
+    record VerifyTodayRequest(LocalDate date, UnderlyingSymbol underlying) {}
 
     @GetMapping("/backtest/results/{id}")
     public ResponseEntity<BacktestResultEntity> result(@PathVariable String id) {

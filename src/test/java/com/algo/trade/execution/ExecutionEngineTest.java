@@ -10,6 +10,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.algo.trade.broker.BrokerClient;
+import com.algo.trade.config.GlobalConfigService;
 import com.algo.trade.config.TradingProperties;
 import com.algo.trade.domain.OptionType;
 import com.algo.trade.domain.OrderRequest;
@@ -21,11 +22,7 @@ import com.algo.trade.domain.StrategyDecision;
 import com.algo.trade.domain.TradeStatus;
 import com.algo.trade.domain.UnderlyingSymbol;
 import com.algo.trade.notification.TelegramAlertService;
-import com.algo.trade.persistence.ErrorEventRepository;
-import com.algo.trade.persistence.OrderRepository;
-import com.algo.trade.persistence.StrategyDecisionRepository;
-import com.algo.trade.persistence.TradeEntity;
-import com.algo.trade.persistence.TradeRepository;
+import com.algo.trade.persistence.*;
 import com.algo.trade.risk.RiskEngine;
 import com.algo.trade.strategy.StrategyConfig;
 import com.algo.trade.strategy.StrategyConfigService;
@@ -43,6 +40,7 @@ class ExecutionEngineTest {
 
     private final TradingProperties properties = new TradingProperties(null, false, null, null,
             null, null, null, null, null, null, null, null, null);
+    private final GlobalConfigService globalConfigService = mock(GlobalConfigService.class);
     private final BrokerClient brokerClient = mock(BrokerClient.class);
     private final TradingStateService tradingStateService = new TradingStateService(properties);
     private final TradeRepository tradeRepository = mock(TradeRepository.class);
@@ -57,9 +55,21 @@ class ExecutionEngineTest {
 
     @BeforeEach
     void setUp() {
+        // Set up GlobalConfigService mock with default risk values
+        when(globalConfigService.getMaxOrdersPerDay()).thenReturn(6);
+        when(globalConfigService.getMaxOpenTrades()).thenReturn(1);
+        when(globalConfigService.getMaxTradesPerDay()).thenReturn(6);
+        when(globalConfigService.getMaxConsecutiveLosses()).thenReturn(2);
+        when(globalConfigService.getTotalCapital()).thenReturn(BigDecimal.valueOf(300_000));
+        when(globalConfigService.getMaxRiskPerTradePercent()).thenReturn(BigDecimal.valueOf(1.2));
+        when(globalConfigService.getMaxDailyLossPercent()).thenReturn(BigDecimal.valueOf(3));
+        when(globalConfigService.getSameInstrumentReentryMinPriceMovePercent()).thenReturn(BigDecimal.TEN);
+        when(globalConfigService.getCooldownMinutes()).thenReturn(10);
+        when(globalConfigService.getDailyProfitTarget()).thenReturn(BigDecimal.ZERO);
+
         var mockConfigService = mock(StrategyConfigService.class);
         when(mockConfigService.getDirectionalBuyConfig()).thenReturn(new StrategyConfig(StrategyType.DIRECTIONAL_BUY));
-        executionEngine = new ExecutionEngine(properties, brokerClient, new RiskEngine(properties, mockConfigService, tradingStateService), tradingStateService,
+        executionEngine = new ExecutionEngine(properties, globalConfigService, brokerClient, new RiskEngine(globalConfigService, properties, mockConfigService, tradingStateService), tradingStateService,
                 tradeRepository, orderRepository, errorEventRepository, decisionRepository, outcomeCsvRecorder,
                 telegramAlertService, clock);
         when(tradeRepository.findByStatus(TradeStatus.OPEN)).thenReturn(List.of());
@@ -177,6 +187,57 @@ class ExecutionEngineTest {
                 eq("trailing stop"),
                 eq(exitOrder)
         );
+    }
+
+    @Test
+    void acceptsLimitOrderInOpenStatusForWatchdog() {
+        tradingStateService.start();
+        when(brokerClient.placeOrder(any(OrderRequest.class))).thenReturn(new OrderResponse(
+                "ENTRY-1",
+                Optional.of("BROKER-1"),
+                "NFO:NIFTY24APR24000CE",
+                OrderSide.BUY,
+                OrderStatus.OPEN,
+                300,
+                0,
+                Optional.empty(),
+                Optional.empty(),
+                Instant.now(clock)
+        ));
+
+        ExecutionResult result = executionEngine.executeEntry(buyDecision(), BigDecimal.valueOf(100), 75);
+
+        assertThat(result.accepted()).isTrue();
+        assertThat(result.reasons()).contains("Limit order placed — awaiting fill");
+        verify(orderRepository).save(any());
+        // No trade created yet — watchdog will handle it
+        verify(tradeRepository, never()).save(any(TradeEntity.class));
+    }
+
+    @Test
+    void openTradeFromFilledOrderCreatesTradeEntity() {
+        OrderEntity orderEntity = new OrderEntity("ENTRY-1", "BROKER-1", "NFO:NIFTY24APR24000CE",
+                "BUY", OrderStatus.COMPLETE, 300, 300, BigDecimal.valueOf(101), null, Instant.now(clock));
+
+        executionEngine.openTradeFromFilledOrder(orderEntity);
+
+        verify(tradeRepository).save(any(TradeEntity.class));
+        verify(orderRepository).save(orderEntity);
+    }
+
+    @Test
+    void rejectsEntryWhenPendingOpenOrderExistsForSameInstrument() {
+        tradingStateService.start();
+        when(orderRepository.findByInstrumentKeyAndSideAndStatusIn(
+                eq("NFO:NIFTY24APR24000CE"), eq("BUY"), any()))
+                .thenReturn(List.of(new OrderEntity("ENTRY-OLD", "BROKER-OLD", "NFO:NIFTY24APR24000CE",
+                        "BUY", OrderStatus.OPEN, 300, 0, null, null, Instant.now(clock))));
+
+        ExecutionResult result = executionEngine.executeEntry(buyDecision(), BigDecimal.valueOf(100), 75);
+
+        assertThat(result.accepted()).isFalse();
+        assertThat(result.reasons()).contains("Open buy order already exists for instrument: NFO:NIFTY24APR24000CE");
+        verify(brokerClient, never()).placeOrder(any());
     }
 
     private StrategyDecision buyDecision() {

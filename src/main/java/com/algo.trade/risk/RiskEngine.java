@@ -1,5 +1,6 @@
 package com.algo.trade.risk;
 
+import com.algo.trade.config.GlobalConfigService;
 import com.algo.trade.config.TradingProperties;
 import com.algo.trade.domain.SignalType;
 import com.algo.trade.domain.StrategyDecision;
@@ -25,12 +26,14 @@ public class RiskEngine {
     private static final MathContext MATH_CONTEXT = MathContext.DECIMAL64;
     private static final Logger log = LoggerFactory.getLogger(RiskEngine.class);
 
+    private final GlobalConfigService globalConfigService;
     private final TradingProperties properties;
     private final StrategyConfigService strategyConfigService;
     private final TradingStateService tradingStateService;
 
-    public RiskEngine(TradingProperties properties, StrategyConfigService strategyConfigService,
+    public RiskEngine(GlobalConfigService globalConfigService, TradingProperties properties, StrategyConfigService strategyConfigService,
                       @Lazy TradingStateService tradingStateService) {
+        this.globalConfigService = globalConfigService;
         this.properties = properties;
         this.strategyConfigService = strategyConfigService;
         this.tradingStateService = tradingStateService;
@@ -63,17 +66,17 @@ public class RiskEngine {
         if (decision.signalType() != SignalType.BUY_CE && decision.signalType() != SignalType.BUY_PE) {
             rejections.add("Decision is not an entry signal");
         }
-        if (openTradeCount >= properties.risk().maxOpenTrades()) {
-            rejections.add("Max open trades limit reached (" + openTradeCount + "/" + properties.risk().maxOpenTrades() + ")");
+        if (openTradeCount >= globalConfigService.getMaxOpenTrades()) {
+            rejections.add("Max open trades limit reached (" + openTradeCount + "/" + globalConfigService.getMaxOpenTrades() + ")");
         }
-        if (tradesToday >= properties.risk().maxTradesPerDay()) {
+        if (tradesToday >= globalConfigService.getMaxTradesPerDay()) {
             rejections.add("Max trades per day reached");
         }
         if (dailyPnl.compareTo(effectiveDailyLossLimit().negate()) <= 0) {
             rejections.add(String.format("Max daily loss reached (limit: \u20b9%.0f)",
                     effectiveDailyLossLimit().doubleValue()));
         }
-        if (consecutiveLosses >= properties.risk().maxConsecutiveLosses()) {
+        if (consecutiveLosses >= globalConfigService.getMaxConsecutiveLosses()) {
             rejections.add("Max consecutive losses reached");
         }
         if (!decision.selectedInstrumentKey().isPresent() || !decision.optionType().isPresent()) {
@@ -89,9 +92,15 @@ public class RiskEngine {
 
     public PositionSizingResult calculateQuantity(BigDecimal optionPremium, int lotSize) {
         StrategyConfig dirConfig = strategyConfigService.getDirectionalBuyConfig();
-        BigDecimal stopLossPercent = dirConfig.getStopLossPercent();
+        return calculateQuantity(optionPremium, lotSize, dirConfig.getStopLossPercent());
+    }
+
+    /**
+     * Position sizing with explicit stop-loss percent (for per-strategy sizing).
+     */
+    public PositionSizingResult calculateQuantity(BigDecimal optionPremium, int lotSize, BigDecimal stopLossPercent) {
         log.info("Position sizing started: optionPremium={}, lotSize={}, totalCapital={}, maxRiskPerTradePercent={}, stopLossPercent={}",
-                optionPremium, lotSize, properties.risk().totalCapital(), properties.risk().maxRiskPerTradePercent(),
+                optionPremium, lotSize, globalConfigService.getTotalCapital(), globalConfigService.getMaxRiskPerTradePercent(),
                 stopLossPercent);
         if (optionPremium == null || optionPremium.signum() <= 0) {
             log.warn("Position sizing rejected: option premium must be positive");
@@ -104,8 +113,8 @@ public class RiskEngine {
                     "Lot size must be positive");
         }
 
-        BigDecimal riskAmount = properties.risk().totalCapital()
-                .multiply(properties.risk().maxRiskPerTradePercent(), MATH_CONTEXT)
+        BigDecimal riskAmount = globalConfigService.getTotalCapital()
+                .multiply(globalConfigService.getMaxRiskPerTradePercent(), MATH_CONTEXT)
                 .divide(BigDecimal.valueOf(100), MATH_CONTEXT);
         BigDecimal lossPerUnit = optionPremium
                 .multiply(stopLossPercent, MATH_CONTEXT)
@@ -127,10 +136,10 @@ public class RiskEngine {
             return new PositionSizingResult(false, 0, riskAmount, estimatedCost,
                     "Premium is too high for the risk budget");
         }
-        if (estimatedCost.compareTo(properties.risk().totalCapital()) > 0) {
+        if (estimatedCost.compareTo(globalConfigService.getTotalCapital()) > 0) {
             log.info("Position sizing capped by total capital: originalQuantity={}, originalEstimatedCost={}",
                     quantity, estimatedCost);
-            int affordableLots = properties.risk().totalCapital()
+            int affordableLots = globalConfigService.getTotalCapital()
                     .divide(optionPremium.multiply(BigDecimal.valueOf(lotSize), MATH_CONTEXT), MATH_CONTEXT)
                     .intValue();
             quantity = affordableLots * lotSize;
@@ -149,8 +158,8 @@ public class RiskEngine {
 
     /** Base daily loss limit = maxDailyLossPercent % of totalCapital (e.g. 3% of ₹60,000 = ₹1,800). */
     public BigDecimal baseDailyLossLimit() {
-        return properties.risk().totalCapital()
-                .multiply(properties.risk().maxDailyLossPercent(), MATH_CONTEXT)
+        return globalConfigService.getTotalCapital()
+                .multiply(globalConfigService.getMaxDailyLossPercent(), MATH_CONTEXT)
                 .divide(BigDecimal.valueOf(100), MATH_CONTEXT);
     }
 

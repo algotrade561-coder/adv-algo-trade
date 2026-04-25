@@ -1,5 +1,6 @@
 import { ChangeDetectorRef, Component, DestroyRef, OnInit, inject } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { DecimalPipe } from '@angular/common';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 import { ApiService } from '../core/api.service';
@@ -8,7 +9,7 @@ import { ApiRecord } from '../core/models';
 @Component({
   selector: 'app-rejected-signals-page',
   standalone: true,
-  imports: [MatButtonModule, MatIconModule],
+  imports: [DecimalPipe, MatButtonModule, MatIconModule],
   template: `
     <section class="page">
       <div class="top-row">
@@ -50,13 +51,17 @@ import { ApiRecord } from '../core/models';
               @if (s['confidenceScore'] != null && s['confidenceScore'] !== 0) { <div class="f"><span>Confidence</span><strong>{{ s['confidenceScore'] }}</strong></div> }
               @if (s['optionOpenInterest']) { <div class="f"><span>Open Interest</span><strong>{{ s['optionOpenInterest'] }}</strong></div> }
             </div>
-            @if (s['vwapConditionPassed'] != null || s['volumeSpike'] != null || s['imbalance'] != null || s['ivRank'] != null) {
+            @if (s['vwapConditionPassed'] != null || s['volumeSpike'] != null || s['imbalance'] != null || s['ivRank'] != null || s['fastEma'] != null || s['bollingerBandwidth'] != null) {
               <div class="sl">Indicators</div>
               <div class="field-grid">
                 @if (s['vwapConditionPassed'] != null) { <div class="f"><span>VWAP</span><strong [class.pos]="s['vwapConditionPassed']" [class.neg]="!s['vwapConditionPassed']">{{ s['vwapConditionPassed'] ? 'Passed' : 'Failed' }}</strong></div> }
                 @if (s['volumeSpike'] != null) { <div class="f"><span>Vol Spike</span><strong>{{ s['volumeSpike'] ? 'Yes' : 'No' }}</strong></div> }
                 @if (s['imbalance'] != null) { <div class="f"><span>OI Imbalance</span><strong>{{ s['imbalance'] }}</strong></div> }
                 @if (s['ivRank'] != null) { <div class="f"><span>IV Rank</span><strong>{{ s['ivRank'] }}</strong></div> }
+                @if (s['fastEma'] != null) { <div class="f"><span>EMA 9</span><strong>{{ $any(s['fastEma']) | number:'1.1-1' }}</strong></div> }
+                @if (s['slowEma'] != null) { <div class="f"><span>EMA 21</span><strong>{{ $any(s['slowEma']) | number:'1.1-1' }}</strong></div> }
+                @if (s['bollingerBandwidth'] != null) { <div class="f"><span>BB Width</span><strong>{{ $any(s['bollingerBandwidth']) | number:'1.2-2' }}%</strong></div> }
+                @if (s['executionStage']) { <div class="f"><span>Exec Stage</span><strong>{{ s['executionStage'] }}</strong></div> }
               </div>
             }
             <div class="reasons"><mat-icon class="ri">info_outline</mat-icon> {{ s['reasons'] ?? 'No reason recorded' }}</div>
@@ -108,7 +113,7 @@ import { ApiRecord } from '../core/models';
   `]
 })
 export class RejectedSignalsPageComponent implements OnInit {
-  readonly strategyOpts = ['DIRECTIONAL_BUY','SCALPING','VOLATILITY_BREAKOUT','EVENT_DRIVEN_BUY','BULL_CALL_SPREAD','BEAR_PUT_SPREAD','LONG_STRADDLE','LONG_STRANGLE','SHORT_STRADDLE','SHORT_STRANGLE','IRON_CONDOR','BUTTERFLY','CALENDAR_SPREAD'];
+  readonly strategyOpts = ['DIRECTIONAL_BUY','SCALPING','VOLATILITY_BREAKOUT','EVENT_DRIVEN_BUY','BULL_CALL_SPREAD','BEAR_PUT_SPREAD','LONG_STRADDLE','LONG_STRANGLE','SHORT_STRADDLE','SHORT_STRANGLE','IRON_CONDOR','BUTTERFLY','CALENDAR_SPREAD','DIAGONAL_SPREAD','JADE_LIZARD','SYNTHETIC_FUTURES'];
   selectedStrategy = 'ALL';
   signals: ApiRecord[] = [];
   currentPage = 0;

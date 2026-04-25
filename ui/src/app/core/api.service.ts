@@ -28,6 +28,60 @@ export interface StrategyDto {
   maxHoldMinutes: number; spreadStrikes: number; otmStrikes: number;
   maxIvRankForBuying: number; minCombinedPremium: number;
   trailingStopActivationPercent: number; trailingGapPercent: number;
+  scanTimeframe: string; candleTimeframe: string; trendTimeframe: string;
+}
+
+export interface GlobalConfigDto {
+  // Entry
+  timeframe: string;
+  trendTimeframe: string;
+  enabledOptionTypes: string[];
+  vwapFilterEnabled: boolean;
+  trendFilterEnabled: boolean;
+  volumeSpikeMultiplier: number;
+  breakoutBufferPercent: number;
+  breakoutLookback: number;
+  volumeLookback: number;
+  bullishImbalanceThreshold: number;
+  bearishImbalanceThreshold: number;
+  minLiquidityVolume: number;
+  maxIvPercent: number;
+  minSignalScorePercent: number;
+  ceOiSupportRequired: boolean;
+  peOiSupportRequired: boolean;
+  ceOiDivergenceFilterEnabled: boolean;
+  peOiDivergenceFilterEnabled: boolean;
+  oiDivergenceMultiplier: number;
+  oiDivergenceMinChange: number;
+  ceBreakoutConfirmationCandles: number;
+  peBreakoutConfirmationCandles: number;
+  entryStartTime: string;
+  entryCutoffTime: string;
+  allowFirstMinutesEntry: boolean;
+  noEntryFirstMinutes: number;
+  rsiFilterEnabled: boolean;
+  rsiPeriod: number;
+  rsiCeBuyThreshold: number;
+  rsiPeSellThreshold: number;
+  // Exit
+  stopLossPercent: number;
+  targetPercent: number;
+  trailingStopActivationPercent: number;
+  trailingGapPercent: number;
+  forcedExitTime: string;
+  partialProfitBookingEnabled: boolean;
+  maxHoldMinutes: number;
+  // Risk
+  totalCapital: number;
+  maxRiskPerTradePercent: number;
+  maxDailyLossPercent: number;
+  maxTradesPerDay: number;
+  maxOrdersPerDay: number;
+  maxConsecutiveLosses: number;
+  maxOpenTrades: number;
+  sameInstrumentReentryMinPriceMovePercent: number;
+  cooldownMinutes: number;
+  dailyProfitTarget: number;
 }
 
 @Injectable({ providedIn: 'root' })
@@ -106,6 +160,11 @@ export class ApiService {
   signalSummary(): Observable<Array<{ strategyType: string; count: number }>> {
     return this.http.get<Array<{ strategyType: string; count: number }>>(`${this.base}/signals/summary`);
   }
+
+  // ── Global config ─────────────────────────────────────────────────────
+  getGlobalConfig(): Observable<GlobalConfigDto> { return this.http.get<GlobalConfigDto>(`${this.base}/global-config`); }
+  updateGlobalConfig(config: GlobalConfigDto): Observable<GlobalConfigDto> { return this.http.put<GlobalConfigDto>(`${this.base}/global-config`, config); }
+  resetGlobalConfig(): Observable<GlobalConfigDto> { return this.http.post<GlobalConfigDto>(`${this.base}/global-config/reset`, {}); }
 }
 
 function clean<T extends Record<string, unknown>>(value: T): Partial<T> {

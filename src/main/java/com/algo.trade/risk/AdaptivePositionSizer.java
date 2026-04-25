@@ -1,5 +1,6 @@
 package com.algo.trade.risk;
 
+import com.algo.trade.config.GlobalConfigService;
 import com.algo.trade.config.TradingProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -22,13 +23,16 @@ public class AdaptivePositionSizer {
     private static final Logger log = LoggerFactory.getLogger(AdaptivePositionSizer.class);
     private static final MathContext MC = MathContext.DECIMAL64;
 
+    private final GlobalConfigService globalConfigService;
     private final TradingProperties properties;
     private final MarketGuard marketGuard;
     private final RiskManager riskManager;
 
-    public AdaptivePositionSizer(TradingProperties properties,
+    public AdaptivePositionSizer(GlobalConfigService globalConfigService,
+                                  TradingProperties properties,
                                   MarketGuard marketGuard,
                                   RiskManager riskManager) {
+        this.globalConfigService = globalConfigService;
         this.properties = properties;
         this.marketGuard = marketGuard;
         this.riskManager = riskManager;
@@ -53,8 +57,8 @@ public class AdaptivePositionSizer {
 
         // 2. Daily P&L scaling — reduce if losing day
         BigDecimal dailyPnl = riskManager.getDailyPnl();
-        BigDecimal maxLoss = properties.risk().totalCapital()
-                .multiply(properties.risk().maxDailyLossPercent(), MC)
+        BigDecimal maxLoss = globalConfigService.getTotalCapital()
+                .multiply(globalConfigService.getMaxDailyLossPercent(), MC)
                 .divide(BigDecimal.valueOf(100), MC);
         BigDecimal halfLoss = maxLoss.multiply(BigDecimal.valueOf(0.5), MC);
 

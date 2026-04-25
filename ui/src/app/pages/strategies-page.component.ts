@@ -73,6 +73,9 @@ import { ApiService, StrategyDto } from '../core/api.service';
                 <div class="param"><span>Stop Loss</span><strong class="c-bad">{{ s.stopLossPercent }}%</strong></div>
                 <div class="param"><span>Target</span><strong class="c-ok">{{ s.targetPercent }}%</strong></div>
                 <div class="param"><span>Max Hold</span><strong>{{ s.maxHoldMinutes === 0 ? 'No limit' : s.maxHoldMinutes + ' min' }}</strong></div>
+                <div class="param"><span>Scan Timeframe</span><strong class="c-tf">{{ formatTimeframe(s.scanTimeframe) }}</strong></div>
+                <div class="param"><span>Candle Timeframe</span><strong class="c-tf">{{ formatTimeframe(s.candleTimeframe) }}</strong></div>
+                <div class="param"><span>Trend Timeframe</span><strong class="c-tf">{{ formatTimeframe(s.trendTimeframe) }}</strong></div>
                 @if (s.type === 'DIRECTIONAL_BUY') {
                   <div class="param"><span>Trailing Activation</span><strong>{{ s.trailingStopActivationPercent }}%</strong></div>
                   <div class="param"><span>Trailing Gap</span><strong>{{ s.trailingGapPercent }}%</strong></div>
@@ -182,6 +185,33 @@ import { ApiService, StrategyDto } from '../core/api.service';
               <mat-label>Max Hold Minutes (0 = no limit)</mat-label>
               <input matInput type="number" min="0" [(ngModel)]="editForm.maxHoldMinutes">
             </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Scan Timeframe</mat-label>
+              <mat-select [(ngModel)]="editForm.scanTimeframe">
+                <mat-option value="ONE_MINUTE">1 Minute</mat-option>
+                <mat-option value="FIVE_MINUTE">5 Minutes</mat-option>
+                <mat-option value="FIFTEEN_MINUTE">15 Minutes</mat-option>
+              </mat-select>
+              <mat-hint>Candle close event that triggers this strategy</mat-hint>
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Candle Timeframe</mat-label>
+              <mat-select [(ngModel)]="editForm.candleTimeframe">
+                <mat-option value="ONE_MINUTE">1 Minute</mat-option>
+                <mat-option value="FIVE_MINUTE">5 Minutes</mat-option>
+                <mat-option value="FIFTEEN_MINUTE">15 Minutes</mat-option>
+              </mat-select>
+              <mat-hint>Resolution for underlying/option candle data</mat-hint>
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Trend Timeframe</mat-label>
+              <mat-select [(ngModel)]="editForm.trendTimeframe">
+                <mat-option value="ONE_MINUTE">1 Minute</mat-option>
+                <mat-option value="FIVE_MINUTE">5 Minutes</mat-option>
+                <mat-option value="FIFTEEN_MINUTE">15 Minutes</mat-option>
+              </mat-select>
+              <mat-hint>Resolution for trend EMA calculation</mat-hint>
+            </mat-form-field>
             @if (!editing()!.sellingStrategy) {
               <mat-form-field appearance="outline">
                 <mat-label>Max IV Rank for Buying (0–100)</mat-label>
@@ -289,6 +319,7 @@ import { ApiService, StrategyDto } from '../core/api.service';
     .param strong { color: var(--text); }
     .c-ok { color: var(--ok) !important; }
     .c-bad { color: var(--bad) !important; }
+    .c-tf { color: var(--accent) !important; }
     .edit-btn { width: 100%; margin-top: 10px; font-size: 12px; }
 
     .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 100; }
@@ -345,6 +376,15 @@ export class StrategiesPageComponent implements OnInit {
 
   buyingStrategies() { return this.strategies().filter(s => !s.sellingStrategy); }
   sellingStrategies() { return this.strategies().filter(s => s.sellingStrategy); }
+
+  formatTimeframe(tf: string): string {
+    switch (tf) {
+      case 'ONE_MINUTE': return '1 min';
+      case 'FIVE_MINUTE': return '5 min';
+      case 'FIFTEEN_MINUTE': return '15 min';
+      default: return tf ?? '15 min';
+    }
+  }
 
   toggle(s: StrategyDto, enabled: boolean) {
     this.msg.set(''); this.error.set('');

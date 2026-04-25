@@ -166,7 +166,7 @@ export interface EntrySignalReplayResult {
   trailingGapPercent: number;
   forcedExitTime: string;
   maxHoldMinutes: number;
-  oneOpenTradeAtATime: boolean;
+  maxOpenTrades: number;
   htmlReportPath: string;
   summary: EntrySignalReplaySummary;
 }

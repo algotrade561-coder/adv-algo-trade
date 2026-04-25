@@ -230,33 +230,33 @@ public record TradingProperties(
                     Timeframe.ONE_MINUTE,
                     Timeframe.FIVE_MINUTE,
                     List.of(OptionType.CE, OptionType.PE),
-                    true,
-                    false,
-                    BigDecimal.valueOf(1.5),
-                    BigDecimal.valueOf(0.1),
-                    15,
-                    5,
-                    BigDecimal.valueOf(1.2),
-                    BigDecimal.valueOf(0.8),
-                    10_000,
-                    BigDecimal.valueOf(80),
-                    BigDecimal.valueOf(70),
-                    false,
-                    true,
-                    true,
-                    true,
-                    BigDecimal.valueOf(2.0),
-                    100_000,
-                    1,
-                    2,
-                    LocalTime.of(9, 25),
-                    LocalTime.of(14, 45),
-                    false,
-                    10,
-                    false,
-                    14,
-                    BigDecimal.valueOf(55),
-                    BigDecimal.valueOf(45)
+                    true,   // vwapFilterEnabled
+                    true,   // trendFilterEnabled
+                    BigDecimal.valueOf(1.2),   // volumeSpikeMultiplier
+                    new BigDecimal("0.05"),     // breakoutBufferPercent
+                    15,     // breakoutLookback
+                    5,      // volumeLookback
+                    BigDecimal.valueOf(1.2),   // bullishImbalanceThreshold
+                    BigDecimal.valueOf(0.8),   // bearishImbalanceThreshold
+                    5_000,  // minLiquidityVolume
+                    BigDecimal.valueOf(80),    // maxIvPercent
+                    BigDecimal.valueOf(70),    // minSignalScorePercent
+                    false,  // ceOiSupportRequired
+                    false,  // peOiSupportRequired
+                    true,   // ceOiDivergenceFilterEnabled
+                    true,   // peOiDivergenceFilterEnabled
+                    BigDecimal.valueOf(2.0),   // oiDivergenceMultiplier
+                    100_000, // oiDivergenceMinChange
+                    1,      // ceBreakoutConfirmationCandles
+                    2,      // peBreakoutConfirmationCandles
+                    LocalTime.of(9, 25),       // entryStartTime
+                    LocalTime.of(15, 10),      // entryCutoffTime
+                    false,  // allowFirstMinutesEntry
+                    10,     // noEntryFirstMinutes
+                    false,  // rsiFilterEnabled
+                    14,     // rsiPeriod
+                    BigDecimal.valueOf(55),    // rsiCeBuyThreshold
+                    BigDecimal.valueOf(45)     // rsiPeSellThreshold
             );
         }
     }
@@ -271,8 +271,8 @@ public record TradingProperties(
             @Min(0) int maxHoldMinutes
     ) {
         public static Exit defaults() {
-            return new Exit(BigDecimal.TEN, BigDecimal.valueOf(20), BigDecimal.valueOf(12),
-                    BigDecimal.valueOf(6), LocalTime.of(15, 15), false, 0);
+            return new Exit(BigDecimal.valueOf(12), BigDecimal.valueOf(24), BigDecimal.valueOf(10),
+                    BigDecimal.valueOf(5), LocalTime.of(15, 15), false, 0);
         }
     }
 
@@ -285,11 +285,18 @@ public record TradingProperties(
             @Min(1) int maxConsecutiveLosses,
             @Min(1) int maxOpenTrades,
             @DecimalMin("0.0") BigDecimal sameInstrumentReentryMinPriceMovePercent,
-            @Min(0) int cooldownMinutes
+            @Min(0) int cooldownMinutes,
+            @DecimalMin("0.0") BigDecimal dailyProfitTarget
     ) {
+        public Risk {
+            if (dailyProfitTarget == null) {
+                dailyProfitTarget = BigDecimal.ZERO;
+            }
+        }
+
         public static Risk defaults() {
-            return new Risk(BigDecimal.valueOf(300_000), BigDecimal.valueOf(1.2), BigDecimal.valueOf(3),
-                    6, 6, 2, 1, BigDecimal.TEN, 10);
+            return new Risk(BigDecimal.valueOf(60_000), BigDecimal.valueOf(5), BigDecimal.valueOf(5),
+                    4, 4, 2, 1, BigDecimal.TEN, 10, BigDecimal.ZERO);
         }
     }
 

@@ -1,5 +1,6 @@
 package com.algo.trade.risk;
 
+import com.algo.trade.config.GlobalConfigService;
 import com.algo.trade.config.TradingProperties;
 import com.algo.trade.notification.TelegramAlertService;
 import com.algo.trade.persistence.TradeEntity;
@@ -34,6 +35,7 @@ public class RiskManager {
     private static final Logger log = LoggerFactory.getLogger(RiskManager.class);
     private static final ZoneId IST = ZoneId.of("Asia/Kolkata");
 
+    private final GlobalConfigService globalConfigService;
     private final TradingProperties properties;
     private final TradeRepository tradeRepository;
     private final TelegramAlertService alertService;
@@ -44,10 +46,11 @@ public class RiskManager {
     private final AtomicInteger openPositionCount = new AtomicInteger(0);
     private volatile HaltMode haltMode = HaltMode.NONE;
 
-    public RiskManager(TradingProperties properties, TradeRepository tradeRepository,
+    public RiskManager(GlobalConfigService globalConfigService, TradingProperties properties, TradeRepository tradeRepository,
                        TelegramAlertService alertService,
                        com.algo.trade.persistence.DailySummaryRepository dailySummaryRepository,
                        com.algo.trade.persistence.StrategyDecisionRepository decisionRepository) {
+        this.globalConfigService = globalConfigService;
         this.properties = properties;
         this.tradeRepository = tradeRepository;
         this.alertService = alertService;
@@ -62,17 +65,23 @@ public class RiskManager {
             return RiskCheckResult.denied("HARD HALT active — all trading stopped");
         if (!tradingAllowed.get())
             return RiskCheckResult.denied("Trading halted due to risk breach");
-        if (openPositionCount.get() >= properties.risk().maxTradesPerDay())
-            return RiskCheckResult.denied("Max open positions reached: " + properties.risk().maxTradesPerDay());
+        if (openPositionCount.get() >= globalConfigService.getMaxTradesPerDay())
+            return RiskCheckResult.denied("Max open positions reached: " + globalConfigService.getMaxTradesPerDay());
 
         BigDecimal dailyPnl = getDailyPnl();
-        BigDecimal maxLoss = properties.risk().totalCapital()
-                .multiply(properties.risk().maxDailyLossPercent())
+        BigDecimal maxLoss = globalConfigService.getTotalCapital()
+                .multiply(globalConfigService.getMaxDailyLossPercent())
                 .divide(BigDecimal.valueOf(100));
 
         if (dailyPnl.compareTo(maxLoss.negate()) <= 0) {
             haltTrading("Daily max loss breached: ₹" + dailyPnl);
             return RiskCheckResult.denied("Daily max loss limit reached");
+        }
+
+        // Daily profit target check
+        BigDecimal profitTarget = globalConfigService.getDailyProfitTarget();
+        if (profitTarget.compareTo(BigDecimal.ZERO) > 0 && dailyPnl.compareTo(profitTarget) >= 0) {
+            return RiskCheckResult.denied("daily profit target reached");
         }
 
         return RiskCheckResult.approved();
@@ -138,13 +147,19 @@ public class RiskManager {
     public void monitorPnl() {
         if (!tradingAllowed.get()) return;
         BigDecimal pnl = getDailyPnl();
-        BigDecimal maxLoss = properties.risk().totalCapital()
-                .multiply(properties.risk().maxDailyLossPercent())
+        BigDecimal maxLoss = globalConfigService.getTotalCapital()
+                .multiply(globalConfigService.getMaxDailyLossPercent())
                 .divide(BigDecimal.valueOf(100));
         BigDecimal warningThreshold = maxLoss.multiply(BigDecimal.valueOf(0.8));
         if (pnl.compareTo(warningThreshold.negate()) <= 0) {
             log.warn("[RiskManager] Daily P&L warning: ₹{} (limit: ₹{})", pnl, maxLoss);
             alertService.systemAlert("⚠️ Risk Warning: Daily P&L at ₹" + pnl + " (limit: ₹" + maxLoss + ")");
+        }
+
+        // Daily profit target monitoring
+        BigDecimal profitTarget = globalConfigService.getDailyProfitTarget();
+        if (profitTarget.compareTo(BigDecimal.ZERO) > 0 && pnl.compareTo(profitTarget) >= 0) {
+            log.info("[RiskManager] Daily profit target reached: ₹{} (target: ₹{})", pnl, profitTarget);
         }
     }
 

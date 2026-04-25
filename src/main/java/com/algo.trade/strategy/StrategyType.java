@@ -37,7 +37,13 @@ public enum StrategyType {
     BUTTERFLY("Butterfly",
             "Buy wings, sell middle — low cost, high reward if market stays near strike", true),
     CALENDAR_SPREAD("Calendar Spread",
-            "Buy far expiry, sell near expiry — theta decay play", true);
+            "Buy far expiry, sell near expiry — theta decay play", true),
+    DIAGONAL_SPREAD("Diagonal Spread",
+            "Buy far expiry ATM, sell near expiry OTM — directional + theta", true),
+    JADE_LIZARD("Jade Lizard",
+            "Sell OTM CE + PE, buy far OTM PE hedge — premium collection with downside protection", true),
+    SYNTHETIC_FUTURES("Synthetic Futures",
+            "Buy ATM CE + Sell ATM PE (or inverse) — replicate futures with options", false);
 
     private final String displayName;
     private final String description;

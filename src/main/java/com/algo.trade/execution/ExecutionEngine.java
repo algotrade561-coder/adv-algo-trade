@@ -1,6 +1,7 @@
 package com.algo.trade.execution;
 
 import com.algo.trade.broker.BrokerClient;
+import com.algo.trade.config.GlobalConfigService;
 import com.algo.trade.config.TradingProperties;
 import com.algo.trade.domain.OrderRequest;
 import com.algo.trade.domain.OrderResponse;
@@ -47,6 +48,7 @@ public class ExecutionEngine {
     private static final Logger log = LoggerFactory.getLogger(ExecutionEngine.class);
 
     private final TradingProperties properties;
+    private final GlobalConfigService globalConfigService;
     private final BrokerClient brokerClient;
     private final RiskEngine riskEngine;
     private final TradingStateService tradingStateService;
@@ -59,22 +61,23 @@ public class ExecutionEngine {
     private final Clock clock;
 
     @Autowired
-    public ExecutionEngine(TradingProperties properties, BrokerClient brokerClient, RiskEngine riskEngine, TradingStateService tradingStateService,
+    public ExecutionEngine(TradingProperties properties, GlobalConfigService globalConfigService, BrokerClient brokerClient, RiskEngine riskEngine, TradingStateService tradingStateService,
                            TradeRepository tradeRepository, OrderRepository orderRepository,
                            ErrorEventRepository errorEventRepository,
                            StrategyDecisionRepository decisionRepository,
                            ExecutionOutcomeCsvRecorder executionOutcomeCsvRecorder,
                            TelegramAlertService telegramAlertService) {
-        this(properties, brokerClient, riskEngine, tradingStateService, tradeRepository, orderRepository, errorEventRepository, decisionRepository,
+        this(properties, globalConfigService, brokerClient, riskEngine, tradingStateService, tradeRepository, orderRepository, errorEventRepository, decisionRepository,
                 executionOutcomeCsvRecorder, telegramAlertService, Clock.systemUTC());
     }
 
-    ExecutionEngine(TradingProperties properties, BrokerClient brokerClient, RiskEngine riskEngine, TradingStateService tradingStateService,
+    ExecutionEngine(TradingProperties properties, GlobalConfigService globalConfigService, BrokerClient brokerClient, RiskEngine riskEngine, TradingStateService tradingStateService,
                     TradeRepository tradeRepository, OrderRepository orderRepository,
                     ErrorEventRepository errorEventRepository,
                     StrategyDecisionRepository decisionRepository, ExecutionOutcomeCsvRecorder executionOutcomeCsvRecorder,
                     TelegramAlertService telegramAlertService, Clock clock) {
         this.properties = properties;
+        this.globalConfigService = globalConfigService;
         this.brokerClient = brokerClient;
         this.riskEngine = riskEngine;
         this.tradingStateService = tradingStateService;
@@ -89,6 +92,15 @@ public class ExecutionEngine {
 
     @Transactional
     public ExecutionResult executeEntry(StrategyDecision decision, BigDecimal optionPremium, int lotSize) {
+        return executeEntry(decision, optionPremium, lotSize, null);
+    }
+
+    /**
+     * Execute entry with optional per-strategy stop-loss percent for position sizing.
+     * If stopLossPercent is null, falls back to directional buy config SL.
+     */
+    @Transactional
+    public ExecutionResult executeEntry(StrategyDecision decision, BigDecimal optionPremium, int lotSize, BigDecimal stopLossPercent) {
         log.info("Entry execution requested: signalType={}, underlying={}, instrument={}, optionType={}, premium={}, lotSize={}, running={}, killSwitch={}",
                 decision.signalType(),
                 decision.underlying(),
@@ -135,7 +147,9 @@ public class ExecutionEngine {
             return ExecutionResult.rejected(risk.reasons());
         }
 
-        var sizing = riskEngine.calculateQuantity(optionPremium, lotSize);
+        var sizing = stopLossPercent != null
+                ? riskEngine.calculateQuantity(optionPremium, lotSize, stopLossPercent)
+                : riskEngine.calculateQuantity(optionPremium, lotSize);
         if (!sizing.allowed()) {
             log.warn("Entry execution rejected by position sizing: reason={}, riskAmount={}, estimatedCost={}",
                     sizing.reason(), sizing.riskAmount(), sizing.estimatedCost());
@@ -158,7 +172,7 @@ public class ExecutionEngine {
         OrderResponse order;
         try {
             order = brokerClient.placeOrder(orderRequest);
-            persistOrder(order);
+            persistOrderWithSignalTime(order, decision.timestamp(), optionPremium);
             log.info("Entry order response: clientOrderId={}, brokerOrderId={}, status={}, requestedQuantity={}, filledQuantity={}, averageFillPrice={}, rejectionReason={}",
                     order.clientOrderId(), order.brokerOrderId().orElse(""), order.status(), order.requestedQuantity(),
                     order.filledQuantity(), order.averageFillPrice().orElse(null), order.rejectionReason().orElse(""));
@@ -262,10 +276,26 @@ public class ExecutionEngine {
     }
 
     private void persistOrder(OrderResponse order) {
-        orderRepository.save(new OrderEntity(order.clientOrderId(), order.brokerOrderId().orElse(null),
+        OrderEntity entity = new OrderEntity(order.clientOrderId(), order.brokerOrderId().orElse(null),
                 order.instrumentKey(), order.side().name(), order.status(), order.requestedQuantity(),
                 order.filledQuantity(), order.averageFillPrice().orElse(null), order.rejectionReason().orElse(null),
-                order.updatedAt()));
+                order.updatedAt());
+        entity.setOrderPlacedAt(Instant.now(clock));
+        orderRepository.save(entity);
+    }
+
+    private void persistOrderWithSignalTime(OrderResponse order, Instant signalTimestamp, BigDecimal limitPrice) {
+        OrderEntity entity = new OrderEntity(order.clientOrderId(), order.brokerOrderId().orElse(null),
+                order.instrumentKey(), order.side().name(), order.status(), order.requestedQuantity(),
+                order.filledQuantity(), order.averageFillPrice().orElse(null), order.rejectionReason().orElse(null),
+                order.updatedAt());
+        entity.setSignalTimestamp(signalTimestamp);
+        entity.setOrderPlacedAt(Instant.now(clock));
+        // Slippage = |fill price - limit price| (only meaningful when filled)
+        if (order.averageFillPrice().isPresent() && limitPrice != null) {
+            entity.setSlippage(order.averageFillPrice().get().subtract(limitPrice).abs());
+        }
+        orderRepository.save(entity);
     }
 
     /**
@@ -383,7 +413,7 @@ public class ExecutionEngine {
         }
 
         int buyOrdersToday = buyOrdersToday();
-        if (buyOrdersToday >= properties.risk().maxOrdersPerDay()) {
+        if (buyOrdersToday >= globalConfigService.getMaxOrdersPerDay()) {
             rejections.add("Max buy orders per day reached");
         }
 
@@ -405,13 +435,13 @@ public class ExecutionEngine {
                 .map(TradeEntity::getEntryPrice)
                 .filter(previousPrice -> previousPrice != null && previousPrice.signum() > 0 && optionPremium != null)
                 .filter(previousPrice -> priceMovePercent(previousPrice, optionPremium)
-                        .compareTo(properties.risk().sameInstrumentReentryMinPriceMovePercent()) < 0)
+                        .compareTo(globalConfigService.getSameInstrumentReentryMinPriceMovePercent()) < 0)
                 .findFirst()
                 .ifPresent(previousPrice -> rejections.add("Same instrument already traded today without required price move: "
                         + instrumentKey));
 
-        if (properties.risk().cooldownMinutes() > 0) {
-            Instant cooldownStart = clock.instant().minus(Duration.ofMinutes(properties.risk().cooldownMinutes()));
+        if (globalConfigService.getCooldownMinutes() > 0) {
+            Instant cooldownStart = clock.instant().minus(Duration.ofMinutes(globalConfigService.getCooldownMinutes()));
             if (!tradeRepository.findByInstrumentKeyAndEntryTimeBetween(instrumentKey, cooldownStart, clock.instant()).isEmpty()) {
                 rejections.add("Cooldown period not elapsed for instrument: " + instrumentKey);
             }

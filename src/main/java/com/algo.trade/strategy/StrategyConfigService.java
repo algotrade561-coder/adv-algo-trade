@@ -33,6 +33,8 @@ public class StrategyConfigService {
                 existing.add(config);
             }
         }
+        // Migrate null fields in old rows
+        existing.forEach(this::migrateNullFields);
         return existing;
     }
 
@@ -81,12 +83,42 @@ public class StrategyConfigService {
         if (patch.getMaxIvRankForBuying() != null) config.setMaxIvRankForBuying(patch.getMaxIvRankForBuying());
         if (patch.getTrailingStopActivationPercent() != null) config.setTrailingStopActivationPercent(patch.getTrailingStopActivationPercent());
         if (patch.getTrailingGapPercent() != null) config.setTrailingGapPercent(patch.getTrailingGapPercent());
+        if (patch.getScanTimeframe() != null) config.setScanTimeframe(patch.getScanTimeframe());
+        if (patch.getCandleTimeframe() != null) config.setCandleTimeframe(patch.getCandleTimeframe());
+        if (patch.getTrendTimeframe() != null) config.setTrendTimeframe(patch.getTrendTimeframe());
         return repository.save(config);
     }
 
     private StrategyConfig getOrCreate(StrategyType type) {
         return repository.findByStrategyType(type)
+                .map(this::migrateNullFields)
                 .orElseGet(() -> repository.save(new StrategyConfig(type)));
+    }
+
+    /**
+     * Migrate null fields in old DB rows that were created before new columns were added.
+     * Applies defaults from a fresh StrategyConfig for the same type.
+     */
+    private StrategyConfig migrateNullFields(StrategyConfig config) {
+        boolean dirty = false;
+        StrategyConfig defaults = new StrategyConfig(config.getStrategyType());
+        if (config.getScanTimeframe() == null) {
+            config.setScanTimeframe(defaults.getScanTimeframe());
+            dirty = true;
+        }
+        if (config.getCandleTimeframe() == null) {
+            config.setCandleTimeframe(defaults.getCandleTimeframe());
+            dirty = true;
+        }
+        if (config.getTrendTimeframe() == null) {
+            config.setTrendTimeframe(defaults.getTrendTimeframe());
+            dirty = true;
+        }
+        if (dirty) {
+            log.info("Migrated null timeframe fields for strategy {}", config.getStrategyType());
+            repository.save(config);
+        }
+        return config;
     }
 
     /** Convenience accessor for the directional buy config — used by RiskEngine, TrailingStopService, etc. */
