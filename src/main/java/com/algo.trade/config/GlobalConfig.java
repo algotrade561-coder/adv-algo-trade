@@ -138,6 +138,13 @@ public class GlobalConfig {
     /** Maximum lots per single trade — safety cap against stale premium quotes. Default 10. */
     private int maxLotsPerTrade = 10;
 
+    /**
+     * Tracks which data migrations have been applied to this row.
+     * 0 = seeded from YAML defaults; incremented by each LiveConfigMigration version.
+     */
+    @Column(columnDefinition = "INTEGER DEFAULT 0")
+    private int configVersion = 0;
+
     // ── Constructors ──────────────────────────────────────────
 
     protected GlobalConfig() {}
@@ -376,4 +383,7 @@ public class GlobalConfig {
 
     public int getMaxLotsPerTrade() { return maxLotsPerTrade; }
     public void setMaxLotsPerTrade(int maxLotsPerTrade) { this.maxLotsPerTrade = maxLotsPerTrade; }
+
+    public int getConfigVersion() { return configVersion; }
+    public void setConfigVersion(int configVersion) { this.configVersion = configVersion; }
 }

@@ -95,7 +95,7 @@ public class KiteAuthService {
             return;
         }
 
-        callbackServer = HttpServer.create(new InetSocketAddress("localhost", 8089), 0);
+        callbackServer = HttpServer.create(new InetSocketAddress("localhost", 8081), 0);
         callbackServer.createContext("/", this::handleCallback);
         callbackServer.start();
         System.out.println("Kite callback listener started on http://localhost:8089/");

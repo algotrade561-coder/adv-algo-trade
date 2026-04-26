@@ -261,8 +261,13 @@ import { ApiService, GlobalConfigDto } from '../core/api.service';
               <input matInput type="number" min="0" [(ngModel)]="config.cooldownMinutes">
             </mat-form-field>
             <mat-form-field appearance="outline">
-              <mat-label>Daily Profit Target</mat-label>
+              <mat-label>Daily Profit Target (₹)</mat-label>
               <input matInput type="number" min="0" [(ngModel)]="config.dailyProfitTarget">
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Max Lots Per Trade</mat-label>
+              <input matInput type="number" min="1" [(ngModel)]="config.maxLotsPerTrade">
+              <mat-hint>Hard cap on lots per single order — safety limit</mat-hint>
             </mat-form-field>
           </div>
         }

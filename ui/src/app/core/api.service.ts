@@ -31,13 +31,14 @@ export interface StrategyDto {
   scanTimeframe: string; candleTimeframe: string; trendTimeframe: string;
   paperTrading: boolean;
   itmDepth: number; minimumMove: number; minimumStrengthGap: number; minimumVolume: number;
+  squareoffHour: number; squareoffMinute: number;
 }
 
 export interface GlobalConfigDto {
   // Entry
   timeframe: string;
   trendTimeframe: string;
-  enabledOptionTypes: string[];
+  enabledOptionTypes: string;
   vwapFilterEnabled: boolean;
   trendFilterEnabled: boolean;
   volumeSpikeMultiplier: number;
@@ -84,6 +85,7 @@ export interface GlobalConfigDto {
   sameInstrumentReentryMinPriceMovePercent: number;
   cooldownMinutes: number;
   dailyProfitTarget: number;
+  maxLotsPerTrade: number;
 }
 
 @Injectable({ providedIn: 'root' })

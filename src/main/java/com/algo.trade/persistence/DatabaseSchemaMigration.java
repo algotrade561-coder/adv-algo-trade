@@ -20,6 +20,18 @@ public class DatabaseSchemaMigration {
     @PostConstruct
     public void migrate() {
         widenStrategyDecisionReasons();
+        addConfigVersionColumn();
+    }
+
+    private void addConfigVersionColumn() {
+        String sql = "alter table if exists global_config add column if not exists config_version integer default 0";
+        try (var connection = dataSource.getConnection();
+             var statement = connection.createStatement()) {
+            statement.execute(sql);
+            log.info("Database schema migration applied: global_config.config_version added");
+        } catch (Exception ex) {
+            log.debug("Database schema migration skipped or failed: sql={}, message={}", sql, ex.getMessage());
+        }
     }
 
     private void widenStrategyDecisionReasons() {

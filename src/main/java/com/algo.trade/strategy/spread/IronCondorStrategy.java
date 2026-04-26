@@ -12,6 +12,7 @@ import com.algo.trade.indicator.EmaIndicator;
 import com.algo.trade.marketdata.ExpiryCalendar;
 import com.algo.trade.marketdata.InstrumentCache;
 import com.algo.trade.marketdata.MarketDataService;
+import com.algo.trade.persistence.PositionGroupRepository;
 import com.algo.trade.risk.MarketGuard;
 import com.algo.trade.strategy.StrategyConfig;
 import com.algo.trade.strategy.StrategySignalCsvRecorder;
@@ -43,9 +44,10 @@ public class IronCondorStrategy extends AbstractSpreadStrategy {
                               StrategySignalCsvRecorder signalRecorder,
                               EmaIndicator emaIndicator,
                               AtrIndicator atrIndicator,
-                              MarketGuard marketGuard) {
+                              MarketGuard marketGuard,
+                              PositionGroupRepository positionGroupRepository) {
         super(expiryCalendar, instrumentCache, marketDataService,
-              executionEngine, signalRecorder, emaIndicator, atrIndicator);
+              executionEngine, signalRecorder, emaIndicator, atrIndicator, positionGroupRepository);
         this.marketGuard = marketGuard;
     }
 
@@ -106,7 +108,7 @@ public class IronCondorStrategy extends AbstractSpreadStrategy {
     }
 
     @Override
-    protected boolean shouldExit(PositionGroup group, Map<String, BigDecimal> currentPrices) {
+    protected boolean shouldExit(PositionGroup group, Map<String, BigDecimal> currentPrices, StrategyConfig config) {
         // Short leg doubling check
         for (SpreadLeg leg : group.legs()) {
             if (leg.side() == OrderSide.SELL) {
@@ -123,7 +125,6 @@ public class IronCondorStrategy extends AbstractSpreadStrategy {
         // Target decay and SL expansion using net credit
         BigDecimal entryCredit = netCredit(group.legs(), group.entryPrices());
         BigDecimal currentCredit = netCredit(group.legs(), currentPrices);
-        StrategyConfig config = new StrategyConfig(strategyType());
 
         // Target: net credit has decayed (profit for seller)
         if (entryCredit.signum() > 0) {
@@ -136,13 +137,14 @@ public class IronCondorStrategy extends AbstractSpreadStrategy {
             }
         }
 
-        // SL expansion: current net cost exceeds entry credit × (1 + SL%/100)
+        // SL expansion: position has lost more than SL% of the initial credit received.
+        // Loss % = (entryCredit - currentCredit) / entryCredit × 100
         if (entryCredit.signum() > 0) {
-            BigDecimal slThreshold = entryCredit.multiply(
-                    BigDecimal.ONE.add(config.getStopLossPercent().divide(BigDecimal.valueOf(100), MC)), MC);
-            BigDecimal currentCost = netDebit(group.legs(), currentPrices);
-            if (currentCost.compareTo(slThreshold) > 0) {
-                log.info("IronCondor: SL expansion hit for group {}", group.groupId());
+            BigDecimal lossPct = entryCredit.subtract(currentCredit)
+                    .divide(entryCredit, MC)
+                    .multiply(BigDecimal.valueOf(100), MC);
+            if (lossPct.compareTo(config.getStopLossPercent()) >= 0) {
+                log.info("IronCondor: SL expansion hit (loss={}%) for group {}", lossPct.setScale(1, java.math.RoundingMode.HALF_UP), group.groupId());
                 return true;
             }
         }
@@ -155,7 +157,7 @@ public class IronCondorStrategy extends AbstractSpreadStrategy {
     }
 
     @Override
-    protected StrategyType strategyType() {
+    public StrategyType strategyType() {
         return StrategyType.IRON_CONDOR;
     }
 }

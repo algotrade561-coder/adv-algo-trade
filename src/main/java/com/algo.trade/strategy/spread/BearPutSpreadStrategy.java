@@ -7,13 +7,13 @@ import com.algo.trade.domain.OrderSide;
 import com.algo.trade.domain.PositionGroup;
 import com.algo.trade.domain.SpreadEvaluationContext;
 import com.algo.trade.domain.SpreadLeg;
-import com.algo.trade.domain.StrategyDecision;
 import com.algo.trade.execution.ExecutionEngine;
 import com.algo.trade.indicator.AtrIndicator;
 import com.algo.trade.indicator.EmaIndicator;
 import com.algo.trade.marketdata.ExpiryCalendar;
 import com.algo.trade.marketdata.InstrumentCache;
 import com.algo.trade.marketdata.MarketDataService;
+import com.algo.trade.persistence.PositionGroupRepository;
 import com.algo.trade.strategy.StrategyConfig;
 import com.algo.trade.strategy.StrategySignalCsvRecorder;
 import com.algo.trade.strategy.StrategyType;
@@ -23,7 +23,6 @@ import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.stream.Collectors;
 
 /**
@@ -34,26 +33,21 @@ import java.util.stream.Collectors;
 @Component
 public class BearPutSpreadStrategy extends AbstractSpreadStrategy {
 
-    private List<Candle> candles;
-
     public BearPutSpreadStrategy(ExpiryCalendar expiryCalendar,
                                  InstrumentCache instrumentCache,
                                  MarketDataService marketDataService,
                                  ExecutionEngine executionEngine,
                                  StrategySignalCsvRecorder signalRecorder,
                                  EmaIndicator emaIndicator,
-                                 AtrIndicator atrIndicator) {
+                                 AtrIndicator atrIndicator,
+                                 PositionGroupRepository positionGroupRepository) {
         super(expiryCalendar, instrumentCache, marketDataService,
-              executionEngine, signalRecorder, emaIndicator, atrIndicator);
-    }
-
-    public Optional<StrategyDecision> evaluate(SpreadEvaluationContext ctx, List<Candle> fifteenMinCandles) {
-        this.candles = fifteenMinCandles;
-        return evaluateAndEnter(ctx);
+              executionEngine, signalRecorder, emaIndicator, atrIndicator, positionGroupRepository);
     }
 
     @Override
     protected boolean shouldEnter(SpreadEvaluationContext ctx) {
+        List<Candle> candles = ctx.trendCandles();
         if (candles == null || candles.size() < 21) {
             log.debug("BearPutSpread: insufficient candles for EMA computation");
             return false;
@@ -99,8 +93,7 @@ public class BearPutSpreadStrategy extends AbstractSpreadStrategy {
     }
 
     @Override
-    protected boolean shouldExit(PositionGroup group, Map<String, BigDecimal> currentPrices) {
-        StrategyConfig config = new StrategyConfig(strategyType());
+    protected boolean shouldExit(PositionGroup group, Map<String, BigDecimal> currentPrices, StrategyConfig config) {
         BigDecimal entryNet = netDebit(group.legs(), group.entryPrices());
         BigDecimal currentNet = netDebit(group.legs(), currentPrices);
 
@@ -120,7 +113,7 @@ public class BearPutSpreadStrategy extends AbstractSpreadStrategy {
     }
 
     @Override
-    protected StrategyType strategyType() {
+    public StrategyType strategyType() {
         return StrategyType.BEAR_PUT_SPREAD;
     }
 }

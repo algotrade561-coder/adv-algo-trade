@@ -64,35 +64,39 @@ public class SpreadStrategyEvaluator {
                     : Optional.empty();
 
             // Selling strategies — require elevated IV (premium worth selling)
-            case SHORT_STRADDLE -> ivRank > 3
+            case SHORT_STRADDLE -> ivRank > 30
                     ? Optional.of(signal(underlying, SignalType.SELL_CE, OptionType.CE, latestClose,
                         "Short straddle: IV rank=" + String.format("%.0f", ivRank) + " (sell premium)"))
                     : Optional.empty();
 
-            case SHORT_STRANGLE -> ivRank > 3
+            case SHORT_STRANGLE -> ivRank > 50
                     ? Optional.of(signal(underlying, SignalType.SELL_CE, OptionType.CE, latestClose,
                         "Short strangle: IV rank=" + String.format("%.0f", ivRank) +
                         " OTM=" + config.getOtmStrikes()))
                     : Optional.empty();
 
-            case IRON_CONDOR -> ivRank > 3
+            case IRON_CONDOR -> ivRank > 40
                     ? Optional.of(signal(underlying, SignalType.SELL_CE, OptionType.CE, latestClose,
                         "Iron condor: IV rank=" + String.format("%.0f", ivRank) +
                         " OTM=" + config.getOtmStrikes() + " hedge=" + config.getSpreadStrikes()))
                     : Optional.empty();
 
-            case BUTTERFLY -> Optional.of(signal(underlying, SignalType.BUY_CE, OptionType.CE, latestClose,
-                    "Butterfly: low cost, high reward if market stays near strike"));
+            case BUTTERFLY -> ivRank < config.getMaxIvRankForBuying().doubleValue()
+                    ? Optional.of(signal(underlying, SignalType.BUY_CE, OptionType.CE, latestClose,
+                        "Butterfly: low cost, high reward if market stays near strike, IV rank=" + String.format("%.0f", ivRank)))
+                    : Optional.empty();
 
-            case CALENDAR_SPREAD -> Optional.of(signal(underlying, SignalType.BUY_CE, OptionType.CE, latestClose,
-                    "Calendar spread: theta decay play"));
+            case CALENDAR_SPREAD -> ivRank < config.getMaxIvRankForBuying().doubleValue()
+                    ? Optional.of(signal(underlying, SignalType.BUY_CE, OptionType.CE, latestClose,
+                        "Calendar spread: theta decay play, IV rank=" + String.format("%.0f", ivRank)))
+                    : Optional.empty();
 
             case DIAGONAL_SPREAD -> bullish
                     ? Optional.of(signal(underlying, SignalType.BUY_CE, OptionType.CE, latestClose,
                         "Diagonal spread: bullish bias + theta decay, EMA9 > EMA21"))
                     : Optional.empty();
 
-            case JADE_LIZARD -> ivRank > 3
+            case JADE_LIZARD -> ivRank > 30
                     ? Optional.of(signal(underlying, SignalType.SELL_CE, OptionType.CE, latestClose,
                         "Jade lizard: IV rank=" + String.format("%.0f", ivRank) +
                         " (premium collection with downside hedge)"))

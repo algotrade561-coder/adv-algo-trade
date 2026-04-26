@@ -14,11 +14,16 @@ import com.algo.trade.indicator.EmaIndicator;
 import com.algo.trade.marketdata.ExpiryCalendar;
 import com.algo.trade.marketdata.InstrumentCache;
 import com.algo.trade.marketdata.MarketDataService;
+import com.algo.trade.persistence.PositionGroupEntity;
+import com.algo.trade.persistence.PositionGroupRepository;
 import com.algo.trade.strategy.StrategyConfig;
+import com.algo.trade.strategy.StrategyConfigService;
 import com.algo.trade.strategy.StrategySignalCsvRecorder;
 import com.algo.trade.strategy.StrategyType;
+import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 
 import java.math.BigDecimal;
 import java.math.MathContext;
@@ -37,7 +42,15 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * <p>Subclasses implement the abstract hooks ({@link #shouldEnter}, {@link #constructLegs},
  * {@link #shouldExit}, {@link #strategyType}) while this class provides the shared lifecycle
- * (evaluate → construct → enter → manage → exit) and common utilities.</p>
+ * (evaluate → construct → enter → persist → manage → exit) and common utilities.</p>
+ *
+ * <p>Position state is persisted to the {@code position_groups} / {@code spread_legs} tables
+ * so that open positions survive JVM restarts. On startup {@link #restoreFromDb()} reloads
+ * this strategy's open groups from DB into the in-memory cache.</p>
+ *
+ * <p>Exits are driven by {@code SpreadPositionExitMonitor} (event-driven on candle close),
+ * which calls {@link #checkAndExit}. The legacy {@link #manageOpenPositions()} method is
+ * retained for backward compatibility but is no longer called by the scheduler.</p>
  *
  * <p>This class is NOT a Spring {@code @Component} — concrete subclasses are annotated
  * as {@code @Component} and injected into the scheduler.</p>
@@ -55,9 +68,13 @@ public abstract class AbstractSpreadStrategy {
     protected final StrategySignalCsvRecorder signalRecorder;
     protected final EmaIndicator emaIndicator;
     protected final AtrIndicator atrIndicator;
+    protected final PositionGroupRepository positionGroupRepository;
 
-    // ── Active position tracking ──────────────────────────────────────────
+    // ── In-memory cache (session + recovered from DB) ─────────────────────
     private final ConcurrentHashMap<String, PositionGroup> activePositions = new ConcurrentHashMap<>();
+
+    @Autowired
+    private StrategyConfigService strategyConfigService;
 
     protected AbstractSpreadStrategy(ExpiryCalendar expiryCalendar,
                                      InstrumentCache instrumentCache,
@@ -65,7 +82,8 @@ public abstract class AbstractSpreadStrategy {
                                      ExecutionEngine executionEngine,
                                      StrategySignalCsvRecorder signalRecorder,
                                      EmaIndicator emaIndicator,
-                                     AtrIndicator atrIndicator) {
+                                     AtrIndicator atrIndicator,
+                                     PositionGroupRepository positionGroupRepository) {
         this.expiryCalendar = expiryCalendar;
         this.instrumentCache = instrumentCache;
         this.marketDataService = marketDataService;
@@ -73,6 +91,7 @@ public abstract class AbstractSpreadStrategy {
         this.signalRecorder = signalRecorder;
         this.emaIndicator = emaIndicator;
         this.atrIndicator = atrIndicator;
+        this.positionGroupRepository = positionGroupRepository;
     }
 
     // ── Abstract hooks ────────────────────────────────────────────────────
@@ -84,15 +103,37 @@ public abstract class AbstractSpreadStrategy {
     protected abstract List<SpreadLeg> constructLegs(SpreadEvaluationContext ctx);
 
     /** Return true if the open position should be exited now. */
-    protected abstract boolean shouldExit(PositionGroup group, Map<String, BigDecimal> currentPrices);
+    protected abstract boolean shouldExit(PositionGroup group, Map<String, BigDecimal> currentPrices, StrategyConfig config);
 
     /** The strategy type enum value for this implementation. */
-    protected abstract StrategyType strategyType();
+    public abstract StrategyType strategyType();
+
+    // ── Startup recovery ──────────────────────────────────────────────────
+
+    /**
+     * Reloads any open positions persisted to DB from a previous JVM session.
+     * Called automatically by Spring after dependency injection.
+     */
+    @PostConstruct
+    public void restoreFromDb() {
+        List<PositionGroupEntity> open =
+                positionGroupRepository.findByStrategyTypeAndOpenTrue(strategyType());
+        for (PositionGroupEntity entity : open) {
+            PositionGroup group = entity.toDomain();
+            activePositions.put(group.groupId(), group);
+            log.info("{} restored open position group {} from DB (legs={})",
+                    strategyType().displayName(), group.groupId(), group.legs().size());
+        }
+        if (!open.isEmpty()) {
+            log.info("{} recovered {} open group(s) from DB on startup",
+                    strategyType().displayName(), open.size());
+        }
+    }
 
     // ── Template method ───────────────────────────────────────────────────
 
     /**
-     * Full entry lifecycle: guard → evaluate → construct legs → fetch quotes → check premium → build decision.
+     * Full entry lifecycle: guard → evaluate → construct legs → fetch quotes → check premium → build decision → persist.
      *
      * @return a {@link StrategyDecision} wrapped in Optional, or empty if entry is skipped
      */
@@ -147,25 +188,28 @@ public abstract class AbstractSpreadStrategy {
             return Optional.empty();
         }
 
-        // 7. Build PositionGroup and register
+        // 7. Build PositionGroup and register in memory + DB
         String groupId = strategyType().name() + "-" + UUID.randomUUID().toString().substring(0, 8);
         PositionGroup group = new PositionGroup(
                 groupId, strategyType(), ctx.underlying(), legs, Map.copyOf(entryPrices),
                 Instant.now(), true);
         activePositions.put(groupId, group);
+        positionGroupRepository.save(PositionGroupEntity.from(group, entryPrices));
 
         // 8. Build StrategyDecision
+        BigDecimal netPremium = netDebit.abs();
+        boolean isCreditStrategy = netDebit.signum() < 0;
         List<String> reasons = new ArrayList<>();
         reasons.add(strategyType().displayName() + " entry signal");
         reasons.add("Legs: " + legs.size());
-        reasons.add("Net debit: " + netDebit);
+        reasons.add((isCreditStrategy ? "Net credit: " : "Net debit: ") + netPremium);
 
         StrategyDecision decision = new StrategyDecision(
                 Instant.now(),
                 ctx.underlying(),
                 SignalType.BUY_CE,
                 ctx.underlyingPrice(),
-                Optional.of(netDebit),
+                Optional.of(netPremium),
                 Optional.empty(),
                 Optional.of(config.getLots() * ctx.indexType().lotSize()),
                 Optional.empty(),
@@ -179,16 +223,35 @@ public abstract class AbstractSpreadStrategy {
                 reasons
         );
 
-        log.info("{} entry decision created: groupId={}, legs={}, netDebit={}",
-                strategyType().displayName(), groupId, legs.size(), netDebit);
+        log.info("{} entry decision created: groupId={}, legs={}, netPremium={} ({})",
+                strategyType().displayName(), groupId, legs.size(), netPremium,
+                isCreditStrategy ? "credit received" : "debit paid");
         return Optional.of(decision);
     }
 
-    // ── Position management ───────────────────────────────────────────────
+    // ── Exit API ──────────────────────────────────────────────────────────
 
     /**
-     * Iterates all active positions and calls {@link #shouldExit} for each.
-     * Exits positions that meet exit criteria.
+     * Called by {@code SpreadPositionExitMonitor} on each candle close.
+     * Checks the subclass exit condition and exits all legs if triggered.
+     *
+     * @return true if the position was exited
+     */
+    public final boolean checkAndExit(PositionGroup group, Map<String, BigDecimal> currentPrices) {
+        StrategyConfig config = strategyConfigService.getConfig(strategyType());
+        if (shouldExit(group, currentPrices, config)) {
+            exitAllLegs(group, currentPrices);
+            return true;
+        }
+        return false;
+    }
+
+    // ── Legacy position management (kept for backward compat) ─────────────
+
+    /**
+     * Iterates the in-memory active positions and exits any that meet the exit criteria.
+     * No longer called by the scheduler — exits are now event-driven via
+     * {@code SpreadPositionExitMonitor}. Retained for testing and monitoring use.
      */
     public void manageOpenPositions() {
         for (Map.Entry<String, PositionGroup> entry : activePositions.entrySet()) {
@@ -202,9 +265,7 @@ public abstract class AbstractSpreadStrategy {
                 Map<String, BigDecimal> currentPrices = new HashMap<>();
                 for (SpreadLeg leg : group.legs()) {
                     Quote q = quotes.get(leg.instrumentKey());
-                    if (q != null) {
-                        currentPrices.put(leg.instrumentKey(), q.lastPrice());
-                    }
+                    if (q != null) currentPrices.put(leg.instrumentKey(), q.lastPrice());
                 }
 
                 if (currentPrices.size() < group.legs().size()) {
@@ -212,7 +273,8 @@ public abstract class AbstractSpreadStrategy {
                     continue;
                 }
 
-                if (shouldExit(group, currentPrices)) {
+                StrategyConfig config = strategyConfigService.getConfig(strategyType());
+                if (shouldExit(group, currentPrices, config)) {
                     exitAllLegs(group, currentPrices);
                 }
             } catch (Exception ex) {
@@ -251,7 +313,10 @@ public abstract class AbstractSpreadStrategy {
         BigDecimal buyTotal = BigDecimal.ZERO;
         BigDecimal sellTotal = BigDecimal.ZERO;
         for (SpreadLeg leg : legs) {
-            BigDecimal price = prices.getOrDefault(leg.instrumentKey(), BigDecimal.ZERO);
+            BigDecimal price = prices.get(leg.instrumentKey());
+            if (price == null) {
+                throw new IllegalStateException("Missing price for leg: " + leg.instrumentKey());
+            }
             BigDecimal legValue = price.multiply(BigDecimal.valueOf(leg.quantity()), MC);
             if (leg.side() == OrderSide.BUY) {
                 buyTotal = buyTotal.add(legValue, MC);
@@ -271,56 +336,73 @@ public abstract class AbstractSpreadStrategy {
     }
 
     /**
-     * Returns true if the loss on the position exceeds the stop-loss percentage.
-     * For debit spreads: loss = (currentNet - entryNet) / entryNet.
-     * SL is hit when loss% > slPercent.
+     * Returns true if the debit position has lost more than slPercent% of its entry value.
+     * Loss = (entryNet - currentNet) / entryNet × 100.
      */
     protected final boolean slHit(BigDecimal entryNet, BigDecimal currentNet, BigDecimal slPercent) {
         if (entryNet.signum() == 0) return false;
-        BigDecimal lossPct = currentNet.subtract(entryNet, MC)
+        BigDecimal lossPct = entryNet.subtract(currentNet, MC)
                 .divide(entryNet.abs(), MC)
                 .multiply(BigDecimal.valueOf(100), MC);
-        return lossPct.abs().compareTo(slPercent) > 0 && lossPct.signum() > 0;
+        return lossPct.compareTo(slPercent) >= 0;
     }
 
     /**
-     * Returns true if the profit on the position reaches the target percentage.
-     * For debit spreads: profit = (entryNet - currentNet) / entryNet.
-     * Target is hit when profit% >= targetPercent.
+     * Returns true if the debit position has gained at least targetPercent% over its entry value.
+     * Profit = (currentNet - entryNet) / entryNet × 100.
      */
     protected final boolean targetHit(BigDecimal entryNet, BigDecimal currentNet, BigDecimal targetPercent) {
         if (entryNet.signum() == 0) return false;
-        BigDecimal profitPct = entryNet.subtract(currentNet, MC)
+        BigDecimal profitPct = currentNet.subtract(entryNet, MC)
                 .divide(entryNet.abs(), MC)
                 .multiply(BigDecimal.valueOf(100), MC);
         return profitPct.compareTo(targetPercent) >= 0;
     }
 
     /**
-     * Exits all legs in the position group by logging the exit and removing from active tracking.
+     * Exits all legs: logs per-leg prices, computes paper P&L, closes the DB record,
+     * and removes the group from the in-memory cache.
      */
     protected final void exitAllLegs(PositionGroup group, Map<String, BigDecimal> currentPrices) {
         log.info("Exiting all legs for group {}: strategy={}, legs={}",
                 group.groupId(), group.strategyType().displayName(), group.legs().size());
 
+        BigDecimal entryNetDebit = netDebit(group.legs(), group.entryPrices());
+        BigDecimal exitNetDebit  = netDebit(group.legs(), currentPrices);
+
         for (SpreadLeg leg : group.legs()) {
-            BigDecimal exitPrice = currentPrices.getOrDefault(leg.instrumentKey(), BigDecimal.ZERO);
-            log.info("  Exit leg: instrument={}, side={}, strike={}, exitPrice={}",
-                    leg.instrumentKey(), leg.side(), leg.strike(), exitPrice);
+            BigDecimal entryPrice = group.entryPrices().getOrDefault(leg.instrumentKey(), BigDecimal.ZERO);
+            BigDecimal exitPrice  = currentPrices.getOrDefault(leg.instrumentKey(), BigDecimal.ZERO);
+            log.info("  Exit leg: instrument={}, side={}, strike={}, entryPrice={}, exitPrice={}",
+                    leg.instrumentKey(), leg.side(), leg.strike(), entryPrice, exitPrice);
         }
 
+        // P&L: entryNetDebit - exitNetDebit works for both debit and credit strategies
+        BigDecimal pnl = entryNetDebit.subtract(exitNetDebit, MC);
+        String pnlLabel = pnl.signum() >= 0 ? "PROFIT" : "LOSS";
+        log.info("PAPER P&L [{}] group={} strategy={} underlying={} pnl={} (entryDebit={} exitDebit={})",
+                pnlLabel, group.groupId(), group.strategyType().displayName(),
+                group.underlying(), pnl.setScale(2, java.math.RoundingMode.HALF_UP),
+                entryNetDebit.setScale(2, java.math.RoundingMode.HALF_UP),
+                exitNetDebit.setScale(2, java.math.RoundingMode.HALF_UP));
+
+        // Persist exit to DB
+        positionGroupRepository.findByGroupId(group.groupId()).ifPresent(entity -> {
+            entity.close(pnl);
+            positionGroupRepository.save(entity);
+        });
+
         activePositions.remove(group.groupId());
-        log.info("Position group {} removed from active tracking", group.groupId());
     }
 
-    // ── Accessors for active positions ────────────────────────────────────
+    // ── Accessors ─────────────────────────────────────────────────────────
 
-    /** Returns an unmodifiable view of active position groups. */
+    /** Returns an unmodifiable view of in-memory active position groups. */
     protected Map<String, PositionGroup> getActivePositions() {
         return Map.copyOf(activePositions);
     }
 
-    /** Returns the number of currently active positions. */
+    /** Returns the number of currently active positions (in-memory cache). */
     protected int activePositionCount() {
         return activePositions.size();
     }

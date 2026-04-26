@@ -28,7 +28,9 @@ class RiskEngineTest {
     private final RiskEngine riskEngine;
 
     RiskEngineTest() {
-        when(mockConfigService.getDirectionalBuyConfig()).thenReturn(new StrategyConfig(StrategyType.DIRECTIONAL_BUY));
+        StrategyConfig directionalBuyConfig = new StrategyConfig(StrategyType.DIRECTIONAL_BUY);
+        directionalBuyConfig.setStopLossPercent(BigDecimal.valueOf(12));
+        when(mockConfigService.getDirectionalBuyConfig()).thenReturn(directionalBuyConfig);
         TradingProperties props = new TradingProperties(null, false, null, null,
                 null, null, null, null, null, null, null, null, null);
         // Set up GlobalConfigService mock with default risk values

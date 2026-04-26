@@ -56,8 +56,7 @@ public class GlobalConfigController {
         // Entry fields
         m.put("timeframe", c.getTimeframe().name());
         m.put("trendTimeframe", c.getTrendTimeframe().name());
-        m.put("enabledOptionTypes", c.getEnabledOptionTypesAsList().stream()
-                .map(Enum::name).toList());
+        m.put("enabledOptionTypes", c.getEnabledOptionTypes());
         m.put("vwapFilterEnabled", c.isVwapFilterEnabled());
         m.put("trendFilterEnabled", c.isTrendFilterEnabled());
         m.put("volumeSpikeMultiplier", c.getVolumeSpikeMultiplier());
@@ -104,6 +103,7 @@ public class GlobalConfigController {
         m.put("sameInstrumentReentryMinPriceMovePercent", c.getSameInstrumentReentryMinPriceMovePercent());
         m.put("cooldownMinutes", c.getCooldownMinutes());
         m.put("dailyProfitTarget", c.getDailyProfitTarget());
+        m.put("maxLotsPerTrade", c.getMaxLotsPerTrade());
         return m;
     }
 }

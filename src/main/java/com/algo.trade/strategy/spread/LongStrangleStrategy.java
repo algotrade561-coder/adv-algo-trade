@@ -20,40 +20,38 @@ import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
 /**
- * Butterfly — BUY 1 lot lower wing, SELL 2 lots ATM, BUY 1 lot upper wing.
- * Uses CE for bullish bias, PE for bearish bias.
+ * Long Strangle — BUY OTM CE + BUY OTM PE at equidistant OTM strikes.
+ * OTM distance is driven by StrategyConfig.otmStrikes (default 2 strikes).
+ * Entry: IV rank < maxIvRankForBuying (cheap options — buy when vol is low).
  * Exit: SL%, target%, or expiry danger zone.
+ * Always paper-trades per StrategyConfig (paperTrading=true by default).
  */
 @Component
-public class ButterflyStrategy extends AbstractSpreadStrategy {
+public class LongStrangleStrategy extends AbstractSpreadStrategy {
 
-    /** Bias for leg construction: true = bullish (CE), false = bearish (PE). */
-    private boolean bullishBias = true;
-
-    public ButterflyStrategy(ExpiryCalendar expiryCalendar,
-                             InstrumentCache instrumentCache,
-                             MarketDataService marketDataService,
-                             ExecutionEngine executionEngine,
-                             StrategySignalCsvRecorder signalRecorder,
-                             EmaIndicator emaIndicator,
-                             AtrIndicator atrIndicator,
-                             PositionGroupRepository positionGroupRepository) {
+    public LongStrangleStrategy(ExpiryCalendar expiryCalendar,
+                                InstrumentCache instrumentCache,
+                                MarketDataService marketDataService,
+                                ExecutionEngine executionEngine,
+                                StrategySignalCsvRecorder signalRecorder,
+                                EmaIndicator emaIndicator,
+                                AtrIndicator atrIndicator,
+                                PositionGroupRepository positionGroupRepository) {
         super(expiryCalendar, instrumentCache, marketDataService,
               executionEngine, signalRecorder, emaIndicator, atrIndicator, positionGroupRepository);
     }
 
-    public void setBullishBias(boolean bullishBias) {
-        this.bullishBias = bullishBias;
-    }
-
     @Override
     protected boolean shouldEnter(SpreadEvaluationContext ctx) {
-        // Butterfly is a low-cost strategy — always eligible when enabled
+        double maxIvRank = ctx.config().getMaxIvRankForBuying().doubleValue();
+        if (ctx.ivRank() >= maxIvRank) {
+            log.debug("LongStrangle: IV rank {} >= max {}, skipping", ctx.ivRank(), maxIvRank);
+            return false;
+        }
         return true;
     }
 
@@ -61,35 +59,30 @@ public class ButterflyStrategy extends AbstractSpreadStrategy {
     protected List<SpreadLeg> constructLegs(SpreadEvaluationContext ctx) {
         IndexType indexType = ctx.indexType();
         int atm = computeATMStrike(ctx.underlyingPrice(), indexType);
-        int spreadStrikes = ctx.config().getSpreadStrikes();
+        int otmStrikes = ctx.config().getOtmStrikes();
         int interval = indexType.strikeInterval();
         LocalDate expiry = currentWeeklyExpiry(indexType);
         int qty = ctx.config().getLots() * indexType.lotSize();
 
-        int lowerWing = atm - spreadStrikes * interval;
-        int upperWing = atm + spreadStrikes * interval;
-        OptionType optType = bullishBias ? OptionType.CE : OptionType.PE;
+        int ceStrike = atm + otmStrikes * interval;
+        int peStrike = atm - otmStrikes * interval;
 
-        String lowerKey = instrumentCache.findOption(ctx.underlying(), expiry,
-                BigDecimal.valueOf(lowerWing), optType)
+        String ceKey = instrumentCache.findOption(ctx.underlying(), expiry,
+                BigDecimal.valueOf(ceStrike), OptionType.CE)
                 .map(i -> i.instrumentKey()).orElse(null);
-        String middleKey = instrumentCache.findOption(ctx.underlying(), expiry,
-                BigDecimal.valueOf(atm), optType)
-                .map(i -> i.instrumentKey()).orElse(null);
-        String upperKey = instrumentCache.findOption(ctx.underlying(), expiry,
-                BigDecimal.valueOf(upperWing), optType)
+        String peKey = instrumentCache.findOption(ctx.underlying(), expiry,
+                BigDecimal.valueOf(peStrike), OptionType.PE)
                 .map(i -> i.instrumentKey()).orElse(null);
 
-        if (lowerKey == null || middleKey == null || upperKey == null) {
-            log.warn("Butterfly: could not find all 3 instruments");
+        if (ceKey == null || peKey == null) {
+            log.warn("LongStrangle: could not find OTM CE={} or PE={} instruments", ceStrike, peStrike);
             return List.of();
         }
 
-        List<SpreadLeg> legs = new ArrayList<>();
-        legs.add(new SpreadLeg(lowerKey, lowerWing, optType, OrderSide.BUY, qty, expiry));
-        legs.add(new SpreadLeg(middleKey, atm, optType, OrderSide.SELL, qty * 2, expiry));
-        legs.add(new SpreadLeg(upperKey, upperWing, optType, OrderSide.BUY, qty, expiry));
-        return legs;
+        return List.of(
+                new SpreadLeg(ceKey, ceStrike, OptionType.CE, OrderSide.BUY, qty, expiry),
+                new SpreadLeg(peKey, peStrike, OptionType.PE, OrderSide.BUY, qty, expiry)
+        );
     }
 
     @Override
@@ -98,15 +91,15 @@ public class ButterflyStrategy extends AbstractSpreadStrategy {
         BigDecimal currentNet = netDebit(group.legs(), currentPrices);
 
         if (slHit(entryNet, currentNet, config.getStopLossPercent())) {
-            log.info("Butterfly: SL hit for group {}", group.groupId());
+            log.info("LongStrangle: SL hit for group {}", group.groupId());
             return true;
         }
         if (targetHit(entryNet, currentNet, config.getTargetPercent())) {
-            log.info("Butterfly: target hit for group {}", group.groupId());
+            log.info("LongStrangle: target hit for group {}", group.groupId());
             return true;
         }
         if (expiryCalendar.isExpiryDangerZone(IndexType.from(group.underlying()))) {
-            log.info("Butterfly: expiry danger zone for group {}", group.groupId());
+            log.info("LongStrangle: expiry danger zone for group {}", group.groupId());
             return true;
         }
         return false;
@@ -114,6 +107,6 @@ public class ButterflyStrategy extends AbstractSpreadStrategy {
 
     @Override
     public StrategyType strategyType() {
-        return StrategyType.BUTTERFLY;
+        return StrategyType.LONG_STRANGLE;
     }
 }

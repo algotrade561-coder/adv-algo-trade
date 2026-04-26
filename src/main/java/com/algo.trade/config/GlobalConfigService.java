@@ -5,6 +5,7 @@ import com.algo.trade.domain.Timeframe;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.annotation.DependsOn;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -16,6 +17,7 @@ import java.util.List;
  * Seeds from {@link TradingProperties} on first startup; caches in memory for hot-path reads.
  */
 @Service
+@DependsOn("databaseSchemaMigration")
 public class GlobalConfigService {
 
     private static final Logger log = LoggerFactory.getLogger(GlobalConfigService.class);

@@ -308,7 +308,7 @@ public class SpreadBacktestEngine {
 
             // Build SpreadEvaluationContext
             SpreadEvaluationContext ctx = new SpreadEvaluationContext(
-                    underlyingPrice, ivRank, chain, config, underlying, indexType);
+                    underlyingPrice, ivRank, chain, config, underlying, indexType, candles15m);
 
             // Evaluate entry using SpreadStrategyEvaluator
             Optional<com.algo.trade.domain.StrategyDecision> decision =

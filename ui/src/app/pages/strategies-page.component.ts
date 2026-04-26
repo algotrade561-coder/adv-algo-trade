@@ -1,4 +1,5 @@
 import { Component, OnInit, signal } from '@angular/core';
+import { DecimalPipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
@@ -12,7 +13,7 @@ import { ApiService, StrategyDto } from '../core/api.service';
 @Component({
   selector: 'app-strategies-page',
   standalone: true,
-  imports: [FormsModule, MatButtonModule, MatIconModule, MatSlideToggleModule,
+  imports: [DecimalPipe, FormsModule, MatButtonModule, MatIconModule, MatSlideToggleModule,
     MatFormFieldModule, MatInputModule, MatSelectModule, MatTooltipModule],
   template: `
     <section class="page">
@@ -79,9 +80,11 @@ import { ApiService, StrategyDto } from '../core/api.service';
                 <div class="param"><span>Scan Timeframe</span><strong class="c-tf">{{ formatTimeframe(s.scanTimeframe) }}</strong></div>
                 <div class="param"><span>Candle Timeframe</span><strong class="c-tf">{{ formatTimeframe(s.candleTimeframe) }}</strong></div>
                 <div class="param"><span>Trend Timeframe</span><strong class="c-tf">{{ formatTimeframe(s.trendTimeframe) }}</strong></div>
-                @if (s.type === 'DIRECTIONAL_BUY') {
+                @if (!s.sellingStrategy) {
+                  <div class="param"><span>Min Premium (₹)</span><strong>{{ s.minCombinedPremium }}</strong></div>
                   <div class="param"><span>Trailing Activation</span><strong>{{ s.trailingStopActivationPercent }}%</strong></div>
                   <div class="param"><span>Trailing Gap</span><strong>{{ s.trailingGapPercent }}%</strong></div>
+                  <div class="param"><span>Squareoff</span><strong>{{ s.squareoffHour }}:{{ s.squareoffMinute | number:'2.0-0' }}</strong></div>
                 }
                 @if (s.type === 'LONG_STRADDLE' || s.type === 'LONG_STRANGLE' || s.type === 'EVENT_DRIVEN_BUY' || s.type === 'VOLATILITY_BREAKOUT') {
                   <div class="param"><span>Max IV Rank</span><strong>{{ s.maxIvRankForBuying }}</strong></div>
@@ -255,8 +258,11 @@ import { ApiService, StrategyDto } from '../core/api.service';
                 <input matInput type="number" min="0" max="100" [(ngModel)]="editForm.maxIvRankForBuying">
                 <mat-hint>Only enter when IV rank is below this value</mat-hint>
               </mat-form-field>
-            }
-            @if (editing()!.type === 'DIRECTIONAL_BUY') {
+              <mat-form-field appearance="outline">
+                <mat-label>Min Combined Premium (₹)</mat-label>
+                <input matInput type="number" min="0" [(ngModel)]="editForm.minCombinedPremium">
+                <mat-hint>Skip entry if option premium is below this floor</mat-hint>
+              </mat-form-field>
               <mat-form-field appearance="outline">
                 <mat-label>Trailing Stop Activation %</mat-label>
                 <input matInput type="number" min="0" step="1" [(ngModel)]="editForm.trailingStopActivationPercent">
@@ -265,7 +271,7 @@ import { ApiService, StrategyDto } from '../core/api.service';
               <mat-form-field appearance="outline">
                 <mat-label>Trailing Gap %</mat-label>
                 <input matInput type="number" min="0" step="1" [(ngModel)]="editForm.trailingGapPercent">
-                <mat-hint>Distance from peak to trailing stop</mat-hint>
+                <mat-hint>Distance kept from peak to trailing stop level</mat-hint>
               </mat-form-field>
             }
             @if (editing()!.type === 'BULL_CALL_SPREAD' || editing()!.type === 'BEAR_PUT_SPREAD') {
@@ -280,13 +286,28 @@ import { ApiService, StrategyDto } from '../core/api.service';
                 <input matInput type="number" min="1" [(ngModel)]="editForm.otmStrikes">
               </mat-form-field>
             }
-            @if (editing()!.type === 'SHORT_STRADDLE' || editing()!.type === 'SHORT_STRANGLE') {
+            @if (editing()!.sellingStrategy) {
               <mat-form-field appearance="outline">
                 <mat-label>Min Combined Premium (₹)</mat-label>
                 <input matInput type="number" min="0" [(ngModel)]="editForm.minCombinedPremium">
                 <mat-hint>Don't enter if combined premium is below this</mat-hint>
               </mat-form-field>
             }
+            <div class="squareoff-row">
+              <mat-form-field appearance="outline" class="squareoff-field">
+                <mat-label>Squareoff Hour</mat-label>
+                <input matInput type="number" min="9" max="15" [(ngModel)]="editForm.squareoffHour">
+              </mat-form-field>
+              <mat-form-field appearance="outline" class="squareoff-field">
+                <mat-label>Squareoff Minute</mat-label>
+                <mat-select [(ngModel)]="editForm.squareoffMinute">
+                  <mat-option [value]="0">:00</mat-option>
+                  <mat-option [value]="15">:15</mat-option>
+                  <mat-option [value]="30">:30</mat-option>
+                  <mat-option [value]="45">:45</mat-option>
+                </mat-select>
+              </mat-form-field>
+            </div>
             <div class="edit-actions">
               <button mat-flat-button color="primary" (click)="saveEdit()">
                 <mat-icon>save</mat-icon> Save
@@ -378,6 +399,8 @@ import { ApiService, StrategyDto } from '../core/api.service';
     .edit-actions button:first-child { flex: 1; }
     .paper-toggle { padding: 8px 0; }
     .paper-hint { color: var(--muted); font-size: 11px; margin: 4px 0 0; line-height: 1.4; }
+    .squareoff-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .squareoff-field { width: 100%; }
   `]
 })
 export class StrategiesPageComponent implements OnInit {

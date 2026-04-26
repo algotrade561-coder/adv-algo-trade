@@ -118,6 +118,8 @@ public class StrategyController {
         m.put("minimumMove", c.getMinimumMove());
         m.put("minimumStrengthGap", c.getMinimumStrengthGap());
         m.put("minimumVolume", c.getMinimumVolume());
+        m.put("squareoffHour", c.getSquareoffHour());
+        m.put("squareoffMinute", c.getSquareoffMinute());
         return m;
     }
 }

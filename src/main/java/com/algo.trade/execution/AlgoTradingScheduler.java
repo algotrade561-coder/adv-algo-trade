@@ -20,6 +20,7 @@ import com.algo.trade.strategy.StrategySignalCsvRecorder;
 import com.algo.trade.strategy.StrategyEvaluationRequest;
 import com.algo.trade.strategy.StrategyType;
 import com.algo.trade.strategy.VolatilityBreakoutStrategy;
+import com.algo.trade.strategy.spread.AbstractSpreadStrategy;
 import com.algo.trade.risk.MarketGuard;
 import com.algo.trade.util.IstDateTimes;
 import java.math.BigDecimal;
@@ -77,6 +78,7 @@ public class AlgoTradingScheduler {
     private final com.algo.trade.risk.SafeWeekPredictor safeWeekPredictor;
     private final Map<String, Quote> previousQuotes = new ConcurrentHashMap<>();
     private final AtomicBoolean scanInProgress = new AtomicBoolean(false);
+    private final Map<StrategyType, AbstractSpreadStrategy> spreadStrategyMap;
 
     public AlgoTradingScheduler(
             TradingProperties properties,
@@ -101,7 +103,8 @@ public class AlgoTradingScheduler {
             ExpiryCalendar expiryCalendar,
             com.algo.trade.news.NewsFeedService newsFeedService,
             com.algo.trade.risk.WeeklyExposureTracker weeklyExposureTracker,
-            com.algo.trade.risk.SafeWeekPredictor safeWeekPredictor
+            com.algo.trade.risk.SafeWeekPredictor safeWeekPredictor,
+            java.util.List<AbstractSpreadStrategy> spreadStrategies
     ) {
         this.properties = properties;
         this.globalConfigService = globalConfigService;
@@ -126,6 +129,11 @@ public class AlgoTradingScheduler {
         this.newsFeedService = newsFeedService;
         this.weeklyExposureTracker = weeklyExposureTracker;
         this.safeWeekPredictor = safeWeekPredictor;
+        Map<StrategyType, AbstractSpreadStrategy> map = new java.util.EnumMap<>(StrategyType.class);
+        for (AbstractSpreadStrategy s : spreadStrategies) {
+            map.put(s.strategyType(), s);
+        }
+        this.spreadStrategyMap = java.util.Collections.unmodifiableMap(map);
     }
 
     /**
@@ -347,7 +355,19 @@ public class AlgoTradingScheduler {
                              IRON_CONDOR, BUTTERFLY, CALENDAR_SPREAD,
                              DIAGONAL_SPREAD, JADE_LIZARD, SYNTHETIC_FUTURES -> {
                             if (!matchesConfiguredTimeframe(config, triggerTimeframe)) { yield Optional.empty(); }
-                            yield spreadStrategyEvaluator.evaluate(trendCandles, ivRank, config, underlying);
+                            AbstractSpreadStrategy spreadStrategy = spreadStrategyMap.get(type);
+                            if (spreadStrategy == null) {
+                                // Fallback: generic signal-only path (no multi-leg construction)
+                                yield spreadStrategyEvaluator.evaluate(trendCandles, ivRank, config, underlying);
+                            }
+                            BigDecimal spotPrice = trendCandles.isEmpty()
+                                    ? BigDecimal.ZERO : trendCandles.getLast().close();
+                            com.algo.trade.domain.IndexType spreadIdx =
+                                    com.algo.trade.domain.IndexType.from(underlying);
+                            com.algo.trade.domain.SpreadEvaluationContext spreadCtx =
+                                    new com.algo.trade.domain.SpreadEvaluationContext(
+                                            spotPrice, ivRank, null, config, underlying, spreadIdx, trendCandles);
+                            yield spreadStrategy.evaluateAndEnter(spreadCtx);
                         }
                         case ITM_CONVICTION -> {
                             if (!matchesConfiguredTimeframe(config, triggerTimeframe)) { yield Optional.empty(); }
@@ -362,6 +382,16 @@ public class AlgoTradingScheduler {
                     };
 
                     if (signal.isPresent()) {
+                        // Spread strategies: evaluateAndEnter() already persisted the PositionGroupEntity
+                        // and in-memory state. Bypass enrichment (which would replace groupId with a phantom
+                        // CE instrument) and skip single-leg execution engine routing entirely.
+                        if (spreadStrategyMap.containsKey(type)) {
+                            persistStrategyDecision(signal.get(), type.name(), config);
+                            log.info("Spread entry recorded: type={} groupId={}",
+                                    type, signal.get().selectedInstrumentKey().orElse(""));
+                            continue;
+                        }
+
                         StrategyDecision enriched = enrichWithOptionData(signal.get(), underlying);
                         persistStrategyDecision(enriched, type.name(), config);
 

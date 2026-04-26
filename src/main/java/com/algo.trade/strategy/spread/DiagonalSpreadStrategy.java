@@ -12,6 +12,7 @@ import com.algo.trade.indicator.EmaIndicator;
 import com.algo.trade.marketdata.ExpiryCalendar;
 import com.algo.trade.marketdata.InstrumentCache;
 import com.algo.trade.marketdata.MarketDataService;
+import com.algo.trade.persistence.PositionGroupRepository;
 import com.algo.trade.strategy.StrategyConfig;
 import com.algo.trade.strategy.StrategySignalCsvRecorder;
 import com.algo.trade.strategy.StrategyType;
@@ -30,32 +31,35 @@ import java.util.Map;
 @Component
 public class DiagonalSpreadStrategy extends AbstractSpreadStrategy {
 
-    /** Bias: true = bullish (CE), false = bearish (PE). */
-    private boolean bullishBias = true;
-
     public DiagonalSpreadStrategy(ExpiryCalendar expiryCalendar,
                                   InstrumentCache instrumentCache,
                                   MarketDataService marketDataService,
                                   ExecutionEngine executionEngine,
                                   StrategySignalCsvRecorder signalRecorder,
                                   EmaIndicator emaIndicator,
-                                  AtrIndicator atrIndicator) {
+                                  AtrIndicator atrIndicator,
+                                  PositionGroupRepository positionGroupRepository) {
         super(expiryCalendar, instrumentCache, marketDataService,
-              executionEngine, signalRecorder, emaIndicator, atrIndicator);
-    }
-
-    public void setBullishBias(boolean bullishBias) {
-        this.bullishBias = bullishBias;
+              executionEngine, signalRecorder, emaIndicator, atrIndicator, positionGroupRepository);
     }
 
     @Override
     protected boolean shouldEnter(SpreadEvaluationContext ctx) {
-        // Diagonal spread is a directional + theta play — always eligible when enabled
-        return true;
+        // Require at least 21 candles for EMA computation
+        return ctx.trendCandles() != null && ctx.trendCandles().size() >= 21;
     }
 
     @Override
     protected List<SpreadLeg> constructLegs(SpreadEvaluationContext ctx) {
+        // Determine directional bias from 15-min EMA crossover
+        List<java.math.BigDecimal> closes = ctx.trendCandles().stream()
+                .map(com.algo.trade.domain.Candle::close)
+                .collect(java.util.stream.Collectors.toList());
+        java.math.BigDecimal ema9  = emaIndicator.calculate(closes, 9);
+        java.math.BigDecimal ema21 = emaIndicator.calculate(closes, 21);
+        boolean bullish = ema9.compareTo(ema21) > 0;
+        log.debug("DiagonalSpread: EMA9={}, EMA21={}, bullish={}", ema9, ema21, bullish);
+
         IndexType indexType = ctx.indexType();
         int atm = computeATMStrike(ctx.underlyingPrice(), indexType);
         int otmStrikes = ctx.config().getOtmStrikes();
@@ -64,8 +68,8 @@ public class DiagonalSpreadStrategy extends AbstractSpreadStrategy {
         LocalDate farExpiry = nextWeeklyExpiry(indexType);
         int qty = ctx.config().getLots() * indexType.lotSize();
 
-        OptionType optType = bullishBias ? OptionType.CE : OptionType.PE;
-        int sellStrike = bullishBias
+        OptionType optType = bullish ? OptionType.CE : OptionType.PE;
+        int sellStrike = bullish
                 ? atm + otmStrikes * interval
                 : atm - otmStrikes * interval;
 
@@ -88,8 +92,7 @@ public class DiagonalSpreadStrategy extends AbstractSpreadStrategy {
     }
 
     @Override
-    protected boolean shouldExit(PositionGroup group, Map<String, BigDecimal> currentPrices) {
-        StrategyConfig config = new StrategyConfig(strategyType());
+    protected boolean shouldExit(PositionGroup group, Map<String, BigDecimal> currentPrices, StrategyConfig config) {
         BigDecimal entryNet = netDebit(group.legs(), group.entryPrices());
         BigDecimal currentNet = netDebit(group.legs(), currentPrices);
 
@@ -112,7 +115,7 @@ public class DiagonalSpreadStrategy extends AbstractSpreadStrategy {
     }
 
     @Override
-    protected StrategyType strategyType() {
+    public StrategyType strategyType() {
         return StrategyType.DIAGONAL_SPREAD;
     }
 }

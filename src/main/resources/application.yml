@@ -117,7 +117,7 @@ spring:
     open-in-view: false
   h2:
     console:
-      enabled: false
+      enabled: true
       path: /h2-console
 
 logging:

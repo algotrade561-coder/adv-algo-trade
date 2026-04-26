@@ -68,7 +68,9 @@ class ExecutionEngineTest {
         when(globalConfigService.getDailyProfitTarget()).thenReturn(BigDecimal.ZERO);
 
         var mockConfigService = mock(StrategyConfigService.class);
-        when(mockConfigService.getDirectionalBuyConfig()).thenReturn(new StrategyConfig(StrategyType.DIRECTIONAL_BUY));
+        StrategyConfig directionalBuyConfig = new StrategyConfig(StrategyType.DIRECTIONAL_BUY);
+        directionalBuyConfig.setStopLossPercent(BigDecimal.valueOf(12));
+        when(mockConfigService.getDirectionalBuyConfig()).thenReturn(directionalBuyConfig);
         executionEngine = new ExecutionEngine(properties, globalConfigService, brokerClient, new RiskEngine(globalConfigService, properties, mockConfigService, tradingStateService, null), tradingStateService,
                 tradeRepository, orderRepository, errorEventRepository, decisionRepository, outcomeCsvRecorder,
                 telegramAlertService, clock);

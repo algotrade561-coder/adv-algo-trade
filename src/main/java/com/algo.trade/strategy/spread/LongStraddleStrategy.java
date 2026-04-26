@@ -12,6 +12,7 @@ import com.algo.trade.indicator.EmaIndicator;
 import com.algo.trade.marketdata.ExpiryCalendar;
 import com.algo.trade.marketdata.InstrumentCache;
 import com.algo.trade.marketdata.MarketDataService;
+import com.algo.trade.persistence.PositionGroupRepository;
 import com.algo.trade.strategy.StrategyConfig;
 import com.algo.trade.strategy.StrategySignalCsvRecorder;
 import com.algo.trade.strategy.StrategyType;
@@ -36,9 +37,10 @@ public class LongStraddleStrategy extends AbstractSpreadStrategy {
                                 ExecutionEngine executionEngine,
                                 StrategySignalCsvRecorder signalRecorder,
                                 EmaIndicator emaIndicator,
-                                AtrIndicator atrIndicator) {
+                                AtrIndicator atrIndicator,
+                                PositionGroupRepository positionGroupRepository) {
         super(expiryCalendar, instrumentCache, marketDataService,
-              executionEngine, signalRecorder, emaIndicator, atrIndicator);
+              executionEngine, signalRecorder, emaIndicator, atrIndicator, positionGroupRepository);
     }
 
     @Override
@@ -77,8 +79,7 @@ public class LongStraddleStrategy extends AbstractSpreadStrategy {
     }
 
     @Override
-    protected boolean shouldExit(PositionGroup group, Map<String, BigDecimal> currentPrices) {
-        StrategyConfig config = new StrategyConfig(strategyType());
+    protected boolean shouldExit(PositionGroup group, Map<String, BigDecimal> currentPrices, StrategyConfig config) {
         BigDecimal entryNet = netDebit(group.legs(), group.entryPrices());
         BigDecimal currentNet = netDebit(group.legs(), currentPrices);
 
@@ -98,7 +99,7 @@ public class LongStraddleStrategy extends AbstractSpreadStrategy {
     }
 
     @Override
-    protected StrategyType strategyType() {
+    public StrategyType strategyType() {
         return StrategyType.LONG_STRADDLE;
     }
 }

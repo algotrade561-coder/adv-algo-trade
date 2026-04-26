@@ -26,25 +26,26 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Short Strangle — SELL OTM CE + SELL OTM PE.
- * Entry: IV rank > 50 AND MarketGuard safe for short premium.
- * Exit: short leg doubling, target decay, or expiry danger zone.
+ * Short Straddle — SELL ATM CE + SELL ATM PE at the same strike.
+ * Entry: IV rank > 3 AND MarketGuard safe for short premium.
+ * Exit: either leg doubles in price, target decay reached, or expiry danger zone.
+ * Always paper-trades per StrategyConfig (paperTrading=true by default).
  */
 @Component
-public class ShortStrangleStrategy extends AbstractSpreadStrategy {
+public class ShortStraddleStrategy extends AbstractSpreadStrategy {
 
     private static final MathContext MC = MathContext.DECIMAL64;
     private final MarketGuard marketGuard;
 
-    public ShortStrangleStrategy(ExpiryCalendar expiryCalendar,
-                                 InstrumentCache instrumentCache,
-                                 MarketDataService marketDataService,
-                                 ExecutionEngine executionEngine,
-                                 StrategySignalCsvRecorder signalRecorder,
-                                 EmaIndicator emaIndicator,
-                                 AtrIndicator atrIndicator,
-                                 MarketGuard marketGuard,
-                                 PositionGroupRepository positionGroupRepository) {
+    public ShortStraddleStrategy(ExpiryCalendar expiryCalendar,
+                                  InstrumentCache instrumentCache,
+                                  MarketDataService marketDataService,
+                                  ExecutionEngine executionEngine,
+                                  StrategySignalCsvRecorder signalRecorder,
+                                  EmaIndicator emaIndicator,
+                                  AtrIndicator atrIndicator,
+                                  MarketGuard marketGuard,
+                                  PositionGroupRepository positionGroupRepository) {
         super(expiryCalendar, instrumentCache, marketDataService,
               executionEngine, signalRecorder, emaIndicator, atrIndicator, positionGroupRepository);
         this.marketGuard = marketGuard;
@@ -52,12 +53,12 @@ public class ShortStrangleStrategy extends AbstractSpreadStrategy {
 
     @Override
     protected boolean shouldEnter(SpreadEvaluationContext ctx) {
-        if (ctx.ivRank() <= 50) {
-            log.debug("ShortStrangle: IV rank {} <= 50, skipping", ctx.ivRank());
+        if (ctx.ivRank() <= 3) {
+            log.debug("ShortStraddle: IV rank {} too low, skipping", ctx.ivRank());
             return false;
         }
         if (!marketGuard.isSafeForShortPremium()) {
-            log.debug("ShortStrangle: MarketGuard blocks short premium");
+            log.debug("ShortStraddle: MarketGuard blocks short premium");
             return false;
         }
         return true;
@@ -67,48 +68,56 @@ public class ShortStrangleStrategy extends AbstractSpreadStrategy {
     protected List<SpreadLeg> constructLegs(SpreadEvaluationContext ctx) {
         IndexType indexType = ctx.indexType();
         int atm = computeATMStrike(ctx.underlyingPrice(), indexType);
-        int otmStrikes = ctx.config().getOtmStrikes();
-        int interval = indexType.strikeInterval();
         LocalDate expiry = currentWeeklyExpiry(indexType);
         int qty = ctx.config().getLots() * indexType.lotSize();
 
-        int sellCeStrike = atm + otmStrikes * interval;
-        int sellPeStrike = atm - otmStrikes * interval;
-
         String sellCeKey = instrumentCache.findOption(ctx.underlying(), expiry,
-                BigDecimal.valueOf(sellCeStrike), OptionType.CE)
+                BigDecimal.valueOf(atm), OptionType.CE)
                 .map(i -> i.instrumentKey()).orElse(null);
         String sellPeKey = instrumentCache.findOption(ctx.underlying(), expiry,
-                BigDecimal.valueOf(sellPeStrike), OptionType.PE)
+                BigDecimal.valueOf(atm), OptionType.PE)
                 .map(i -> i.instrumentKey()).orElse(null);
 
         if (sellCeKey == null || sellPeKey == null) {
-            log.warn("ShortStrangle: could not find instruments for CE={} or PE={}", sellCeStrike, sellPeStrike);
+            log.warn("ShortStraddle: could not find ATM={} CE or PE instruments", atm);
             return List.of();
         }
 
+        BigDecimal minPremium = ctx.config().getMinCombinedPremium();
+        if (minPremium != null && minPremium.signum() > 0) {
+            BigDecimal cePrice = marketDataService.quote(sellCeKey)
+                    .map(q -> q.lastPrice()).orElse(BigDecimal.ZERO);
+            BigDecimal pePrice = marketDataService.quote(sellPeKey)
+                    .map(q -> q.lastPrice()).orElse(BigDecimal.ZERO);
+            BigDecimal combined = cePrice.add(pePrice);
+            if (combined.compareTo(minPremium) < 0) {
+                log.debug("ShortStraddle: combined premium {} < minCombinedPremium {}, skipping",
+                        combined, minPremium);
+                return List.of();
+            }
+        }
+
         return List.of(
-                new SpreadLeg(sellCeKey, sellCeStrike, OptionType.CE, OrderSide.SELL, qty, expiry),
-                new SpreadLeg(sellPeKey, sellPeStrike, OptionType.PE, OrderSide.SELL, qty, expiry)
+                new SpreadLeg(sellCeKey, atm, OptionType.CE, OrderSide.SELL, qty, expiry),
+                new SpreadLeg(sellPeKey, atm, OptionType.PE, OrderSide.SELL, qty, expiry)
         );
     }
 
     @Override
     protected boolean shouldExit(PositionGroup group, Map<String, BigDecimal> currentPrices, StrategyConfig config) {
-        // Short leg doubling check
         for (SpreadLeg leg : group.legs()) {
             if (leg.side() == OrderSide.SELL) {
                 BigDecimal entryPrice = group.entryPrices().getOrDefault(leg.instrumentKey(), BigDecimal.ZERO);
                 BigDecimal currentPrice = currentPrices.getOrDefault(leg.instrumentKey(), BigDecimal.ZERO);
-                if (entryPrice.signum() > 0 && currentPrice.compareTo(entryPrice.multiply(BigDecimal.valueOf(2))) >= 0) {
-                    log.info("ShortStrangle: short leg {} doubled (entry={}, current={})",
+                if (entryPrice.signum() > 0
+                        && currentPrice.compareTo(entryPrice.multiply(BigDecimal.valueOf(2))) >= 0) {
+                    log.info("ShortStraddle: short leg {} doubled (entry={}, current={})",
                             leg.instrumentKey(), entryPrice, currentPrice);
                     return true;
                 }
             }
         }
 
-        // Target decay using net credit
         BigDecimal entryCredit = netCredit(group.legs(), group.entryPrices());
         BigDecimal currentCredit = netCredit(group.legs(), currentPrices);
 
@@ -117,13 +126,13 @@ public class ShortStrangleStrategy extends AbstractSpreadStrategy {
                     .divide(entryCredit, MC)
                     .multiply(BigDecimal.valueOf(100), MC);
             if (decayPercent.compareTo(config.getTargetPercent()) >= 0) {
-                log.info("ShortStrangle: target decay hit for group {}", group.groupId());
+                log.info("ShortStraddle: target decay {}% hit for group {}", decayPercent, group.groupId());
                 return true;
             }
         }
 
         if (expiryCalendar.isExpiryDangerZone(IndexType.from(group.underlying()))) {
-            log.info("ShortStrangle: expiry danger zone for group {}", group.groupId());
+            log.info("ShortStraddle: expiry danger zone for group {}", group.groupId());
             return true;
         }
         return false;
@@ -131,6 +140,6 @@ public class ShortStrangleStrategy extends AbstractSpreadStrategy {
 
     @Override
     public StrategyType strategyType() {
-        return StrategyType.SHORT_STRANGLE;
+        return StrategyType.SHORT_STRADDLE;
     }
 }

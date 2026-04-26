@@ -12,6 +12,7 @@ import com.algo.trade.indicator.EmaIndicator;
 import com.algo.trade.marketdata.ExpiryCalendar;
 import com.algo.trade.marketdata.InstrumentCache;
 import com.algo.trade.marketdata.MarketDataService;
+import com.algo.trade.persistence.PositionGroupRepository;
 import com.algo.trade.risk.MarketGuard;
 import com.algo.trade.strategy.StrategyConfig;
 import com.algo.trade.strategy.StrategySignalCsvRecorder;
@@ -43,9 +44,10 @@ public class JadeLizardStrategy extends AbstractSpreadStrategy {
                               StrategySignalCsvRecorder signalRecorder,
                               EmaIndicator emaIndicator,
                               AtrIndicator atrIndicator,
+                              PositionGroupRepository positionGroupRepository,
                               MarketGuard marketGuard) {
         super(expiryCalendar, instrumentCache, marketDataService,
-              executionEngine, signalRecorder, emaIndicator, atrIndicator);
+              executionEngine, signalRecorder, emaIndicator, atrIndicator, positionGroupRepository);
         this.marketGuard = marketGuard;
     }
 
@@ -95,10 +97,9 @@ public class JadeLizardStrategy extends AbstractSpreadStrategy {
     }
 
     @Override
-    protected boolean shouldExit(PositionGroup group, Map<String, BigDecimal> currentPrices) {
+    protected boolean shouldExit(PositionGroup group, Map<String, BigDecimal> currentPrices, StrategyConfig config) {
         BigDecimal entryCredit = netCredit(group.legs(), group.entryPrices());
         BigDecimal currentCredit = netCredit(group.legs(), currentPrices);
-        StrategyConfig config = new StrategyConfig(strategyType());
 
         // Target decay: net credit has decayed by target%
         if (entryCredit.signum() > 0) {
@@ -130,7 +131,7 @@ public class JadeLizardStrategy extends AbstractSpreadStrategy {
     }
 
     @Override
-    protected StrategyType strategyType() {
+    public StrategyType strategyType() {
         return StrategyType.JADE_LIZARD;
     }
 }

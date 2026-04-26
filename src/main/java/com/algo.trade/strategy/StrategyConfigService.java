@@ -86,6 +86,8 @@ public class StrategyConfigService {
         if (patch.getScanTimeframe() != null) config.setScanTimeframe(patch.getScanTimeframe());
         if (patch.getCandleTimeframe() != null) config.setCandleTimeframe(patch.getCandleTimeframe());
         if (patch.getTrendTimeframe() != null) config.setTrendTimeframe(patch.getTrendTimeframe());
+        if (patch.getSquareoffHour() > 0) config.setSquareoffHour(patch.getSquareoffHour());
+        config.setSquareoffMinute(patch.getSquareoffMinute());
         config.setPaperTrading(patch.isPaperTrading());
         if (patch.getItmDepth() > 0) config.setItmDepth(patch.getItmDepth());
         if (patch.getMinimumMove() != null) config.setMinimumMove(patch.getMinimumMove());
@@ -124,6 +126,11 @@ public class StrategyConfigService {
             repository.save(config);
         }
         return config;
+    }
+
+    /** Returns the DB-backed config for a given type, creating a default if absent. */
+    public StrategyConfig getConfig(StrategyType type) {
+        return getOrCreate(type);
     }
 
     /** Convenience accessor for the directional buy config — used by RiskEngine, TrailingStopService, etc. */
