@@ -57,9 +57,13 @@ export interface TradingStatus {
   entryAllowed: boolean;
   blockingReasons: string[];
   openTrades: number;
+  openPaperTrades: number;
   tradesToday: number;
   consecutiveLosses: number;
   dailyPnl: number;
+  paperPnl: number;
+  entrySignals: number;
+  rejectedSignals: number;
   effectiveDailyLossLimit: number;
 }
 

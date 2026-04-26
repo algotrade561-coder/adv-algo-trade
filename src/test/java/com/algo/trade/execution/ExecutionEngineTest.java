@@ -69,7 +69,7 @@ class ExecutionEngineTest {
 
         var mockConfigService = mock(StrategyConfigService.class);
         when(mockConfigService.getDirectionalBuyConfig()).thenReturn(new StrategyConfig(StrategyType.DIRECTIONAL_BUY));
-        executionEngine = new ExecutionEngine(properties, globalConfigService, brokerClient, new RiskEngine(globalConfigService, properties, mockConfigService, tradingStateService), tradingStateService,
+        executionEngine = new ExecutionEngine(properties, globalConfigService, brokerClient, new RiskEngine(globalConfigService, properties, mockConfigService, tradingStateService, null), tradingStateService,
                 tradeRepository, orderRepository, errorEventRepository, decisionRepository, outcomeCsvRecorder,
                 telegramAlertService, clock);
         when(tradeRepository.findByStatus(TradeStatus.OPEN)).thenReturn(List.of());

@@ -87,4 +87,40 @@ public class DynamicExitManager {
         if (profitPercent >= 30) return 0.5; // exit 50% at 30% profit
         return 0;
     }
+
+    /**
+     * Is the market breaking out of range? (momentum exit signal)
+     * If price moves > 2.5x ATR from day open, it's trending — exit short premium.
+     *
+     * @param candles recent candles (at least 15)
+     * @param periods ATR period
+     * @return true if breakout detected
+     */
+    public boolean isBreakout(List<Candle> candles, int periods) {
+        if (candles.size() < periods + 1) return false;
+        double atr = calculateATR(candles, periods);
+        if (atr <= 0) return false;
+        Candle latest = candles.getLast();
+        Candle dayOpen = candles.getFirst();
+        double move = Math.abs(latest.close().subtract(dayOpen.open()).doubleValue());
+        return move > 2.5 * atr;
+    }
+
+    /**
+     * Calculate ATR-based dynamic target (not just SL).
+     * Target = 3x ATR from entry, adjusted by time-to-expiry.
+     */
+    public double calculateDynamicTarget(double entryPremium, double atr, int daysToExpiry) {
+        if (entryPremium <= 0 || atr <= 0) return 60; // default 60%
+        double atrBasedTarget = (3 * atr / entryPremium) * 100;
+        // Tighter target near expiry (less time for big moves)
+        double timeMultiplier = switch (daysToExpiry) {
+            case 0 -> 0.4;
+            case 1 -> 0.6;
+            case 2 -> 0.8;
+            default -> 1.0;
+        };
+        double dynamicTarget = atrBasedTarget * timeMultiplier;
+        return Math.max(20, Math.min(150, dynamicTarget)); // clamp 20–150%
+    }
 }

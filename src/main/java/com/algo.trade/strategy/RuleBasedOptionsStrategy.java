@@ -1,5 +1,6 @@
 package com.algo.trade.strategy;
 
+import com.algo.trade.config.GlobalConfigService;
 import com.algo.trade.config.TradingProperties;
 import com.algo.trade.domain.Candle;
 import com.algo.trade.domain.OptionType;
@@ -23,6 +24,8 @@ import org.slf4j.LoggerFactory;
 
 /**
  * Rule-based option buying entry strategy. This phase only evaluates signals; it never places orders.
+ * Reads all entry/exit/risk parameters from GlobalConfigService (DB-backed, runtime-editable)
+ * with fallback to TradingProperties (YAML) for backtest/test use.
  */
 public class RuleBasedOptionsStrategy {
 
@@ -31,6 +34,7 @@ public class RuleBasedOptionsStrategy {
     private static final BigDecimal MIN_RESISTANCE_HEADROOM_PERCENT = BigDecimal.valueOf(0.20);
 
     private final TradingProperties properties;
+    private final GlobalConfigService globalConfigService;
     private final VwapIndicator vwapIndicator;
     private final EmaIndicator emaIndicator;
     private final VolumeSpikeDetector volumeSpikeDetector;
@@ -43,6 +47,7 @@ public class RuleBasedOptionsStrategy {
 
     public RuleBasedOptionsStrategy(
             TradingProperties properties,
+            GlobalConfigService globalConfigService,
             VwapIndicator vwapIndicator,
             EmaIndicator emaIndicator,
             VolumeSpikeDetector volumeSpikeDetector,
@@ -53,6 +58,7 @@ public class RuleBasedOptionsStrategy {
             StrategySignalCsvRecorder signalCsvRecorder
     ) {
         this.properties = properties;
+        this.globalConfigService = globalConfigService;
         this.vwapIndicator = vwapIndicator;
         this.emaIndicator = emaIndicator;
         this.volumeSpikeDetector = volumeSpikeDetector;
@@ -64,6 +70,7 @@ public class RuleBasedOptionsStrategy {
         this.rsiIndicator = new RsiIndicator();
     }
 
+    /** Backtest/test constructor — no GlobalConfigService, falls back to YAML properties. */
     public RuleBasedOptionsStrategy(
             TradingProperties properties,
             VwapIndicator vwapIndicator,
@@ -73,8 +80,102 @@ public class RuleBasedOptionsStrategy {
             OiChangeTracker oiChangeTracker,
             OptionChainAnalyzer optionChainAnalyzer
     ) {
-        this(properties, vwapIndicator, new EmaIndicator(), volumeSpikeDetector, breakoutDetector, volatilityFilter, oiChangeTracker,
+        this(properties, null, vwapIndicator, new EmaIndicator(), volumeSpikeDetector, breakoutDetector, volatilityFilter, oiChangeTracker,
                 optionChainAnalyzer, null);
+    }
+
+    /** Backtest constructor with EmaIndicator and optional signalCsvRecorder — no GlobalConfigService. */
+    public RuleBasedOptionsStrategy(
+            TradingProperties properties,
+            VwapIndicator vwapIndicator,
+            EmaIndicator emaIndicator,
+            VolumeSpikeDetector volumeSpikeDetector,
+            BreakoutDetector breakoutDetector,
+            VolatilityFilter volatilityFilter,
+            OiChangeTracker oiChangeTracker,
+            OptionChainAnalyzer optionChainAnalyzer,
+            StrategySignalCsvRecorder signalCsvRecorder
+    ) {
+        this(properties, null, vwapIndicator, emaIndicator, volumeSpikeDetector, breakoutDetector, volatilityFilter, oiChangeTracker,
+                optionChainAnalyzer, signalCsvRecorder);
+    }
+
+    // ── Config accessors: prefer GlobalConfigService (DB), fallback to YAML ───
+
+    private boolean cfgVwapFilterEnabled() {
+        return globalConfigService != null ? globalConfigService.isVwapFilterEnabled() : properties.entry().vwapFilterEnabled();
+    }
+    private boolean cfgTrendFilterEnabled() {
+        return globalConfigService != null ? globalConfigService.isTrendFilterEnabled() : properties.entry().trendFilterEnabled();
+    }
+    private BigDecimal cfgVolumeSpikeMultiplier() {
+        return globalConfigService != null ? globalConfigService.getVolumeSpikeMultiplier() : properties.entry().volumeSpikeMultiplier();
+    }
+    private BigDecimal cfgBreakoutBufferPercent() {
+        return globalConfigService != null ? globalConfigService.getBreakoutBufferPercent() : properties.entry().breakoutBufferPercent();
+    }
+    private int cfgBreakoutLookback() {
+        return globalConfigService != null ? globalConfigService.getBreakoutLookback() : properties.entry().breakoutLookback();
+    }
+    private int cfgVolumeLookback() {
+        return globalConfigService != null ? globalConfigService.getVolumeLookback() : properties.entry().volumeLookback();
+    }
+    private BigDecimal cfgBullishImbalanceThreshold() {
+        return globalConfigService != null ? globalConfigService.getBullishImbalanceThreshold() : properties.entry().bullishImbalanceThreshold();
+    }
+    private BigDecimal cfgBearishImbalanceThreshold() {
+        return globalConfigService != null ? globalConfigService.getBearishImbalanceThreshold() : properties.entry().bearishImbalanceThreshold();
+    }
+    private long cfgMinLiquidityVolume() {
+        return globalConfigService != null ? globalConfigService.getMinLiquidityVolume() : properties.entry().minLiquidityVolume();
+    }
+    private BigDecimal cfgMaxIvPercent() {
+        return globalConfigService != null ? globalConfigService.getMaxIvPercent() : properties.entry().maxIvPercent();
+    }
+    private BigDecimal cfgMinSignalScorePercent() {
+        return globalConfigService != null ? globalConfigService.getMinSignalScorePercent() : properties.entry().minSignalScorePercent();
+    }
+    private boolean cfgCeOiSupportRequired() {
+        return globalConfigService != null ? globalConfigService.isCeOiSupportRequired() : properties.entry().ceOiSupportRequired();
+    }
+    private boolean cfgPeOiSupportRequired() {
+        return globalConfigService != null ? globalConfigService.isPeOiSupportRequired() : properties.entry().peOiSupportRequired();
+    }
+    private boolean cfgCeOiDivergenceFilterEnabled() {
+        return globalConfigService != null ? globalConfigService.isCeOiDivergenceFilterEnabled() : properties.entry().ceOiDivergenceFilterEnabled();
+    }
+    private boolean cfgPeOiDivergenceFilterEnabled() {
+        return globalConfigService != null ? globalConfigService.isPeOiDivergenceFilterEnabled() : properties.entry().peOiDivergenceFilterEnabled();
+    }
+    private BigDecimal cfgOiDivergenceMultiplier() {
+        return globalConfigService != null ? globalConfigService.getOiDivergenceMultiplier() : properties.entry().oiDivergenceMultiplier();
+    }
+    private long cfgOiDivergenceMinChange() {
+        return globalConfigService != null ? globalConfigService.getOiDivergenceMinChange() : properties.entry().oiDivergenceMinChange();
+    }
+    private int cfgCeBreakoutConfirmationCandles() {
+        return globalConfigService != null ? globalConfigService.getCeBreakoutConfirmationCandles() : properties.entry().ceBreakoutConfirmationCandles();
+    }
+    private int cfgPeBreakoutConfirmationCandles() {
+        return globalConfigService != null ? globalConfigService.getPeBreakoutConfirmationCandles() : properties.entry().peBreakoutConfirmationCandles();
+    }
+    private LocalTime cfgEntryStartTime() {
+        return globalConfigService != null ? globalConfigService.getEntryStartTime() : properties.entry().entryStartTime();
+    }
+    private LocalTime cfgEntryCutoffTime() {
+        return globalConfigService != null ? globalConfigService.getEntryCutoffTime() : properties.entry().entryCutoffTime();
+    }
+    private boolean cfgRsiFilterEnabled() {
+        return globalConfigService != null ? globalConfigService.isRsiFilterEnabled() : properties.entry().rsiFilterEnabled();
+    }
+    private int cfgRsiPeriod() {
+        return globalConfigService != null ? globalConfigService.getRsiPeriod() : properties.entry().rsiPeriod();
+    }
+    private BigDecimal cfgRsiCeBuyThreshold() {
+        return globalConfigService != null ? globalConfigService.getRsiCeBuyThreshold() : properties.entry().rsiCeBuyThreshold();
+    }
+    private BigDecimal cfgRsiPeSellThreshold() {
+        return globalConfigService != null ? globalConfigService.getRsiPeSellThreshold() : properties.entry().rsiPeSellThreshold();
     }
 
     public StrategyDecision evaluateEntry(StrategyEvaluationRequest request) {
@@ -108,18 +209,18 @@ public class RuleBasedOptionsStrategy {
         BigDecimal lotPrice = optionPrice.multiply(BigDecimal.valueOf(lotSize), MATH_CONTEXT);
         List<Candle> trendCandles = trendCandles(request);
         BigDecimal trendReference = trendReference(trendCandles);
-        boolean vwapPassed = !properties.entry().vwapFilterEnabled()
+        boolean vwapPassed = !cfgVwapFilterEnabled()
                 || vwapConditionPassed(request.optionType(), underlyingPrice, trendReference);
         boolean breakoutPassed = breakoutPassed(request, chain);
         boolean breakoutConfirmed = breakoutConfirmed(request, chain);
         boolean volumeSpike = volumeSpikeDetector.hasSpike(request.selectedOptionCandles(),
-                properties.entry().volumeLookback(),
-                properties.entry().volumeSpikeMultiplier());
+                cfgVolumeLookback(),
+                cfgVolumeSpikeMultiplier());
         OiEvaluation oiEvaluation = oiEvaluation(request, chain);
         boolean oiPassed = oiEvaluation.passed();
         boolean ivPassed = volatilityFilter.isAcceptable(request.selectedOptionQuote().impliedVolatility(),
-                properties.entry().maxIvPercent());
-        boolean liquidityPassed = request.selectedOptionQuote().volume() >= properties.entry().minLiquidityVolume();
+                cfgMaxIvPercent());
+        boolean liquidityPassed = request.selectedOptionQuote().volume() >= cfgMinLiquidityVolume();
         boolean timePassed = withinEntryWindow(request.marketTime());
         boolean rsiPassed = rsiConditionPassed(request);
         BigDecimal confidenceScore = confidenceScore(vwapPassed, breakoutPassed, volumeSpike, oiPassed,
@@ -141,7 +242,7 @@ public class RuleBasedOptionsStrategy {
         addReason(reasons, liquidityPassed, "Liquidity filter passed", "Liquidity filter failed");
         addReason(reasons, timePassed, "Entry time window passed", "Entry time window failed");
         addReason(reasons, rsiPassed, "RSI momentum gate passed", "RSI momentum gate failed");
-        addReason(reasons, confidenceScore.compareTo(properties.entry().minSignalScorePercent()) >= 0,
+        addReason(reasons, confidenceScore.compareTo(cfgMinSignalScorePercent()) >= 0,
                 "Signal score passed: " + confidenceScore + "%",
                 "Signal score failed: " + confidenceScore + "%");
         boolean resistanceHeadroomPassed = resistanceHeadroomPassed(request.optionType(), underlyingPrice, chain);
@@ -152,7 +253,7 @@ public class RuleBasedOptionsStrategy {
                 "Side-specific entry filter failed");
 
         boolean entry = timePassed && ivPassed && liquidityPassed && rsiPassed
-                && confidenceScore.compareTo(properties.entry().minSignalScorePercent()) >= 0
+                && confidenceScore.compareTo(cfgMinSignalScorePercent()) >= 0
                 && sideFilterPassed;
         SignalType signalType = entry
                 ? (request.optionType() == OptionType.CE ? SignalType.BUY_CE : SignalType.BUY_PE)
@@ -160,7 +261,7 @@ public class RuleBasedOptionsStrategy {
 
         log.info("Strategy evaluation completed: signalType={}, underlyingPrice={}, trendReference={}, vwapPassed={}, breakoutPassed={}, volumeSpike={}, oiPassed={}, ivPassed={}, liquidityPassed={}, timePassed={}, confidenceScore={}, minSignalScore={}, imbalance={}, reasons={}",
                 signalType, underlyingPrice, trendReference, vwapPassed, breakoutPassed, volumeSpike, oiPassed, ivPassed,
-                liquidityPassed, timePassed, confidenceScore, properties.entry().minSignalScorePercent(),
+                liquidityPassed, timePassed, confidenceScore, cfgMinSignalScorePercent(),
                 chain.nearbyPutCallOiImbalance(), reasons);
         StrategyDecision decision = new StrategyDecision(request.timestamp(), request.underlying(), signalType,
                 underlyingPrice, Optional.of(optionPrice), Optional.of(optionOpenInterest), Optional.of(lotSize),
@@ -178,19 +279,19 @@ public class RuleBasedOptionsStrategy {
     private boolean breakoutPassed(StrategyEvaluationRequest request, OptionChainAnalysis chain) {
         List<Candle> candles = request.underlyingCandles();
         BigDecimal price = candles.getLast().close();
-        BigDecimal buffer = properties.entry().breakoutBufferPercent();
+        BigDecimal buffer = cfgBreakoutBufferPercent();
         if (request.optionType() == OptionType.CE) {
             boolean resistanceBreak = chain.resistanceStrike()
                     .map(resistance -> price.compareTo(applyPositiveBuffer(resistance, buffer)) > 0)
                     .orElse(false);
             return resistanceBreak || breakoutDetector.breaksAboveSwingHigh(candles,
-                    properties.entry().breakoutLookback(), buffer);
+                    cfgBreakoutLookback(), buffer);
         }
         boolean supportBreak = chain.supportStrike()
                 .map(support -> price.compareTo(applyNegativeBuffer(support, buffer)) < 0)
                 .orElse(false);
         return supportBreak || breakoutDetector.breaksBelowSwingLow(candles,
-                properties.entry().breakoutLookback(), buffer);
+                cfgBreakoutLookback(), buffer);
     }
 
     private OiEvaluation oiEvaluation(StrategyEvaluationRequest request, OptionChainAnalysis chain) {
@@ -203,8 +304,8 @@ public class RuleBasedOptionsStrategy {
                 ? chain.supportPutOiChange() > 0 || chain.resistanceCallOiChange() < 0
                 : chain.resistanceCallOiChange() > 0 || chain.supportPutOiChange() < 0;
         boolean imbalanceSupports = request.optionType() == OptionType.CE
-                ? chain.nearbyPutCallOiImbalance().compareTo(properties.entry().bullishImbalanceThreshold()) >= 0
-                : chain.nearbyPutCallOiImbalance().compareTo(properties.entry().bearishImbalanceThreshold()) <= 0;
+                ? chain.nearbyPutCallOiImbalance().compareTo(cfgBullishImbalanceThreshold()) >= 0
+                : chain.nearbyPutCallOiImbalance().compareTo(cfgBearishImbalanceThreshold()) <= 0;
         boolean divergenceRejected = oiDivergenceRejected(request.optionType(), chain);
         return new OiEvaluation(priceOiBuildUp, chainBuildUp, imbalanceSupports, divergenceRejected);
     }
@@ -220,7 +321,7 @@ public class RuleBasedOptionsStrategy {
         if (candles.size() < confirmationCandles) {
             return false;
         }
-        BigDecimal buffer = properties.entry().breakoutBufferPercent();
+        BigDecimal buffer = cfgBreakoutBufferPercent();
         Candle latest = candles.getLast();
         List<Candle> thresholdHistory = candles.subList(0, Math.max(0, candles.size() - confirmationCandles));
         if (request.optionType() == OptionType.CE) {
@@ -274,16 +375,16 @@ public class RuleBasedOptionsStrategy {
 
     private boolean oiSupportRequired(OptionType optionType) {
         return optionType == OptionType.CE
-                ? properties.entry().ceOiSupportRequired()
-                : properties.entry().peOiSupportRequired();
+                ? cfgCeOiSupportRequired()
+                : cfgPeOiSupportRequired();
     }
 
     private boolean oiDivergenceRejected(OptionType optionType, OptionChainAnalysis chain) {
         if (!oiDivergenceFilterEnabled(optionType)) {
             return false;
         }
-        BigDecimal multiplier = properties.entry().oiDivergenceMultiplier();
-        long minChange = properties.entry().oiDivergenceMinChange();
+        BigDecimal multiplier = cfgOiDivergenceMultiplier();
+        long minChange = cfgOiDivergenceMinChange();
         if (optionType == OptionType.CE) {
             return chain.nearbyCallOiChange() > minChange
                     && BigDecimal.valueOf(chain.nearbyCallOiChange()).compareTo(
@@ -296,14 +397,14 @@ public class RuleBasedOptionsStrategy {
 
     private boolean oiDivergenceFilterEnabled(OptionType optionType) {
         return optionType == OptionType.CE
-                ? properties.entry().ceOiDivergenceFilterEnabled()
-                : properties.entry().peOiDivergenceFilterEnabled();
+                ? cfgCeOiDivergenceFilterEnabled()
+                : cfgPeOiDivergenceFilterEnabled();
     }
 
     private int confirmationCandles(OptionType optionType) {
         return optionType == OptionType.CE
-                ? properties.entry().ceBreakoutConfirmationCandles()
-                : properties.entry().peBreakoutConfirmationCandles();
+                ? cfgCeBreakoutConfirmationCandles()
+                : cfgPeBreakoutConfirmationCandles();
     }
 
     private boolean consecutiveClosesMeetThreshold(List<Candle> candles, int consecutiveCandles,
@@ -317,7 +418,7 @@ public class RuleBasedOptionsStrategy {
     }
 
     private List<Candle> trendCandles(StrategyEvaluationRequest request) {
-        return properties.entry().trendFilterEnabled()
+        return cfgTrendFilterEnabled()
                 ? request.trendUnderlyingCandles()
                 : request.underlyingCandles();
     }
@@ -329,30 +430,30 @@ public class RuleBasedOptionsStrategy {
             return vwapIndicator.calculateSessionAnchored(candles, properties.timezone());
         }
         List<BigDecimal> closes = candles.stream().map(Candle::close).toList();
-        return emaIndicator.calculate(closes, Math.min(properties.entry().breakoutLookback(), closes.size()));
+        return emaIndicator.calculate(closes, Math.min(cfgBreakoutLookback(), closes.size()));
     }
 
     private boolean rsiConditionPassed(StrategyEvaluationRequest request) {
-        if (!properties.entry().rsiFilterEnabled()) {
+        if (!cfgRsiFilterEnabled()) {
             return true;
         }
         List<BigDecimal> closes = request.underlyingCandles().stream().map(Candle::close).toList();
-        BigDecimal rsi = rsiIndicator.calculate(closes, properties.entry().rsiPeriod());
+        BigDecimal rsi = rsiIndicator.calculate(closes, cfgRsiPeriod());
         boolean passed = request.optionType() == OptionType.CE
-                ? rsi.compareTo(properties.entry().rsiCeBuyThreshold()) > 0
-                : rsi.compareTo(properties.entry().rsiPeSellThreshold()) < 0;
+                ? rsi.compareTo(cfgRsiCeBuyThreshold()) > 0
+                : rsi.compareTo(cfgRsiPeSellThreshold()) < 0;
         log.debug("RSI gate: optionType={}, rsi={}, threshold={}, passed={}",
                 request.optionType(), rsi.setScale(2, java.math.RoundingMode.HALF_UP),
                 request.optionType() == OptionType.CE
-                        ? properties.entry().rsiCeBuyThreshold()
-                        : properties.entry().rsiPeSellThreshold(),
+                        ? cfgRsiCeBuyThreshold()
+                        : cfgRsiPeSellThreshold(),
                 passed);
         return passed;
     }
 
     private boolean withinEntryWindow(LocalTime marketTime) {
-        return !marketTime.isBefore(properties.entry().entryStartTime())
-                && !marketTime.isAfter(properties.entry().entryCutoffTime());
+        return !marketTime.isBefore(cfgEntryStartTime())
+                && !marketTime.isAfter(cfgEntryCutoffTime());
     }
 
     private StrategyDecision noTrade(StrategyEvaluationRequest request, Optional<BigDecimal> imbalance,
@@ -395,7 +496,7 @@ public class RuleBasedOptionsStrategy {
         score += oiPassed ? 25 : 0;
         score += liquidityPassed ? 10 : 0;
         score += ivPassed ? 5 : 0;
-        score += properties.entry().rsiFilterEnabled() && rsiPassed ? 10 : 0;
+        score += cfgRsiFilterEnabled() && rsiPassed ? 10 : 0;
         return BigDecimal.valueOf(score);
     }
 
@@ -409,14 +510,16 @@ public class RuleBasedOptionsStrategy {
         if (candles.isEmpty()) {
             return BigDecimal.ZERO;
         }
-        return candles.stream().map(Candle::close).max(BigDecimal::compareTo).orElse(BigDecimal.ZERO);
+        // Use Candle::high for swing high reference — consistent with BreakoutDetector.swingHigh()
+        return candles.stream().map(Candle::high).max(BigDecimal::compareTo).orElse(BigDecimal.ZERO);
     }
 
     private BigDecimal lowestClose(List<Candle> candles) {
         if (candles.isEmpty()) {
             return BigDecimal.ZERO;
         }
-        return candles.stream().map(Candle::close).min(BigDecimal::compareTo).orElse(BigDecimal.ZERO);
+        // Use Candle::low for swing low reference — consistent with BreakoutDetector.swingLow()
+        return candles.stream().map(Candle::low).min(BigDecimal::compareTo).orElse(BigDecimal.ZERO);
     }
 
     private BigDecimal applyPositiveBuffer(BigDecimal value, BigDecimal bufferPercent) {

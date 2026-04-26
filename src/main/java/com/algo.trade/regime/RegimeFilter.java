@@ -21,19 +21,29 @@ public class RegimeFilter {
     /**
      * Compute regime score (0–100) from market indicators.
      *
-     * <p>Scoring rules:</p>
+     * <p>Scoring rules (7 factors):</p>
      * <ul>
      *   <li>Base: 50</li>
-     *   <li>VIX 13–18: +15 | VIX 11–21 (outside 13–18): +8 | VIX > 22: −20</li>
+     *   <li>VIX 13–18: +15 | VIX 11–21: +8 | VIX > 22: −20</li>
      *   <li>IV rank 30–70: +10 | IV rank > 80: −10</li>
      *   <li>PCR 0.8–1.3: +10 | PCR > 1.5 or < 0.5: −15</li>
      *   <li>Trend signal 0 (range-bound): +10</li>
      *   <li>OI wall distance: +5 to +15 based on proximity</li>
+     *   <li>VIX trend: rising −10, falling +5</li>
      *   <li>Final score clamped to [0, 100]</li>
      * </ul>
      */
     public int computeScore(double vix, double ivRank, double pcr,
                             int trendSignal, double oiWallDistancePercent) {
+        return computeScore(vix, ivRank, pcr, trendSignal, oiWallDistancePercent, 0);
+    }
+
+    /**
+     * Extended scoring with VIX trend factor.
+     * @param vixTrend 1 = VIX rising (danger), -1 = VIX falling (opportunity), 0 = flat
+     */
+    public int computeScore(double vix, double ivRank, double pcr,
+                            int trendSignal, double oiWallDistancePercent, int vixTrend) {
         int score = 50;
 
         // VIX contribution
@@ -77,11 +87,18 @@ public class RegimeFilter {
             score += 5;
         }
 
+        // VIX trend contribution: rising VIX = danger, falling = opportunity
+        if (vixTrend > 0) {
+            score -= 10; // VIX rising — increased risk
+        } else if (vixTrend < 0) {
+            score += 5;  // VIX falling — calming market
+        }
+
         // Clamp to [0, 100]
         score = Math.max(0, Math.min(100, score));
 
-        log.debug("RegimeFilter score={} | vix={}, ivRank={}, pcr={}, trend={}, oiWall={}",
-                score, vix, ivRank, pcr, trendSignal, oiWallDistancePercent);
+        log.debug("RegimeFilter score={} | vix={}, ivRank={}, pcr={}, trend={}, oiWall={}, vixTrend={}",
+                score, vix, ivRank, pcr, trendSignal, oiWallDistancePercent, vixTrend);
         return score;
     }
 
@@ -106,5 +123,29 @@ public class RegimeFilter {
         MarketRegime regime = classify(score);
         log.debug("RegimeFilter: detected regime={} (score={})", regime, score);
         return regime;
+    }
+
+    /**
+     * Extended regime detection with VIX trend.
+     */
+    public MarketRegime detectRegime(double vix, double ivRank, double pcr,
+                                      int trendSignal, double oiWallDistancePercent, int vixTrend) {
+        int score = computeScore(vix, ivRank, pcr, trendSignal, oiWallDistancePercent, vixTrend);
+        return classify(score);
+    }
+
+    /** Should we enter short premium trades? Score >= 60. */
+    public boolean isShortPremiumAllowed(int score) {
+        return score >= 60;
+    }
+
+    /** Should we use defined risk only (iron condor) instead of naked (straddle)? Score 40-60. */
+    public boolean useDefinedRiskOnly(int score) {
+        return score >= 40 && score < 60;
+    }
+
+    /** Is it too dangerous for any new trades? Score < 20. */
+    public boolean isDangerZone(int score) {
+        return score < 20;
     }
 }

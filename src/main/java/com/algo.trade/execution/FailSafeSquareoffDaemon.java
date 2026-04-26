@@ -9,6 +9,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
+import java.math.BigDecimal;
 import java.time.LocalTime;
 import java.time.ZoneId;
 import java.util.List;
@@ -31,13 +32,16 @@ public class FailSafeSquareoffDaemon {
     private final TradeRepository tradeRepository;
     private final ExecutionEngine executionEngine;
     private final TelegramAlertService alertService;
+    private final com.algo.trade.marketdata.MarketDataService marketDataService;
 
     public FailSafeSquareoffDaemon(TradeRepository tradeRepository,
                                     ExecutionEngine executionEngine,
-                                    TelegramAlertService alertService) {
+                                    TelegramAlertService alertService,
+                                    com.algo.trade.marketdata.MarketDataService marketDataService) {
         this.tradeRepository = tradeRepository;
         this.executionEngine = executionEngine;
         this.alertService = alertService;
+        this.marketDataService = marketDataService;
     }
 
     @Scheduled(cron = "0 * 15 * * MON-FRI", zone = "Asia/Kolkata")
@@ -51,13 +55,25 @@ public class FailSafeSquareoffDaemon {
         log.warn("[FailSafe] {} open trades remain after {} — forcing close", openTrades.size(), FAILSAFE_TIME);
         alertService.systemAlert("🚨 FailSafe: " + openTrades.size() + " open trades after " + FAILSAFE_TIME + " — forcing close");
 
+        List<String> failures = new java.util.ArrayList<>();
         for (TradeEntity trade : openTrades) {
             try {
-                executionEngine.closeTrade(trade.getTradeId(), trade.getEntryPrice(), "FailSafe square-off 15:20");
-                log.warn("[FailSafe] Force-closed: tradeId={} instrument={}", trade.getTradeId(), trade.getInstrumentKey());
+                // Use live market price, not stale entry price
+                BigDecimal exitPrice = marketDataService.quote(trade.getInstrumentKey())
+                        .map(q -> q.lastPrice())
+                        .filter(p -> p != null && p.signum() > 0)
+                        .orElse(trade.getEntryPrice()); // fallback to entry price if no quote
+                executionEngine.closeTrade(trade.getTradeId(), exitPrice, "FailSafe square-off 15:20");
+                log.warn("[FailSafe] Force-closed: tradeId={} instrument={} exitPrice={}", trade.getTradeId(), trade.getInstrumentKey(), exitPrice);
             } catch (Exception e) {
                 log.error("[FailSafe] Failed to close trade {}: {}", trade.getTradeId(), e.getMessage());
+                failures.add(trade.getTradeId() + " (" + trade.getInstrumentKey() + "): " + e.getMessage());
             }
+        }
+        if (!failures.isEmpty()) {
+            alertService.systemAlert("🚨 CRITICAL: FailSafe partial failure! " + failures.size()
+                    + " trades NOT closed:\n" + String.join("\n", failures));
+            log.error("[FailSafe] Partial square-off failure: {} trades not closed: {}", failures.size(), failures);
         }
     }
 }

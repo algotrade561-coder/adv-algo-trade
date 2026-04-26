@@ -92,18 +92,18 @@ class VerifyAllServiceTest {
     // ═══════════════════════════════════════════════════════════════════════
 
     @Nested
-    @DisplayName("All 16 strategies iterated")
+    @DisplayName("All strategies iterated")
     class AllStrategiesIterated {
 
         @Test
-        @DisplayName("verifyAll produces exactly 16 StrategyVerificationResult entries")
+        @DisplayName("verifyAll produces all StrategyVerificationResult entries")
         void verifyAllProduces16Results() {
             VerifyAllRequest request = new VerifyAllRequest(
                     LocalDate.of(2026, 1, 15), LocalDate.of(2026, 4, 15), UnderlyingSymbol.NIFTY);
 
             VerifyAllResult result = service.verifyAll(request);
 
-            assertThat(result.strategyResults()).hasSize(16);
+            assertThat(result.strategyResults()).hasSize(StrategyType.values().length);
         }
 
         @Test
@@ -210,8 +210,8 @@ class VerifyAllServiceTest {
 
             VerifyAllResult result = service.verifyAll(VerifyAllRequest.defaults());
 
-            // Still 16 results
-            assertThat(result.strategyResults()).hasSize(16);
+            // Still all results
+            assertThat(result.strategyResults()).hasSize(StrategyType.values().length);
 
             // IRON_CONDOR has error status
             StrategyVerificationResult icResult = result.strategyResults().stream()
@@ -226,7 +226,7 @@ class VerifyAllServiceTest {
                     .filter(r -> r.strategyType() != StrategyType.IRON_CONDOR)
                     .filter(r -> !r.status().equals("error"))
                     .count();
-            assertThat(nonErrorCount).isEqualTo(15);
+            assertThat(nonErrorCount).isEqualTo(StrategyType.values().length - 1);
         }
 
         @Test
@@ -245,7 +245,7 @@ class VerifyAllServiceTest {
 
             VerifyAllResult result = service.verifyAll(VerifyAllRequest.defaults());
 
-            assertThat(result.strategyResults()).hasSize(16);
+            assertThat(result.strategyResults()).hasSize(StrategyType.values().length);
 
             // All 3 single-leg strategies should have no-data status (inner catch logs warning,
             // but both CE and PE fail → empty trades → noDataResult)
@@ -261,7 +261,8 @@ class VerifyAllServiceTest {
                     .filter(r -> !SINGLE_LEG.contains(r.strategyType()))
                     .filter(r -> !r.status().equals("error"))
                     .count();
-            assertThat(spreadOkCount).isEqualTo(13);
+            // Spread strategies + live-only (skipped) strategies
+            assertThat(spreadOkCount).isEqualTo(StrategyType.values().length - SINGLE_LEG.size());
         }
     }
 
@@ -278,9 +279,9 @@ class VerifyAllServiceTest {
         void getAllCalledForConfigs() {
             service.verifyAll(VerifyAllRequest.defaults());
 
-            // getAll() is called once per strategy type (16 times) since loadOrCreateConfig
+            // getAll() is called once per strategy type since loadOrCreateConfig
             // calls it for each strategy
-            verify(strategyConfigService, times(16)).getAll();
+            verify(strategyConfigService, times(StrategyType.values().length)).getAll();
         }
 
         @Test
@@ -289,7 +290,7 @@ class VerifyAllServiceTest {
             VerifyAllResult result = service.verifyAll(VerifyAllRequest.defaults());
 
             assertThat(result.configSnapshot()).isNotNull();
-            assertThat(result.configSnapshot().strategyConfigs()).hasSize(16);
+            assertThat(result.configSnapshot().strategyConfigs()).hasSize(StrategyType.values().length);
             for (StrategyType type : StrategyType.values()) {
                 assertThat(result.configSnapshot().strategyConfigs()).containsKey(type);
             }

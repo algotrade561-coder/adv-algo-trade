@@ -86,6 +86,11 @@ public class StrategyConfigService {
         if (patch.getScanTimeframe() != null) config.setScanTimeframe(patch.getScanTimeframe());
         if (patch.getCandleTimeframe() != null) config.setCandleTimeframe(patch.getCandleTimeframe());
         if (patch.getTrendTimeframe() != null) config.setTrendTimeframe(patch.getTrendTimeframe());
+        config.setPaperTrading(patch.isPaperTrading());
+        if (patch.getItmDepth() > 0) config.setItmDepth(patch.getItmDepth());
+        if (patch.getMinimumMove() != null) config.setMinimumMove(patch.getMinimumMove());
+        if (patch.getMinimumStrengthGap() != null) config.setMinimumStrengthGap(patch.getMinimumStrengthGap());
+        if (patch.getMinimumVolume() > 0) config.setMinimumVolume(patch.getMinimumVolume());
         return repository.save(config);
     }
 

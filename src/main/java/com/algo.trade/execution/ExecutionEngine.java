@@ -195,9 +195,11 @@ public class ExecutionEngine {
         if (order.status() == OrderStatus.COMPLETE) {
             BigDecimal fillPrice = order.averageFillPrice().orElse(optionPremium);
             String tradeId = "TRD-" + UUID.randomUUID();
-            tradeRepository.save(new TradeEntity(tradeId, order.instrumentKey(),
+            TradeEntity tradeEntity = new TradeEntity(tradeId, order.instrumentKey(),
                     decision.underlying().name(), decision.optionType().orElseThrow().name(), TradeStatus.OPEN,
-                    order.filledQuantity(), fillPrice, Instant.now(clock), String.join("; ", decision.reasons())));
+                    order.filledQuantity(), fillPrice, Instant.now(clock), String.join("; ", decision.reasons()));
+            tradeEntity.setStrategyType(extractStrategyType(decision));
+            tradeRepository.save(tradeEntity);
             log.info("Entry trade opened: tradeId={}, instrument={}, quantity={}, entryPrice={}",
                     tradeId, order.instrumentKey(), order.filledQuantity(), fillPrice);
             List<String> reasons = List.of("Entry order filled and trade journal updated");
@@ -217,6 +219,57 @@ public class ExecutionEngine {
         return ExecutionResult.rejected(reasons);
     }
 
+    /**
+     * Execute a paper trade entry — creates a TradeEntity with simulated fill at current market price.
+     * No broker order is placed. The trade is managed by existing exit monitors (SL/target/trailing/maxHold)
+     * and closed via closeTrade which detects the "PAPER-" prefix and skips the broker exit order.
+     */
+    @Transactional
+    public ExecutionResult executePaperEntry(StrategyDecision decision, BigDecimal optionPremium, int lotSize, BigDecimal stopLossPercent) {
+        log.info("PAPER entry requested: signalType={}, underlying={}, instrument={}, premium={}",
+                decision.signalType(), decision.underlying(),
+                decision.selectedInstrumentKey().orElse(""), optionPremium);
+
+        if (!tradingStateService.running()) {
+            log.warn("PAPER entry rejected: trading engine is stopped");
+            return ExecutionResult.rejected(List.of("Trading engine is stopped"));
+        }
+
+        StrategyDecisionEntity savedDecision = persistDecision(decision);
+
+        var sizing = stopLossPercent != null
+                ? riskEngine.calculateQuantity(optionPremium, lotSize, stopLossPercent)
+                : riskEngine.calculateQuantity(optionPremium, lotSize);
+        if (!sizing.allowed()) {
+            updateExecutionStage(savedDecision, "PAPER_SIZING_REJECTED", sizing.reason());
+            return ExecutionResult.rejected(List.of(sizing.reason()));
+        }
+
+        String tradeId = "PAPER-TRD-" + UUID.randomUUID();
+        String instrumentKey = decision.selectedInstrumentKey().orElse("UNKNOWN");
+        TradeEntity trade = new TradeEntity(tradeId, instrumentKey,
+                decision.underlying().name(), decision.optionType().map(Enum::name).orElse("CE"),
+                TradeStatus.OPEN, sizing.quantity(), optionPremium, Instant.now(clock),
+                "PAPER_TRADE [" + decision.signalType().name() + "]: " + String.join("; ", decision.reasons()));
+        // Extract strategy type from decision reasons
+        trade.setStrategyType(extractStrategyType(decision));
+        tradeRepository.save(trade);
+
+        updateExecutionStage(savedDecision, "PAPER_FILLED", "tradeId=" + tradeId);
+        log.info("PAPER trade opened: tradeId={}, instrument={}, qty={}, entryPrice={}",
+                tradeId, instrumentKey, sizing.quantity(), optionPremium);
+
+        OrderResponse syntheticOrder = new OrderResponse(
+                "PAPER-" + UUID.randomUUID(), Optional.empty(), instrumentKey,
+                OrderSide.BUY, OrderStatus.COMPLETE, sizing.quantity(), sizing.quantity(),
+                Optional.of(optionPremium), Optional.empty(), Instant.now(clock));
+        executionOutcomeCsvRecorder.recordEntry(decision, optionPremium, lotSize, "PAPER_FILLED", true,
+                sizing.quantity(), sizing.riskAmount(), sizing.estimatedCost(), syntheticOrder,
+                List.of("Paper trade opened — exit managed by live monitors"));
+
+        return ExecutionResult.accepted(syntheticOrder, List.of("Paper trade opened"));
+    }
+
     @Transactional
     public ExecutionResult closeTrade(String tradeId, BigDecimal lastPrice, String reason) {
         log.info("Close trade requested: tradeId={}, lastPrice={}, reason={}", tradeId, lastPrice, reason);
@@ -227,19 +280,64 @@ public class ExecutionEngine {
             return ExecutionResult.rejected(List.of("Trade is not open"));
         }
 
+        // Paper trades: close without broker order — just compute P&L and update DB
+        if (tradeId.startsWith("PAPER-")) {
+            // Determine P&L direction: SELL entries profit when price drops, BUY entries profit when price rises
+            boolean isShortEntry = trade.getEntryReason() != null
+                    && (trade.getEntryReason().contains("[SELL_CE]")
+                        || trade.getEntryReason().contains("[SELL_PE]"));
+            BigDecimal realizedPnl = isShortEntry
+                    ? trade.getEntryPrice().subtract(lastPrice).multiply(BigDecimal.valueOf(trade.getQuantity()))
+                    : lastPrice.subtract(trade.getEntryPrice()).multiply(BigDecimal.valueOf(trade.getQuantity()));
+            trade.close(lastPrice, Instant.now(clock), realizedPnl, "PAPER_EXIT: " + reason);
+            tradeRepository.save(trade);
+            log.info("PAPER trade closed: tradeId={}, exitPrice={}, realizedPnl={}, reason={}",
+                    tradeId, lastPrice, realizedPnl, reason);
+            telegramAlertService.systemAlert(String.format(
+                    "📝 Paper Trade Closed: %s | Entry ₹%.2f → Exit ₹%.2f | P&L ₹%.2f | %s",
+                    trade.getInstrumentKey(), trade.getEntryPrice().doubleValue(),
+                    lastPrice.doubleValue(), realizedPnl.doubleValue(), reason));
+            return new ExecutionResult(true, Optional.empty(), List.of("Paper trade closed: P&L=" + realizedPnl));
+        }
+
         OrderRequest orderRequest = new OrderRequest("EXIT-" + UUID.randomUUID(), trade.getInstrumentKey(),
                 OrderSide.SELL, OrderType.LIMIT, ProductType.MIS, trade.getQuantity(), Optional.of(lastPrice),
                 "strategy-exit");
         log.info("Placing exit order: tradeId={}, clientOrderId={}, instrument={}, quantity={}",
                 tradeId, orderRequest.clientOrderId(), orderRequest.instrumentKey(), orderRequest.quantity());
-        OrderResponse order = brokerClient.placeOrder(orderRequest);
+        OrderResponse order;
+        try {
+            order = brokerClient.placeOrder(orderRequest);
+        } catch (RuntimeException ex) {
+            // Retry once with MARKET order if LIMIT fails
+            log.warn("Exit LIMIT order failed for tradeId={}, retrying with MARKET order: {}", tradeId, ex.getMessage());
+            telegramAlertService.systemAlert("⚠️ Exit LIMIT failed for " + trade.getInstrumentKey() + " — retrying MARKET order");
+            try {
+                OrderRequest marketRequest = new OrderRequest("EXIT-MKT-" + UUID.randomUUID(), trade.getInstrumentKey(),
+                        OrderSide.SELL, OrderType.MARKET, ProductType.MIS, trade.getQuantity(), Optional.empty(),
+                        "strategy-exit-market-retry");
+                order = brokerClient.placeOrder(marketRequest);
+            } catch (RuntimeException retryEx) {
+                log.error("Exit MARKET retry also failed for tradeId={}: {}", tradeId, retryEx.getMessage());
+                telegramAlertService.systemAlert("🚨 URGENT: Exit failed for " + trade.getInstrumentKey()
+                        + " — POSITION STILL OPEN! Manual intervention required.");
+                return ExecutionResult.rejected(List.of("Exit order failed after retry: " + retryEx.getMessage()));
+            }
+        }
         persistOrder(order);
         log.info("Exit order response: clientOrderId={}, brokerOrderId={}, status={}, filledQuantity={}, averageFillPrice={}, rejectionReason={}",
                 order.clientOrderId(), order.brokerOrderId().orElse(""), order.status(), order.filledQuantity(),
                 order.averageFillPrice().orElse(null), order.rejectionReason().orElse(""));
         if (order.status() != OrderStatus.COMPLETE) {
+            // Order is pending — watchdog will track it
+            if (order.status() == OrderStatus.OPEN || order.status() == OrderStatus.NEW) {
+                log.info("Exit order pending — watchdog will track: tradeId={}, clientOrderId={}", tradeId, order.clientOrderId());
+                return ExecutionResult.accepted(order, List.of("Exit order pending — watchdog tracking"));
+            }
             log.warn("Exit order not filled: tradeId={}, status={}, reason={}",
                     tradeId, order.status(), order.rejectionReason().orElse("Exit order was not filled"));
+            telegramAlertService.systemAlert("⚠️ Exit order rejected for " + trade.getInstrumentKey()
+                    + " — " + order.rejectionReason().orElse("unknown reason"));
             return ExecutionResult.rejected(List.of(order.rejectionReason().orElse("Exit order was not filled")));
         }
 
@@ -310,14 +408,23 @@ public class ExecutionEngine {
                 ? orderEntity.getAverageFillPrice() : BigDecimal.ZERO;
         int filledQty = orderEntity.getFilledQuantity();
 
-        // Derive underlying and option type from instrument key
-        String underlying = instrumentKey.contains("NIFTY") && !instrumentKey.contains("BANKNIFTY")
-                ? "NIFTY" : instrumentKey.contains("BANKNIFTY") ? "BANKNIFTY" : "NIFTY";
+        // Derive underlying and option type from instrument key using UnderlyingSymbol enum
+        String underlying = extractUnderlyingFromKey(instrumentKey);
         String optionType = instrumentKey.toUpperCase().contains("PE") ? "PE" : "CE";
 
         TradeEntity trade = new TradeEntity(tradeId, instrumentKey, underlying, optionType,
                 TradeStatus.OPEN, filledQty, fillPrice, orderEntity.getUpdatedAt(),
                 "Limit order filled (watchdog): " + orderEntity.getClientOrderId());
+        // Try to resolve strategy type from the order's signal timestamp
+        if (orderEntity.getSignalTimestamp() != null) {
+            decisionRepository.findTop200BySignalTypeInOrderByTimestampDesc(List.of("BUY_CE", "BUY_PE")).stream()
+                    .filter(d -> d.getTimestamp() != null && d.getSelectedInstrumentKey() != null
+                            && d.getSelectedInstrumentKey().equals(instrumentKey))
+                    .findFirst()
+                    .ifPresent(d -> {
+                        if (d.getStrategyType() != null) trade.setStrategyType(d.getStrategyType());
+                    });
+        }
         tradeRepository.save(trade);
 
         // Update order entity with final status
@@ -376,26 +483,86 @@ public class ExecutionEngine {
     }
 
     private int openTradeCount() {
-        return tradeRepository.findByStatus(TradeStatus.OPEN).size();
+        return (int) tradeRepository.findByStatus(TradeStatus.OPEN).stream()
+                .filter(t -> !t.isPaperTrade())
+                .count();
+    }
+
+    /** Find open trades by instrument key — used by OrderFillWatchdog for exit order fills. */
+    public List<TradeEntity> findOpenTradesByInstrument(String instrumentKey) {
+        return tradeRepository.findByStatus(TradeStatus.OPEN).stream()
+                .filter(t -> instrumentKey.equals(t.getInstrumentKey()))
+                .toList();
+    }
+
+    /** Save a trade entity — used by OrderFillWatchdog when closing trades from exit fills. */
+    public void saveTradeEntity(TradeEntity trade) {
+        tradeRepository.save(trade);
+    }
+
+    /** Populate entry Greeks on a trade from live option data. Called by scheduler after trade creation. */
+    public void populateEntryGreeks(String tradeId, Double delta, Double gamma, Double theta, Double iv) {
+        tradeRepository.findById(tradeId).ifPresent(trade -> {
+            trade.setEntryDelta(delta);
+            trade.setEntryGamma(gamma);
+            trade.setEntryTheta(theta);
+            trade.setEntryIV(iv);
+            tradeRepository.save(trade);
+            log.debug("Entry Greeks populated: tradeId={} delta={} gamma={} theta={} iv={}",
+                    tradeId, delta, gamma, theta, iv);
+        });
+    }
+
+    /** Extract strategy type name from a StrategyDecision's reasons list. */
+    private String extractStrategyType(StrategyDecision decision) {
+        for (String reason : decision.reasons()) {
+            String upper = reason.toUpperCase();
+            for (com.algo.trade.strategy.StrategyType type : com.algo.trade.strategy.StrategyType.values()) {
+                if (upper.contains(type.name())) return type.name();
+            }
+        }
+        // Fallback: derive from signal type
+        return decision.signalType().name().startsWith("BUY_") ? "DIRECTIONAL_BUY" : "UNKNOWN";
+    }
+
+    /** Extract underlying symbol from instrument key using enum matching. */
+    private static String extractUnderlyingFromKey(String instrumentKey) {
+        if (instrumentKey == null) return "NIFTY";
+        String upper = instrumentKey.toUpperCase();
+        // Check longer names first to avoid BANKNIFTY matching NIFTY
+        if (upper.contains("MIDCPNIFTY")) return "MIDCPNIFTY";
+        if (upper.contains("FINNIFTY")) return "FINNIFTY";
+        if (upper.contains("BANKNIFTY")) return "BANKNIFTY";
+        if (upper.contains("SENSEX")) return "SENSEX";
+        if (upper.contains("NIFTY")) return "NIFTY";
+        return "NIFTY";
     }
 
     private int tradesToday() {
-        return tradeRepository.findByEntryTimeBetween(todayStart(), tomorrowStart()).size();
+        return (int) tradeRepository.findByEntryTimeBetween(todayStart(), tomorrowStart()).stream()
+                .filter(t -> !t.isPaperTrade())
+                .count();
     }
 
     private BigDecimal dailyPnl() {
         return tradeRepository.findByEntryTimeBetween(todayStart(), tomorrowStart()).stream()
+                .filter(t -> !t.isPaperTrade())
                 .map(TradeEntity::getRealizedPnl)
+                .filter(p -> p != null)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
     }
 
     private int consecutiveLosses() {
-        List<TradeEntity> closedTrades = tradeRepository.findAll().stream()
+        // Use bounded query instead of findAll() to avoid full table scan
+        List<TradeEntity> recentClosed = tradeRepository.findByEntryTimeBetween(
+                        todayStart().minus(Duration.ofDays(30)), tomorrowStart()).stream()
                 .filter(trade -> trade.getStatus() == TradeStatus.CLOSED)
+                .filter(trade -> !trade.isPaperTrade())
                 .sorted((a, b) -> b.getEntryTime().compareTo(a.getEntryTime()))
+                .limit(20) // only need to check recent trades
                 .toList();
         int losses = 0;
-        for (TradeEntity trade : closedTrades) {
+        for (TradeEntity trade : recentClosed) {
             if (trade.getRealizedPnl().signum() < 0) {
                 losses++;
             } else {
@@ -426,7 +593,8 @@ public class ExecutionEngine {
             rejections.add("Open buy order already exists for instrument: " + instrumentKey);
         }
 
-        boolean existingOpenTrade = !tradeRepository.findByInstrumentKeyAndStatus(instrumentKey, TradeStatus.OPEN).isEmpty();
+        boolean existingOpenTrade = tradeRepository.findByInstrumentKeyAndStatus(instrumentKey, TradeStatus.OPEN).stream()
+                .anyMatch(t -> !t.isPaperTrade());
         if (existingOpenTrade) {
             rejections.add("Open trade already exists for instrument: " + instrumentKey);
         }

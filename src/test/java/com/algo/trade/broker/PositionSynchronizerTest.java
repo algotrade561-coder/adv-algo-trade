@@ -21,6 +21,7 @@ class PositionSynchronizerTest {
     private BrokerClient brokerClient;
     private TradeRepository tradeRepository;
     private KiteAccessTokenStore tokenStore;
+    private com.algo.trade.marketdata.MarketDataService marketDataService;
     private PositionSynchronizer synchronizer;
 
     @BeforeEach
@@ -28,7 +29,8 @@ class PositionSynchronizerTest {
         brokerClient = mock(BrokerClient.class);
         tradeRepository = mock(TradeRepository.class);
         tokenStore = mock(KiteAccessTokenStore.class);
-        synchronizer = new PositionSynchronizer(brokerClient, tradeRepository, tokenStore);
+        marketDataService = mock(com.algo.trade.marketdata.MarketDataService.class);
+        synchronizer = new PositionSynchronizer(brokerClient, tradeRepository, tokenStore, marketDataService);
     }
 
     @Test

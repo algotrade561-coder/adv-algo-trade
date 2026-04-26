@@ -161,8 +161,14 @@ public class TradingStateService {
      * Returns a consolidated list of all reasons currently blocking new entries.
      * Covers all 4 layers: scanner state, halt/approval, risk limits, market guard.
      * Empty list = all clear, entries are allowed.
+     *
+     * @param maxOpenTrades from GlobalConfigService (DB-backed)
+     * @param maxTradesPerDay from GlobalConfigService (DB-backed)
+     * @param maxConsecutiveLosses from GlobalConfigService (DB-backed)
+     * @param dailyLossLimit effective daily loss limit (base + extensions)
      */
-    public List<String> entryBlockReasons(BigDecimal dailyPnl, int openTrades, int tradesToday, int consecutiveLosses, boolean wsConnected) {
+    public List<String> entryBlockReasons(BigDecimal dailyPnl, int openTrades, int tradesToday, int consecutiveLosses, boolean wsConnected,
+                                           int maxOpenTrades, int maxTradesPerDay, int maxConsecutiveLosses, BigDecimal dailyLossLimit) {
         List<String> reasons = new ArrayList<>();
 
         // Layer 1 — Scanner / data feed state (only relevant during market hours)
@@ -178,20 +184,16 @@ public class TradingStateService {
         if (haltMode() == HaltMode.SOFT) reasons.add("Soft halt — no new entries allowed");
         if (!isDailyApproved()) reasons.add("Daily trading not approved yet");
 
-        // Layer 3 — Risk limits
-        if (openTrades >= properties.risk().maxOpenTrades())
-            reasons.add("Max open trades limit reached (" + openTrades + "/" + properties.risk().maxOpenTrades() + ")");
-        if (tradesToday >= properties.risk().maxTradesPerDay())
-            reasons.add("Max trades per day reached (" + tradesToday + "/" + properties.risk().maxTradesPerDay() + ")");
-        if (consecutiveLosses >= properties.risk().maxConsecutiveLosses())
+        // Layer 3 — Risk limits (using DB-backed values passed by caller)
+        if (openTrades >= maxOpenTrades)
+            reasons.add("Max open trades limit reached (" + openTrades + "/" + maxOpenTrades + ")");
+        if (tradesToday >= maxTradesPerDay)
+            reasons.add("Max trades per day reached (" + tradesToday + "/" + maxTradesPerDay + ")");
+        if (consecutiveLosses >= maxConsecutiveLosses)
             reasons.add("Max consecutive losses reached (" + consecutiveLosses + ")");
-        BigDecimal limit = properties.risk().totalCapital()
-                .multiply(properties.risk().maxDailyLossPercent(), java.math.MathContext.DECIMAL64)
-                .divide(java.math.BigDecimal.valueOf(100), java.math.MathContext.DECIMAL64)
-                .add(java.math.BigDecimal.valueOf(dailyLossExtension));
-        if (dailyPnl != null && dailyPnl.compareTo(limit.negate()) <= 0)
+        if (dailyPnl != null && dailyLossLimit != null && dailyPnl.compareTo(dailyLossLimit.negate()) <= 0)
             reasons.add(String.format("Max daily loss reached (\u20b9%.0f / \u20b9%.0f)",
-                    dailyPnl.abs().doubleValue(), limit.doubleValue()));
+                    dailyPnl.abs().doubleValue(), dailyLossLimit.doubleValue()));
 
         return reasons;
     }

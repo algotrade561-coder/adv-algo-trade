@@ -43,7 +43,9 @@ public enum StrategyType {
     JADE_LIZARD("Jade Lizard",
             "Sell OTM CE + PE, buy far OTM PE hedge — premium collection with downside protection", true),
     SYNTHETIC_FUTURES("Synthetic Futures",
-            "Buy ATM CE + Sell ATM PE (or inverse) — replicate futures with options", false);
+            "Buy ATM CE + Sell ATM PE (or inverse) — replicate futures with options", false),
+    ITM_CONVICTION("ITM Conviction",
+            "Compares ITM vs ATM option strength via ATP-LTP differential — order flow signal", false);
 
     private final String displayName;
     private final String description;

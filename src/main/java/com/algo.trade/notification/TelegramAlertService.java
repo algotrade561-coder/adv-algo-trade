@@ -23,9 +23,22 @@ public class TelegramAlertService {
     private static final Logger log = LoggerFactory.getLogger(TelegramAlertService.class);
     private static final int MAX_ATTEMPTS = 3;
     private static final long INITIAL_BACKOFF_MILLIS = 500;
+    private static final long DEDUP_WINDOW_MILLIS = 5 * 60 * 1000; // 5 minutes
 
     private final TradingProperties properties;
     private final RestClient.Builder restClientBuilder;
+
+    /** Dedup key → last sent timestamp. Prevents flooding identical alerts. */
+    private final java.util.concurrent.ConcurrentHashMap<String, Long> recentAlerts = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** Keywords that bypass deduplication — always sent immediately. */
+    private static final java.util.Set<String> ALWAYS_SEND_KEYWORDS = java.util.Set.of(
+            "SL Hit", "STOP_LOSS", "TARGET", "Target Hit", "Trailing Stop",
+            "Trade closed", "PAPER Trade Closed", "order filled", "Entry order filled",
+            "URGENT", "DANGER", "FailSafe", "Graceful shutdown",
+            "Application started", "Application shutting down",
+            "Kill switch", "HALTED", "Regime change"
+    );
 
     public TelegramAlertService(TradingProperties properties, RestClient.Builder restClientBuilder) {
         this.properties = properties;
@@ -128,6 +141,23 @@ public class TelegramAlertService {
             return;
         }
 
+        // Smart deduplication: suppress repeated identical alerts within 5-min window
+        // but always send critical alerts (SL, target, trade closed, etc.)
+        if (!isAlwaysSend(text)) {
+            String dedupKey = extractDedupKey(text);
+            long now = System.currentTimeMillis();
+            Long lastSent = recentAlerts.get(dedupKey);
+            if (lastSent != null && (now - lastSent) < DEDUP_WINDOW_MILLIS) {
+                log.debug("Telegram alert deduplicated (sent {}s ago): {}", (now - lastSent) / 1000, dedupKey);
+                return;
+            }
+            recentAlerts.put(dedupKey, now);
+            // Cleanup stale entries periodically
+            if (recentAlerts.size() > 200) {
+                recentAlerts.entrySet().removeIf(e -> (now - e.getValue()) > DEDUP_WINDOW_MILLIS * 2);
+            }
+        }
+
         for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
             try {
                 restClientBuilder
@@ -171,6 +201,34 @@ public class TelegramAlertService {
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
         }
+    }
+
+    /** Check if this alert should always be sent (bypass dedup). */
+    private boolean isAlwaysSend(String text) {
+        String upper = text.toUpperCase();
+        return ALWAYS_SEND_KEYWORDS.stream().anyMatch(kw -> upper.contains(kw.toUpperCase()));
+    }
+
+    /**
+     * Extract a dedup key from the alert text.
+     * Groups by: first line (alert type) + instrument key if present.
+     * This means "Entry rejected for NIFTY26APR24500CE" deduplicates separately
+     * from "Entry rejected for NIFTY26APR24600CE".
+     */
+    private String extractDedupKey(String text) {
+        // Use first line as the base key
+        String firstLine = text.contains("\n") ? text.substring(0, text.indexOf('\n')).trim() : text.trim();
+        // Extract instrument key if present (NFO:NIFTY...)
+        String instrument = "";
+        if (text.contains("NFO:") || text.contains("NIFTY") || text.contains("BANKNIFTY")) {
+            for (String word : text.split("[\\s,;]+")) {
+                if (word.contains("NIFTY") && word.length() > 8) {
+                    instrument = word;
+                    break;
+                }
+            }
+        }
+        return firstLine + "|" + instrument;
     }
 
     private record SendMessageRequest(String chat_id, String text) {

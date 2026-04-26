@@ -48,11 +48,15 @@ public class LivePositionExitMonitor {
     private final TrailingStopService trailingStopService;
     private final TelegramAlertService telegramAlertService;
     private final ExpiryCalendar expiryCalendar;
+    private final com.algo.trade.strategy.DynamicExitManager dynamicExitManager;
+    private final com.algo.trade.marketdata.LiveCandleBuilder liveCandleBuilder;
 
     // tradeId → highest price seen since entry
     private final Map<String, BigDecimal> peakPrices = new ConcurrentHashMap<>();
     // tradeId → current trailing stop price
     private final Map<String, BigDecimal> trailingStops = new ConcurrentHashMap<>();
+    // tradeId → whether partial profit has been taken
+    private final Map<String, Boolean> partialExited = new ConcurrentHashMap<>();
 
     public LivePositionExitMonitor(TradeRepository tradeRepository,
                                     ExecutionEngine executionEngine,
@@ -60,7 +64,9 @@ public class LivePositionExitMonitor {
                                     StrategyConfigService strategyConfigService,
                                     TrailingStopService trailingStopService,
                                     TelegramAlertService telegramAlertService,
-                                    ExpiryCalendar expiryCalendar) {
+                                    ExpiryCalendar expiryCalendar,
+                                    com.algo.trade.strategy.DynamicExitManager dynamicExitManager,
+                                    com.algo.trade.marketdata.LiveCandleBuilder liveCandleBuilder) {
         this.tradeRepository = tradeRepository;
         this.executionEngine = executionEngine;
         this.marketDataService = marketDataService;
@@ -68,6 +74,8 @@ public class LivePositionExitMonitor {
         this.trailingStopService = trailingStopService;
         this.telegramAlertService = telegramAlertService;
         this.expiryCalendar = expiryCalendar;
+        this.dynamicExitManager = dynamicExitManager;
+        this.liveCandleBuilder = liveCandleBuilder;
     }
 
     @EventListener
@@ -119,6 +127,9 @@ public class LivePositionExitMonitor {
         BigDecimal entryPrice = trade.getEntryPrice();
         StrategyConfig config = resolveConfig(trade);
 
+        // Populate entry Greeks if not yet set (first evaluation after entry)
+        populateEntryGreeksIfMissing(trade);
+
         // Per-strategy squareoff time check (non-expiry days)
         LocalTime now = LocalTime.now(java.time.ZoneId.of("Asia/Kolkata"));
         LocalTime squareoffTime = LocalTime.of(config.getSquareoffHour(), config.getSquareoffMinute());
@@ -141,20 +152,53 @@ public class LivePositionExitMonitor {
             default -> 1.0;  // normal
         };
 
-        // Track peak price
+        // Track peak price (load from DB if available for restart recovery)
+        BigDecimal savedPeak = trade.getPeakPrice();
+        if (savedPeak != null && savedPeak.compareTo(currentPrice) > 0) {
+            peakPrices.putIfAbsent(trade.getTradeId(), savedPeak);
+        }
         BigDecimal peak = peakPrices.merge(trade.getTradeId(), currentPrice,
                 (existing, incoming) -> incoming.compareTo(existing) > 0 ? incoming : existing);
+        // Persist peak price for restart recovery
+        if (peak.compareTo(trade.getPeakPrice() != null ? trade.getPeakPrice() : BigDecimal.ZERO) > 0) {
+            trade.setPeakPrice(peak);
+            tradeRepository.save(trade);
+        }
 
         double profitPct = profitPercent(entryPrice, currentPrice);
         double peakPct   = profitPercent(entryPrice, peak);
 
-        log.debug("[ExitMonitor] tradeId={} instrument={} entry={} current={} profit={}% peak={}% sl={}% target={}%",
+        // ── Compute ATR-based dynamic exits when candle data is available ─────
+        // Resolve instrument token for candle lookup
+        long instrumentToken = resolveInstrumentToken(trade);
+        List<com.algo.trade.domain.Candle> candles15m = liveCandleBuilder.getHistory(instrumentToken, com.algo.trade.domain.Timeframe.FIFTEEN_MINUTE);
+        double atr = candles15m.size() >= 15 ? dynamicExitManager.calculateATR(candles15m, 14) : 0;
+        boolean useAtrExits = atr > 0 && entryPrice.doubleValue() > 0;
+
+        // Dynamic SL: ATR-based when available, fixed % as fallback
+        double slPct;
+        if (useAtrExits) {
+            slPct = dynamicExitManager.calculateDynamicSL(entryPrice.doubleValue(), atr, (int) daysToExpiry);
+            log.debug("[ExitMonitor] ATR-based SL: {}% (ATR={}, entry={})", String.format("%.1f", slPct), String.format("%.1f", atr), entryPrice);
+        } else {
+            slPct = config.getStopLossPercent().doubleValue() * slMultiplier;
+        }
+
+        // Dynamic target: ATR-based when available
+        double targetPct;
+        if (useAtrExits) {
+            targetPct = dynamicExitManager.calculateDynamicTarget(entryPrice.doubleValue(), atr, (int) daysToExpiry);
+        } else {
+            targetPct = config.getTargetPercent().doubleValue();
+        }
+
+        log.debug("[ExitMonitor] tradeId={} instrument={} entry={} current={} profit={}% peak={}% sl={}% target={}% atr={}",
                 trade.getTradeId(), trade.getInstrumentKey(), entryPrice, currentPrice,
                 String.format("%.1f", profitPct), String.format("%.1f", peakPct),
-                config.getStopLossPercent(), config.getTargetPercent());
+                String.format("%.1f", slPct), String.format("%.1f", targetPct),
+                useAtrExits ? String.format("%.1f", atr) : "N/A");
 
         // ── 1. Stop Loss ──────────────────────────────────────────────────────
-        double slPct = config.getStopLossPercent().doubleValue() * slMultiplier;
         if (profitPct <= -slPct) {
             log.warn("[ExitMonitor] STOP LOSS hit: tradeId={} instrument={} entry={} current={} profit={}% sl={}%{}",
                     trade.getTradeId(), trade.getInstrumentKey(), entryPrice, currentPrice,
@@ -168,7 +212,6 @@ public class LivePositionExitMonitor {
         }
 
         // ── 2. Target ─────────────────────────────────────────────────────────
-        double targetPct = config.getTargetPercent().doubleValue();
         if (profitPct >= targetPct) {
             log.info("[ExitMonitor] TARGET hit: tradeId={} instrument={} entry={} current={} profit={}% target={}%",
                     trade.getTradeId(), trade.getInstrumentKey(), entryPrice, currentPrice,
@@ -198,24 +241,79 @@ public class LivePositionExitMonitor {
                 close(trade, currentPrice, "TRAILING_STOP");
             }
         }
+
+        // ── 4. ATR-based trailing stop (when candle data available) ───────────
+        if (useAtrExits && peakPct > 10) {
+            double atrTrailLevel = dynamicExitManager.calculateTrailingSL(
+                    profitPct, peakPct, atr, entryPrice.doubleValue());
+            if (atrTrailLevel > -900 && profitPct < atrTrailLevel) {
+                log.info("[ExitMonitor] ATR TRAILING STOP hit: tradeId={} profit={}% < trail={}%",
+                        trade.getTradeId(), String.format("%.1f", profitPct), String.format("%.1f", atrTrailLevel));
+                telegramAlertService.systemAlert(String.format(
+                        "📉 ATR Trail Stop: %s | Profit %.1f%% dropped below trail %.1f%%",
+                        trade.getInstrumentKey(), profitPct, atrTrailLevel));
+                close(trade, currentPrice, "ATR_TRAILING_STOP");
+                return;
+            }
+        }
+
+        // ── 5. Partial profit at 30% (exit half, trail rest) ──────────────────
+        if (useAtrExits) {
+            boolean alreadyPartial = partialExited.getOrDefault(trade.getTradeId(), false);
+            double fraction = dynamicExitManager.partialProfitFraction(profitPct, alreadyPartial);
+            if (fraction > 0) {
+                partialExited.put(trade.getTradeId(), true);
+                log.info("[ExitMonitor] PARTIAL PROFIT: tradeId={} profit={}% — booking {}% of position (logged only, partial close not yet implemented)",
+                        trade.getTradeId(), String.format("%.1f", profitPct), String.format("%.0f", fraction * 100));
+                // Note: actual partial close requires splitting the trade — not yet implemented.
+                // No Telegram alert to avoid confusion until ExecutionEngine.closePartial() is built.
+            }
+        }
+
+        // ── 6. Momentum breakout exit (for short premium strategies) ──────────
+        if (useAtrExits && candles15m.size() >= 15) {
+            StrategyConfig cfg = resolveConfig(trade);
+            if (cfg.getStrategyType().isSellingStrategy() && dynamicExitManager.isBreakout(candles15m, 14)) {
+                log.warn("[ExitMonitor] BREAKOUT EXIT: tradeId={} — market trending, exiting short premium",
+                        trade.getTradeId());
+                telegramAlertService.systemAlert(String.format(
+                        "⚡ Breakout Exit: %s | Market moved > 2.5x ATR — exiting short premium position",
+                        trade.getInstrumentKey()));
+                close(trade, currentPrice, "MOMENTUM_BREAKOUT_EXIT");
+            }
+        }
     }
 
     private void close(TradeEntity trade, BigDecimal price, String reason) {
         try {
             executionEngine.closeTrade(trade.getTradeId(), price, reason);
+            // Only clear in-memory state after confirmed successful close
             trailingStops.remove(trade.getTradeId());
             peakPrices.remove(trade.getTradeId());
+            partialExited.remove(trade.getTradeId());
         } catch (Exception e) {
-            log.error("[ExitMonitor] Failed to close trade {}: {}", trade.getTradeId(), e.getMessage());
+            log.warn("[ExitMonitor] Failed to close trade {} — retaining trailing stop state for next evaluation: {}",
+                    trade.getTradeId(), e.getMessage());
         }
     }
 
     /**
      * Resolve strategy config for a trade.
-     * Matches by strategyType name found in the entryReason string.
-     * Falls back to DIRECTIONAL_BUY config if no match.
+     * Uses the persisted strategyType field first, falls back to entryReason text parsing.
      */
     private StrategyConfig resolveConfig(TradeEntity trade) {
+        // Prefer the explicit strategyType field (set at entry time)
+        if (trade.getStrategyType() != null && !trade.getStrategyType().isBlank()) {
+            try {
+                com.algo.trade.strategy.StrategyType type =
+                        com.algo.trade.strategy.StrategyType.valueOf(trade.getStrategyType());
+                return strategyConfigService.getAll().stream()
+                        .filter(c -> c.getStrategyType() == type)
+                        .findFirst()
+                        .orElseGet(() -> strategyConfigService.getDirectionalBuyConfig());
+            } catch (IllegalArgumentException ignored) { /* fall through to text parsing */ }
+        }
+        // Fallback: parse from entryReason text
         String entryReason = trade.getEntryReason() != null ? trade.getEntryReason().toUpperCase() : "";
         return strategyConfigService.getAll().stream()
                 .filter(c -> entryReason.contains(c.getStrategyType().name()))
@@ -229,5 +327,38 @@ public class LivePositionExitMonitor {
                 .multiply(BigDecimal.valueOf(100), MC)
                 .divide(entry, MC)
                 .doubleValue();
+    }
+
+    /**
+     * Resolve instrument token for candle history lookup.
+     * Uses the underlying's spot token (NIFTY=256265, BANKNIFTY=260105).
+     */
+    private long resolveInstrumentToken(TradeEntity trade) {
+        String underlying = trade.getUnderlying();
+        if (underlying != null && underlying.contains("BANKNIFTY")) {
+            return com.algo.trade.domain.IndexType.BANKNIFTY.spotToken();
+        }
+        return com.algo.trade.domain.IndexType.NIFTY.spotToken();
+    }
+
+    /** Populate entry Greeks on a trade if not yet set. */
+    private void populateEntryGreeksIfMissing(TradeEntity trade) {
+        if (trade.getEntryDelta() != null) return; // already populated
+        String instrumentKey = trade.getInstrumentKey();
+        if (instrumentKey == null || !instrumentKey.contains(":")) return;
+        String symbol = instrumentKey.split(":", 2)[1];
+        liveCandleBuilder.toString(); // ensure bean is initialized (no-op)
+        // Look up from LiveInstrumentCache via marketDataService quote
+        // The GreeksCalculator runs on every tick in LiveInstrumentCache
+        // We can't access LiveInstrumentCache directly here, but the Greeks
+        // are computed and stored on OptionInstrument objects in the cache.
+        // For now, store IV from the quote if available.
+        marketDataService.quote(instrumentKey).ifPresent(q -> {
+            q.impliedVolatility().ifPresent(iv -> {
+                trade.setEntryIV(iv.doubleValue());
+                tradeRepository.save(trade);
+                log.debug("[ExitMonitor] Entry IV populated: tradeId={} iv={}", trade.getTradeId(), iv);
+            });
+        });
     }
 }

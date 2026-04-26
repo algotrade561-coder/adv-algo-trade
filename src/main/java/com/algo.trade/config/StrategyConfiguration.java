@@ -53,6 +53,7 @@ public class StrategyConfiguration {
     @Bean
     RuleBasedOptionsStrategy ruleBasedOptionsStrategy(
             TradingProperties properties,
+            GlobalConfigService globalConfigService,
             VwapIndicator vwapIndicator,
             EmaIndicator emaIndicator,
             VolumeSpikeDetector volumeSpikeDetector,
@@ -62,7 +63,7 @@ public class StrategyConfiguration {
             OptionChainAnalyzer optionChainAnalyzer,
             StrategySignalCsvRecorder signalCsvRecorder
     ) {
-        return new RuleBasedOptionsStrategy(properties, vwapIndicator, emaIndicator, volumeSpikeDetector, breakoutDetector,
+        return new RuleBasedOptionsStrategy(properties, globalConfigService, vwapIndicator, emaIndicator, volumeSpikeDetector, breakoutDetector,
                 volatilityFilter, oiChangeTracker, optionChainAnalyzer, signalCsvRecorder);
     }
 }

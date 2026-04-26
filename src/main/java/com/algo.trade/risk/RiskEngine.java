@@ -30,13 +30,15 @@ public class RiskEngine {
     private final TradingProperties properties;
     private final StrategyConfigService strategyConfigService;
     private final TradingStateService tradingStateService;
+    private final SafeWeekPredictor safeWeekPredictor;
 
     public RiskEngine(GlobalConfigService globalConfigService, TradingProperties properties, StrategyConfigService strategyConfigService,
-                      @Lazy TradingStateService tradingStateService) {
+                      @Lazy TradingStateService tradingStateService, SafeWeekPredictor safeWeekPredictor) {
         this.globalConfigService = globalConfigService;
         this.properties = properties;
         this.strategyConfigService = strategyConfigService;
         this.tradingStateService = tradingStateService;
+        this.safeWeekPredictor = safeWeekPredictor;
     }
 
     public RiskCheckResult evaluateEntry(
@@ -127,6 +129,20 @@ public class RiskEngine {
 
         int rawQuantity = riskAmount.divide(lossPerUnit, MATH_CONTEXT).intValue();
         int lots = rawQuantity / lotSize;
+        // Cap lots at maxLotsPerTrade to prevent runaway sizing from stale quotes
+        int maxLots = globalConfigService.getMaxLotsPerTrade();
+        if (maxLots > 0 && lots > maxLots) {
+            log.info("Position sizing capped by maxLotsPerTrade: lots={} → {}", lots, maxLots);
+            lots = maxLots;
+        }
+        // Apply safe week multiplier: SAFE=1.0x, MODERATE=0.5x, RISKY=0.25x
+        double weekMultiplier = safeWeekPredictor != null ? safeWeekPredictor.getSizeMultiplier() : 1.0;
+        if (weekMultiplier < 1.0 && lots > 1) {
+            int adjustedLots = Math.max(1, (int) (lots * weekMultiplier));
+            log.info("Position sizing adjusted by SafeWeek: lots={} → {} (multiplier={}, risk={})",
+                    lots, adjustedLots, weekMultiplier, safeWeekPredictor.getRisk());
+            lots = adjustedLots;
+        }
         int quantity = lots * lotSize;
         BigDecimal estimatedCost = optionPremium.multiply(BigDecimal.valueOf(quantity), MATH_CONTEXT);
 

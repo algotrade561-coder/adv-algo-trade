@@ -61,6 +61,9 @@ import { ApiService, StrategyDto } from '../core/api.service';
               <p class="card-desc">{{ s.description }}</p>
               <div class="card-tags">
                 <span class="tag tag-buy">BUY</span>
+                @if (s.paperTrading) {
+                  <span class="tag tag-paper">PAPER</span>
+                }
                 <span class="tag">{{ s.underlying }}</span>
                 <span class="tag">{{ s.lots }} lot{{ s.lots > 1 ? 's' : '' }}</span>
                 @if (signalCount(s.type) > 0) {
@@ -88,6 +91,12 @@ import { ApiService, StrategyDto } from '../core/api.service';
                 }
                 @if (s.type === 'LONG_STRANGLE') {
                   <div class="param"><span>OTM Strikes</span><strong>{{ s.otmStrikes }}</strong></div>
+                }
+                @if (s.type === 'ITM_CONVICTION') {
+                  <div class="param"><span>ITM Depth</span><strong>{{ s.itmDepth }} strike{{ s.itmDepth > 1 ? 's' : '' }}</strong></div>
+                  <div class="param"><span>Min Move</span><strong>₹{{ s.minimumMove }}</strong></div>
+                  <div class="param"><span>Min Strength Gap</span><strong>{{ s.minimumStrengthGap }}</strong></div>
+                  <div class="param"><span>Min Volume</span><strong>{{ s.minimumVolume }}</strong></div>
                 }
                 <button mat-stroked-button class="edit-btn" (click)="openEdit(s)">
                   <mat-icon>tune</mat-icon> Edit Parameters
@@ -212,6 +221,34 @@ import { ApiService, StrategyDto } from '../core/api.service';
               </mat-select>
               <mat-hint>Resolution for trend EMA calculation</mat-hint>
             </mat-form-field>
+            <div class="paper-toggle">
+              <mat-slide-toggle [(ngModel)]="editForm.paperTrading" color="accent">
+                Paper Trading Mode
+              </mat-slide-toggle>
+              <p class="paper-hint">When enabled, signals are tracked with full P&L but no real broker orders are placed.</p>
+            </div>
+            @if (editing()!.type === 'ITM_CONVICTION') {
+              <mat-form-field appearance="outline">
+                <mat-label>ITM Depth (strikes)</mat-label>
+                <input matInput type="number" min="1" max="5" [(ngModel)]="editForm.itmDepth">
+                <mat-hint>How many strikes ITM to compare against ATM</mat-hint>
+              </mat-form-field>
+              <mat-form-field appearance="outline">
+                <mat-label>Minimum Move (₹)</mat-label>
+                <input matInput type="number" min="0" step="1" [(ngModel)]="editForm.minimumMove">
+                <mat-hint>Minimum underlying price change to confirm direction</mat-hint>
+              </mat-form-field>
+              <mat-form-field appearance="outline">
+                <mat-label>Minimum Strength Gap</mat-label>
+                <input matInput type="number" min="0" step="0.5" [(ngModel)]="editForm.minimumStrengthGap">
+                <mat-hint>Minimum ATP-LTP gap between ITM and ATM</mat-hint>
+              </mat-form-field>
+              <mat-form-field appearance="outline">
+                <mat-label>Minimum Volume</mat-label>
+                <input matInput type="number" min="0" [(ngModel)]="editForm.minimumVolume">
+                <mat-hint>Minimum volume on ITM option to confirm conviction</mat-hint>
+              </mat-form-field>
+            }
             @if (!editing()!.sellingStrategy) {
               <mat-form-field appearance="outline">
                 <mat-label>Max IV Rank for Buying (0–100)</mat-label>
@@ -312,6 +349,7 @@ import { ApiService, StrategyDto } from '../core/api.service';
     .tag-buy { background: var(--ok-bg); color: var(--ok); border-color: rgba(69,209,140,.3); }
     .tag-sell { background: var(--warn-bg); color: var(--warn); border-color: rgba(242,189,75,.3); }
     .tag-signal { background: rgba(97,168,255,.12); color: var(--accent); border-color: rgba(97,168,255,.3); }
+    .tag-paper { background: rgba(168,130,255,.12); color: #a882ff; border-color: rgba(168,130,255,.3); }
 
     .card-params { padding: 12px 16px 16px; border-top: 1px solid var(--line); background: rgba(0,0,0,.1); }
     .param { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; font-size: 12px; }
@@ -338,6 +376,8 @@ import { ApiService, StrategyDto } from '../core/api.service';
     .edit-body { padding: 20px; display: flex; flex-direction: column; gap: 12px; }
     .edit-actions { display: flex; gap: 10px; margin-top: 8px; }
     .edit-actions button:first-child { flex: 1; }
+    .paper-toggle { padding: 8px 0; }
+    .paper-hint { color: var(--muted); font-size: 11px; margin: 4px 0 0; line-height: 1.4; }
   `]
 })
 export class StrategiesPageComponent implements OnInit {

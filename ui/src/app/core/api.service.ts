@@ -29,6 +29,8 @@ export interface StrategyDto {
   maxIvRankForBuying: number; minCombinedPremium: number;
   trailingStopActivationPercent: number; trailingGapPercent: number;
   scanTimeframe: string; candleTimeframe: string; trendTimeframe: string;
+  paperTrading: boolean;
+  itmDepth: number; minimumMove: number; minimumStrengthGap: number; minimumVolume: number;
 }
 
 export interface GlobalConfigDto {

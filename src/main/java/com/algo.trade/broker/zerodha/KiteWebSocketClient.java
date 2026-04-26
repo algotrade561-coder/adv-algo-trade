@@ -61,11 +61,17 @@ public class KiteWebSocketClient {
         });
     }
 
-    private WebSocket webSocket;
+    private volatile WebSocket webSocket;
     private volatile boolean connected = false;
     private final AtomicBoolean intentionalClose = new AtomicBoolean(false);
     private final AtomicInteger reconnectDelay = new AtomicInteger(5);
     private List<Long> subscribedTokens = List.of();
+    private final java.util.concurrent.ExecutorService alertExecutor =
+            java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "ws-telegram-alert");
+                t.setDaemon(true);
+                return t;
+            });
 
     public KiteWebSocketClient(LiveInstrumentCache liveInstrumentCache,
                                 LiveCandleBuilder candleBuilder,
@@ -101,13 +107,15 @@ public class KiteWebSocketClient {
     public void subscribe(List<Long> tokens) {
         this.subscribedTokens = List.copyOf(tokens);
         if (!connected) return;
-        sendSubscribe(tokens);
+        WebSocket ws = this.webSocket;
+        if (ws != null) sendSubscribe(ws, tokens);
     }
 
     public void disconnect() {
         intentionalClose.set(true);
         reconnectExecutor.shutdownNow();
-        if (webSocket != null) webSocket.close(1000, "Shutdown");
+        WebSocket ws = this.webSocket;
+        if (ws != null) ws.close(1000, "Shutdown");
         connected = false;
         log.info("[WS] Disconnected");
     }
@@ -133,10 +141,10 @@ public class KiteWebSocketClient {
         return credentialResolver.apiKey();
     }
 
-    private void sendSubscribe(List<Long> tokens) {
+    private void sendSubscribe(WebSocket ws, List<Long> tokens) {
         if (tokens.isEmpty()) return;
-        webSocket.send("{\"a\":\"subscribe\",\"v\":" + tokens + "}");
-        webSocket.send("{\"a\":\"mode\",\"v\":[\"full\"," + tokens + "]}");
+        ws.send("{\"a\":\"subscribe\",\"v\":" + tokens + "}");
+        ws.send("{\"a\":\"mode\",\"v\":[\"full\"," + tokens + "]}");
         log.info("[WS] Subscribed to {} instruments in full mode", tokens.size());
     }
 
@@ -163,8 +171,8 @@ public class KiteWebSocketClient {
             connected = true;
             reconnectDelay.set(5);
             log.info("[WS] Connected to Kite WebSocket");
-            if (!subscribedTokens.isEmpty()) sendSubscribe(subscribedTokens);
-            telegramAlertService.systemAlert("\uD83D\uDFE2 WebSocket connected to Kite");
+            if (!subscribedTokens.isEmpty()) sendSubscribe(ws, subscribedTokens);
+            alertExecutor.execute(() -> telegramAlertService.systemAlert("\uD83D\uDFE2 WebSocket connected to Kite"));
         }
 
         @Override
@@ -188,10 +196,10 @@ public class KiteWebSocketClient {
                     String msg      = data.path("status_message").asText("");
                     log.info("[WS] Order update: orderId={} status={} symbol={} filledQty={} avgPrice={} msg={}",
                             orderId, status, symbol, filledQty, avgPrice, msg);
-                    telegramAlertService.systemAlert(
+                    alertExecutor.execute(() -> telegramAlertService.systemAlert(
                             String.format("📋 Order Update: %s | %s | Filled: %d @ ₹%.2f%s",
                                     symbol, status, filledQty, avgPrice,
-                                    msg.isBlank() ? "" : " | " + msg));
+                                    msg.isBlank() ? "" : " | " + msg)));
                 } else {
                     log.debug("[WS] Text frame type={}: {}", type, text);
                 }
@@ -204,7 +212,7 @@ public class KiteWebSocketClient {
         public void onFailure(WebSocket ws, Throwable t, Response response) {
             connected = false;
             log.error("[WS] Failure: {}", t.getMessage());
-            telegramAlertService.systemAlert("\uD83D\uDD34 WebSocket disconnected (failure): " + t.getMessage());
+            alertExecutor.execute(() -> telegramAlertService.systemAlert("\uD83D\uDD34 WebSocket disconnected (failure): " + t.getMessage()));
             scheduleReconnect();
         }
 
@@ -213,10 +221,10 @@ public class KiteWebSocketClient {
             connected = false;
             log.info("[WS] Closed: {} {}", code, reason);
             if (!intentionalClose.get()) {
-                telegramAlertService.systemAlert("\uD83D\uDFE1 WebSocket closed unexpectedly (code=" + code + ") — reconnecting");
+                alertExecutor.execute(() -> telegramAlertService.systemAlert("\uD83D\uDFE1 WebSocket closed unexpectedly (code=" + code + ") — reconnecting"));
                 scheduleReconnect();
             } else {
-                telegramAlertService.systemAlert("\u26AA WebSocket disconnected");
+                alertExecutor.execute(() -> telegramAlertService.systemAlert("\u26AA WebSocket disconnected"));
             }
         }
     }
@@ -293,6 +301,10 @@ public class KiteWebSocketClient {
             for (IndexType idx : IndexType.values()) {
                 if (token == idx.spotToken()) {
                     liveInstrumentCache.updateFuturesPrice(idx, ltp);
+                    // Feed circuit breaker: open price from packet, current = ltp
+                    if (open > 0) {
+                        marketGuard.updateIndexPrice(open, ltp);
+                    }
                     // Also feed to candle builder for underlying candles
                     candleBuilder.onTick(token, ltp, volume, oi, now);
                     return;

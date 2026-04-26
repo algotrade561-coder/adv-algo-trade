@@ -107,6 +107,9 @@ public class TailHedgeManager {
     }
 
     private void processTradeForHedge(TradeEntity trade) {
+        // Skip paper trades — no real position to hedge
+        if (trade.getTradeId().startsWith("PAPER-")) return;
+
         // Filter: only BUY positions (qty > 0)
         if (trade.getQuantity() <= 0) return;
 

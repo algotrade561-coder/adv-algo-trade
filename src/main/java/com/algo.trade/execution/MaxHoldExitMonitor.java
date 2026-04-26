@@ -95,14 +95,26 @@ public class MaxHoldExitMonitor {
     }
 
     private int resolveMaxHoldMinutes(TradeEntity trade) {
-        // Match strategy type from the trade's entry reason
+        // Prefer the explicit strategyType field (set at entry time)
+        if (trade.getStrategyType() != null && !trade.getStrategyType().isBlank()) {
+            try {
+                StrategyType type = StrategyType.valueOf(trade.getStrategyType());
+                StrategyConfig config = strategyConfigService.getAll().stream()
+                        .filter(c -> c.getStrategyType() == type)
+                        .findFirst().orElse(null);
+                if (config != null && config.getMaxHoldMinutes() > 0) {
+                    return config.getMaxHoldMinutes();
+                }
+            } catch (IllegalArgumentException ignored) { /* fall through */ }
+        }
+        // Fallback: parse from entryReason text
         String entryReason = trade.getEntryReason() != null ? trade.getEntryReason().toUpperCase() : "";
         for (StrategyConfig config : strategyConfigService.getAll()) {
             if (entryReason.contains(config.getStrategyType().name()) && config.getMaxHoldMinutes() > 0) {
                 return config.getMaxHoldMinutes();
             }
         }
-        // Fall back to directional buy config
+        // Final fallback
         int fallback = strategyConfigService.getDirectionalBuyConfig().getMaxHoldMinutes();
         return fallback > 0 ? fallback : globalConfigService.getMaxHoldMinutes();
     }

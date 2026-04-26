@@ -25,7 +25,18 @@ public class ExpiryCalendar {
         LocalDate.of(2025, 10, 2), LocalDate.of(2025, 10, 24),
         LocalDate.of(2025, 11, 5), LocalDate.of(2025, 12, 25),
         LocalDate.of(2026, 1, 26), LocalDate.of(2026, 3, 3),
-        LocalDate.of(2026, 4, 3),  LocalDate.of(2026, 4, 14)
+        LocalDate.of(2026, 4, 3),  LocalDate.of(2026, 4, 14),
+        // 2026 holidays (NSE tentative — verify with NSE circular)
+        LocalDate.of(2026, 5, 1),  // Maharashtra Day
+        LocalDate.of(2026, 7, 17), // Muharram
+        LocalDate.of(2026, 8, 15), // Independence Day
+        LocalDate.of(2026, 9, 25), // Milad-un-Nabi
+        LocalDate.of(2026, 10, 2), // Mahatma Gandhi Jayanti
+        LocalDate.of(2026, 10, 13),// Dussehra
+        LocalDate.of(2026, 11, 2), // Diwali (Laxmi Puja)
+        LocalDate.of(2026, 11, 3), // Diwali (Balipratipada)
+        LocalDate.of(2026, 11, 19),// Guru Nanak Jayanti
+        LocalDate.of(2026, 12, 25) // Christmas
     );
 
     /**

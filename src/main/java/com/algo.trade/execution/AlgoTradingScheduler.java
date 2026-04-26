@@ -10,6 +10,7 @@ import com.algo.trade.marketdata.MarketDataService;
 import com.algo.trade.persistence.StrategyDecisionEntity;
 import com.algo.trade.persistence.StrategyDecisionRepository;
 import com.algo.trade.strategy.EventDrivenBuyStrategy;
+import com.algo.trade.strategy.ItmConvictionStrategy;
 import com.algo.trade.strategy.RuleBasedOptionsStrategy;
 import com.algo.trade.strategy.ScalpingStrategy;
 import com.algo.trade.strategy.SpreadStrategyEvaluator;
@@ -65,11 +66,15 @@ public class AlgoTradingScheduler {
     private final VolatilityBreakoutStrategy volatilityBreakoutStrategy;
     private final SpreadStrategyEvaluator spreadStrategyEvaluator;
     private final EventDrivenBuyStrategy eventDrivenBuyStrategy;
+    private final ItmConvictionStrategy itmConvictionStrategy;
     private final MarketGuard marketGuard;
     private final com.algo.trade.marketdata.LiveInstrumentCache liveInstrumentCache;
     private final com.algo.trade.marketdata.LiveCandleBuilder candleBuilder;
     private final StrategySignalCsvRecorder signalCsvRecorder;
     private final ExpiryCalendar expiryCalendar;
+    private final com.algo.trade.news.NewsFeedService newsFeedService;
+    private final com.algo.trade.risk.WeeklyExposureTracker weeklyExposureTracker;
+    private final com.algo.trade.risk.SafeWeekPredictor safeWeekPredictor;
     private final Map<String, Quote> previousQuotes = new ConcurrentHashMap<>();
     private final AtomicBoolean scanInProgress = new AtomicBoolean(false);
 
@@ -88,11 +93,15 @@ public class AlgoTradingScheduler {
             VolatilityBreakoutStrategy volatilityBreakoutStrategy,
             SpreadStrategyEvaluator spreadStrategyEvaluator,
             EventDrivenBuyStrategy eventDrivenBuyStrategy,
+            ItmConvictionStrategy itmConvictionStrategy,
             MarketGuard marketGuard,
             com.algo.trade.marketdata.LiveInstrumentCache liveInstrumentCache,
             com.algo.trade.marketdata.LiveCandleBuilder candleBuilder,
             StrategySignalCsvRecorder signalCsvRecorder,
-            ExpiryCalendar expiryCalendar
+            ExpiryCalendar expiryCalendar,
+            com.algo.trade.news.NewsFeedService newsFeedService,
+            com.algo.trade.risk.WeeklyExposureTracker weeklyExposureTracker,
+            com.algo.trade.risk.SafeWeekPredictor safeWeekPredictor
     ) {
         this.properties = properties;
         this.globalConfigService = globalConfigService;
@@ -108,11 +117,15 @@ public class AlgoTradingScheduler {
         this.volatilityBreakoutStrategy = volatilityBreakoutStrategy;
         this.spreadStrategyEvaluator = spreadStrategyEvaluator;
         this.eventDrivenBuyStrategy = eventDrivenBuyStrategy;
+        this.itmConvictionStrategy = itmConvictionStrategy;
         this.marketGuard = marketGuard;
         this.liveInstrumentCache = liveInstrumentCache;
         this.candleBuilder = candleBuilder;
         this.signalCsvRecorder = signalCsvRecorder;
         this.expiryCalendar = expiryCalendar;
+        this.newsFeedService = newsFeedService;
+        this.weeklyExposureTracker = weeklyExposureTracker;
+        this.safeWeekPredictor = safeWeekPredictor;
     }
 
     /**
@@ -128,7 +141,7 @@ public class AlgoTradingScheduler {
         if (tf != Timeframe.ONE_MINUTE && tf != Timeframe.FIVE_MINUTE && tf != Timeframe.FIFTEEN_MINUTE) return;
         if (tradingStateService.killSwitchEnabled()) return;
         if (tradingStateService.haltMode() == com.algo.trade.risk.HaltMode.HARD) return;
-        if (!tradingStateService.running() && !tradingStateService.schedulerEnabled()) return;
+        if (!tradingStateService.running()) return;
         if (!scanInProgress.compareAndSet(false, true)) return;
         try {
             log.info("CandleClosedEvent triggered scan: token={} tf={}", event.instrumentToken(), tf);
@@ -222,6 +235,12 @@ public class AlgoTradingScheduler {
             return;
         }
 
+        // News sentiment: log high-impact events but don't block scan
+        // (blocking happens per-strategy for real trades only)
+        if (newsFeedService.hasHighImpactEvent()) {
+            log.info("Algo scan: high-impact news event detected — real entries will be blocked, paper trades continue");
+        }
+
         List<UnderlyingSymbol> enabledUnderlyings = tradingStateService.enabledUnderlyings();
         log.info("Algo scan started: mode={}, marketTime={}, underlyings={}, maxEntriesPerScan={}",
                 properties.mode(), marketTime, enabledUnderlyings, properties.algo().maxEntriesPerScan());
@@ -266,6 +285,13 @@ public class AlgoTradingScheduler {
         if (enabledConfigs.isEmpty()) return;
 
         for (UnderlyingSymbol underlying : underlyings) {
+            // Expiry-day theta guard: no new buying entries after 1 PM on expiry day
+            IndexType expiryIdx = com.algo.trade.domain.IndexType.from(underlying);
+            if (expiryCalendar.isExpiryDay(expiryIdx) && marketTime.isAfter(LocalTime.of(13, 0))) {
+                log.info("Additional strategies skipped: expiry day for {} — no entries after 1 PM", underlying);
+                continue;
+            }
+
             // Pre-fetch common candle resolutions (cached by MarketDataService)
             Map<Timeframe, List<Candle>> candleCache = new java.util.EnumMap<>(Timeframe.class);
 
@@ -323,31 +349,82 @@ public class AlgoTradingScheduler {
                             if (!matchesConfiguredTimeframe(config, triggerTimeframe)) { yield Optional.empty(); }
                             yield spreadStrategyEvaluator.evaluate(trendCandles, ivRank, config, underlying);
                         }
+                        case ITM_CONVICTION -> {
+                            if (!matchesConfiguredTimeframe(config, triggerTimeframe)) { yield Optional.empty(); }
+                            // ITM Conviction needs live option quotes with ATP
+                            BigDecimal spotPrice = strategyCandles.isEmpty() ? BigDecimal.ZERO : strategyCandles.getLast().close();
+                            // Fetch option chain quotes for ATM ± ITM depth strikes
+                            Optional<ScanContext> ctx = buildScanContext(underlying, marketTime);
+                            if (ctx.isEmpty()) { yield Optional.empty(); }
+                            yield itmConvictionStrategy.evaluate(underlying, spotPrice, ctx.get().quotes(), config);
+                        }
                         default -> Optional.empty();
                     };
 
                     if (signal.isPresent()) {
                         StrategyDecision enriched = enrichWithOptionData(signal.get(), underlying);
                         persistStrategyDecision(enriched, type.name(), config);
+
+                        // Weekly exposure check: block if weekly cap exceeded (skip for paper trades)
+                        BigDecimal estimatedPremium = enriched.optionPrice().orElse(enriched.underlyingPrice());
+                        BigDecimal estimatedCost = estimatedPremium.multiply(
+                                BigDecimal.valueOf(config.getLots() * com.algo.trade.domain.IndexType.from(underlying).lotSize()));
+                        if (!config.isPaperTrading() && !weeklyExposureTracker.canTrade(estimatedCost)) {
+                            log.info("Entry blocked: weekly exposure cap reached (₹{}/₹{})",
+                                    weeklyExposureTracker.getWeeklyExposure().setScale(0, java.math.RoundingMode.HALF_UP),
+                                    weeklyExposureTracker.getWeeklyExposureCap().setScale(0, java.math.RoundingMode.HALF_UP));
+                            continue;
+                        }
+
                         boolean executed = false;
                         if (enriched.signalType().name().startsWith("BUY_")
                                 && enriched.selectedInstrumentKey().isPresent()) {
-                            log.info("Additional strategy signal: type={} underlying={} signal={} instrument={}",
-                                    type, underlying, enriched.signalType(), enriched.selectedInstrumentKey().orElse(""));
-                            BigDecimal premium = enriched.optionPrice().orElse(enriched.underlyingPrice());
-                            executionEngine.executeEntry(enriched, premium,
-                                    config.getLots() * com.algo.trade.domain.IndexType.from(underlying).lotSize(),
-                                    config.getStopLossPercent());
-                            executed = true;
+                            // Paper trading check: create simulated trade for full P&L tracking
+                            if (config.isPaperTrading()) {
+                                log.info("PAPER TRADE signal: type={} underlying={} signal={} instrument={}",
+                                        type, underlying, enriched.signalType(), enriched.selectedInstrumentKey().orElse(""));
+                                BigDecimal premium = enriched.optionPrice().orElse(enriched.underlyingPrice());
+                                executionEngine.executePaperEntry(enriched, premium,
+                                        config.getLots() * com.algo.trade.domain.IndexType.from(underlying).lotSize(),
+                                        config.getStopLossPercent());
+                                executed = true; // paper trade counts as executed for CSV recording
+                            } else {
+                                log.info("Additional strategy signal: type={} underlying={} signal={} instrument={}",
+                                        type, underlying, enriched.signalType(), enriched.selectedInstrumentKey().orElse(""));
+                                BigDecimal premium = enriched.optionPrice().orElse(enriched.underlyingPrice());
+                                executionEngine.executeEntry(enriched, premium,
+                                        config.getLots() * com.algo.trade.domain.IndexType.from(underlying).lotSize(),
+                                        config.getStopLossPercent());
+                                executed = true;
+                                // Record real trade cost for weekly exposure tracking
+                                weeklyExposureTracker.recordTrade(estimatedCost);
+                            }
+                        } else if (enriched.signalType().name().startsWith("SELL_")
+                                && enriched.selectedInstrumentKey().isPresent()) {
+                            // SELL signals — only paper mode for now (no multi-leg execution)
+                            if (config.isPaperTrading()) {
+                                log.info("PAPER SELL signal: type={} underlying={} signal={} instrument={}",
+                                        type, underlying, enriched.signalType(), enriched.selectedInstrumentKey().orElse(""));
+                                BigDecimal premium = enriched.optionPrice().orElse(enriched.underlyingPrice());
+                                executionEngine.executePaperEntry(enriched, premium,
+                                        config.getLots() * com.algo.trade.domain.IndexType.from(underlying).lotSize(),
+                                        config.getStopLossPercent());
+                                executed = true;
+                            } else {
+                                log.warn("SELL signal from {} but paperTrading=false — blocking real SELL execution until multi-leg engine is built",
+                                        type);
+                            }
                         } else if (enriched.signalType().name().startsWith("BUY_")) {
                             log.info("Additional strategy signal persisted but not executed (no instrument resolved): type={} underlying={}",
                                     type, underlying);
                         }
-                        signalCsvRecorder.recordAdditionalStrategy(type.name(), enriched, executed,
-                                executed ? "EXECUTED" : "NOT_EXECUTED", null, null,
-                                strategyCandles,
-                                null, null, null, null,
-                                null, null, null, null, ivRank);
+                        if (!config.isPaperTrading()) {
+                            signalCsvRecorder.recordAdditionalStrategy(type.name(), enriched, executed,
+                                    executed ? "EXECUTED" : "NOT_EXECUTED", null, null,
+                                    strategyCandles,
+                                    null, null, null, null,
+                                    null, null, null, null, ivRank);
+                        }
                     } else if (type != StrategyType.DIRECTIONAL_BUY) {
                         // Persist NO_TRADE with spot price for analysis
                         BigDecimal spotPrice = strategyCandles.isEmpty() ? BigDecimal.ZERO : strategyCandles.getLast().close();
@@ -842,7 +919,7 @@ public class AlgoTradingScheduler {
         }
     }
 
-    /** @deprecated Use per-strategy config trendTimeframe instead of YAML. Kept for backward compatibility. */
+    /** @deprecated Unused — strike selection is done via selectedAffordableOption(). */
 
     private boolean freshQuote(Quote quote) {
         return quote.timestamp().plus(properties.safety().staleMarketDataThreshold()).isAfter(Instant.now());

@@ -20,12 +20,31 @@ public class OptionChainAnalyzer {
             throw new IllegalArgumentException("nearbyStrikes must be positive");
         }
 
+        BigDecimal atm = nearestStrike(snapshot);
+        // Find nearest relevant resistance/support walls within 3% of spot
+        // instead of global max OI which could be far OTM and irrelevant
+        BigDecimal maxDistance = snapshot.underlyingPrice().multiply(BigDecimal.valueOf(0.03));
         Optional<OptionChainLevel> resistance = snapshot.levels().stream()
+                .filter(l -> l.strike().compareTo(atm) >= 0) // at or above ATM for resistance
+                .filter(l -> l.strike().subtract(atm).abs().compareTo(maxDistance) <= 0)
+                .filter(l -> l.callOpenInterest() > 0)
                 .max(Comparator.comparingLong(OptionChainLevel::callOpenInterest));
         Optional<OptionChainLevel> support = snapshot.levels().stream()
+                .filter(l -> l.strike().compareTo(atm) <= 0) // at or below ATM for support
+                .filter(l -> atm.subtract(l.strike()).abs().compareTo(maxDistance) <= 0)
+                .filter(l -> l.putOpenInterest() > 0)
                 .max(Comparator.comparingLong(OptionChainLevel::putOpenInterest));
-
-        BigDecimal atm = nearestStrike(snapshot);
+        // Fallback to global max if no nearby wall found
+        if (resistance.isEmpty()) {
+            resistance = snapshot.levels().stream()
+                    .filter(l -> l.callOpenInterest() > 0)
+                    .max(Comparator.comparingLong(OptionChainLevel::callOpenInterest));
+        }
+        if (support.isEmpty()) {
+            support = snapshot.levels().stream()
+                    .filter(l -> l.putOpenInterest() > 0)
+                    .max(Comparator.comparingLong(OptionChainLevel::putOpenInterest));
+        }
         List<OptionChainLevel> nearby = nearbyLevels(snapshot, atm, nearbyStrikes);
         long callOi = nearby.stream().mapToLong(OptionChainLevel::callOpenInterest).sum();
         long putOi = nearby.stream().mapToLong(OptionChainLevel::putOpenInterest).sum();

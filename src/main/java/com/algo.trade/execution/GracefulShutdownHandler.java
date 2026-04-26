@@ -26,15 +26,18 @@ public class GracefulShutdownHandler {
     private final ExecutionEngine executionEngine;
     private final KiteWebSocketClient webSocketClient;
     private final TelegramAlertService alertService;
+    private final com.algo.trade.marketdata.MarketDataService marketDataService;
 
     public GracefulShutdownHandler(TradeRepository tradeRepository,
                                     ExecutionEngine executionEngine,
                                     KiteWebSocketClient webSocketClient,
-                                    TelegramAlertService alertService) {
+                                    TelegramAlertService alertService,
+                                    com.algo.trade.marketdata.MarketDataService marketDataService) {
         this.tradeRepository = tradeRepository;
         this.executionEngine = executionEngine;
         this.webSocketClient = webSocketClient;
         this.alertService = alertService;
+        this.marketDataService = marketDataService;
     }
 
     @EventListener
@@ -47,8 +50,13 @@ public class GracefulShutdownHandler {
             log.warn("[Shutdown] {} open trades to close", openTrades.size());
             for (TradeEntity trade : openTrades) {
                 try {
-                    executionEngine.closeTrade(trade.getTradeId(), trade.getEntryPrice(), "Graceful shutdown");
-                    log.info("[Shutdown] Closed: tradeId={}", trade.getTradeId());
+                    // Use live market price, not stale entry price
+                    java.math.BigDecimal exitPrice = marketDataService.quote(trade.getInstrumentKey())
+                            .map(q -> q.lastPrice())
+                            .filter(p -> p != null && p.signum() > 0)
+                            .orElse(trade.getEntryPrice()); // fallback to entry price if no quote
+                    executionEngine.closeTrade(trade.getTradeId(), exitPrice, "Graceful shutdown");
+                    log.info("[Shutdown] Closed: tradeId={} exitPrice={}", trade.getTradeId(), exitPrice);
                 } catch (Exception e) {
                     log.error("[Shutdown] Failed to close trade {}: {}", trade.getTradeId(), e.getMessage());
                 }

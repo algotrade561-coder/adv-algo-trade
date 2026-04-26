@@ -135,6 +135,9 @@ public class GlobalConfig {
     @Column(precision = 19, scale = 4)
     private BigDecimal dailyProfitTarget = BigDecimal.ZERO;
 
+    /** Maximum lots per single trade — safety cap against stale premium quotes. Default 10. */
+    private int maxLotsPerTrade = 10;
+
     // ── Constructors ──────────────────────────────────────────
 
     protected GlobalConfig() {}
@@ -370,4 +373,7 @@ public class GlobalConfig {
 
     public BigDecimal getDailyProfitTarget() { return dailyProfitTarget; }
     public void setDailyProfitTarget(BigDecimal dailyProfitTarget) { this.dailyProfitTarget = dailyProfitTarget; }
+
+    public int getMaxLotsPerTrade() { return maxLotsPerTrade; }
+    public void setMaxLotsPerTrade(int maxLotsPerTrade) { this.maxLotsPerTrade = maxLotsPerTrade; }
 }

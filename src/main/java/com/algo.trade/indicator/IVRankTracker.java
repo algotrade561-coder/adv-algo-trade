@@ -29,6 +29,27 @@ public class IVRankTracker {
     private static final int MAX_SAMPLES = 252; // ~1 trading year
 
     private final Map<IndexType, Deque<IVSample>> history = new ConcurrentHashMap<>();
+    private final com.algo.trade.persistence.IVSampleRepository ivSampleRepository;
+
+    public IVRankTracker(com.algo.trade.persistence.IVSampleRepository ivSampleRepository) {
+        this.ivSampleRepository = ivSampleRepository;
+    }
+
+    /** Load persisted IV history from DB on startup. */
+    @jakarta.annotation.PostConstruct
+    public void loadFromDb() {
+        for (IndexType idx : IndexType.values()) {
+            var samples = ivSampleRepository.findByIndexTypeOrderBySampleDateAsc(idx.name());
+            if (!samples.isEmpty()) {
+                Deque<IVSample> deque = new ArrayDeque<>();
+                for (var s : samples) {
+                    deque.addLast(new IVSample(s.getSampleDate(), s.getIv()));
+                }
+                history.put(idx, deque);
+                log.info("[IVRank] Loaded {} historical samples for {} from DB", samples.size(), idx);
+            }
+        }
+    }
 
     /** Record ATM IV for an index. Called when ATM option IV is calculated. */
     public void recordIV(IndexType indexType, double iv) {
@@ -80,6 +101,16 @@ public class IVRankTracker {
                         String.format("%.1f", iv),
                         String.format("%.0f", getIVRank(index)),
                         String.format("%.0f", getIVPercentile(index)));
+                // Persist to DB for restart recovery
+                try {
+                    ivSampleRepository.save(new com.algo.trade.persistence.IVSampleEntity(
+                            index.name(), LocalDate.now(), iv));
+                    // Cleanup old samples (keep 1 year)
+                    ivSampleRepository.deleteByIndexTypeAndSampleDateBefore(
+                            index.name(), LocalDate.now().minusDays(365));
+                } catch (Exception e) {
+                    log.debug("[IVRank] Failed to persist IV sample for {}: {}", index, e.getMessage());
+                }
             }
         });
     }

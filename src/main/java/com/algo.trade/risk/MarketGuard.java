@@ -45,12 +45,13 @@ public class MarketGuard {
     private volatile double todayCurrent = 0;
     private final Map<String, Long> lastLogTime = new ConcurrentHashMap<>();
 
-    // Known high-impact event dates — update as announced
+    // Known high-impact event dates — update as announced (RBI policy, Budget, GDP, etc.)
     private static final List<LocalDate> EVENT_DATES = List.of(
         LocalDate.of(2025, 6, 6),  LocalDate.of(2025, 8, 6),
         LocalDate.of(2025, 10, 8), LocalDate.of(2025, 12, 5),
         LocalDate.of(2026, 2, 1),  LocalDate.of(2026, 4, 9),
-        LocalDate.of(2026, 6, 5)
+        LocalDate.of(2026, 6, 5),  LocalDate.of(2026, 8, 5),
+        LocalDate.of(2026, 10, 7), LocalDate.of(2026, 12, 4)
     );
 
     // ── Public API ────────────────────────────────────────────────────────────
@@ -87,7 +88,12 @@ public class MarketGuard {
      */
     public String longPremiumBlockReason() {
         double vix = currentVix.get();
-        if (vix > 0 && vix < vixMinForLongPremium) {
+        if (vix <= 0) {
+            logRateLimited("vix-unavailable",
+                "[MarketGuard] VIX unavailable ({}), blocking entry as safety default", vix);
+            return "VIX feed unavailable — blocking entries until live VIX data arrives";
+        }
+        if (vix < vixMinForLongPremium) {
             return String.format("VIX %.1f too low (min %.1f) — options cheap, IV may not expand", vix, vixMinForLongPremium);
         }
         if (isCircuitBreakerTriggered()) {

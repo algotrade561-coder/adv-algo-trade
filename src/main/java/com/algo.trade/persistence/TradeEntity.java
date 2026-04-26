@@ -36,6 +36,15 @@ public class TradeEntity {
     private BigDecimal realizedPnl;
     private String entryReason;
     private String exitReason;
+    /** Strategy type that generated this trade (e.g. DIRECTIONAL_BUY, ITM_CONVICTION). */
+    private String strategyType;
+    /** Highest price seen since entry — for trailing stop recovery after restart. */
+    private BigDecimal peakPrice;
+    /** Greeks at entry time — for post-trade analysis. */
+    private Double entryDelta;
+    private Double entryTheta;
+    private Double entryIV;
+    private Double entryGamma;
 
     protected TradeEntity() {
     }
@@ -76,4 +85,19 @@ public class TradeEntity {
     public BigDecimal getRealizedPnl() { return realizedPnl == null ? BigDecimal.ZERO : realizedPnl; }
     public String getEntryReason() { return entryReason; }
     public String getExitReason() { return exitReason; }
+    public String getStrategyType() { return strategyType; }
+    public void setStrategyType(String strategyType) { this.strategyType = strategyType; }
+    public BigDecimal getPeakPrice() { return peakPrice; }
+    public void setPeakPrice(BigDecimal peakPrice) { this.peakPrice = peakPrice; }
+    public Double getEntryDelta() { return entryDelta; }
+    public void setEntryDelta(Double v) { this.entryDelta = v; }
+    public Double getEntryTheta() { return entryTheta; }
+    public void setEntryTheta(Double v) { this.entryTheta = v; }
+    public Double getEntryIV() { return entryIV; }
+    public void setEntryIV(Double v) { this.entryIV = v; }
+    public Double getEntryGamma() { return entryGamma; }
+    public void setEntryGamma(Double v) { this.entryGamma = v; }
+
+    /** Check if this is a paper (simulated) trade. */
+    public boolean isPaperTrade() { return tradeId != null && tradeId.startsWith("PAPER-"); }
 }

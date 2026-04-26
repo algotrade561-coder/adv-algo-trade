@@ -19,7 +19,6 @@ import { MarketSnapshot, PnlSnapshot, RuntimeStatus, StrategyDecision, TradingSt
         </div>
         <span class="spacer"></span>
         <span class="ts">{{ lastUpdatedAt ? 'Updated ' + lastUpdatedAt : '' }}</span>
-        <button mat-stroked-button (click)="load()"><mat-icon>refresh</mat-icon> Refresh</button>
       </div>
 
       @if (loadError) {
@@ -154,6 +153,7 @@ import { MarketSnapshot, PnlSnapshot, RuntimeStatus, StrategyDecision, TradingSt
               <strong>{{ tradingStatus.entryAllowed ? 'Entries Allowed' : 'Entries Blocked' }}</strong>
               <span class="es-stats">
                 Open: {{ tradingStatus.openTrades }} &nbsp;|&nbsp;
+                Paper: {{ tradingStatus.openPaperTrades }} &nbsp;|&nbsp;
                 Today: {{ tradingStatus.tradesToday }} &nbsp;|&nbsp;
                 Losses: {{ tradingStatus.consecutiveLosses }} &nbsp;|&nbsp;
                 P&amp;L: <span [class.pos]="tradingStatus.dailyPnl >= 0" [class.neg]="tradingStatus.dailyPnl < 0">₹{{ tradingStatus.dailyPnl | number:'1.0-0' }}</span>
@@ -173,15 +173,19 @@ import { MarketSnapshot, PnlSnapshot, RuntimeStatus, StrategyDecision, TradingSt
         <div class="pnl-row">
           <div class="pnl-card">
             <mat-icon class="pi">account_balance_wallet</mat-icon>
-            <div><span class="pl">Realized PnL</span><span class="pv" [class.pos]="(pnl?.realizedPnl ?? 0) >= 0" [class.neg]="(pnl?.realizedPnl ?? 0) < 0">₹{{ (pnl?.realizedPnl ?? 0) | number:'1.2-2' }}</span></div>
+            <div><span class="pl">Live Realized PnL</span><span class="pv" [class.pos]="(pnl?.realizedPnl ?? 0) >= 0" [class.neg]="(pnl?.realizedPnl ?? 0) < 0">₹{{ (pnl?.realizedPnl ?? 0) | number:'1.2-2' }}</span></div>
           </div>
           <div class="pnl-card">
             <mat-icon class="pi">trending_up</mat-icon>
-            <div><span class="pl">Unrealized PnL</span><span class="pv" [class.pos]="(pnl?.unrealizedPnl ?? 0) >= 0" [class.neg]="(pnl?.unrealizedPnl ?? 0) < 0">₹{{ (pnl?.unrealizedPnl ?? 0) | number:'1.2-2' }}</span></div>
+            <div><span class="pl">Live Unrealized PnL</span><span class="pv" [class.pos]="(pnl?.unrealizedPnl ?? 0) >= 0" [class.neg]="(pnl?.unrealizedPnl ?? 0) < 0">₹{{ (pnl?.unrealizedPnl ?? 0) | number:'1.2-2' }}</span></div>
           </div>
           <div class="pnl-card pnl-total">
             <mat-icon class="pi pi-accent">assessment</mat-icon>
-            <div><span class="pl">Total PnL</span><span class="pv pv-big" [class.pos]="(pnl?.totalPnl ?? 0) >= 0" [class.neg]="(pnl?.totalPnl ?? 0) < 0">₹{{ (pnl?.totalPnl ?? 0) | number:'1.2-2' }}</span></div>
+            <div><span class="pl">Live Total PnL</span><span class="pv pv-big" [class.pos]="(pnl?.totalPnl ?? 0) >= 0" [class.neg]="(pnl?.totalPnl ?? 0) < 0">₹{{ (pnl?.totalPnl ?? 0) | number:'1.2-2' }}</span></div>
+          </div>
+          <div class="pnl-card pnl-paper">
+            <mat-icon class="pi pi-paper">description</mat-icon>
+            <div><span class="pl">Paper PnL</span><span class="pv" [class.pos]="(tradingStatus?.paperPnl ?? 0) >= 0" [class.neg]="(tradingStatus?.paperPnl ?? 0) < 0">₹{{ (tradingStatus?.paperPnl ?? 0) | number:'1.2-2' }}</span></div>
           </div>
         </div>
 
@@ -202,25 +206,25 @@ import { MarketSnapshot, PnlSnapshot, RuntimeStatus, StrategyDecision, TradingSt
           </div>
 
           <div class="panel">
-            <h2><mat-icon class="hi">notifications</mat-icon> Latest Signal</h2>
-            @if (!latestSignal) {
-              <div class="empty"><mat-icon>inbox</mat-icon><span>No signal yet</span></div>
-            } @else {
-              <div class="signal-badges">
+            <h2><mat-icon class="hi">radar</mat-icon> Scan & Signal Status</h2>
+            <div class="detail-grid">
+              <div class="dg"><span>Scanner</span><strong [class.pos]="runtime.running" [class.neg]="!runtime.running">{{ runtime.running ? 'Active' : 'Stopped' }}</strong></div>
+              <div class="dg"><span>WebSocket</span><strong [class.pos]="runtime.webSocketConnected" [class.neg]="!runtime.webSocketConnected">{{ runtime.webSocketConnected ? 'Connected' : 'Disconnected' }}</strong></div>
+              <div class="dg"><span>Last Scan</span><strong>{{ lastUpdatedAt || '—' }}</strong></div>
+              <div class="dg"><span>Open Trades</span><strong>{{ tradingStatus?.openTrades ?? 0 }}</strong></div>
+              <div class="dg"><span>Paper Trades</span><strong style="color:#a882ff">{{ tradingStatus?.openPaperTrades ?? 0 }}</strong></div>
+              <div class="dg"><span>Trades Today</span><strong>{{ tradingStatus?.tradesToday ?? 0 }}</strong></div>
+              <div class="dg"><span>Entry Signals</span><strong class="pos">{{ tradingStatus?.entrySignals ?? 0 }}</strong></div>
+              <div class="dg"><span>Rejected</span><strong class="neg">{{ tradingStatus?.rejectedSignals ?? 0 }}</strong></div>
+            </div>
+            @if (latestSignal) {
+              <div class="scan-last-signal">
                 <span class="sb" [class.sb-buy]="latestSignal.signalType?.startsWith('BUY')" [class.sb-no]="latestSignal.signalType === 'NO_TRADE'">{{ latestSignal.signalType }}</span>
                 <span class="sb">{{ latestSignal.underlying }}</span>
-                @if (latestSignal.optionType) { <span class="sb">{{ latestSignal.optionType }}</span> }
-                @if (latestSignal.strategyType) { <span class="sb sb-strat">{{ latestSignal.strategyType }}</span> }
+                <span class="scan-time">{{ latestSignal.selectedInstrumentKey ?? '' }}</span>
               </div>
-              <div class="detail-grid" style="margin-top:12px">
-                <div class="dg"><span>Price</span><strong>₹{{ latestSignal.underlyingPrice ?? '-' }}</strong></div>
-                <div class="dg"><span>Strike</span><strong>{{ latestSignal.selectedStrike ?? '-' }}</strong></div>
-                <div class="dg"><span>Confidence</span><strong>{{ latestSignal.confidenceScore ?? '-' }}</strong></div>
-                <div class="dg"><span>Instrument</span><strong>{{ latestSignal.selectedInstrumentKey ?? '-' }}</strong></div>
-              </div>
-              @if (latestSignal.reasons) {
-                <p class="reasons">{{ latestSignal.reasons }}</p>
-              }
+            } @else {
+              <div class="scan-idle"><mat-icon>hourglass_empty</mat-icon> Waiting for first signal</div>
             }
           </div>
         </div>
@@ -284,8 +288,10 @@ import { MarketSnapshot, PnlSnapshot, RuntimeStatus, StrategyDecision, TradingSt
     .pnl-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 20px; }
     .pnl-card { display: flex; align-items: center; gap: 14px; padding: 18px 20px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel); }
     .pnl-total { border-color: rgba(97,168,255,.3); background: rgba(97,168,255,.04); }
+    .pnl-paper { border-color: rgba(168,130,255,.3); background: rgba(168,130,255,.04); }
     .pi { font-size: 24px; width: 24px; height: 24px; color: var(--muted); }
     .pi-accent { color: var(--accent); }
+    .pi-paper { color: #a882ff; }
     .pl { display: block; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
     .pv { display: block; font-size: 20px; font-weight: 700; color: var(--ink); margin-top: 2px; }
     .pv-big { font-size: 24px; }
@@ -309,6 +315,10 @@ import { MarketSnapshot, PnlSnapshot, RuntimeStatus, StrategyDecision, TradingSt
     .sb-buy   { background: rgba(69,209,140,.1);  border-color: rgba(69,209,140,.3);  color: var(--ok); }
     .sb-no    { background: rgba(255,113,106,.08); border-color: rgba(255,113,106,.25); color: var(--bad); }
     .sb-strat { background: rgba(97,168,255,.1);  border-color: rgba(97,168,255,.3);  color: var(--accent); }
+    .scan-last-signal { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+    .scan-time { font-size: 11px; color: var(--muted); margin-left: auto; }
+    .scan-idle { display: flex; align-items: center; gap: 6px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+    .scan-idle mat-icon { font-size: 14px; width: 14px; height: 14px; }
     .reasons { font-size: 12px; color: var(--muted); margin: 12px 0 0; line-height: 1.5; word-break: break-word; }
     .empty { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 36px 0; color: var(--muted); font-size: 13px; }
     .empty mat-icon { font-size: 32px; width: 32px; height: 32px; opacity: .35; }
@@ -331,10 +341,10 @@ export class DashboardPageComponent implements OnInit, OnDestroy {
 
   ngOnInit(): void {
     setTimeout(() => this.load(), 0);
-    // Poll /market every 5 seconds to keep VIX and PCR live
-    this.marketPollSub = interval(5000).subscribe(() => this.refreshMarket());
-    // Poll latest signal every 10 seconds
-    this.signalPollSub = interval(10000).subscribe(() => this.refreshSignal());
+    // Poll /market every 3 seconds to keep VIX and PCR live
+    this.marketPollSub = interval(1000).subscribe(() => this.refreshMarket());
+    // Poll latest signal and P&L every 5 seconds
+    this.signalPollSub = interval(1000).subscribe(() => this.refreshSignal());
   }
 
   ngOnDestroy(): void {

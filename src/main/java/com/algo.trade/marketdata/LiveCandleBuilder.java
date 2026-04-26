@@ -31,7 +31,7 @@ public class LiveCandleBuilder {
     private static final int MAX_HISTORY = 120;
 
     private static final Timeframe[] TRACKED_TIMEFRAMES = {
-        Timeframe.ONE_MINUTE, Timeframe.FIVE_MINUTE, Timeframe.FIFTEEN_MINUTE
+        Timeframe.ONE_MINUTE, Timeframe.FIVE_MINUTE, Timeframe.FIFTEEN_MINUTE, Timeframe.ONE_HOUR
     };
 
     private final ApplicationEventPublisher eventPublisher;
@@ -100,6 +100,74 @@ public class LiveCandleBuilder {
 
     private CandleHistory getHistory(String key) {
         return history.computeIfAbsent(key, k -> new CandleHistory(MAX_HISTORY));
+    }
+
+    // ── Analysis methods ──────────────────────────────────────────────────────
+
+    /**
+     * Calculate EMA (Exponential Moving Average) for a token and timeframe.
+     * @param instrumentToken the instrument token
+     * @param tf the timeframe
+     * @param period EMA period (e.g., 9, 21)
+     * @return EMA value, or 0 if insufficient data
+     */
+    public double calculateEMA(long instrumentToken, Timeframe tf, int period) {
+        List<Candle> candles = getHistory(instrumentToken, tf);
+        if (candles.size() < period) return 0;
+        double multiplier = 2.0 / (period + 1);
+        double ema = candles.get(candles.size() - period).close().doubleValue();
+        for (int i = candles.size() - period + 1; i < candles.size(); i++) {
+            ema = (candles.get(i).close().doubleValue() - ema) * multiplier + ema;
+        }
+        return ema;
+    }
+
+    /**
+     * Detect trend direction across multiple timeframes.
+     * Compares EMA9 vs EMA21 on 5m, 15m, and 1hr candles.
+     * @return 1 = bullish (all aligned up), -1 = bearish (all down), 0 = mixed/no data
+     */
+    public int detectMultiTFTrend(long instrumentToken) {
+        int bullCount = 0, bearCount = 0;
+        for (Timeframe tf : new Timeframe[]{Timeframe.FIVE_MINUTE, Timeframe.FIFTEEN_MINUTE, Timeframe.ONE_HOUR}) {
+            double ema9 = calculateEMA(instrumentToken, tf, 9);
+            double ema21 = calculateEMA(instrumentToken, tf, 21);
+            if (ema9 == 0 || ema21 == 0) continue;
+            if (ema9 > ema21) bullCount++;
+            else bearCount++;
+        }
+        if (bullCount >= 3) return 1;
+        if (bearCount >= 3) return -1;
+        return 0;
+    }
+
+    /**
+     * Get support and resistance levels from 15-min candle history.
+     * @return [support, resistance] — lowest low and highest high of recent candles
+     */
+    public double[] getSupportResistance(long instrumentToken) {
+        List<Candle> candles = getHistory(instrumentToken, Timeframe.FIFTEEN_MINUTE);
+        if (candles.size() < 5) return new double[]{0, 0};
+        double support = candles.stream().mapToDouble(c -> c.low().doubleValue()).min().orElse(0);
+        double resistance = candles.stream().mapToDouble(c -> c.high().doubleValue()).max().orElse(0);
+        return new double[]{support, resistance};
+    }
+
+    /**
+     * Detect VIX trend direction from recent VIX candles.
+     * @param vixToken the VIX instrument token (264969 for India VIX)
+     * @return 1 = VIX rising (danger), -1 = VIX falling (opportunity), 0 = flat
+     */
+    public int detectVixTrend(long vixToken) {
+        List<Candle> candles = getHistory(vixToken, Timeframe.FIFTEEN_MINUTE);
+        if (candles.size() < 5) return 0;
+        double ema3 = calculateEMA(vixToken, Timeframe.FIFTEEN_MINUTE, 3);
+        double ema8 = calculateEMA(vixToken, Timeframe.FIFTEEN_MINUTE, 8);
+        if (ema3 == 0 || ema8 == 0) return 0;
+        double diff = (ema3 - ema8) / ema8 * 100;
+        if (diff > 2) return 1;   // VIX rising > 2%
+        if (diff < -2) return -1; // VIX falling > 2%
+        return 0;
     }
 
     // ── Inner types ───────────────────────────────────────────────────────────

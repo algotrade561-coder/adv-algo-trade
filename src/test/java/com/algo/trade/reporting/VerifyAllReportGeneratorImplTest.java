@@ -130,10 +130,10 @@ class VerifyAllReportGeneratorImplTest {
 
         assertThat(html).contains("Verify-All Report");
         assertThat(html).contains("VERIFY-TEST-001");
-        // 16 strategies
-        assertThat(html).contains("16");
-        // Total trades = 16 * 20 = 320
-        assertThat(html).contains("320");
+        // All strategies present
+        assertThat(html).contains(String.valueOf(StrategyType.values().length));
+        // Total trades = N * 20
+        assertThat(html).contains(String.valueOf(StrategyType.values().length * 20));
     }
 
     @Test
@@ -143,8 +143,8 @@ class VerifyAllReportGeneratorImplTest {
         Path htmlPath = generator.generateHtmlReport(result, tempDir);
         String html = Files.readString(htmlPath);
 
-        // Total PnL = 16 * 5000 = 80000
-        assertThat(html).contains("80000");
+        // Total PnL = N * 5000
+        assertThat(html).contains(String.valueOf(StrategyType.values().length * 5000));
         // Win Rate card present
         assertThat(html).contains("Win Rate");
         // Profit Factor card present
@@ -276,7 +276,7 @@ class VerifyAllReportGeneratorImplTest {
         // Strategy results array
         JsonNode strategies = root.get("strategyResults");
         assertThat(strategies.isArray()).isTrue();
-        assertThat(strategies.size()).isEqualTo(16);
+        assertThat(strategies.size()).isEqualTo(StrategyType.values().length);
 
         // First strategy has expected fields
         JsonNode first = strategies.get(0);
@@ -358,7 +358,7 @@ class VerifyAllReportGeneratorImplTest {
         assertThat(html).contains("No data available for Directional Buy");
         // Summary shows 0 trades
         assertThat(html).contains("0");
-        // All 16 strategy types still listed
+        // All strategy types still listed
         for (StrategyType type : StrategyType.values()) {
             assertThat(html).contains(type.displayName());
         }
@@ -391,7 +391,7 @@ class VerifyAllReportGeneratorImplTest {
 
         assertThat(root.get("verifyId").asText()).isEqualTo("VERIFY-ERR-002");
         JsonNode strategies = root.get("strategyResults");
-        assertThat(strategies.size()).isEqualTo(16);
+        assertThat(strategies.size()).isEqualTo(StrategyType.values().length);
         for (int i = 0; i < strategies.size(); i++) {
             assertThat(strategies.get(i).get("status").asText()).isEqualTo("error");
             assertThat(strategies.get(i).get("metrics").isNull()).isTrue();

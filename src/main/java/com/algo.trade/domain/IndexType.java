@@ -53,6 +53,7 @@ public enum IndexType {
         return switch (symbol) {
             case NIFTY -> NIFTY;
             case BANKNIFTY -> BANKNIFTY;
+            default -> throw new IllegalArgumentException("No IndexType mapping for " + symbol);
         };
     }
 }

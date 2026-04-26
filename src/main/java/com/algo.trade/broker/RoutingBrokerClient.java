@@ -97,6 +97,18 @@ public class RoutingBrokerClient implements BrokerClient {
     }
 
     @Override
+    public void cancelOrder(String brokerOrderId) {
+        if (tradingStateService.executionMode() == ExecutionMode.ZERODHA) {
+            zerodhaClient.cancelOrder(brokerOrderId);
+        } else {
+            log.info("Paper cancel order: brokerOrderId={}", brokerOrderId);
+            // Remove from paper orders if present
+            paperOrdersByClientId.values().removeIf(
+                    order -> order.brokerOrderId().filter(brokerOrderId::equals).isPresent());
+        }
+    }
+
+    @Override
     public List<OrderResponse> orders() {
         if (tradingStateService.executionMode() == ExecutionMode.ZERODHA) {
             return zerodhaClient.orders();

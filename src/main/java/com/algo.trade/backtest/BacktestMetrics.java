@@ -113,4 +113,28 @@ public record BacktestMetrics(
         return trades.stream().map(BacktestTrade::pnl).reduce(BigDecimal.ZERO, BigDecimal::add)
                 .divide(BigDecimal.valueOf(trades.size()), java.math.MathContext.DECIMAL64);
     }
+
+    /**
+     * Estimate total brokerage charges for all trades.
+     * Uses Zerodha fee structure: ~₹80-150 per round trip per lot.
+     * Simplified: ₹20 brokerage + ~0.1% of turnover per side.
+     */
+    public BigDecimal estimatedCharges(int lotSize) {
+        if (totalTrades <= 0 || lotSize <= 0) return BigDecimal.ZERO;
+        // Each trade = 1 entry + 1 exit = 2 orders
+        // Brokerage: ₹20 × 2 = ₹40 per trade
+        // STT + exchange + GST + stamp ≈ 0.12% of turnover per side
+        BigDecimal brokeragePerTrade = BigDecimal.valueOf(40);
+        BigDecimal avgTurnover = averageWin().abs().add(averageLoss().abs())
+                .divide(BigDecimal.valueOf(2), java.math.MathContext.DECIMAL64)
+                .multiply(BigDecimal.valueOf(lotSize));
+        BigDecimal chargesPerTrade = brokeragePerTrade.add(
+                avgTurnover.multiply(BigDecimal.valueOf(0.0024))); // ~0.12% × 2 sides
+        return chargesPerTrade.multiply(BigDecimal.valueOf(totalTrades));
+    }
+
+    /** Net P&L after estimated brokerage charges. */
+    public BigDecimal netCumulativePnl(int lotSize) {
+        return cumulativePnl.subtract(estimatedCharges(lotSize));
+    }
 }

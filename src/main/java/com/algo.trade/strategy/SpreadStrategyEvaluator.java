@@ -65,18 +65,18 @@ public class SpreadStrategyEvaluator {
 
             // Selling strategies — require elevated IV (premium worth selling)
             case SHORT_STRADDLE -> ivRank > 3
-                    ? Optional.of(signal(underlying, SignalType.BUY_CE, OptionType.CE, latestClose,
+                    ? Optional.of(signal(underlying, SignalType.SELL_CE, OptionType.CE, latestClose,
                         "Short straddle: IV rank=" + String.format("%.0f", ivRank) + " (sell premium)"))
                     : Optional.empty();
 
             case SHORT_STRANGLE -> ivRank > 3
-                    ? Optional.of(signal(underlying, SignalType.BUY_CE, OptionType.CE, latestClose,
+                    ? Optional.of(signal(underlying, SignalType.SELL_CE, OptionType.CE, latestClose,
                         "Short strangle: IV rank=" + String.format("%.0f", ivRank) +
                         " OTM=" + config.getOtmStrikes()))
                     : Optional.empty();
 
             case IRON_CONDOR -> ivRank > 3
-                    ? Optional.of(signal(underlying, SignalType.BUY_CE, OptionType.CE, latestClose,
+                    ? Optional.of(signal(underlying, SignalType.SELL_CE, OptionType.CE, latestClose,
                         "Iron condor: IV rank=" + String.format("%.0f", ivRank) +
                         " OTM=" + config.getOtmStrikes() + " hedge=" + config.getSpreadStrikes()))
                     : Optional.empty();
@@ -93,7 +93,7 @@ public class SpreadStrategyEvaluator {
                     : Optional.empty();
 
             case JADE_LIZARD -> ivRank > 3
-                    ? Optional.of(signal(underlying, SignalType.BUY_CE, OptionType.CE, latestClose,
+                    ? Optional.of(signal(underlying, SignalType.SELL_CE, OptionType.CE, latestClose,
                         "Jade lizard: IV rank=" + String.format("%.0f", ivRank) +
                         " (premium collection with downside hedge)"))
                     : Optional.empty();

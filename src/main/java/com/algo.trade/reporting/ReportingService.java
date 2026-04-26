@@ -77,6 +77,7 @@ public class ReportingService {
     public PnlSnapshot pnl() {
         log.debug("Reporting PnL calculation started");
         BigDecimal realized = tradeRepository.findAll().stream()
+                .filter(t -> !t.isPaperTrade())
                 .map(TradeEntity::getRealizedPnl)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
         BigDecimal unrealized = positions().stream()

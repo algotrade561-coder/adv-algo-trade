@@ -32,6 +32,11 @@ public interface BrokerClient {
 
     Optional<OrderResponse> orderStatus(String brokerOrderId);
 
+    /** Cancel a pending order by broker order ID. */
+    default void cancelOrder(String brokerOrderId) {
+        // Default no-op — implementations should override
+    }
+
     List<OrderResponse> orders();
 
     List<Position> positions();

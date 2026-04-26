@@ -839,6 +839,7 @@ public class BacktestEngine {
             case ONE_MINUTE -> "1m";
             case FIVE_MINUTE -> "5m";
             case FIFTEEN_MINUTE -> "15m";
+            case ONE_HOUR -> "1h";
         };
     }
 

@@ -106,6 +106,7 @@ public class RiskManager {
         Instant start = LocalDate.now(IST).atStartOfDay(IST).toInstant();
         Instant end   = LocalDate.now(IST).plusDays(1).atStartOfDay(IST).toInstant();
         return tradeRepository.findByEntryTimeBetween(start, end).stream()
+                .filter(t -> !t.isPaperTrade())
                 .map(TradeEntity::getRealizedPnl)
                 .filter(p -> p != null)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);

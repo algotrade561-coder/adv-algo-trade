@@ -31,6 +31,10 @@ public class StrategySelector {
     private final RegimeFilter regimeFilter;
     private final MarketGuard marketGuard;
     private final TelegramAlertService telegramAlertService;
+    private final com.algo.trade.indicator.IVRankTracker ivRankTracker;
+    private final com.algo.trade.marketdata.LiveCandleBuilder liveCandleBuilder;
+    private final com.algo.trade.marketdata.LiveInstrumentCache liveInstrumentCache;
+    private final com.algo.trade.marketdata.ExpiryCalendar expiryCalendar;
 
     /** Previous regime per index (e.g. "NIFTY" → IDEAL). */
     private final ConcurrentHashMap<String, MarketRegime> previousRegimes = new ConcurrentHashMap<>();
@@ -77,10 +81,18 @@ public class StrategySelector {
 
     public StrategySelector(RegimeFilter regimeFilter,
                             MarketGuard marketGuard,
-                            TelegramAlertService telegramAlertService) {
+                            TelegramAlertService telegramAlertService,
+                            com.algo.trade.indicator.IVRankTracker ivRankTracker,
+                            com.algo.trade.marketdata.LiveCandleBuilder liveCandleBuilder,
+                            com.algo.trade.marketdata.LiveInstrumentCache liveInstrumentCache,
+                            com.algo.trade.marketdata.ExpiryCalendar expiryCalendar) {
         this.regimeFilter = regimeFilter;
         this.marketGuard = marketGuard;
         this.telegramAlertService = telegramAlertService;
+        this.ivRankTracker = ivRankTracker;
+        this.liveCandleBuilder = liveCandleBuilder;
+        this.liveInstrumentCache = liveInstrumentCache;
+        this.expiryCalendar = expiryCalendar;
     }
 
     /**
@@ -104,12 +116,28 @@ public class StrategySelector {
     }
 
     private void evaluateIndex(String index, double vix, double pcr) {
-        // Use neutral defaults for indicators we don't have real-time data for
-        double ivRank = 50;
-        int trendSignal = 0;
-        double oiWallDistance = 3.0;
+        com.algo.trade.domain.IndexType indexType = "BANKNIFTY".equals(index)
+                ? com.algo.trade.domain.IndexType.BANKNIFTY : com.algo.trade.domain.IndexType.NIFTY;
+        double ivRank = ivRankTracker.getIVRank(indexType);
 
-        MarketRegime currentRegime = regimeFilter.detectRegime(vix, ivRank, pcr, trendSignal, oiWallDistance);
+        // Live multi-TF trend from candle builder
+        long spotToken = indexType.spotToken();
+        int trendSignal = liveCandleBuilder.detectMultiTFTrend(spotToken);
+
+        // VIX trend from candle builder
+        int vixTrend = liveCandleBuilder.detectVixTrend(264969L);
+
+        // Live OI wall distance from option chain
+        double oiWallDistance = computeOiWallDistance(indexType);
+
+        // IV skew adjustment: if CE IV >> PE IV, bearish bias → reduce score
+        double ivSkewAdjustment = computeIvSkewAdjustment(indexType);
+
+        int rawScore = regimeFilter.computeScore(vix, ivRank, pcr, trendSignal, oiWallDistance, vixTrend);
+        // Apply IV skew adjustment (±5 points)
+        int adjustedScore = Math.max(0, Math.min(100, rawScore + (int) ivSkewAdjustment));
+
+        MarketRegime currentRegime = regimeFilter.classify(adjustedScore);
         MarketRegime previousRegime = previousRegimes.get(index);
 
         if (previousRegime != null && previousRegime != currentRegime) {
@@ -144,5 +172,78 @@ public class StrategySelector {
      */
     public List<StrategyType> recommendedStrategies(MarketRegime regime) {
         return REGIME_STRATEGY_MAP.getOrDefault(regime, List.of());
+    }
+
+    // ── Live data computation helpers ─────────────────────────────────────────
+
+    /**
+     * Compute OI wall distance from live option chain.
+     * Finds the nearest high-OI CE strike above ATM (resistance) and PE strike below ATM (support),
+     * returns the average distance as % of spot price.
+     */
+    private double computeOiWallDistance(com.algo.trade.domain.IndexType indexType) {
+        try {
+            double spot = liveInstrumentCache.getFuturesPrice(indexType);
+            if (spot <= 0) return 3.0; // default
+            int atm = indexType.roundToATM(spot);
+            java.time.LocalDate expiry = expiryCalendar.getCurrentWeeklyExpiry(indexType);
+            var chain = liveInstrumentCache.getStrikeChain(indexType, expiry);
+            if (chain.isEmpty()) return 3.0;
+
+            // Find nearest CE wall above ATM (highest OI within 3% of spot)
+            double maxDist = spot * 0.03;
+            var ceWall = chain.stream()
+                    .filter(o -> o.isCE() && o.getStrikePrice() > atm)
+                    .filter(o -> (o.getStrikePrice() - atm) <= maxDist)
+                    .filter(o -> o.getOpenInterest() > 0)
+                    .max(java.util.Comparator.comparingLong(com.algo.trade.domain.OptionInstrument::getOpenInterest));
+
+            var peWall = chain.stream()
+                    .filter(o -> o.isPE() && o.getStrikePrice() < atm)
+                    .filter(o -> (atm - o.getStrikePrice()) <= maxDist)
+                    .filter(o -> o.getOpenInterest() > 0)
+                    .max(java.util.Comparator.comparingLong(com.algo.trade.domain.OptionInstrument::getOpenInterest));
+
+            double ceDistance = ceWall.map(o -> Math.abs(o.getStrikePrice() - spot) / spot * 100).orElse(5.0);
+            double peDistance = peWall.map(o -> Math.abs(spot - o.getStrikePrice()) / spot * 100).orElse(5.0);
+            return (ceDistance + peDistance) / 2.0;
+        } catch (Exception e) {
+            return 3.0; // default on error
+        }
+    }
+
+    /**
+     * Compute IV skew adjustment for regime scoring.
+     * CE IV > PE IV → bearish bias (call writers active) → reduce score
+     * PE IV > CE IV → bullish bias (put writers active) → increase score
+     * Returns adjustment in points: -5 to +5.
+     */
+    private double computeIvSkewAdjustment(com.algo.trade.domain.IndexType indexType) {
+        try {
+            double spot = liveInstrumentCache.getFuturesPrice(indexType);
+            if (spot <= 0) return 0;
+            int atm = indexType.roundToATM(spot);
+            java.time.LocalDate expiry = expiryCalendar.getCurrentWeeklyExpiry(indexType);
+
+            var atmCe = liveInstrumentCache.getOption(indexType, atm, "CE", expiry);
+            var atmPe = liveInstrumentCache.getOption(indexType, atm, "PE", expiry);
+            if (atmCe.isEmpty() || atmPe.isEmpty()) return 0;
+
+            double ceIv = atmCe.get().getImpliedVolatility();
+            double peIv = atmPe.get().getImpliedVolatility();
+            if (ceIv <= 0 || peIv <= 0) return 0;
+
+            // Skew ratio: CE IV / PE IV
+            // > 1.1 = bearish skew (calls expensive, market expects downside)
+            // < 0.9 = bullish skew (puts expensive, market expects upside)
+            double skewRatio = ceIv / peIv;
+            if (skewRatio > 1.15) return -5;  // strong bearish skew
+            if (skewRatio > 1.05) return -2;  // mild bearish skew
+            if (skewRatio < 0.85) return 5;   // strong bullish skew
+            if (skewRatio < 0.95) return 2;   // mild bullish skew
+            return 0; // balanced
+        } catch (Exception e) {
+            return 0;
+        }
     }
 }

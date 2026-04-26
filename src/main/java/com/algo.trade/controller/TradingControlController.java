@@ -44,6 +44,8 @@ public class TradingControlController {
     private final TradeRepository tradeRepository;
     private final ReportingService reportingService;
     private final MarketGuard marketGuard;
+    private final com.algo.trade.config.GlobalConfigService globalConfigService;
+    private final com.algo.trade.risk.RiskEngine riskEngine;
 
     public TradingControlController(
             TradingProperties tradingProperties,
@@ -55,7 +57,9 @@ public class TradingControlController {
             BrokerClient brokerClient,
             TradeRepository tradeRepository,
             ReportingService reportingService,
-            MarketGuard marketGuard
+            MarketGuard marketGuard,
+            com.algo.trade.config.GlobalConfigService globalConfigService,
+            com.algo.trade.risk.RiskEngine riskEngine
     ) {
         this.tradingProperties = tradingProperties;
         this.tradingStateService = tradingStateService;
@@ -67,6 +71,8 @@ public class TradingControlController {
         this.tradeRepository = tradeRepository;
         this.reportingService = reportingService;
         this.marketGuard = marketGuard;
+        this.globalConfigService = globalConfigService;
+        this.riskEngine = riskEngine;
     }
 
     @GetMapping("/config")
@@ -82,15 +88,19 @@ public class TradingControlController {
     @GetMapping("/trading/status")
     public Map<String, Object> tradingStatus() {
         var pnl = reportingService.pnl();
-        int openTrades = tradeRepository.findByStatus(TradeStatus.OPEN).size();
-        int tradesToday = reportingService.trades().stream()
+        var allOpenTrades = tradeRepository.findByStatus(TradeStatus.OPEN);
+        int openTrades = (int) allOpenTrades.stream().filter(t -> !t.isPaperTrade()).count();
+        int openPaperTrades = (int) allOpenTrades.stream().filter(t -> t.isPaperTrade()).count();
+        int tradesToday = (int) reportingService.trades().stream()
+                .filter(t -> !t.isPaperTrade())
                 .filter(t -> t.getEntryTime() != null &&
                         t.getEntryTime().isAfter(java.time.LocalDate.now(
                                 tradingProperties.timezone()).atStartOfDay(
                                 tradingProperties.timezone()).toInstant()))
-                .toList().size();
-        // Consecutive losses
+                .count();
+        // Consecutive losses (exclude paper trades)
         var allTrades = reportingService.trades().stream()
+                .filter(t -> !t.isPaperTrade())
                 .filter(t -> t.getStatus() == com.algo.trade.domain.TradeStatus.CLOSED)
                 .sorted((a, b) -> b.getEntryTime().compareTo(a.getEntryTime()))
                 .toList();
@@ -103,7 +113,11 @@ public class TradingControlController {
         java.util.List<String> blockingReasons = new java.util.ArrayList<>(
                 tradingStateService.entryBlockReasons(
                         pnl.realizedPnl(), openTrades, tradesToday, consecutiveLosses,
-                        webSocketClient.isConnected()));
+                        webSocketClient.isConnected(),
+                        globalConfigService.getMaxOpenTrades(),
+                        globalConfigService.getMaxTradesPerDay(),
+                        globalConfigService.getMaxConsecutiveLosses(),
+                        riskEngine.effectiveDailyLossLimit()));
 
         // Layer 4 — MarketGuard
         String marketBlock = marketGuard.longPremiumBlockReason();
@@ -113,9 +127,27 @@ public class TradingControlController {
         result.put("entryAllowed", blockingReasons.isEmpty());
         result.put("blockingReasons", blockingReasons);
         result.put("openTrades", openTrades);
+        result.put("openPaperTrades", openPaperTrades);
         result.put("tradesToday", tradesToday);
         result.put("consecutiveLosses", consecutiveLosses);
         result.put("dailyPnl", pnl.realizedPnl());
+        // Paper P&L — separate from real P&L
+        BigDecimal paperPnl = reportingService.trades().stream()
+                .filter(t -> t.isPaperTrade())
+                .map(t -> t.getRealizedPnl())
+                .filter(p -> p != null)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        result.put("paperPnl", paperPnl);
+        // Signal counts today
+        var recentDecisions = reportingService.recentDecisions();
+        long entrySignals = recentDecisions.stream()
+                .filter(d -> d.getSignalType() != null && (d.getSignalType().startsWith("BUY_") || d.getSignalType().startsWith("SELL_")))
+                .count();
+        long rejectedSignals = recentDecisions.stream()
+                .filter(d -> "NO_TRADE".equals(d.getSignalType()))
+                .count();
+        result.put("entrySignals", entrySignals);
+        result.put("rejectedSignals", rejectedSignals);
         result.put("effectiveDailyLossLimit", tradingStateService.dailyLossExtension() > 0
                 ? tradingProperties.risk().totalCapital().doubleValue()
                     * tradingProperties.risk().maxDailyLossPercent().doubleValue() / 100.0
@@ -282,6 +314,25 @@ public class TradingControlController {
         log.info("Manual order requested: instrument={}, side={}, type={}, product={}, qty={}, limit={}, tag={}",
                 request.instrumentKey(), request.side(), request.orderType(), request.productType(),
                 request.quantity(), request.limitPrice(), request.tag());
+
+        // ── Safety checks: same gates as strategy orders ──────────────────────
+        if (!tradingStateService.running()) {
+            log.warn("Manual order rejected: trading engine is stopped");
+            return ResponseEntity.badRequest().body(Map.of("accepted", false, "reason", "Trading engine is stopped"));
+        }
+        if (tradingStateService.killSwitchEnabled()) {
+            log.warn("Manual order rejected: kill switch is enabled");
+            return ResponseEntity.badRequest().body(Map.of("accepted", false, "reason", "Kill switch is enabled"));
+        }
+        if (tradingStateService.haltMode() == com.algo.trade.risk.HaltMode.HARD) {
+            log.warn("Manual order rejected: hard halt is active");
+            return ResponseEntity.badRequest().body(Map.of("accepted", false, "reason", "Hard halt is active"));
+        }
+        if (!tradingStateService.isDailyApproved()) {
+            log.warn("Manual order rejected: daily trading not approved");
+            return ResponseEntity.badRequest().body(Map.of("accepted", false, "reason", "Daily trading not approved"));
+        }
+
         try {
             var orderRequest = new com.algo.trade.domain.OrderRequest(
                     "MANUAL-" + java.util.UUID.randomUUID(),
@@ -294,6 +345,15 @@ public class TradingControlController {
                     request.tag() != null ? request.tag() : "manual-ui"
             );
             var response = brokerClient.placeOrder(orderRequest);
+
+            // Reject if broker rejected
+            if (response.status() == com.algo.trade.domain.OrderStatus.REJECTED) {
+                log.warn("Manual order rejected by broker: {}", response.rejectionReason().orElse("unknown"));
+                return ResponseEntity.badRequest().body(Map.of(
+                        "accepted", false,
+                        "reason", response.rejectionReason().orElse("Broker rejected the order")));
+            }
+
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("accepted", true);
             body.put("clientOrderId", response.clientOrderId());

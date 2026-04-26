@@ -40,7 +40,7 @@ class RiskEngineTest {
         when(globalConfigService.getMaxDailyLossPercent()).thenReturn(BigDecimal.valueOf(3));
         when(globalConfigService.getDailyProfitTarget()).thenReturn(BigDecimal.ZERO);
         tradingStateService = new TradingStateService(props);
-        riskEngine = new RiskEngine(globalConfigService, props, mockConfigService, tradingStateService);
+        riskEngine = new RiskEngine(globalConfigService, props, mockConfigService, tradingStateService, null);
     }
 
     @Test
@@ -87,7 +87,7 @@ class RiskEngineTest {
         TradingStateService multiTradingState = new TradingStateService(multiTradeProps);
         multiTradingState.start();
         multiTradingState.approveToday();
-        RiskEngine multiRiskEngine = new RiskEngine(multiGlobalConfig, multiTradeProps, mockConfigService, multiTradingState);
+        RiskEngine multiRiskEngine = new RiskEngine(multiGlobalConfig, multiTradeProps, mockConfigService, multiTradingState, null);
 
         // 2 open trades, max is 3 → allowed
         RiskCheckResult allowed = multiRiskEngine.evaluateEntry(buyDecision(), 2, 2, BigDecimal.ZERO, 0, false);

@@ -16,7 +16,8 @@ public record Quote(
         long openInterest,
         Optional<BigDecimal> impliedVolatility,
         Optional<BigDecimal> bid,
-        Optional<BigDecimal> ask
+        Optional<BigDecimal> ask,
+        Optional<BigDecimal> averageTradedPrice
 ) {
     public Quote {
         Validation.notBlank(instrumentKey, "instrumentKey");
@@ -28,5 +29,14 @@ public record Quote(
         impliedVolatility = impliedVolatility == null ? Optional.empty() : impliedVolatility;
         bid = bid == null ? Optional.empty() : bid;
         ask = ask == null ? Optional.empty() : ask;
+        averageTradedPrice = averageTradedPrice == null ? Optional.empty() : averageTradedPrice;
+    }
+
+    /** Backward-compatible constructor without ATP. */
+    public Quote(String instrumentKey, Instant timestamp, BigDecimal lastPrice,
+                 long volume, long openInterest, Optional<BigDecimal> impliedVolatility,
+                 Optional<BigDecimal> bid, Optional<BigDecimal> ask) {
+        this(instrumentKey, timestamp, lastPrice, volume, openInterest,
+                impliedVolatility, bid, ask, Optional.empty());
     }
 }

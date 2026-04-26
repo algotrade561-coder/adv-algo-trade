@@ -1,5 +1,6 @@
 package com.algo.trade;
 
+import com.algo.trade.config.GlobalConfigService;
 import com.algo.trade.config.TradingProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -28,17 +29,17 @@ public class AdvancedAlgoTradeApplication {
     }
 
     @Bean
-    ApplicationRunner logStartupConfiguration(TradingProperties properties) {
+    ApplicationRunner logStartupConfiguration(TradingProperties properties, GlobalConfigService globalConfigService) {
         return args -> log.info("Application started: mode={}, liveTradingEnabled={}, timezone={}, broker={}, entryWindow={} to {}, forcedExitTime={}, maxTradesPerDay={}, maxDailyLossPercent={}, algoSchedulerEnabled={}, algoScanIntervalMs={}",
                 properties.mode(),
                 properties.liveTradingEnabled(),
                 properties.timezone(),
                 properties.broker().name(),
-                properties.entry().entryStartTime(),
-                properties.entry().entryCutoffTime(),
-                properties.exit().forcedExitTime(),
-                properties.risk().maxTradesPerDay(),
-                properties.risk().maxDailyLossPercent(),
+                globalConfigService.getEntryStartTime(),
+                globalConfigService.getEntryCutoffTime(),
+                globalConfigService.getForcedExitTime(),
+                globalConfigService.getMaxTradesPerDay(),
+                globalConfigService.getMaxDailyLossPercent(),
                 properties.algo().schedulerEnabled(),
                 properties.algo().scanIntervalMs());
     }

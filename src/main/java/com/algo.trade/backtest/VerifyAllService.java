@@ -43,6 +43,11 @@ public class VerifyAllService {
             StrategyType.VOLATILITY_BREAKOUT
     );
 
+    /** Strategies that require live data (ATP) and cannot be backtested. */
+    private static final Set<StrategyType> LIVE_ONLY_STRATEGIES = Set.of(
+            StrategyType.ITM_CONVICTION
+    );
+
     private final TradingProperties tradingProperties;
     private final GlobalConfigService globalConfigService;
     private final StrategyConfigService strategyConfigService;
@@ -96,7 +101,12 @@ public class VerifyAllService {
 
             try {
                 StrategyVerificationResult result;
-                if (SINGLE_LEG_STRATEGIES.contains(strategyType)) {
+                if (LIVE_ONLY_STRATEGIES.contains(strategyType)) {
+                    result = new StrategyVerificationResult(
+                            strategyType, "skipped", null, List.of(),
+                            0, 0, Map.of(), Map.of(),
+                            "Live-only strategy — requires ATP data, not backtestable");
+                } else if (SINGLE_LEG_STRATEGIES.contains(strategyType)) {
                     result = runSingleLegStrategy(strategyType, config, req, tracker);
                 } else {
                     result = runSpreadStrategy(strategyType, config, req, tracker);

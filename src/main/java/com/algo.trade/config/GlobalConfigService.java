@@ -149,6 +149,8 @@ public class GlobalConfigService {
 
     public BigDecimal getDailyProfitTarget() { return cached.getDailyProfitTarget(); }
 
+    public int getMaxLotsPerTrade() { return cached.getMaxLotsPerTrade(); }
+
     // ── Write operations ──────────────────────────────────────
 
     /**
@@ -201,6 +203,10 @@ public class GlobalConfigService {
         LocalTime cutoff = config.getEntryCutoffTimeAsLocalTime();
         if (cutoff != null && start != null && !cutoff.isAfter(start)) {
             throw new IllegalArgumentException("entryCutoffTime must be after entryStartTime");
+        }
+        LocalTime forcedExit = config.getForcedExitTimeAsLocalTime();
+        if (forcedExit != null && cutoff != null && !forcedExit.isAfter(cutoff)) {
+            throw new IllegalArgumentException("forcedExitTime must be after entryCutoffTime");
         }
     }
 }

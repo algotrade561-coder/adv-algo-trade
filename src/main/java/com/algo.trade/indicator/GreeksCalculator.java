@@ -89,8 +89,19 @@ public class GreeksCalculator {
     }
 
     public double timeToExpiry(LocalDate expiry) {
-        long days = ChronoUnit.DAYS.between(LocalDate.now(), expiry);
-        return Math.max(0, days / 365.0);
+        LocalDate today = LocalDate.now();
+        if (!expiry.isAfter(today)) return 1.0 / 365.0; // minimum: 1 calendar day equivalent
+        // Count trading days (exclude weekends) for more accurate theta
+        long tradingDays = 0;
+        LocalDate d = today;
+        while (d.isBefore(expiry)) {
+            d = d.plusDays(1);
+            java.time.DayOfWeek dow = d.getDayOfWeek();
+            if (dow != java.time.DayOfWeek.SATURDAY && dow != java.time.DayOfWeek.SUNDAY) {
+                tradingDays++;
+            }
+        }
+        return Math.max(1.0 / 365.0, tradingDays / 252.0); // 252 trading days per year
     }
 
     private double bsPrice(double S, double K, double T, double r, double q, double sigma, boolean isCall) {

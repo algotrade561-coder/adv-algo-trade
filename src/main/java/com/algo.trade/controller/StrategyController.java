@@ -113,6 +113,11 @@ public class StrategyController {
         m.put("scanTimeframe", c.getScanTimeframe());
         m.put("candleTimeframe", c.getCandleTimeframe());
         m.put("trendTimeframe", c.getTrendTimeframe());
+        m.put("paperTrading", c.isPaperTrading());
+        m.put("itmDepth", c.getItmDepth());
+        m.put("minimumMove", c.getMinimumMove());
+        m.put("minimumStrengthGap", c.getMinimumStrengthGap());
+        m.put("minimumVolume", c.getMinimumVolume());
         return m;
     }
 }

@@ -198,20 +198,7 @@ public class ZerodhaBrokerClient implements BrokerClient {
                     .body(body)
                     .retrieve()
                     .body(String.class));
-            //JsonNode data = objectMapper.readTree(responseBody).path("data");
-            //Optional<String> orderId = Optional.ofNullable(data.path("order_id").textValue());
-            // Tese Execution ---------
-
-            /*String responseBody = """
-                                    {
-                                    "status": "success",
-                                    "data": {
-                                    "order_id": "240617000123456"
-                                    }
-                                    }
-                                    """;*/
             JsonNode data = objectMapper.readTree(responseBody).path("data");
-
             Optional<String> orderId = Optional.ofNullable(data.path("order_id").textValue());
 
             log.info("Zerodha order submitted: clientOrderId={}, brokerOrderId={}",
@@ -231,6 +218,21 @@ public class ZerodhaBrokerClient implements BrokerClient {
         return orders().stream()
                 .filter(order -> order.brokerOrderId().filter(brokerOrderId::equals).isPresent())
                 .findFirst();
+    }
+
+    @Override
+    public void cancelOrder(String brokerOrderId) {
+        log.info("Zerodha cancel order requested: brokerOrderId={}", brokerOrderId);
+        try {
+            retryWithBackoff("cancelOrder", () -> restClient.delete()
+                    .uri("/orders/regular/{orderId}", brokerOrderId)
+                    .headers(this::applyAuthHeaders)
+                    .retrieve()
+                    .body(String.class));
+            log.info("Zerodha order cancelled: brokerOrderId={}", brokerOrderId);
+        } catch (Exception ex) {
+            log.warn("Zerodha cancel order failed: brokerOrderId={}, error={}", brokerOrderId, ex.getMessage());
+        }
     }
 
     @Override
@@ -329,7 +331,7 @@ public class ZerodhaBrokerClient implements BrokerClient {
     private Quote quoteFromJson(String instrumentKey, JsonNode node) {
         return new Quote(instrumentKey, Instant.now(), decimal(node, "last_price"), node.path("volume").asLong(0),
                 node.path("oi").asLong(0), Optional.ofNullable(nullableDecimal(node, "implied_volatility")),
-                Optional.empty(), Optional.empty());
+                Optional.empty(), Optional.empty(), Optional.ofNullable(nullableDecimal(node, "average_price")));
     }
 
     private List<Candle> parseCandles(String instrumentKey, Timeframe timeframe, JsonNode candles) {
@@ -395,6 +397,7 @@ public class ZerodhaBrokerClient implements BrokerClient {
             case ONE_MINUTE -> "minute";
             case FIVE_MINUTE -> "5minute";
             case FIFTEEN_MINUTE -> "15minute";
+            case ONE_HOUR -> "60minute";
         };
     }
 

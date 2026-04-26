@@ -37,13 +37,16 @@ public class PositionSynchronizer {
     private final BrokerClient brokerClient;
     private final TradeRepository tradeRepository;
     private final KiteAccessTokenStore tokenStore;
+    private final com.algo.trade.marketdata.MarketDataService marketDataService;
 
     public PositionSynchronizer(BrokerClient brokerClient,
                                 TradeRepository tradeRepository,
-                                KiteAccessTokenStore tokenStore) {
+                                KiteAccessTokenStore tokenStore,
+                                com.algo.trade.marketdata.MarketDataService marketDataService) {
         this.brokerClient = brokerClient;
         this.tradeRepository = tradeRepository;
         this.tokenStore = tokenStore;
+        this.marketDataService = marketDataService;
     }
 
     /**
@@ -76,8 +79,9 @@ public class PositionSynchronizer {
             List<TradeEntity> openTrades = tradeRepository.findByStatus(TradeStatus.OPEN);
 
             // Index open trades by instrumentKey for fast lookup
-            Map<String, TradeEntity> openTradesByInstrument = openTrades.stream()
-                    .collect(Collectors.toMap(TradeEntity::getInstrumentKey, Function.identity(), (a, b) -> a));
+            // Use list-based grouping to handle multiple trades on same instrument
+            Map<String, List<TradeEntity>> openTradesByInstrument = openTrades.stream()
+                    .collect(Collectors.groupingBy(TradeEntity::getInstrumentKey));
 
             // Index broker positions by instrumentKey (only non-zero quantity)
             Map<String, Position> brokerByInstrument = brokerPositions.stream()
@@ -98,8 +102,11 @@ public class PositionSynchronizer {
                 }
             }
 
-            // 2. DB OPEN trades not in broker → close them
+            // 2. DB OPEN trades not in broker → close them (skip paper trades)
             for (TradeEntity trade : openTrades) {
+                if (trade.isPaperTrade()) {
+                    continue; // Paper trades have no broker position — don't close them
+                }
                 if (!brokerByInstrument.containsKey(trade.getInstrumentKey())) {
                     closeStaleTrade(trade);
                     closed++;
@@ -135,10 +142,17 @@ public class PositionSynchronizer {
     }
 
     private void closeStaleTrade(TradeEntity trade) {
+        // Use live market price if available, fallback to entry price
+        BigDecimal exitPrice = marketDataService.quote(trade.getInstrumentKey())
+                .map(q -> q.lastPrice())
+                .filter(p -> p != null && p.signum() > 0)
+                .orElse(trade.getEntryPrice());
+        BigDecimal realizedPnl = exitPrice.subtract(trade.getEntryPrice())
+                .multiply(BigDecimal.valueOf(trade.getQuantity()));
         trade.close(
-                BigDecimal.ZERO,
+                exitPrice,
                 Instant.now(),
-                BigDecimal.ZERO,
+                realizedPnl,
                 "position-sync: not found in broker"
         );
         tradeRepository.save(trade);

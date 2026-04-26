@@ -5,6 +5,7 @@ import com.algo.trade.domain.OrderResponse;
 import com.algo.trade.domain.OrderStatus;
 import com.algo.trade.persistence.OrderEntity;
 import com.algo.trade.persistence.OrderRepository;
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Optional;
 import org.slf4j.Logger;
@@ -51,11 +52,30 @@ public class OrderFillWatchdog {
         }
     }
 
+    private static final long MAX_FILL_WAIT_MINUTES = 5; // auto-cancel after 5 minutes
+
     private void checkOrder(OrderEntity order) {
         String brokerOrderId = order.getBrokerOrderId();
         if (brokerOrderId == null || brokerOrderId.isBlank()) {
             log.debug("OrderFillWatchdog skipping order without broker ID: {}", order.getClientOrderId());
             return;
+        }
+
+        // Auto-cancel stale unfilled orders after MAX_FILL_WAIT_MINUTES
+        if (order.getOrderPlacedAt() != null) {
+            long waitMinutes = java.time.Duration.between(order.getOrderPlacedAt(), java.time.Instant.now()).toMinutes();
+            if (waitMinutes >= MAX_FILL_WAIT_MINUTES) {
+                log.warn("OrderFillWatchdog: order expired after {}min — cancelling: clientOrderId={}, brokerOrderId={}",
+                        waitMinutes, order.getClientOrderId(), brokerOrderId);
+                try {
+                    brokerClient.cancelOrder(brokerOrderId);
+                } catch (Exception ex) {
+                    log.warn("OrderFillWatchdog: cancel failed for {}: {}", brokerOrderId, ex.getMessage());
+                }
+                order.setStatus(OrderStatus.CANCELLED);
+                orderRepository.save(order);
+                return;
+            }
         }
 
         Optional<OrderResponse> polled = brokerClient.orderStatus(brokerOrderId);
@@ -77,7 +97,13 @@ public class OrderFillWatchdog {
             order.setUpdatedAt(latest.updatedAt());
             orderRepository.save(order);
 
-            executionEngine.openTradeFromFilledOrder(order);
+            // Only create TradeEntity for BUY (entry) orders.
+            // SELL (exit) orders need to close the existing trade instead.
+            if (order.getClientOrderId().startsWith("EXIT-")) {
+                closeTradeFromFilledExitOrder(order);
+            } else {
+                executionEngine.openTradeFromFilledOrder(order);
+            }
 
         } else if (latest.status() == OrderStatus.REJECTED || latest.status() == OrderStatus.CANCELLED) {
             log.info("OrderFillWatchdog: order terminal — clientOrderId={}, status={}, reason={}",
@@ -86,5 +112,33 @@ public class OrderFillWatchdog {
             order.setUpdatedAt(latest.updatedAt());
             orderRepository.save(order);
         }
+    }
+
+    /**
+     * Close the matching open trade when a pending SELL (exit) order fills.
+     * Finds the open trade by instrument key and computes realized P&L.
+     */
+    private void closeTradeFromFilledExitOrder(OrderEntity exitOrder) {
+        String instrumentKey = exitOrder.getInstrumentKey();
+        BigDecimal exitPrice = exitOrder.getAverageFillPrice() != null
+                ? exitOrder.getAverageFillPrice() : BigDecimal.ZERO;
+
+        // Find the open trade for this instrument
+        var openTrades = executionEngine.findOpenTradesByInstrument(instrumentKey);
+        if (openTrades.isEmpty()) {
+            log.warn("OrderFillWatchdog: exit order filled but no open trade found for instrument {}",
+                    instrumentKey);
+            return;
+        }
+
+        var trade = openTrades.getFirst();
+        BigDecimal realizedPnl = exitPrice.subtract(trade.getEntryPrice())
+                .multiply(BigDecimal.valueOf(trade.getQuantity()));
+        trade.close(exitPrice, exitOrder.getUpdatedAt(), realizedPnl, "Watchdog: exit order filled");
+        // Save via executionEngine's repository access
+        executionEngine.saveTradeEntity(trade);
+
+        log.info("OrderFillWatchdog: closed trade from exit fill — tradeId={}, instrument={}, exitPrice={}, pnl={}",
+                trade.getTradeId(), instrumentKey, exitPrice, realizedPnl);
     }
 }
