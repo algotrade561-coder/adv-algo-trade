@@ -29,17 +29,22 @@ public class LiveInstrumentCache {
 
     private final GreeksCalculator greeksCalculator;
     private final IVRankTracker ivRankTracker;
+    private final ExpiryCalendar expiryCalendar;
 
     // token → OptionInstrument (live enriched)
     private final Map<Long, OptionInstrument> byToken = new ConcurrentHashMap<>();
     // symbol → OptionInstrument
     private final Map<String, OptionInstrument> bySymbol = new ConcurrentHashMap<>();
+    // "INDEXTYPE|strike|CE_or_PE|expiry" → OptionInstrument for O(1) getOption() lookup
+    private final Map<String, OptionInstrument> byCompoundKey = new ConcurrentHashMap<>();
     // IndexType → current futures/spot price
     private final Map<IndexType, Double> futuresPriceCache = new ConcurrentHashMap<>();
 
-    public LiveInstrumentCache(GreeksCalculator greeksCalculator, IVRankTracker ivRankTracker) {
+    public LiveInstrumentCache(GreeksCalculator greeksCalculator, IVRankTracker ivRankTracker,
+                               ExpiryCalendar expiryCalendar) {
         this.greeksCalculator = greeksCalculator;
         this.ivRankTracker = ivRankTracker;
+        this.expiryCalendar = expiryCalendar;
     }
 
     // ── Population ────────────────────────────────────────────────────────────
@@ -48,6 +53,7 @@ public class LiveInstrumentCache {
     public void populate(List<Instrument> instruments) {
         byToken.clear();
         bySymbol.clear();
+        byCompoundKey.clear();
         int count = 0;
         for (Instrument inst : instruments) {
             if (!inst.tradable() || inst.optionType().isEmpty()) continue;
@@ -66,9 +72,18 @@ public class LiveInstrumentCache {
             );
             byToken.put(inst.instrumentToken(), opt);
             bySymbol.put(inst.tradingSymbol(), opt);
+            byCompoundKey.put(compoundKey(opt), opt);
             count++;
         }
         log.info("LiveInstrumentCache populated: {} option instruments", count);
+    }
+
+    private static String compoundKey(OptionInstrument o) {
+        return o.getIndexType() + "|" + o.getStrikePrice() + "|" + o.getOptionType() + "|" + o.getExpiry();
+    }
+
+    private static String compoundKey(IndexType indexType, int strike, String optionType, LocalDate expiry) {
+        return indexType + "|" + strike + "|" + optionType + "|" + expiry;
     }
 
     // ── Live updates from WebSocket ───────────────────────────────────────────
@@ -103,8 +118,7 @@ public class LiveInstrumentCache {
         futuresPriceCache.put(indexType, price);
         // Record ATM IV for IV rank tracking
         try {
-            ExpiryCalendar cal = new ExpiryCalendar();
-            LocalDate expiry = cal.getCurrentWeeklyExpiry(indexType);
+            LocalDate expiry = expiryCalendar.getCurrentWeeklyExpiry(indexType);
             int atm = indexType.roundToATM(price);
             getOption(indexType, atm, "CE", expiry).ifPresent(ce -> {
                 if (ce.getImpliedVolatility() > 0) {
@@ -126,12 +140,7 @@ public class LiveInstrumentCache {
 
     public Optional<OptionInstrument> getOption(IndexType indexType, int strike,
                                                   String optionType, LocalDate expiry) {
-        return byToken.values().stream()
-                .filter(o -> o.getIndexType() == indexType)
-                .filter(o -> o.getStrikePrice() == strike)
-                .filter(o -> o.getOptionType().equals(optionType))
-                .filter(o -> o.getExpiry().equals(expiry))
-                .findFirst();
+        return Optional.ofNullable(byCompoundKey.get(compoundKey(indexType, strike, optionType, expiry)));
     }
 
     /** All options for a given index and expiry, sorted by strike. */

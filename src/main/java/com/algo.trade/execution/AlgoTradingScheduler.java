@@ -250,6 +250,7 @@ public class AlgoTradingScheduler {
         }
 
         List<UnderlyingSymbol> enabledUnderlyings = tradingStateService.enabledUnderlyings();
+        tradingStateService.recordScan();
         log.info("Algo scan started: mode={}, marketTime={}, underlyings={}, maxEntriesPerScan={}",
                 properties.mode(), marketTime, enabledUnderlyings, properties.algo().maxEntriesPerScan());
 
@@ -271,7 +272,10 @@ public class AlgoTradingScheduler {
 
                 entriesSubmitted += evaluateAndExecute(underlying, context.get(), marketTime,
                         properties.algo().maxEntriesPerScan() - entriesSubmitted);
-                previousQuotes.putAll(context.get().quotes());
+                // Evict stale keys (expired strikes from prior weeks) before recording current quotes
+                Map<String, Quote> currentQuotes = context.get().quotes();
+                previousQuotes.keySet().retainAll(currentQuotes.keySet());
+                previousQuotes.putAll(currentQuotes);
             }
         } else {
             log.debug("Directional Buy skipped: trigger timeframe is {} (needs ONE_MINUTE)", triggerTimeframe);

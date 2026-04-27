@@ -28,12 +28,15 @@ public class MonitoringController {
     private final ReportingService reportingService;
     private final MarketGuard marketGuard;
     private final LiveInstrumentCache liveInstrumentCache;
+    private final com.algo.trade.marketdata.ExpiryCalendar expiryCalendar;
 
     public MonitoringController(ReportingService reportingService, MarketGuard marketGuard,
-                                 LiveInstrumentCache liveInstrumentCache) {
+                                 LiveInstrumentCache liveInstrumentCache,
+                                 com.algo.trade.marketdata.ExpiryCalendar expiryCalendar) {
         this.reportingService = reportingService;
         this.marketGuard = marketGuard;
         this.liveInstrumentCache = liveInstrumentCache;
+        this.expiryCalendar = expiryCalendar;
     }
 
     @GetMapping("/market")
@@ -68,8 +71,7 @@ public class MonitoringController {
         try {
             double spot = liveInstrumentCache.getFuturesPrice(indexType);
             if (spot <= 0) return 0;
-            java.time.LocalDate expiry = new com.algo.trade.marketdata.ExpiryCalendar()
-                    .getCurrentWeeklyExpiry(indexType);
+            java.time.LocalDate expiry = expiryCalendar.getCurrentWeeklyExpiry(indexType);
             var chain = liveInstrumentCache.getStrikeChain(indexType, expiry);
             if (chain.isEmpty()) return 0;
             long totalCallOi = chain.stream()

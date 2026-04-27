@@ -7,6 +7,7 @@ import {
   EntrySignalReplayResult,
   ExecutionMode,
   HealthResponse,
+  JvmHealth,
   KiteLoginResponse,
   KiteSessionResponse,
   MarketDataMode,
@@ -97,6 +98,7 @@ export class ApiService {
   health(): Observable<HealthResponse> { return this.http.get<HealthResponse>(`${this.base}/health`); }
   brokerHealth(): Observable<HealthResponse> { return this.http.get<HealthResponse>(`${this.base}/health/broker`); }
   databaseHealth(): Observable<HealthResponse> { return this.http.get<HealthResponse>(`${this.base}/health/database`); }
+  jvmHealth(): Observable<JvmHealth> { return this.http.get<JvmHealth>(`${this.base}/health/jvm`); }
   config(): Observable<ConfigResponse> { return this.http.get<ConfigResponse>(`${this.base}/config`); }
   tradingStatus(): Observable<TradingStatus> { return this.http.get<TradingStatus>(`${this.base}/trading/status`); }
   start(): Observable<RuntimeStatus> { return this.http.post<RuntimeStatus>(`${this.base}/start`, {}); }

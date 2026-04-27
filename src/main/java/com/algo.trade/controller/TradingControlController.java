@@ -148,6 +148,7 @@ public class TradingControlController {
                 .count();
         result.put("entrySignals", entrySignals);
         result.put("rejectedSignals", rejectedSignals);
+        result.put("lastScanAt", tradingStateService.lastScanAt());
         result.put("effectiveDailyLossLimit", tradingStateService.dailyLossExtension() > 0
                 ? tradingProperties.risk().totalCapital().doubleValue()
                     * tradingProperties.risk().maxDailyLossPercent().doubleValue() / 100.0

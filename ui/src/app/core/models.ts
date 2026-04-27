@@ -65,6 +65,18 @@ export interface TradingStatus {
   entrySignals: number;
   rejectedSignals: number;
   effectiveDailyLossLimit: number;
+  lastScanAt?: string | null;
+}
+
+export interface JvmHealth {
+  heapUsedMb: number;
+  heapTotalMb: number;
+  heapMaxMb: number;
+  heapUsedPercent: number;
+  threadCount: number;
+  gcCollections: number;
+  gcPauseMs: number;
+  uptimeMs: number;
 }
 
 export interface MarketSnapshot {

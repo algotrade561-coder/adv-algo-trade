@@ -1,11 +1,11 @@
 import { Component, OnInit } from '@angular/core';
 import { DecimalPipe } from '@angular/common';
-import { forkJoin } from 'rxjs';
+import { catchError, forkJoin, of } from 'rxjs';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 import { MatTabsModule } from '@angular/material/tabs';
 import { ApiService } from '../core/api.service';
-import { ApiRecord, PnlSnapshot, RuntimeStatus, TradingStatus } from '../core/models';
+import { ApiRecord, JvmHealth, PnlSnapshot, RuntimeStatus, TradingStatus } from '../core/models';
 import { DataTableComponent } from '../shared/data-table.component';
 
 @Component({
@@ -141,6 +141,45 @@ import { DataTableComponent } from '../shared/data-table.component';
               [class.fill-ok]="lossUsedPercent < 50"
               [class.fill-warn]="lossUsedPercent >= 50 && lossUsedPercent < 80"
               [class.fill-bad]="lossUsedPercent >= 80">
+            </div>
+          </div>
+        </div>
+      }
+
+      <!-- ── JVM Health ──────────────────────────────────────────────── -->
+      @if (jvm) {
+        <div class="jvm-bar-wrap">
+          <div class="jvm-header">
+            <mat-icon>memory</mat-icon>
+            <span class="jvm-title">JVM Health</span>
+            <span class="jvm-uptime">Up {{ uptimeLabel }}</span>
+          </div>
+          <div class="jvm-grid">
+            <div class="jvm-card" [class.jvm-warn]="jvm.heapUsedPercent >= 70" [class.jvm-bad]="jvm.heapUsedPercent >= 85">
+              <span class="jvm-label">Heap Used</span>
+              <span class="jvm-val">{{ jvm.heapUsedMb }} MB</span>
+              <div class="jvm-sub-bar">
+                <div class="jvm-sub-fill" [style.width.%]="jvm.heapUsedPercent"
+                  [class.fill-ok]="jvm.heapUsedPercent < 70"
+                  [class.fill-warn]="jvm.heapUsedPercent >= 70 && jvm.heapUsedPercent < 85"
+                  [class.fill-bad]="jvm.heapUsedPercent >= 85"></div>
+              </div>
+              <span class="jvm-sub-label">{{ jvm.heapUsedPercent }}% of {{ jvm.heapMaxMb }} MB max</span>
+            </div>
+            <div class="jvm-card">
+              <span class="jvm-label">Heap Committed</span>
+              <span class="jvm-val">{{ jvm.heapTotalMb }} MB</span>
+              <span class="jvm-sub-label">Allocated from OS</span>
+            </div>
+            <div class="jvm-card">
+              <span class="jvm-label">Threads</span>
+              <span class="jvm-val">{{ jvm.threadCount }}</span>
+              <span class="jvm-sub-label">Live JVM threads</span>
+            </div>
+            <div class="jvm-card">
+              <span class="jvm-label">GC Pauses</span>
+              <span class="jvm-val">{{ jvm.gcPauseMs }} ms</span>
+              <span class="jvm-sub-label">{{ jvm.gcCollections }} collections total</span>
             </div>
           </div>
         </div>
@@ -392,6 +431,33 @@ import { DataTableComponent } from '../shared/data-table.component';
     .filter-chip:hover { border-color: var(--accent); color: var(--ink); }
     .chip-active { background: rgba(97,168,255,.14) !important; border-color: rgba(97,168,255,.4) !important; color: var(--accent) !important; }
 
+    /* ── JVM Health ──────────────────────────────────────────── */
+    .jvm-bar-wrap {
+      background: var(--panel); border: 1px solid var(--line);
+      border-radius: 10px; padding: 14px 16px; margin-bottom: 16px;
+    }
+    .jvm-header {
+      display: flex; align-items: center; gap: 8px; margin-bottom: 12px;
+      font-size: 12px; font-weight: 700; color: var(--muted);
+      text-transform: uppercase; letter-spacing: .05em;
+    }
+    .jvm-header mat-icon { font-size: 15px; width: 15px; height: 15px; color: var(--accent); }
+    .jvm-title { color: var(--ink); }
+    .jvm-uptime { margin-left: auto; font-size: 11px; color: var(--muted); font-weight: 400; text-transform: none; letter-spacing: 0; }
+    .jvm-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
+    .jvm-card {
+      display: flex; flex-direction: column; gap: 4px;
+      padding: 10px 12px; border-radius: 8px;
+      background: rgba(255,255,255,.03); border: 1px solid var(--line);
+    }
+    .jvm-warn { border-color: rgba(242,189,75,.35) !important; }
+    .jvm-bad  { border-color: rgba(255,113,106,.35) !important; }
+    .jvm-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+    .jvm-val   { font-size: 18px; font-weight: 700; color: var(--ink); }
+    .jvm-sub-label { font-size: 10px; color: var(--muted); }
+    .jvm-sub-bar { height: 4px; background: rgba(255,255,255,.06); border-radius: 2px; overflow: hidden; margin: 2px 0; }
+    .jvm-sub-fill { height: 100%; border-radius: 2px; transition: width 600ms ease; }
+
     /* ── Empty state ──────────────────────────────────────────── */
     .empty-state {
       display: flex; flex-direction: column; align-items: center;
@@ -414,9 +480,18 @@ export class MonitoringPageComponent implements OnInit {
   pnl?: PnlSnapshot;
   runtime?: RuntimeStatus;
   tradingStatus?: TradingStatus;
+  jvm?: JvmHealth;
 
   dailyLossLimit = 0;
   dailyLossUsed = 0;
+
+  get uptimeLabel(): string {
+    if (!this.jvm) return '';
+    const s = Math.floor(this.jvm.uptimeMs / 1000);
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    return h > 0 ? `${h}h ${m}m` : `${m}m`;
+  }
 
   get livePnl(): number      { return Number(this.pnl?.realizedPnl ?? 0); }
   get liveUnrealized(): number { return Number(this.pnl?.unrealizedPnl ?? 0); }
@@ -480,7 +555,8 @@ export class MonitoringPageComponent implements OnInit {
       trades: this.api.trades(),
       pnl: this.api.pnl(),
       signals: this.api.recentSignals(),
-      status: this.api.tradingStatus()
+      status: this.api.tradingStatus(),
+      jvm: this.api.jvmHealth().pipe(catchError(() => of(null as JvmHealth | null)))
     }).subscribe(r => {
       this.runtime = r.config.runtime as unknown as RuntimeStatus;
       this.positions = r.positions;
@@ -489,6 +565,7 @@ export class MonitoringPageComponent implements OnInit {
       this.pnl = r.pnl;
       this.signals = r.signals as ApiRecord[];
       this.tradingStatus = r.status;
+      if (r.jvm) this.jvm = r.jvm;
 
       const params = r.config.parameters ?? [];
       const capital = Number(params.find(p => p.path === 'trading.risk.total-capital')?.value ?? 0);

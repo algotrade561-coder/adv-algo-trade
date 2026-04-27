@@ -34,6 +34,7 @@ public class TradingStateService {
     private final AtomicReference<RuntimeState> runtimeState =
             new AtomicReference<>(new RuntimeState(false, false, Instant.now()));
     private final AtomicReference<Instant> updatedAt = new AtomicReference<>(Instant.now());
+    private final AtomicReference<Instant> lastScanAt = new AtomicReference<>(null);
     private volatile boolean schedulerEnabled;
     private volatile HaltMode haltMode = HaltMode.NONE;
     private volatile boolean dailyApproved = false;
@@ -264,6 +265,9 @@ public class TradingStateService {
     public ExecutionMode executionMode() { return executionMode.get(); }
     public List<UnderlyingSymbol> enabledUnderlyings() { return List.copyOf(enabledUnderlyings.get()); }
     public Instant updatedAt() { return updatedAt.get(); }
+
+    public void recordScan() { lastScanAt.set(Instant.now()); }
+    public Instant lastScanAt() { return lastScanAt.get(); }
 
     public void setSchedulerEnabled(boolean enabled) {
         this.schedulerEnabled = enabled;

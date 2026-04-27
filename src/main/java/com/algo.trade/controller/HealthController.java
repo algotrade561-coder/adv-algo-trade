@@ -46,6 +46,29 @@ public class HealthController {
         this.properties = properties;
     }
 
+    @GetMapping("/health/jvm")
+    public Map<String, Object> jvmHealth() {
+        Runtime rt = Runtime.getRuntime();
+        long used = rt.totalMemory() - rt.freeMemory();
+        long total = rt.totalMemory();
+        long max = rt.maxMemory();
+        long gcCount = 0, gcMs = 0;
+        for (var gc : java.lang.management.ManagementFactory.getGarbageCollectorMXBeans()) {
+            if (gc.getCollectionCount() > 0) gcCount += gc.getCollectionCount();
+            if (gc.getCollectionTime() > 0) gcMs += gc.getCollectionTime();
+        }
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("heapUsedMb",     used  / (1024 * 1024));
+        m.put("heapTotalMb",    total / (1024 * 1024));
+        m.put("heapMaxMb",      max   / (1024 * 1024));
+        m.put("heapUsedPercent", (int) (used * 100 / max));
+        m.put("threadCount",    java.lang.management.ManagementFactory.getThreadMXBean().getThreadCount());
+        m.put("gcCollections",  gcCount);
+        m.put("gcPauseMs",      gcMs);
+        m.put("uptimeMs",       java.lang.management.ManagementFactory.getRuntimeMXBean().getUptime());
+        return m;
+    }
+
     @GetMapping("/health")
     public Map<String, Object> health() {
         Instant timestamp = Instant.now();

@@ -210,7 +210,7 @@ import { MarketSnapshot, PnlSnapshot, RuntimeStatus, StrategyDecision, TradingSt
             <div class="detail-grid">
               <div class="dg"><span>Scanner</span><strong [class.pos]="runtime.running" [class.neg]="!runtime.running">{{ runtime.running ? 'Active' : 'Stopped' }}</strong></div>
               <div class="dg"><span>WebSocket</span><strong [class.pos]="runtime.webSocketConnected" [class.neg]="!runtime.webSocketConnected">{{ runtime.webSocketConnected ? 'Connected' : 'Disconnected' }}</strong></div>
-              <div class="dg"><span>Last Scan</span><strong>{{ lastUpdatedAt || '—' }}</strong></div>
+              <div class="dg"><span>Last Scan</span><strong>{{ lastScanTime }}</strong></div>
               <div class="dg"><span>Open Trades</span><strong>{{ tradingStatus?.openTrades ?? 0 }}</strong></div>
               <div class="dg"><span>Paper Trades</span><strong style="color:#a882ff">{{ tradingStatus?.openPaperTrades ?? 0 }}</strong></div>
               <div class="dg"><span>Trades Today</span><strong>{{ tradingStatus?.tradesToday ?? 0 }}</strong></div>
@@ -337,14 +337,20 @@ export class DashboardPageComponent implements OnInit, OnDestroy {
   private marketPollSub?: Subscription;
   private signalPollSub?: Subscription;
 
+  get lastScanTime(): string {
+    const s = this.tradingStatus?.lastScanAt;
+    if (!s) return '—';
+    try { return new Date(s).toLocaleTimeString(); } catch { return '—'; }
+  }
+
   constructor(private readonly api: ApiService, private readonly cd: ChangeDetectorRef) {}
 
   ngOnInit(): void {
     setTimeout(() => this.load(), 0);
-    // Poll /market every 3 seconds to keep VIX and PCR live
+    // Market data (Nifty, BankNifty, VIX, PCR, trading status) — 1 s for live index refresh
     this.marketPollSub = interval(1000).subscribe(() => this.refreshMarket());
-    // Poll latest signal and P&L every 5 seconds
-    this.signalPollSub = interval(1000).subscribe(() => this.refreshSignal());
+    // Signals and P&L change on candle close (every 1–15 min) — 3 s is plenty
+    this.signalPollSub = interval(3000).subscribe(() => this.refreshSignal());
   }
 
   ngOnDestroy(): void {
@@ -373,17 +379,26 @@ export class DashboardPageComponent implements OnInit, OnDestroy {
   }
 
   private refreshMarket(): void {
-    this.api.market().pipe(catchError(() => of(null as MarketSnapshot | null)))
-      .subscribe(m => { if (m) { this.market = m; this.cd.detectChanges(); } });
-    this.api.tradingStatus().pipe(catchError(() => of(null as TradingStatus | null)))
-      .subscribe(s => { if (s) { this.tradingStatus = s; this.cd.detectChanges(); } });
+    forkJoin({
+      market: this.api.market().pipe(catchError(() => of(null as MarketSnapshot | null))),
+      status: this.api.tradingStatus().pipe(catchError(() => of(null as TradingStatus | null)))
+    }).subscribe(({ market, status }) => {
+      if (market) this.market = market;
+      if (status) this.tradingStatus = status;
+      this.lastUpdatedAt = new Date().toLocaleTimeString();
+      this.cd.detectChanges();
+    });
   }
 
   private refreshSignal(): void {
-    this.api.latestSignal().pipe(catchError(() => of(null as StrategyDecision | null)))
-      .subscribe(sig => { this.latestSignal = sig; this.cd.detectChanges(); });
-    this.api.pnl().pipe(catchError(() => of(null as PnlSnapshot | null)))
-      .subscribe(p => { if (p) { this.pnl = p; this.cd.detectChanges(); } });
+    forkJoin({
+      sig: this.api.latestSignal().pipe(catchError(() => of(null as StrategyDecision | null))),
+      pnl: this.api.pnl().pipe(catchError(() => of(null as PnlSnapshot | null)))
+    }).subscribe(({ sig, pnl }) => {
+      this.latestSignal = sig;
+      if (pnl) this.pnl = pnl;
+      this.cd.detectChanges();
+    });
   }
 
   private loadExtra(): void {
