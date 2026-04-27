@@ -8,6 +8,7 @@ import { EntrySignalsPageComponent } from './pages/entry-signals-page.component'
 import { RejectedSignalsPageComponent } from './pages/rejected-signals-page.component';
 import { StrategiesPageComponent } from './pages/strategies-page.component';
 import { SettingsPageComponent } from './pages/settings-page.component';
+import { AiInsightsPageComponent } from './pages/ai-insights-page.component';
 
 export const routes: Routes = [
   { path: '', pathMatch: 'full', redirectTo: 'dashboard' },
@@ -20,5 +21,6 @@ export const routes: Routes = [
   { path: 'rejected-signals', component: RejectedSignalsPageComponent },
   { path: 'reports', component: ReportsPageComponent },
   { path: 'auth', component: AuthPageComponent },
+  { path: 'ai-insights', component: AiInsightsPageComponent },
   { path: '**', redirectTo: 'dashboard' }
 ];

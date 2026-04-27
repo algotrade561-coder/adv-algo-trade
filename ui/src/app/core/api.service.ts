@@ -175,6 +175,17 @@ export class ApiService {
   getGlobalConfig(): Observable<GlobalConfigDto> { return this.http.get<GlobalConfigDto>(`${this.base}/global-config`); }
   updateGlobalConfig(config: GlobalConfigDto): Observable<GlobalConfigDto> { return this.http.put<GlobalConfigDto>(`${this.base}/global-config`, config); }
   resetGlobalConfig(): Observable<GlobalConfigDto> { return this.http.post<GlobalConfigDto>(`${this.base}/global-config/reset`, {}); }
+
+  // ── AI Insights ───────────────────────────────────────────────────────
+  getAiRecommendations(period = 'today'): Observable<import('../pages/ai-insights-page.component').AiRecommendationDto[]> {
+    return this.http.get<import('../pages/ai-insights-page.component').AiRecommendationDto[]>(`${this.base}/ai/recommendations?period=${period}`);
+  }
+  runAiAnalysis(): Observable<import('../pages/ai-insights-page.component').AiRecommendationDto> {
+    return this.http.post<import('../pages/ai-insights-page.component').AiRecommendationDto>(`${this.base}/ai/recommendations/run`, {});
+  }
+  runBacktestTune(underlying = 'NIFTY'): Observable<import('../pages/ai-insights-page.component').AiRecommendationDto> {
+    return this.http.post<import('../pages/ai-insights-page.component').AiRecommendationDto>(`${this.base}/ai/backtest/sync-and-tune?underlying=${underlying}`, {});
+  }
 }
 
 function clean<T extends Record<string, unknown>>(value: T): Partial<T> {

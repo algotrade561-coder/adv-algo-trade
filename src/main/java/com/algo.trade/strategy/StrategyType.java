@@ -61,4 +61,14 @@ public enum StrategyType {
     public String description() { return description; }
     public boolean isSellingStrategy() { return sellingStrategy; }
     public boolean isDefaultEnabled() { return !sellingStrategy; }
+
+    /** Multi-leg strategies managed by SpreadPositionExitMonitor — not by LivePositionExitMonitor. */
+    public boolean isSpreadStrategy() {
+        return switch (this) {
+            case BULL_CALL_SPREAD, BEAR_PUT_SPREAD, LONG_STRADDLE, LONG_STRANGLE,
+                 SHORT_STRADDLE, SHORT_STRANGLE, IRON_CONDOR, BUTTERFLY,
+                 CALENDAR_SPREAD, DIAGONAL_SPREAD, JADE_LIZARD, SYNTHETIC_FUTURES -> true;
+            default -> false;
+        };
+    }
 }

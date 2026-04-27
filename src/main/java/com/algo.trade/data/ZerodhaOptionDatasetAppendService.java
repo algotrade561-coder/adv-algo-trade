@@ -42,19 +42,25 @@ public class ZerodhaOptionDatasetAppendService {
     private static final int CHUNK_DAYS_MINUTE = 59;
     private static final int CHUNK_DAYS_HIGHER = 99;
     private static final long RATE_LIMIT_SLEEP_MS = 400L;
-    private static final Path DEFAULT_OUTPUT_ROOT = Path.of("C:/data/backtest/imports/global-datafeeds");
     private static final DateTimeFormatter GLOBAL_DATAFEEDS_EXPIRY =
             DateTimeFormatter.ofPattern("ddMMMyy", Locale.ENGLISH);
 
     private final BrokerClient brokerClient;
     private final InstrumentCache instrumentCache;
     private final TradingProperties properties;
+    private final Path defaultOutputRoot;
 
     public ZerodhaOptionDatasetAppendService(BrokerClient brokerClient, InstrumentCache instrumentCache,
                                              TradingProperties properties) {
         this.brokerClient = brokerClient;
         this.instrumentCache = instrumentCache;
         this.properties = properties;
+        this.defaultOutputRoot = deriveOutputRoot(properties.backtest().csvImportPath());
+    }
+
+    public static Path deriveOutputRoot(String csvImportPath) {
+        Path parent = Path.of(csvImportPath).getParent();
+        return parent == null ? Path.of("global-datafeeds") : parent.resolve("global-datafeeds");
     }
 
     public AppendResult append(AppendRequest request) throws IOException {
@@ -63,7 +69,7 @@ public class ZerodhaOptionDatasetAppendService {
         UnderlyingSymbol underlying = effective.underlying() == null ? UnderlyingSymbol.NIFTY : effective.underlying();
         Timeframe timeframe = effective.timeframe() == null ? Timeframe.ONE_MINUTE : effective.timeframe();
         Path outputRoot = effective.outputRoot() == null || effective.outputRoot().isBlank()
-                ? DEFAULT_OUTPUT_ROOT
+                ? defaultOutputRoot
                 : Path.of(effective.outputRoot());
         LocalDate latestExistingDay = latestExistingDay(outputRoot);
         LocalDate from = effective.from() != null

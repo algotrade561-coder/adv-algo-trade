@@ -82,6 +82,8 @@ public class MaxHoldExitMonitor {
 
         for (TradeEntity trade : openTrades) {
             if (!positionSyncProperties.manageSyncedTrades() && trade.getTradeId().startsWith("SYNC-")) continue;
+            // Spread positions are managed by SpreadPositionExitMonitor — skip them here
+            if (isSpreadTrade(trade)) continue;
             int maxHold = resolveMaxHoldMinutes(trade);
             if (maxHold <= 0) continue;
 
@@ -102,6 +104,15 @@ public class MaxHoldExitMonitor {
             } catch (Exception e) {
                 log.error("[MaxHoldExit] Failed to close trade: tradeId={} reason={}", trade.getTradeId(), e.getMessage());
             }
+        }
+    }
+
+    private boolean isSpreadTrade(TradeEntity trade) {
+        if (trade.getStrategyType() == null || trade.getStrategyType().isBlank()) return false;
+        try {
+            return StrategyType.valueOf(trade.getStrategyType()).isSpreadStrategy();
+        } catch (IllegalArgumentException ignored) {
+            return false;
         }
     }
 

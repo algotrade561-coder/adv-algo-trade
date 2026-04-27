@@ -95,8 +95,8 @@ trading:
     from: 2024-01-01
     to: 2025-01-01
     candle-timeframe: ONE_MINUTE
-    csv-import-path: C:/data/backtest/imports/input.csv
-    output-directory: C:/data/backtest/results
+    csv-import-path: ./data/backtest/imports/input.csv
+    output-directory: ./data/backtest/results
     mock-instrument-key: NFO:NIFTY-MOCK-ATM-CE
     mock-candle-count: 180
     lot-size: 65

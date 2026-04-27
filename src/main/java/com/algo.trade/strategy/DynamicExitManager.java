@@ -1,27 +1,28 @@
 package com.algo.trade.strategy;
 
 import com.algo.trade.domain.Candle;
+import java.time.Instant;
+import java.util.List;
+import java.util.Optional;
+import java.util.Set;
 import org.springframework.stereotype.Component;
 
-import java.util.List;
-
 /**
- * Dynamic Exit Manager — ATR-based trailing stops and partial profit taking.
- *
- * Instead of fixed SL/target percentages, uses Average True Range (ATR)
- * to adapt exits to current market volatility.
- *
- * Features:
- * 1. ATR-based trailing SL — wider in volatile markets, tighter in calm
- * 2. Partial profit taking — exit 50% at 30% profit, trail rest
- * 3. Time-based tightening — SL gets tighter as expiry approaches
+ * Dynamic Exit Manager — ATR-based trailing stops, progressive profit booking,
+ * stall detection, and gamma spike exits.
  */
 @Component
 public class DynamicExitManager {
 
-    /**
-     * Calculate ATR from candles.
-     */
+    public record ExitLayer(String name, double triggerProfitPct, double exitFraction) {}
+
+    /** Progressive profit booking ladder — exit fraction of CURRENT remaining quantity at each trigger. */
+    public static final List<ExitLayer> PROGRESSIVE_LAYERS = List.of(
+            new ExitLayer("PARTIAL_1", 30.0, 0.25),
+            new ExitLayer("PARTIAL_2", 50.0, 0.33),
+            new ExitLayer("PARTIAL_3", 80.0, 0.50)
+    );
+
     public double calculateATR(List<Candle> candles, int periods) {
         if (candles.size() < periods + 1) return 0;
         double atrSum = 0;
@@ -40,36 +41,22 @@ public class DynamicExitManager {
         return atrSum / periods;
     }
 
-    /**
-     * Calculate dynamic SL based on ATR.
-     * High ATR → wider SL to avoid whipsaws.
-     * Low ATR → tighter SL to protect profits.
-     *
-     * @param entryPremium combined premium at entry
-     * @param atr current ATR value
-     * @param daysToExpiry days remaining
-     * @return SL as percentage of entry premium
-     */
     public double calculateDynamicSL(double entryPremium, double atr, int daysToExpiry) {
         if (entryPremium <= 0 || atr <= 0) return 30;
         double atrBasedSL = (2 * atr / entryPremium) * 100;
         double timeMultiplier = switch (daysToExpiry) {
-            case 0 -> 0.5;   // expiry day: very tight
+            case 0 -> 0.5;
             case 1 -> 0.7;
             case 2 -> 0.85;
             default -> 1.0;
         };
         double dynamicSL = atrBasedSL * timeMultiplier;
-        return Math.max(15, Math.min(60, dynamicSL)); // clamp 15–60%
+        return Math.max(15, Math.min(60, dynamicSL));
     }
 
-    /**
-     * Calculate trailing SL based on profit level and ATR.
-     * As profit grows, trailing SL tightens to lock in more gains.
-     */
     public double calculateTrailingSL(double profitPercent, double peakProfitPercent,
                                        double atr, double entryPremium) {
-        if (peakProfitPercent < 10) return -999; // not active yet
+        if (peakProfitPercent < 10) return -999;
         double atrTrail = entryPremium > 0 ? (1.5 * atr / entryPremium) * 100 : 15;
         atrTrail = Math.max(8, Math.min(25, atrTrail));
         if (peakProfitPercent > 50) atrTrail *= 0.6;
@@ -78,24 +65,14 @@ public class DynamicExitManager {
         return peakProfitPercent - atrTrail;
     }
 
-    /**
-     * Should we take partial profit?
-     * Returns fraction to exit (0 = don't, 0.5 = exit half).
-     */
+    /** @deprecated Use nextExitLayer() for progressive booking */
+    @Deprecated
     public double partialProfitFraction(double profitPercent, boolean alreadyPartialExited) {
         if (alreadyPartialExited) return 0;
-        if (profitPercent >= 30) return 0.5; // exit 50% at 30% profit
+        if (profitPercent >= 30) return 0.5;
         return 0;
     }
 
-    /**
-     * Is the market breaking out of range? (momentum exit signal)
-     * If price moves > 2.5x ATR from day open, it's trending — exit short premium.
-     *
-     * @param candles recent candles (at least 15)
-     * @param periods ATR period
-     * @return true if breakout detected
-     */
     public boolean isBreakout(List<Candle> candles, int periods) {
         if (candles.size() < periods + 1) return false;
         double atr = calculateATR(candles, periods);
@@ -106,14 +83,9 @@ public class DynamicExitManager {
         return move > 2.5 * atr;
     }
 
-    /**
-     * Calculate ATR-based dynamic target (not just SL).
-     * Target = 3x ATR from entry, adjusted by time-to-expiry.
-     */
     public double calculateDynamicTarget(double entryPremium, double atr, int daysToExpiry) {
-        if (entryPremium <= 0 || atr <= 0) return 60; // default 60%
+        if (entryPremium <= 0 || atr <= 0) return 60;
         double atrBasedTarget = (3 * atr / entryPremium) * 100;
-        // Tighter target near expiry (less time for big moves)
         double timeMultiplier = switch (daysToExpiry) {
             case 0 -> 0.4;
             case 1 -> 0.6;
@@ -121,6 +93,45 @@ public class DynamicExitManager {
             default -> 1.0;
         };
         double dynamicTarget = atrBasedTarget * timeMultiplier;
-        return Math.max(20, Math.min(150, dynamicTarget)); // clamp 20–150%
+        return Math.max(20, Math.min(150, dynamicTarget));
+    }
+
+    /**
+     * Returns the next unfired progressive exit layer if the profit threshold is met.
+     * Caller must add the returned layer name to firedLayers and execute the partial close.
+     */
+    public Optional<ExitLayer> nextExitLayer(double profitPercent, Set<String> firedLayers) {
+        return PROGRESSIVE_LAYERS.stream()
+                .filter(layer -> !firedLayers.contains(layer.name()))
+                .filter(layer -> profitPercent >= layer.triggerProfitPct())
+                .findFirst();
+    }
+
+    /**
+     * Detects premium stall: underlying moved less than 50% of ATR in the last N 1-min candles after entry.
+     * Only triggers when trade is neither in significant profit nor near stop-loss.
+     */
+    public boolean isStalled(List<Candle> underlying1mCandles, Instant entryTime, double atr, int lookbackCandles) {
+        if (atr <= 0) return false;
+        List<Candle> postEntry = underlying1mCandles.stream()
+                .filter(c -> c.timestamp().isAfter(entryTime))
+                .toList();
+        if (postEntry.size() < lookbackCandles) return false;
+        List<Candle> window = postEntry.subList(postEntry.size() - lookbackCandles, postEntry.size());
+        double high = window.stream().mapToDouble(c -> c.high().doubleValue()).max().orElse(0);
+        double low  = window.stream().mapToDouble(c -> c.low().doubleValue()).min().orElse(0);
+        return (high - low) < 0.5 * atr;
+    }
+
+    /**
+     * Detects a gamma spike: last closed candle moved > 3× ATR from the previous candle close.
+     * Relevant on expiry day when ATM gamma causes non-linear premium moves.
+     */
+    public boolean isGammaSpike(List<Candle> candles, double atr) {
+        if (candles.size() < 2 || atr <= 0) return false;
+        Candle prev = candles.get(candles.size() - 2);
+        Candle curr = candles.getLast();
+        double move = Math.abs(curr.close().subtract(prev.close()).doubleValue());
+        return move > 3.0 * atr;
     }
 }

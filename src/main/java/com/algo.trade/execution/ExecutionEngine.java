@@ -31,7 +31,9 @@ import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -46,6 +48,9 @@ public class ExecutionEngine {
 
     private static final MathContext MATH_CONTEXT = MathContext.DECIMAL64;
     private static final Logger log = LoggerFactory.getLogger(ExecutionEngine.class);
+
+    /** Prevents two monitors from placing duplicate broker SELL orders for the same trade. */
+    private final Set<String> closingInProgress = ConcurrentHashMap.newKeySet();
 
     private final TradingProperties properties;
     private final GlobalConfigService globalConfigService;
@@ -271,6 +276,18 @@ public class ExecutionEngine {
 
     @Transactional
     public ExecutionResult closeTrade(String tradeId, BigDecimal lastPrice, String reason) {
+        if (!closingInProgress.add(tradeId)) {
+            log.warn("Close already in progress for tradeId={} reason={} — duplicate suppressed", tradeId, reason);
+            return ExecutionResult.rejected(List.of("Close already in progress"));
+        }
+        try {
+            return doCloseTrade(tradeId, lastPrice, reason);
+        } finally {
+            closingInProgress.remove(tradeId);
+        }
+    }
+
+    private ExecutionResult doCloseTrade(String tradeId, BigDecimal lastPrice, String reason) {
         log.info("Close trade requested: tradeId={}, lastPrice={}, reason={}", tradeId, lastPrice, reason);
         TradeEntity trade = tradeRepository.findById(tradeId)
                 .orElseThrow(() -> new IllegalArgumentException("Unknown tradeId: " + tradeId));
@@ -348,6 +365,69 @@ public class ExecutionEngine {
         telegramAlertService.tradeClosed(tradeId, trade.getInstrumentKey(), trade.getQuantity(),
                 trade.getEntryPrice(), exitPrice, realizedPnl, reason, order);
         return ExecutionResult.accepted(order, List.of("Exit order filled and trade journal updated"));
+    }
+
+    @Transactional
+    public ExecutionResult closePartialTrade(String tradeId, int partialQuantity, BigDecimal lastPrice, String layerReason) {
+        log.info("Partial close requested: tradeId={}, partialQuantity={}, lastPrice={}, layer={}", tradeId, partialQuantity, lastPrice, layerReason);
+        TradeEntity trade = tradeRepository.findById(tradeId)
+                .orElseThrow(() -> new IllegalArgumentException("Unknown tradeId: " + tradeId));
+        if (trade.getStatus() != TradeStatus.OPEN) {
+            log.warn("Partial close rejected: tradeId={}, status={}", tradeId, trade.getStatus());
+            return ExecutionResult.rejected(List.of("Trade is not open"));
+        }
+        if (partialQuantity <= 0 || partialQuantity >= trade.getQuantity()) {
+            log.warn("Partial close quantity invalid ({}), falling back to full close: tradeId={}", partialQuantity, tradeId);
+            return closeTrade(tradeId, lastPrice, layerReason);
+        }
+
+        if (trade.isPaperTrade()) {
+            BigDecimal partialPnl = lastPrice.subtract(trade.getEntryPrice()).multiply(BigDecimal.valueOf(partialQuantity));
+            trade.partialClose(partialQuantity, partialPnl, layerReason);
+            tradeRepository.save(trade);
+            log.info("PAPER partial close: tradeId={}, layer={}, qty={}, price={}, partialPnl={}, remainingQty={}",
+                    tradeId, layerReason, partialQuantity, lastPrice, partialPnl, trade.getQuantity());
+            telegramAlertService.systemAlert(String.format(
+                    "📊 Partial Profit Booked (%s): %s | %d lots @ ₹%.2f | P&L ₹%.2f | Remaining: %d lots",
+                    layerReason, trade.getInstrumentKey(), partialQuantity, lastPrice.doubleValue(),
+                    partialPnl.doubleValue(), trade.getQuantity()));
+            return new ExecutionResult(true, Optional.empty(), List.of("Paper partial close: layer=" + layerReason + " pnl=" + partialPnl));
+        }
+
+        OrderRequest orderRequest = new OrderRequest("PARTIAL-" + UUID.randomUUID(), trade.getInstrumentKey(),
+                OrderSide.SELL, OrderType.LIMIT, ProductType.MIS, partialQuantity, Optional.of(lastPrice),
+                "partial-exit-" + layerReason.toLowerCase());
+        OrderResponse order;
+        try {
+            order = brokerClient.placeOrder(orderRequest);
+        } catch (RuntimeException ex) {
+            log.warn("Partial exit LIMIT failed for tradeId={}, retrying MARKET: {}", tradeId, ex.getMessage());
+            try {
+                OrderRequest marketReq = new OrderRequest("PARTIAL-MKT-" + UUID.randomUUID(), trade.getInstrumentKey(),
+                        OrderSide.SELL, OrderType.MARKET, ProductType.MIS, partialQuantity, Optional.empty(),
+                        "partial-exit-market-" + layerReason.toLowerCase());
+                order = brokerClient.placeOrder(marketReq);
+            } catch (RuntimeException retryEx) {
+                log.error("Partial exit MARKET retry failed for tradeId={}: {}", tradeId, retryEx.getMessage());
+                return ExecutionResult.rejected(List.of("Partial exit failed after retry: " + retryEx.getMessage()));
+            }
+        }
+        persistOrder(order);
+        if (order.status() != OrderStatus.COMPLETE) {
+            log.warn("Partial exit order not filled: tradeId={}, status={}", tradeId, order.status());
+            return ExecutionResult.rejected(List.of("Partial exit order not filled: " + order.status()));
+        }
+        BigDecimal exitPrice = order.averageFillPrice().orElse(lastPrice);
+        BigDecimal partialPnl = exitPrice.subtract(trade.getEntryPrice()).multiply(BigDecimal.valueOf(partialQuantity));
+        trade.partialClose(partialQuantity, partialPnl, layerReason);
+        tradeRepository.save(trade);
+        log.info("Partial close filled: tradeId={}, layer={}, qty={}, exitPrice={}, partialPnl={}, remainingQty={}",
+                tradeId, layerReason, partialQuantity, exitPrice, partialPnl, trade.getQuantity());
+        telegramAlertService.systemAlert(String.format(
+                "📊 Partial Profit Booked (%s): %s | %d lots @ ₹%.2f | P&L ₹%.2f | Remaining: %d lots",
+                layerReason, trade.getInstrumentKey(), partialQuantity, exitPrice.doubleValue(),
+                partialPnl.doubleValue(), trade.getQuantity()));
+        return ExecutionResult.accepted(order, List.of("Partial close: layer=" + layerReason + " qty=" + partialQuantity));
     }
 
     private StrategyDecisionEntity persistDecision(StrategyDecision decision) {

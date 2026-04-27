@@ -45,6 +45,10 @@ public class TradeEntity {
     private Double entryTheta;
     private Double entryIV;
     private Double entryGamma;
+    /** Cumulative P&L from partial exits already booked. */
+    private BigDecimal bookedPnl;
+    /** Comma-separated progressive exit layer names that have already fired (e.g. "PARTIAL_1,PARTIAL_2"). */
+    private String partialExitLayers;
 
     protected TradeEntity() {
     }
@@ -69,6 +73,14 @@ public class TradeEntity {
         this.exitTime = exitTime;
         this.realizedPnl = realizedPnl;
         this.exitReason = exitReason;
+    }
+
+    public void partialClose(int quantitySold, BigDecimal partialPnl, String layerName) {
+        this.quantity -= quantitySold;
+        this.bookedPnl = (this.bookedPnl == null ? BigDecimal.ZERO : this.bookedPnl).add(partialPnl);
+        this.realizedPnl = (this.realizedPnl == null ? BigDecimal.ZERO : this.realizedPnl).add(partialPnl);
+        String existing = this.partialExitLayers == null ? "" : this.partialExitLayers;
+        this.partialExitLayers = existing.isEmpty() ? layerName : existing + "," + layerName;
     }
 
     public String getTradeId() { return tradeId; }
@@ -100,4 +112,6 @@ public class TradeEntity {
 
     /** Check if this is a paper (simulated) trade. */
     public boolean isPaperTrade() { return tradeId != null && tradeId.startsWith("PAPER-"); }
+    public BigDecimal getBookedPnl() { return bookedPnl == null ? BigDecimal.ZERO : bookedPnl; }
+    public String getPartialExitLayers() { return partialExitLayers; }
 }

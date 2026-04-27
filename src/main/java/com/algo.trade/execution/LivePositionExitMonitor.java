@@ -18,9 +18,12 @@ import com.algo.trade.strategy.StrategyConfigService;
 import java.math.BigDecimal;
 import java.math.MathContext;
 import java.time.LocalTime;
+import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -63,8 +66,8 @@ public class LivePositionExitMonitor {
     private final Map<String, BigDecimal> peakPrices = new ConcurrentHashMap<>();
     // tradeId → current trailing stop price
     private final Map<String, BigDecimal> trailingStops = new ConcurrentHashMap<>();
-    // tradeId → whether partial profit has been taken
-    private final Map<String, Boolean> partialExited = new ConcurrentHashMap<>();
+    // tradeId → set of progressive exit layer names that have already fired
+    private final Map<String, Set<String>> firedLayers = new ConcurrentHashMap<>();
 
     public LivePositionExitMonitor(TradeRepository tradeRepository,
                                     ExecutionEngine executionEngine,
@@ -110,6 +113,14 @@ public class LivePositionExitMonitor {
     }
 
     private void evaluate(TradeEntity trade) {
+        // Spread positions are managed exclusively by SpreadPositionExitMonitor
+        StrategyConfig cfg = resolveConfig(trade);
+        if (cfg.getStrategyType().isSpreadStrategy()) {
+            log.debug("[ExitMonitor] Skipping spread trade {} ({}): managed by SpreadPositionExitMonitor",
+                    trade.getTradeId(), cfg.getStrategyType());
+            return;
+        }
+
         Optional<Quote> quoteOpt = marketDataService.quote(trade.getInstrumentKey());
         if (quoteOpt.isEmpty()) {
             log.debug("[ExitMonitor] No quote for {}", trade.getInstrumentKey());
@@ -142,7 +153,7 @@ public class LivePositionExitMonitor {
         }
 
         BigDecimal entryPrice = trade.getEntryPrice();
-        StrategyConfig config = resolveConfig(trade);
+        StrategyConfig config = cfg;
 
         // Populate entry Greeks if not yet set (first evaluation after entry)
         populateEntryGreeksIfMissing(trade);
@@ -191,6 +202,7 @@ public class LivePositionExitMonitor {
         List<com.algo.trade.domain.Candle> candles15m = liveCandleBuilder.getHistory(instrumentToken, com.algo.trade.domain.Timeframe.FIFTEEN_MINUTE);
         double atr = candles15m.size() >= 15 ? dynamicExitManager.calculateATR(candles15m, 14) : 0;
         boolean useAtrExits = atr > 0 && entryPrice.doubleValue() > 0;
+        List<com.algo.trade.domain.Candle> candles1m = liveCandleBuilder.getHistory(instrumentToken, com.algo.trade.domain.Timeframe.ONE_MINUTE);
 
         // Dynamic SL: ATR-based when available, fixed % as fallback
         double slPct;
@@ -274,22 +286,68 @@ public class LivePositionExitMonitor {
             }
         }
 
-        // ── 5. Partial profit at 30% (exit half, trail rest) ──────────────────
-        if (useAtrExits) {
-            boolean alreadyPartial = partialExited.getOrDefault(trade.getTradeId(), false);
-            double fraction = dynamicExitManager.partialProfitFraction(profitPct, alreadyPartial);
-            if (fraction > 0) {
-                partialExited.put(trade.getTradeId(), true);
-                log.info("[ExitMonitor] PARTIAL PROFIT: tradeId={} profit={}% — booking {}% of position (logged only, partial close not yet implemented)",
-                        trade.getTradeId(), String.format("%.1f", profitPct), String.format("%.0f", fraction * 100));
-                // Note: actual partial close requires splitting the trade — not yet implemented.
-                // No Telegram alert to avoid confusion until ExecutionEngine.closePartial() is built.
+        // ── 5. Progressive profit booking ──────────────────────────────────────
+        if (useAtrExits && profitPct > 0) {
+            Set<String> fired = firedLayers.computeIfAbsent(trade.getTradeId(),
+                    id -> loadFiredLayers(trade));
+            Optional<com.algo.trade.strategy.DynamicExitManager.ExitLayer> layer =
+                    dynamicExitManager.nextExitLayer(profitPct, fired);
+            if (layer.isPresent()) {
+                com.algo.trade.strategy.DynamicExitManager.ExitLayer l = layer.get();
+                int lotSize = IndexType.fromName(trade.getUnderlying()).lotSize();
+                int rawQty = (int) Math.round(trade.getQuantity() * l.exitFraction());
+                // F&O orders must be whole-lot multiples — round DOWN to nearest lot
+                int partialQty = (rawQty / lotSize) * lotSize;
+                fired.add(l.name()); // mark fired regardless so we don't re-check this layer
+                if (partialQty > 0) {
+                    log.info("[ExitMonitor] PROGRESSIVE BOOKING {}: tradeId={} profit={}% qty={} lotSize={}",
+                            l.name(), trade.getTradeId(), String.format("%.1f", profitPct), partialQty, lotSize);
+                    executionEngine.closePartialTrade(trade.getTradeId(), partialQty, currentPrice, l.name());
+                } else {
+                    log.debug("[ExitMonitor] PROGRESSIVE BOOKING {}: skipped — position too small for lot-size rounding (remaining={} lotSize={})",
+                            l.name(), trade.getQuantity(), lotSize);
+                }
             }
         }
 
-        // ── 6. Momentum breakout exit (for short premium strategies) ──────────
+        // ── 6. Stall detection — exit dead trades bleeding theta ───────────────
+        if (useAtrExits && profitPct > -10 && profitPct < 8 && !candles1m.isEmpty()) {
+            if (dynamicExitManager.isStalled(candles1m, trade.getEntryTime(), atr, 10)) {
+                log.info("[ExitMonitor] STALL EXIT: tradeId={} — underlying flat for 10 candles, profit={}%",
+                        trade.getTradeId(), String.format("%.1f", profitPct));
+                telegramAlertService.systemAlert(String.format(
+                        "💤 Stall Exit: %s | Underlying flat 10 min | P&L %.1f%%",
+                        trade.getInstrumentKey(), profitPct));
+                close(trade, currentPrice, "STALL_EXIT");
+                return;
+            }
+        }
+
+        // ── 7. Gamma spike exit — expiry day only, before EXPIRY_AFTERNOON gate ──
+        if (useAtrExits && expiryCalendar.isExpiryDay(indexType)
+                && !expiryCalendar.isExpiryAfternoon(indexType)
+                && dynamicExitManager.isGammaSpike(candles15m, atr)) {
+            if (profitPct >= 20) {
+                log.info("[ExitMonitor] GAMMA SPIKE PROFIT: tradeId={} profit={}% — locking in expiry spike",
+                        trade.getTradeId(), String.format("%.1f", profitPct));
+                telegramAlertService.systemAlert(String.format(
+                        "⚡ Gamma Spike Exit (profit): %s | Spike detected | P&L +%.1f%%",
+                        trade.getInstrumentKey(), profitPct));
+                close(trade, currentPrice, "GAMMA_SPIKE_PROFIT");
+                return;
+            } else if (profitPct <= -25) {
+                log.warn("[ExitMonitor] GAMMA SPIKE PROTECTION: tradeId={} loss={}% — cutting before escalation",
+                        trade.getTradeId(), String.format("%.1f", profitPct));
+                telegramAlertService.systemAlert(String.format(
+                        "⚡ Gamma Spike Exit (protection): %s | Spike against position | P&L %.1f%%",
+                        trade.getInstrumentKey(), profitPct));
+                close(trade, currentPrice, "GAMMA_SPIKE_PROTECTION");
+                return;
+            }
+        }
+
+        // ── 8. Momentum breakout exit (for short premium strategies) ──────────
         if (useAtrExits && candles15m.size() >= 15) {
-            StrategyConfig cfg = resolveConfig(trade);
             if (cfg.getStrategyType().isSellingStrategy() && dynamicExitManager.isBreakout(candles15m, 14)) {
                 log.warn("[ExitMonitor] BREAKOUT EXIT: tradeId={} — market trending, exiting short premium",
                         trade.getTradeId());
@@ -301,7 +359,7 @@ public class LivePositionExitMonitor {
             }
         }
 
-        // ── 7. VWAP reversal exit — close long options when underlying crosses back through VWAP ──
+        // ── 9. VWAP reversal exit — close long options when underlying crosses back through VWAP ──
         if (globalConfigService.isVwapExitEnabled() && profitPct > 0) {
             checkVwapReversal(trade, currentPrice, profitPct);
         }
@@ -353,7 +411,7 @@ public class LivePositionExitMonitor {
             // Only clear in-memory state after confirmed successful close
             trailingStops.remove(trade.getTradeId());
             peakPrices.remove(trade.getTradeId());
-            partialExited.remove(trade.getTradeId());
+            firedLayers.remove(trade.getTradeId());
         } catch (Exception e) {
             log.warn("[ExitMonitor] Failed to close trade {} — retaining trailing stop state for next evaluation: {}",
                     trade.getTradeId(), e.getMessage());
@@ -399,6 +457,15 @@ public class LivePositionExitMonitor {
     private long resolveInstrumentToken(TradeEntity trade) {
         String underlying = trade.getUnderlying();
         return com.algo.trade.domain.IndexType.fromName(underlying).spotToken();
+    }
+
+    private Set<String> loadFiredLayers(TradeEntity trade) {
+        Set<String> set = ConcurrentHashMap.newKeySet();
+        String layers = trade.getPartialExitLayers();
+        if (layers != null && !layers.isBlank()) {
+            set.addAll(Arrays.asList(layers.split(",")));
+        }
+        return set;
     }
 
     /** Populate entry Greeks on a trade if not yet set. */

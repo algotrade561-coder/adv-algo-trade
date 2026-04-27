@@ -121,8 +121,16 @@ public class StrategyConfigService {
             config.setTrendTimeframe(defaults.getTrendTimeframe());
             dirty = true;
         }
+        // Migrate SCALPING trailing stop activation from old default 20% → 10%
+        if (config.getStrategyType() == com.algo.trade.strategy.StrategyType.SCALPING
+                && config.getTrailingStopActivationPercent() != null
+                && config.getTrailingStopActivationPercent().compareTo(java.math.BigDecimal.valueOf(20)) == 0) {
+            config.setTrailingStopActivationPercent(java.math.BigDecimal.valueOf(10));
+            log.info("Migrated SCALPING trailingStopActivationPercent: 20% → 10%");
+            dirty = true;
+        }
         if (dirty) {
-            log.info("Migrated null timeframe fields for strategy {}", config.getStrategyType());
+            log.info("Migrated config fields for strategy {}", config.getStrategyType());
             repository.save(config);
         }
         return config;

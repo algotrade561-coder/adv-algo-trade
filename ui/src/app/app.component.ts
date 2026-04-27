@@ -513,6 +513,7 @@ export class AppComponent implements OnInit, OnDestroy {
     { label: 'Strategies', path: 'strategies', icon: 'auto_awesome' },
     { label: 'Execution', path: 'execution', icon: 'play_circle' },
     { label: 'Monitoring', path: 'monitoring', icon: 'monitoring' },
+    { label: 'AI Insights', path: 'ai-insights', icon: 'psychology' },
     { label: 'Reports', path: 'reports', icon: 'description' },
     { label: 'Kite Auth', path: 'auth', icon: 'lock_open' },
     { label: 'Settings', path: 'settings', icon: 'tune' }
