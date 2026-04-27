@@ -3,7 +3,7 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { DecimalPipe } from '@angular/common';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
-import { ApiService } from '../core/api.service';
+import { ApiService, StrategyDto } from '../core/api.service';
 import { ApiRecord } from '../core/models';
 
 @Component({
@@ -16,14 +16,38 @@ import { ApiRecord } from '../core/models';
         <div><h1 class="title">Rejected Signals</h1><p class="sub">NO_TRADE decisions with rejection reasons.</p></div>
         <span class="spacer"></span>
         <span class="count">{{ totalElements }} total · Page {{ currentPage + 1 }}/{{ totalPages || 1 }}</span>
-        <button mat-stroked-button (click)="loadPage(0)"><mat-icon>refresh</mat-icon> Refresh</button>
       </div>
 
       <div class="filter-bar">
+        <label class="fi"><span class="fl">Date</span>
+          <select [value]="selectedPeriod" (change)="onPeriodChange($any($event.target).value)">
+            @for (p of periodOpts; track p.value) { <option [value]="p.value">{{ p.label }}</option> }
+          </select>
+        </label>
+        <label class="fi"><span class="fl">Index</span>
+          <select [value]="selectedUnderlying" (change)="selectedUnderlying = $any($event.target).value">
+            <option value="ALL">All</option>
+            @for (u of underlyingOpts; track u) { <option [value]="u">{{ u }}</option> }
+          </select>
+        </label>
         <label class="fi"><span class="fl">Strategy</span>
           <select [value]="selectedStrategy" (change)="selectedStrategy = $any($event.target).value">
             <option value="ALL">All</option>
             @for (s of strategyOpts; track s) { <option [value]="s">{{ s }}</option> }
+          </select>
+        </label>
+        <label class="fi"><span class="fl">Symbol</span>
+          <select [value]="selectedOptionType" (change)="selectedOptionType = $any($event.target).value">
+            <option value="ALL">All</option>
+            <option value="CE">CE</option>
+            <option value="PE">PE</option>
+          </select>
+        </label>
+        <label class="fi"><span class="fl">Mode</span>
+          <select [value]="selectedMode" (change)="selectedMode = $any($event.target).value">
+            <option value="ALL">All</option>
+            <option value="LIVE">Live</option>
+            <option value="PAPER">Paper</option>
           </select>
         </label>
       </div>
@@ -39,6 +63,11 @@ import { ApiRecord } from '../core/models';
             <span class="badge badge-strat">{{ s['strategyType'] }}</span>
             <span class="badge">{{ s['underlying'] }}</span>
             @if (s['optionType']) { <span class="badge">{{ s['optionType'] }}</span> }
+            @if (paperStrategyTypes.size > 0) {
+              <span [class]="paperStrategyTypes.has(str(s['strategyType'])) ? 'badge badge-paper' : 'badge badge-live'">
+                {{ paperStrategyTypes.has(str(s['strategyType'])) ? 'PAPER' : 'LIVE' }}
+              </span>
+            }
             <span class="spacer"></span>
             <span class="ts">{{ s['_display_ts'] }}</span>
           </div>
@@ -61,8 +90,16 @@ import { ApiRecord } from '../core/models';
                 @if (s['fastEma'] != null) { <div class="f"><span>EMA 9</span><strong>{{ $any(s['fastEma']) | number:'1.1-1' }}</strong></div> }
                 @if (s['slowEma'] != null) { <div class="f"><span>EMA 21</span><strong>{{ $any(s['slowEma']) | number:'1.1-1' }}</strong></div> }
                 @if (s['bollingerBandwidth'] != null) { <div class="f"><span>BB Width</span><strong>{{ $any(s['bollingerBandwidth']) | number:'1.2-2' }}%</strong></div> }
-                @if (s['executionStage']) { <div class="f"><span>Exec Stage</span><strong>{{ s['executionStage'] }}</strong></div> }
               </div>
+            }
+            @if (s['executionStage']) {
+              <div class="sl">Execution Outcome</div>
+              <div class="field-grid">
+                <div class="f"><span>Stage</span><strong [class]="execClass(s['executionStage'])">{{ s['executionStage'] }}</strong></div>
+              </div>
+              @if (s['executionReason']) {
+                <div class="exec-reason"><mat-icon class="exec-ri">info_outline</mat-icon>{{ s['executionReason'] }}</div>
+              }
             }
             <div class="reasons"><mat-icon class="ri">info_outline</mat-icon> {{ s['reasons'] ?? 'No reason recorded' }}</div>
           </div>
@@ -97,6 +134,8 @@ import { ApiRecord } from '../core/models';
     .badge { padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; background: rgba(255,255,255,.04); border: 1px solid var(--line); color: var(--muted); }
     .badge-no { background: rgba(255,113,106,.1); border-color: rgba(255,113,106,.3); color: var(--bad); }
     .badge-strat { background: rgba(97,168,255,.1); border-color: rgba(97,168,255,.3); color: var(--accent); }
+    .badge-live { background: rgba(69,209,140,.1); border-color: rgba(69,209,140,.3); color: var(--ok); }
+    .badge-paper { background: rgba(242,189,75,.1); border-color: rgba(242,189,75,.3); color: var(--warn, #f2bd4b); }
     .ts { font-size: 12px; color: var(--muted); }
     .field-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 6px; }
     .f { padding: 7px 10px; border-radius: 6px; background: rgba(255,255,255,.02); border: 1px solid rgba(255,255,255,.04); }
@@ -107,6 +146,9 @@ import { ApiRecord } from '../core/models';
     .neg { color: var(--bad) !important; }
     .sl { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--accent); margin: 10px 0 4px; }
     .reasons { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; color: var(--muted); margin-top: 10px; padding: 10px 12px; border-radius: 6px; background: rgba(255,113,106,.03); border: 1px solid rgba(255,113,106,.1); line-height: 1.5; word-break: break-word; }
+    .warn { color: var(--warn, #f2bd4b) !important; }
+    .exec-reason { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; color: var(--muted); margin-top: 6px; padding: 8px 10px; border-radius: 6px; background: rgba(97,168,255,.03); border: 1px solid rgba(97,168,255,.1); line-height: 1.5; word-break: break-word; }
+    .exec-ri { font-size: 14px; width: 14px; height: 14px; color: var(--accent); margin-top: 1px; flex-shrink: 0; }
     .ri { font-size: 16px; width: 16px; height: 16px; color: var(--bad); margin-top: 1px; flex-shrink: 0; }
     .pager { display: flex; align-items: center; justify-content: center; gap: 16px; margin-top: 20px; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
     .pager-info { font-size: 13px; font-weight: 600; color: var(--muted); }
@@ -114,7 +156,20 @@ import { ApiRecord } from '../core/models';
 })
 export class RejectedSignalsPageComponent implements OnInit {
   readonly strategyOpts = ['DIRECTIONAL_BUY','SCALPING','VOLATILITY_BREAKOUT','EVENT_DRIVEN_BUY','BULL_CALL_SPREAD','BEAR_PUT_SPREAD','LONG_STRADDLE','LONG_STRANGLE','SHORT_STRADDLE','SHORT_STRANGLE','IRON_CONDOR','BUTTERFLY','CALENDAR_SPREAD','DIAGONAL_SPREAD','JADE_LIZARD','SYNTHETIC_FUTURES'];
+  readonly underlyingOpts = ['NIFTY', 'BANKNIFTY', 'SENSEX'];
+  readonly periodOpts = [
+    { value: 'TODAY', label: 'Today' },
+    { value: 'YESTERDAY', label: 'Yesterday' },
+    { value: 'LAST7', label: 'Last 7 days' },
+    { value: 'LAST30', label: 'Last 30 days' },
+    { value: 'ALL', label: 'All time' }
+  ];
   selectedStrategy = 'ALL';
+  selectedUnderlying = 'ALL';
+  selectedOptionType = 'ALL';
+  selectedMode = 'ALL';
+  selectedPeriod = 'TODAY';
+  paperStrategyTypes = new Set<string>();
   signals: ApiRecord[] = [];
   currentPage = 0;
   totalPages = 0;
@@ -124,13 +179,37 @@ export class RejectedSignalsPageComponent implements OnInit {
   constructor(private api: ApiService, private cd: ChangeDetectorRef) {}
 
   get filtered(): ApiRecord[] {
-    return this.signals.filter(s => this.selectedStrategy === 'ALL' || String(s['strategyType'] ?? '') === this.selectedStrategy);
+    return this.signals
+      .filter(s => this.selectedStrategy === 'ALL' || String(s['strategyType'] ?? '') === this.selectedStrategy)
+      .filter(s => this.selectedUnderlying === 'ALL' || String(s['underlying'] ?? '') === this.selectedUnderlying)
+      .filter(s => this.selectedOptionType === 'ALL' || String(s['optionType'] ?? '') === this.selectedOptionType)
+      .filter(s => {
+        if (this.selectedMode === 'ALL' || this.paperStrategyTypes.size === 0) return true;
+        const isPaper = this.paperStrategyTypes.has(String(s['strategyType'] ?? ''));
+        return this.selectedMode === 'PAPER' ? isPaper : !isPaper;
+      });
   }
 
-  ngOnInit(): void { setTimeout(() => this.loadPage(0), 0); }
+  ngOnInit(): void {
+    this.api.getStrategies().subscribe(strategies => {
+      this.paperStrategyTypes = new Set(strategies.filter((s: StrategyDto) => s.paperTrading).map((s: StrategyDto) => s.type));
+    });
+    setTimeout(() => this.loadPage(0), 0);
+  }
+
+  onPeriodChange(val: string): void { this.selectedPeriod = val; this.loadPage(0); }
+
+  str(v: unknown): string { return String(v ?? ''); }
+
+  execClass(stage: unknown): string {
+    const s = String(stage ?? '');
+    if (s === 'ORDER_FILLED' || s === 'PAPER_FILLED') return 'pos';
+    if (s === 'ORDER_OPEN') return 'warn';
+    return 'neg';
+  }
 
   loadPage(page: number): void {
-    this.api.rejectedSignalsPaged(page, this.pageSize).pipe(takeUntilDestroyed(this.dr)).subscribe({
+    this.api.rejectedSignalsPaged(page, this.pageSize, this.selectedPeriod).pipe(takeUntilDestroyed(this.dr)).subscribe({
       next: r => {
         this.signals = (r.content as ApiRecord[]).map((s, i) => norm(s, page * this.pageSize + i));
         this.currentPage = r.number;

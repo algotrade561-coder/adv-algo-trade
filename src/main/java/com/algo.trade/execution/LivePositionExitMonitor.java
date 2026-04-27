@@ -1,5 +1,6 @@
 package com.algo.trade.execution;
 
+import com.algo.trade.config.PositionSyncProperties;
 import com.algo.trade.domain.CandleClosedEvent;
 import com.algo.trade.domain.IndexType;
 import com.algo.trade.domain.Quote;
@@ -50,6 +51,7 @@ public class LivePositionExitMonitor {
     private final ExpiryCalendar expiryCalendar;
     private final com.algo.trade.strategy.DynamicExitManager dynamicExitManager;
     private final com.algo.trade.marketdata.LiveCandleBuilder liveCandleBuilder;
+    private final PositionSyncProperties positionSyncProperties;
 
     // tradeId → highest price seen since entry
     private final Map<String, BigDecimal> peakPrices = new ConcurrentHashMap<>();
@@ -66,7 +68,8 @@ public class LivePositionExitMonitor {
                                     TelegramAlertService telegramAlertService,
                                     ExpiryCalendar expiryCalendar,
                                     com.algo.trade.strategy.DynamicExitManager dynamicExitManager,
-                                    com.algo.trade.marketdata.LiveCandleBuilder liveCandleBuilder) {
+                                    com.algo.trade.marketdata.LiveCandleBuilder liveCandleBuilder,
+                                    PositionSyncProperties positionSyncProperties) {
         this.tradeRepository = tradeRepository;
         this.executionEngine = executionEngine;
         this.marketDataService = marketDataService;
@@ -76,6 +79,7 @@ public class LivePositionExitMonitor {
         this.expiryCalendar = expiryCalendar;
         this.dynamicExitManager = dynamicExitManager;
         this.liveCandleBuilder = liveCandleBuilder;
+        this.positionSyncProperties = positionSyncProperties;
     }
 
     @EventListener
@@ -83,6 +87,7 @@ public class LivePositionExitMonitor {
         List<TradeEntity> openTrades = tradeRepository.findByStatus(TradeStatus.OPEN);
         if (openTrades.isEmpty()) return;
         for (TradeEntity trade : openTrades) {
+            if (!positionSyncProperties.manageSyncedTrades() && trade.getTradeId().startsWith("SYNC-")) continue;
             try {
                 evaluate(trade);
             } catch (Exception e) {
@@ -101,8 +106,7 @@ public class LivePositionExitMonitor {
         if (currentPrice == null || currentPrice.signum() <= 0) return;
 
         // Expiry danger zone: force-exit all positions after 3 PM on expiry day
-        IndexType indexType = trade.getInstrumentKey().contains("BANKNIFTY")
-                ? IndexType.BANKNIFTY : IndexType.NIFTY;
+        IndexType indexType = IndexType.fromName(trade.getUnderlying());
         if (expiryCalendar.isExpiryDangerZone(indexType)) {
             log.warn("[ExitMonitor] EXPIRY DANGER ZONE — force-closing: tradeId={} instrument={}",
                     trade.getTradeId(), trade.getInstrumentKey());
@@ -335,10 +339,7 @@ public class LivePositionExitMonitor {
      */
     private long resolveInstrumentToken(TradeEntity trade) {
         String underlying = trade.getUnderlying();
-        if (underlying != null && underlying.contains("BANKNIFTY")) {
-            return com.algo.trade.domain.IndexType.BANKNIFTY.spotToken();
-        }
-        return com.algo.trade.domain.IndexType.NIFTY.spotToken();
+        return com.algo.trade.domain.IndexType.fromName(underlying).spotToken();
     }
 
     /** Populate entry Greeks on a trade if not yet set. */

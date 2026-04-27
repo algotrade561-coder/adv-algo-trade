@@ -122,7 +122,8 @@ public class BacktestMonthDiagnosticsService {
                 activeProperties.backtest().lotSize(),
                 optionType,
                 selectedQuote,
-                Optional.ofNullable(previousQuote)
+                Optional.ofNullable(previousQuote),
+                0.0
         );
         return strategy.evaluateEntryWithoutRecording(request);
     }

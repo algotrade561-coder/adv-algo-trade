@@ -2,6 +2,7 @@ package com.algo.trade.config;
 
 import com.algo.trade.domain.OptionType;
 import com.algo.trade.domain.Timeframe;
+import com.algo.trade.domain.UnderlyingSymbol;
 import jakarta.persistence.*;
 import java.math.BigDecimal;
 import java.time.LocalTime;
@@ -35,6 +36,9 @@ public class GlobalConfig {
 
     @Column(columnDefinition = "VARCHAR(20)")
     private String enabledOptionTypes = "CE,PE";
+
+    @Column(columnDefinition = "VARCHAR(100)")
+    private String enabledUnderlyings = "NIFTY";
 
     private boolean vwapFilterEnabled = true;
     private boolean trendFilterEnabled = true;
@@ -157,6 +161,10 @@ public class GlobalConfig {
         this.enabledOptionTypes = props.entry().enabledOptionTypes().stream()
                 .map(OptionType::name)
                 .collect(Collectors.joining(","));
+        this.enabledUnderlyings = props.symbols().underlyings().isEmpty() ? "NIFTY"
+                : props.symbols().underlyings().stream()
+                        .map(UnderlyingSymbol::name)
+                        .collect(Collectors.joining(","));
         this.vwapFilterEnabled = props.entry().vwapFilterEnabled();
         this.trendFilterEnabled = props.entry().trendFilterEnabled();
         this.volumeSpikeMultiplier = props.entry().volumeSpikeMultiplier();
@@ -234,6 +242,25 @@ public class GlobalConfig {
     public void setEnabledOptionTypes(List<OptionType> types) {
         this.enabledOptionTypes = types.stream()
                 .map(OptionType::name)
+                .collect(Collectors.joining(","));
+    }
+
+    public String getEnabledUnderlyings() { return enabledUnderlyings; }
+    public void setEnabledUnderlyings(String enabledUnderlyings) { this.enabledUnderlyings = enabledUnderlyings; }
+
+    public List<UnderlyingSymbol> getEnabledUnderlyingsAsList() {
+        if (enabledUnderlyings == null || enabledUnderlyings.isBlank()) {
+            return List.of(UnderlyingSymbol.NIFTY);
+        }
+        return Arrays.stream(enabledUnderlyings.split(","))
+                .map(String::trim)
+                .map(UnderlyingSymbol::valueOf)
+                .toList();
+    }
+
+    public void setEnabledUnderlyings(List<UnderlyingSymbol> underlyings) {
+        this.enabledUnderlyings = underlyings.stream()
+                .map(UnderlyingSymbol::name)
                 .collect(Collectors.joining(","));
     }
 

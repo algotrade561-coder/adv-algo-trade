@@ -29,6 +29,7 @@ public class OrderEntity {
     private Instant signalTimestamp;
     private Instant orderPlacedAt;
     private java.math.BigDecimal slippage;
+    private String strategyType;
 
     protected OrderEntity() {
     }
@@ -70,6 +71,8 @@ public class OrderEntity {
     public void setOrderPlacedAt(Instant v) { this.orderPlacedAt = v; }
     public java.math.BigDecimal getSlippage() { return slippage; }
     public void setSlippage(java.math.BigDecimal v) { this.slippage = v; }
+    public String getStrategyType() { return strategyType; }
+    public void setStrategyType(String v) { this.strategyType = v; }
 
     /** Signal-to-order latency in milliseconds. */
     public Long getSignalToOrderMs() {

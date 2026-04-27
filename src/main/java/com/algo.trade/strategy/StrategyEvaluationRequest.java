@@ -27,7 +27,8 @@ public record StrategyEvaluationRequest(
         int selectedLotSize,
         OptionType optionType,
         Quote selectedOptionQuote,
-        Optional<Quote> previousSelectedOptionQuote
+        Optional<Quote> previousSelectedOptionQuote,
+        double ivRank
 ) {
     public StrategyEvaluationRequest {
         underlyingCandles = List.copyOf(underlyingCandles == null ? List.of() : underlyingCandles);

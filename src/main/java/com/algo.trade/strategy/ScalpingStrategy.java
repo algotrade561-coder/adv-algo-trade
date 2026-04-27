@@ -19,17 +19,17 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * Requires 2 consecutive candles confirming EMA 9/21 crossover before entry.
  * Tight stops, 30-min max hold, no entries after 14:00.
- * Uses the existing EmaIndicator from the project.
  */
 @Component
 public class ScalpingStrategy {
 
     private static final Logger log = LoggerFactory.getLogger(ScalpingStrategy.class);
     private static final LocalTime CUTOFF = LocalTime.of(14, 0);
+    private static final int MIN_CANDLES = 22;
+    private static final int CONFIRM_CANDLES = 2;
 
     private final EmaIndicator emaIndicator;
 
-    // Per-underlying crossover confirmation counters (thread-safe)
     private final Map<String, Integer> bullishConfirm = new ConcurrentHashMap<>();
     private final Map<String, Integer> bearishConfirm = new ConcurrentHashMap<>();
 
@@ -39,9 +39,20 @@ public class ScalpingStrategy {
 
     public Optional<StrategyDecision> evaluate(List<Candle> candles5m, LocalTime marketTime,
                                                StrategyConfig config, UnderlyingSymbol underlying) {
-        if (marketTime.isBefore(LocalTime.of(9, 30)) || marketTime.isAfter(CUTOFF))
-            return Optional.empty();
-        if (candles5m.size() < 22) return Optional.empty();
+        return evaluateWithDiagnostics(candles5m, marketTime, config, underlying).signal();
+    }
+
+    public StrategyDiagnostics.WithSignal evaluateWithDiagnostics(List<Candle> candles5m, LocalTime marketTime,
+                                                                   StrategyConfig config, UnderlyingSymbol underlying) {
+        if (marketTime.isBefore(LocalTime.of(9, 30)) || marketTime.isAfter(CUTOFF)) {
+            return new StrategyDiagnostics.WithSignal(Optional.empty(),
+                    new StrategyDiagnostics("timeWindow", null, null, null, null, null, null, null, null));
+        }
+        if (candles5m.size() < MIN_CANDLES) {
+            return new StrategyDiagnostics.WithSignal(Optional.empty(),
+                    new StrategyDiagnostics("insufficientCandles(" + candles5m.size() + "/" + MIN_CANDLES + ")",
+                            null, null, null, null, null, null, null, null));
+        }
 
         String key = underlying.name();
         List<BigDecimal> closes = candles5m.stream().map(Candle::close).toList();
@@ -68,20 +79,32 @@ public class ScalpingStrategy {
 
         int bullCount = bullishConfirm.getOrDefault(key, 0);
         int bearCount = bearishConfirm.getOrDefault(key, 0);
+        String crossType = bullishCross ? "BULLISH" : bearishCross ? "BEARISH" : "NONE";
+        int confirmCount = bullishCross ? bullCount : (bearishCross ? bearCount : 0);
 
-        if (bullCount >= 2) {
+        if (bullCount >= CONFIRM_CANDLES) {
             bullishConfirm.put(key, 0);
             log.info("[Scalping {}] Bullish EMA crossover confirmed (2 candles)", underlying);
-            return Optional.of(signal(underlying, SignalType.BUY_CE, OptionType.CE,
-                    candles5m.getLast().close(), fastEma, slowEma));
+            StrategyDiagnostics diag = new StrategyDiagnostics(null, fastEma, slowEma, crossType, confirmCount,
+                    null, null, null, null);
+            return new StrategyDiagnostics.WithSignal(
+                    Optional.of(signal(underlying, SignalType.BUY_CE, OptionType.CE,
+                            candles5m.getLast().close(), fastEma, slowEma)), diag);
         }
-        if (bearCount >= 2) {
+        if (bearCount >= CONFIRM_CANDLES) {
             bearishConfirm.put(key, 0);
             log.info("[Scalping {}] Bearish EMA crossover confirmed (2 candles)", underlying);
-            return Optional.of(signal(underlying, SignalType.BUY_PE, OptionType.PE,
-                    candles5m.getLast().close(), fastEma, slowEma));
+            StrategyDiagnostics diag = new StrategyDiagnostics(null, fastEma, slowEma, crossType, confirmCount,
+                    null, null, null, null);
+            return new StrategyDiagnostics.WithSignal(
+                    Optional.of(signal(underlying, SignalType.BUY_PE, OptionType.PE,
+                            candles5m.getLast().close(), fastEma, slowEma)), diag);
         }
-        return Optional.empty();
+
+        String firstFailed = (bullCount == 0 && bearCount == 0) ? "noEmaCross" : "needsConfirmation(" + confirmCount + "/" + CONFIRM_CANDLES + ")";
+        return new StrategyDiagnostics.WithSignal(Optional.empty(),
+                new StrategyDiagnostics(firstFailed, fastEma, slowEma, crossType, confirmCount,
+                        null, null, null, null));
     }
 
     private StrategyDecision signal(UnderlyingSymbol underlying, SignalType signalType,

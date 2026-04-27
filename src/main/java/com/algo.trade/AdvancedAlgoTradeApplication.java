@@ -1,6 +1,7 @@
 package com.algo.trade;
 
 import com.algo.trade.config.GlobalConfigService;
+import com.algo.trade.config.PositionSyncProperties;
 import com.algo.trade.config.TradingProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -16,7 +17,7 @@ import java.util.TimeZone;
  * Spring Boot entrypoint for the Kite API options application.
  */
 @SpringBootApplication
-@EnableConfigurationProperties(TradingProperties.class)
+@EnableConfigurationProperties({TradingProperties.class, PositionSyncProperties.class})
 @EnableScheduling
 public class AdvancedAlgoTradeApplication {
 

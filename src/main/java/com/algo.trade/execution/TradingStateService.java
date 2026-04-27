@@ -1,5 +1,6 @@
 package com.algo.trade.execution;
 
+import com.algo.trade.config.GlobalConfigService;
 import com.algo.trade.config.TradingProperties;
 import com.algo.trade.domain.ExecutionMode;
 import com.algo.trade.domain.MarketDataMode;
@@ -27,6 +28,7 @@ public class TradingStateService {
     private static final Logger log = LoggerFactory.getLogger(TradingStateService.class);
 
     private final TradingProperties properties;
+    private final GlobalConfigService globalConfigService;
     private final AtomicReference<TradingMode> requestedMode;
     private final AtomicReference<MarketDataMode> marketDataMode;
     private final AtomicReference<ExecutionMode> executionMode;
@@ -43,11 +45,14 @@ public class TradingStateService {
     private volatile int extensionsUsedToday = 0;
     private static final int MAX_EXTENSIONS = 2;
 
-    public TradingStateService(TradingProperties properties) {
+    public TradingStateService(TradingProperties properties, GlobalConfigService globalConfigService) {
         this.properties = properties;
-        EnumSet<UnderlyingSymbol> configuredUnderlyings = properties.symbols().underlyings().isEmpty()
+        this.globalConfigService = globalConfigService;
+        // Read persisted underlyings from DB; fall back to YAML if DB has none
+        java.util.List<UnderlyingSymbol> persisted = globalConfigService.getEnabledUnderlyings();
+        EnumSet<UnderlyingSymbol> configuredUnderlyings = persisted.isEmpty()
                 ? EnumSet.of(UnderlyingSymbol.NIFTY)
-                : EnumSet.copyOf(properties.symbols().underlyings());
+                : EnumSet.copyOf(persisted);
         this.enabledUnderlyings = new AtomicReference<>(configuredUnderlyings);
         this.requestedMode = new AtomicReference<>(properties.mode());
         this.marketDataMode = new AtomicReference<>(properties.marketDataMode());
@@ -236,6 +241,7 @@ public class TradingStateService {
             }
             return next;
         });
+        globalConfigService.persistEnabledUnderlyings(java.util.List.copyOf(updatedUnderlyings));
         Instant timestamp = Instant.now();
         updatedAt.set(timestamp);
         log.info("Underlying scan state changed: underlying={}, enabled={}, enabledUnderlyings={}, updatedAt={}",

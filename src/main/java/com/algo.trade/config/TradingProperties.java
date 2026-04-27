@@ -174,11 +174,13 @@ public record TradingProperties(
                     "NEAREST_WEEKLY",
                     Map.of(
                             UnderlyingSymbol.NIFTY, "NSE:NIFTY 50",
-                            UnderlyingSymbol.BANKNIFTY, "NSE:NIFTY BANK"
+                            UnderlyingSymbol.BANKNIFTY, "NSE:NIFTY BANK",
+                            UnderlyingSymbol.SENSEX, "BSE:SENSEX"
                     ),
                     Map.of(
                             UnderlyingSymbol.NIFTY, "NSE:NIFTY 50",
-                            UnderlyingSymbol.BANKNIFTY, "NSE:NIFTY BANK"
+                            UnderlyingSymbol.BANKNIFTY, "NSE:NIFTY BANK",
+                            UnderlyingSymbol.SENSEX, "BSE:SENSEX"
                     )
             );
         }

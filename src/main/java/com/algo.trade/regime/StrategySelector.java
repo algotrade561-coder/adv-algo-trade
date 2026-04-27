@@ -110,14 +110,19 @@ public class StrategySelector {
         double vix = marketGuard.getCurrentVix();
         double pcr = marketGuard.getCurrentPcr();
 
-        // Evaluate for both indices
-        evaluateIndex("NIFTY", vix, pcr);
-        evaluateIndex("BANKNIFTY", vix, pcr);
+        // Evaluate for all supported indices
+        for (com.algo.trade.domain.IndexType indexType : com.algo.trade.domain.IndexType.values()) {
+            try {
+                com.algo.trade.domain.UnderlyingSymbol.valueOf(indexType.underlyingSymbol());
+                evaluateIndex(indexType.underlyingSymbol(), vix, pcr);
+            } catch (IllegalArgumentException ignored) {
+                // IndexType exists but has no UnderlyingSymbol (e.g. FINNIFTY, MIDCPNIFTY) — skip
+            }
+        }
     }
 
     private void evaluateIndex(String index, double vix, double pcr) {
-        com.algo.trade.domain.IndexType indexType = "BANKNIFTY".equals(index)
-                ? com.algo.trade.domain.IndexType.BANKNIFTY : com.algo.trade.domain.IndexType.NIFTY;
+        com.algo.trade.domain.IndexType indexType = com.algo.trade.domain.IndexType.fromName(index);
         double ivRank = ivRankTracker.getIVRank(indexType);
 
         // Live multi-TF trend from candle builder

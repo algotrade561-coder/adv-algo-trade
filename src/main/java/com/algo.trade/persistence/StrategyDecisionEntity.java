@@ -13,7 +13,8 @@ import java.time.Instant;
 @Table(name = "strategy_decision_entity", indexes = {
     @Index(name = "idx_sde_timestamp", columnList = "timestamp"),
     @Index(name = "idx_sde_signal_type", columnList = "signalType"),
-    @Index(name = "idx_sde_strategy_type", columnList = "strategyType")
+    @Index(name = "idx_sde_strategy_type", columnList = "strategyType"),
+    @Index(name = "idx_sde_underlying", columnList = "underlying")
 })
 public class StrategyDecisionEntity {
 
@@ -64,6 +65,10 @@ public class StrategyDecisionEntity {
     // ── Scalping fields ───────────────────────────────────────────────────────
     private Double fastEma;
     private Double slowEma;
+
+    // ── Diagnostic fields (filter-level analysis) ─────────────────────────────
+    /** Machine-readable first gate that blocked entry: noEmaCross, thetaGuard, noSqueeze, etc. */
+    private String firstFailedFilter;
 
     // ── Execution outcome (populated after execution attempt) ─────────────────
     /** RISK_REJECTED, SIZING_REJECTED, ORDER_FILLED, ORDER_NOT_FILLED, BROKER_ERROR, NOT_EXECUTED */
@@ -157,6 +162,7 @@ public class StrategyDecisionEntity {
     public Double getBollingerBandwidth() { return bollingerBandwidth; }
     public Double getFastEma() { return fastEma; }
     public Double getSlowEma() { return slowEma; }
+    public String getFirstFailedFilter() { return firstFailedFilter; }
     public String getExecutionStage() { return executionStage; }
     public String getExecutionReason() { return executionReason; }
 
@@ -173,6 +179,7 @@ public class StrategyDecisionEntity {
     public void setBollingerBandwidth(Double v) { this.bollingerBandwidth = v; }
     public void setFastEma(Double v) { this.fastEma = v; }
     public void setSlowEma(Double v) { this.slowEma = v; }
+    public void setFirstFailedFilter(String v) { this.firstFailedFilter = v; }
     public void setLotSize(Integer v) { this.lotSize = v; }
     public void setOptionOpenInterest(Long v) { this.optionOpenInterest = v; }
     public void setVwapConditionPassed(boolean v) { this.vwapConditionPassed = v; }

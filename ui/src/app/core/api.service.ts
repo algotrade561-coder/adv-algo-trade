@@ -144,12 +144,14 @@ export class ApiService {
 
   // ── Signal endpoints ────────────────────────────────────────────────────
   entrySignals(): Observable<StrategyDecision[]> { return this.http.get<StrategyDecision[]>(`${this.base}/signals/entries`); }
-  entrySignalsPaged(page: number, size: number): Observable<PagedResponse<StrategyDecision>> {
-    return this.http.get<PagedResponse<StrategyDecision>>(`${this.base}/signals/entries/paged?page=${page}&size=${size}`);
+  entrySignalsPaged(page: number, size: number, period?: string): Observable<PagedResponse<StrategyDecision>> {
+    const p = period && period !== 'ALL' ? `&period=${period}` : '';
+    return this.http.get<PagedResponse<StrategyDecision>>(`${this.base}/signals/entries/paged?page=${page}&size=${size}${p}`);
   }
   rejectedSignals(): Observable<StrategyDecision[]> { return this.http.get<StrategyDecision[]>(`${this.base}/signals/rejected`); }
-  rejectedSignalsPaged(page: number, size: number): Observable<PagedResponse<StrategyDecision>> {
-    return this.http.get<PagedResponse<StrategyDecision>>(`${this.base}/signals/rejected/paged?page=${page}&size=${size}`);
+  rejectedSignalsPaged(page: number, size: number, period?: string): Observable<PagedResponse<StrategyDecision>> {
+    const p = period && period !== 'ALL' ? `&period=${period}` : '';
+    return this.http.get<PagedResponse<StrategyDecision>>(`${this.base}/signals/rejected/paged?page=${page}&size=${size}${p}`);
   }
   replayEntrySignals(): Observable<EntrySignalReplayResult> { return this.http.post<EntrySignalReplayResult>(`${this.base}/reports/entry-signals/replay`, {}); }
 

@@ -54,7 +54,7 @@ public class StrategySignalCsvRecorder {
             "ivPassed", "liquidityPassed", "timePassed",
             "scalpEma9", "scalpEma21", "scalpCrossType", "scalpConfirmCount",
             "bbUpperBand", "bbLowerBand", "bbBandwidth", "bbSqueeze", "ivRank",
-            "confidenceScore", "reasons"
+            "confidenceScore", "firstFailedFilter", "reasons"
     ) + System.lineSeparator();
 
     private static final String CANDLES_HEADER = String.join(",",
@@ -173,6 +173,7 @@ public class StrategySignalCsvRecorder {
                     csv(scalpEma9), csv(scalpEma21), csv(scalpCrossType), csv(scalpConfirmCount),
                     csv(bbUpperBand), csv(bbLowerBand), csv(bbBandwidth), csv(bbSqueeze), csv(ivRank),
                     csv(decision.confidenceScore()),
+                    csv(null),
                     csv(String.join("; ", decision.reasons()))
             ) + System.lineSeparator();
             append(OUTPUT, HEADER, row);
@@ -183,14 +184,37 @@ public class StrategySignalCsvRecorder {
 
     /**
      * Records a NO_TRADE from any additional strategy into the same entry-signals.csv.
+     * Pass {@link StrategyDiagnostics#NONE} when a strategy doesn't compute indicators.
      */
     public synchronized void recordAdditionalNoTrade(
             String strategyType,
             String underlying,
             BigDecimal spotPrice,
             String reason,
-            List<Candle> underlyingCandles
+            List<Candle> underlyingCandles,
+            StrategyDiagnostics diagnostics,
+            double ivRank
     ) {
+        recordAdditionalNoTrade(strategyType, underlying, spotPrice, reason,
+                underlyingCandles, diagnostics, ivRank, null, null);
+    }
+
+    /**
+     * Records a NO_TRADE with ATM instrument context (selectedInstrumentKey + selectedStrike).
+     * Use when the ATM option can be resolved even though no signal was generated.
+     */
+    public synchronized void recordAdditionalNoTrade(
+            String strategyType,
+            String underlying,
+            BigDecimal spotPrice,
+            String reason,
+            List<Candle> underlyingCandles,
+            StrategyDiagnostics diagnostics,
+            double ivRank,
+            String selectedInstrumentKey,
+            BigDecimal selectedStrike
+    ) {
+        if (diagnostics == null) diagnostics = StrategyDiagnostics.NONE;
         try {
             Files.createDirectories(OUTPUT.getParent());
             Candle latestUnderlying = last(underlyingCandles);
@@ -215,7 +239,7 @@ public class StrategySignalCsvRecorder {
                     csv(properties.risk().maxOpenTrades()),
                     csv(null), csv(null), csv(null),
                     csv(null), csv(null), csv(null), csv(null),
-                    csv(null), csv(null),
+                    csv(selectedInstrumentKey), csv(selectedStrike),
                     csv(spotPrice),
                     csv(null),
                     csv(null), csv(null), csv(null), csv(null),
@@ -233,9 +257,13 @@ public class StrategySignalCsvRecorder {
                     csv(null), csv(null),
                     csv(null), csv(null), csv(null), csv(null),
                     csv(null), csv(null), csv(null),
-                    csv(null), csv(null), csv(null), csv(null), // scalp
-                    csv(null), csv(null), csv(null), csv(null), csv(null), // BB/IV
+                    csv(diagnostics.ema9()), csv(diagnostics.ema21()),
+                    csv(diagnostics.emaCrossType()), csv(diagnostics.emaCrossConfirmCount()),
+                    csv(diagnostics.bbUpper()), csv(diagnostics.bbLower()),
+                    csv(diagnostics.bbBandwidth()), csv(diagnostics.bbSqueeze()),
+                    csv(ivRank > 0 ? ivRank : null),
                     csv(null),
+                    csv(diagnostics.firstFailedFilter()),
                     csv(reason)
             ) + System.lineSeparator();
             append(OUTPUT, HEADER, row);
@@ -331,8 +359,10 @@ public class StrategySignalCsvRecorder {
                 csv(liquidityPassed),
                 csv(timePassed),
                 csv(null), csv(null), csv(null), csv(null), // scalp EMA fields
-                csv(null), csv(null), csv(null), csv(null), csv(null), // BB/IV fields
+                csv(null), csv(null), csv(null), csv(null), // BB fields
+                csv(request.ivRank() > 0 ? request.ivRank() : null),
                 csv(decision.confidenceScore()),
+                csv(null), // firstFailedFilter — N/A for DIRECTIONAL_BUY
                 csv(String.join("; ", decision.reasons()))
         ) + System.lineSeparator();
     }

@@ -96,7 +96,7 @@ public class ReportingService {
     }
 
     public List<StrategyDecisionEntity> recentDecisions() {
-        List<StrategyDecisionEntity> decisions = decisionRepository.findTop20ByOrderByTimestampDesc();
+        List<StrategyDecisionEntity> decisions = decisionRepository.findTop50ByOrderByTimestampDesc();
         log.debug("Reporting recent decisions completed: count={}", decisions.size());
         return decisions;
     }
@@ -114,6 +114,13 @@ public class ReportingService {
                 org.springframework.data.domain.PageRequest.of(page, size));
     }
 
+    public org.springframework.data.domain.Page<StrategyDecisionEntity> entrySignalsPaged(
+            int page, int size, java.time.Instant from, java.time.Instant to) {
+        return decisionRepository.findBySignalTypeInAndTimestampBetweenOrderByTimestampDesc(
+                List.of("BUY_CE", "BUY_PE"), from, to,
+                org.springframework.data.domain.PageRequest.of(page, size));
+    }
+
     public List<StrategyDecisionEntity> rejectedSignals() {
         List<StrategyDecisionEntity> decisions = decisionRepository.findTop200BySignalTypeOrderByTimestampDesc("NO_TRADE");
         log.debug("Reporting rejected signals completed: count={}", decisions.size());
@@ -126,8 +133,23 @@ public class ReportingService {
                 org.springframework.data.domain.PageRequest.of(page, size));
     }
 
+    public org.springframework.data.domain.Page<StrategyDecisionEntity> rejectedSignalsPaged(
+            int page, int size, java.time.Instant from, java.time.Instant to) {
+        return decisionRepository.findBySignalTypeAndTimestampBetweenOrderByTimestampDesc(
+                "NO_TRADE", from, to,
+                org.springframework.data.domain.PageRequest.of(page, size));
+    }
+
     public List<StrategyDecisionEntity> signalsByStrategy(String strategyType) {
         return decisionRepository.findTop100ByStrategyTypeOrderByTimestampDesc(strategyType);
+    }
+
+    public long countEntrySignalsSince(java.time.Instant since) {
+        return decisionRepository.countEntrySignalsSince(since);
+    }
+
+    public long countRejectedSignalsSince(java.time.Instant since) {
+        return decisionRepository.countRejectedSignalsSince(since);
     }
 
     public List<java.util.Map<String, Object>> signalSummaryToday() {

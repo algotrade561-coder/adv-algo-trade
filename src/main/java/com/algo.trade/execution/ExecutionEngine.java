@@ -58,6 +58,7 @@ public class ExecutionEngine {
     private final StrategyDecisionRepository decisionRepository;
     private final ExecutionOutcomeCsvRecorder executionOutcomeCsvRecorder;
     private final TelegramAlertService telegramAlertService;
+    private final com.algo.trade.config.PositionSyncProperties positionSyncProperties;
     private final Clock clock;
 
     @Autowired
@@ -66,16 +67,18 @@ public class ExecutionEngine {
                            ErrorEventRepository errorEventRepository,
                            StrategyDecisionRepository decisionRepository,
                            ExecutionOutcomeCsvRecorder executionOutcomeCsvRecorder,
-                           TelegramAlertService telegramAlertService) {
+                           TelegramAlertService telegramAlertService,
+                           com.algo.trade.config.PositionSyncProperties positionSyncProperties) {
         this(properties, globalConfigService, brokerClient, riskEngine, tradingStateService, tradeRepository, orderRepository, errorEventRepository, decisionRepository,
-                executionOutcomeCsvRecorder, telegramAlertService, Clock.systemUTC());
+                executionOutcomeCsvRecorder, telegramAlertService, positionSyncProperties, Clock.systemUTC());
     }
 
     ExecutionEngine(TradingProperties properties, GlobalConfigService globalConfigService, BrokerClient brokerClient, RiskEngine riskEngine, TradingStateService tradingStateService,
                     TradeRepository tradeRepository, OrderRepository orderRepository,
                     ErrorEventRepository errorEventRepository,
                     StrategyDecisionRepository decisionRepository, ExecutionOutcomeCsvRecorder executionOutcomeCsvRecorder,
-                    TelegramAlertService telegramAlertService, Clock clock) {
+                    TelegramAlertService telegramAlertService,
+                    com.algo.trade.config.PositionSyncProperties positionSyncProperties, Clock clock) {
         this.properties = properties;
         this.globalConfigService = globalConfigService;
         this.brokerClient = brokerClient;
@@ -87,6 +90,7 @@ public class ExecutionEngine {
         this.decisionRepository = decisionRepository;
         this.executionOutcomeCsvRecorder = executionOutcomeCsvRecorder;
         this.telegramAlertService = telegramAlertService;
+        this.positionSyncProperties = positionSyncProperties;
         this.clock = clock;
     }
 
@@ -172,12 +176,12 @@ public class ExecutionEngine {
         OrderResponse order;
         try {
             order = brokerClient.placeOrder(orderRequest);
-            persistOrderWithSignalTime(order, decision.timestamp(), optionPremium);
+            persistOrderWithSignalTime(order, decision.timestamp(), optionPremium, extractStrategyType(decision));
             log.info("Entry order response: clientOrderId={}, brokerOrderId={}, status={}, requestedQuantity={}, filledQuantity={}, averageFillPrice={}, rejectionReason={}",
                     order.clientOrderId(), order.brokerOrderId().orElse(""), order.status(), order.requestedQuantity(),
                     order.filledQuantity(), order.averageFillPrice().orElse(null), order.rejectionReason().orElse(""));
         } catch (RuntimeException ex) {
-            return rejectBrokerFailure(decision, optionPremium, lotSize, sizing.quantity(), sizing.riskAmount(),
+            return rejectBrokerFailure(savedDecision, decision, optionPremium, lotSize, sizing.quantity(), sizing.riskAmount(),
                     sizing.estimatedCost(), orderRequest.clientOrderId(), ex);
         }
 
@@ -229,11 +233,6 @@ public class ExecutionEngine {
         log.info("PAPER entry requested: signalType={}, underlying={}, instrument={}, premium={}",
                 decision.signalType(), decision.underlying(),
                 decision.selectedInstrumentKey().orElse(""), optionPremium);
-
-        if (!tradingStateService.running()) {
-            log.warn("PAPER entry rejected: trading engine is stopped");
-            return ExecutionResult.rejected(List.of("Trading engine is stopped"));
-        }
 
         StrategyDecisionEntity savedDecision = persistDecision(decision);
 
@@ -355,14 +354,16 @@ public class ExecutionEngine {
         log.info("Persisting strategy decision: timestamp={}, underlying={}, signalType={}, instrument={}, reasons={}",
                 decision.timestamp(), decision.underlying(), decision.signalType(),
                 decision.selectedInstrumentKey().orElse(""), decision.reasons());
-        return decisionRepository.save(new StrategyDecisionEntity(decision.timestamp(), decision.underlying().name(),
+        StrategyDecisionEntity entity = new StrategyDecisionEntity(decision.timestamp(), decision.underlying().name(),
                 decision.signalType().name(), decision.underlyingPrice(), decision.optionPrice().orElse(null),
                 decision.optionOpenInterest().orElse(null), decision.lotSize().orElse(null),
                 decision.lotPrice().orElse(null),
                 decision.selectedInstrumentKey().orElse(null), decision.selectedStrike().orElse(null),
                 decision.optionType().map(Enum::name).orElse(null), decision.vwapConditionPassed(),
                 decision.imbalance().orElse(null), decision.volumeSpike(), decision.confidenceScore(),
-                String.join("; ", decision.reasons())));
+                String.join("; ", decision.reasons()));
+        entity.setStrategyType(extractStrategyType(decision));
+        return decisionRepository.save(entity);
     }
 
     private void updateExecutionStage(StrategyDecisionEntity entity, String stage, String reason) {
@@ -382,14 +383,14 @@ public class ExecutionEngine {
         orderRepository.save(entity);
     }
 
-    private void persistOrderWithSignalTime(OrderResponse order, Instant signalTimestamp, BigDecimal limitPrice) {
+    private void persistOrderWithSignalTime(OrderResponse order, Instant signalTimestamp, BigDecimal limitPrice, String strategyType) {
         OrderEntity entity = new OrderEntity(order.clientOrderId(), order.brokerOrderId().orElse(null),
                 order.instrumentKey(), order.side().name(), order.status(), order.requestedQuantity(),
                 order.filledQuantity(), order.averageFillPrice().orElse(null), order.rejectionReason().orElse(null),
                 order.updatedAt());
         entity.setSignalTimestamp(signalTimestamp);
         entity.setOrderPlacedAt(Instant.now(clock));
-        // Slippage = |fill price - limit price| (only meaningful when filled)
+        entity.setStrategyType(strategyType);
         if (order.averageFillPrice().isPresent() && limitPrice != null) {
             entity.setSlippage(order.averageFillPrice().get().subtract(limitPrice).abs());
         }
@@ -412,18 +413,12 @@ public class ExecutionEngine {
         String underlying = extractUnderlyingFromKey(instrumentKey);
         String optionType = instrumentKey.toUpperCase().contains("PE") ? "PE" : "CE";
 
+        String entryReason = "Limit order filled (watchdog) [" + (orderEntity.getStrategyType() != null ? orderEntity.getStrategyType() : "UNKNOWN") + "]: " + orderEntity.getClientOrderId();
         TradeEntity trade = new TradeEntity(tradeId, instrumentKey, underlying, optionType,
-                TradeStatus.OPEN, filledQty, fillPrice, orderEntity.getUpdatedAt(),
-                "Limit order filled (watchdog): " + orderEntity.getClientOrderId());
-        // Try to resolve strategy type from the order's signal timestamp
-        if (orderEntity.getSignalTimestamp() != null) {
-            decisionRepository.findTop200BySignalTypeInOrderByTimestampDesc(List.of("BUY_CE", "BUY_PE")).stream()
-                    .filter(d -> d.getTimestamp() != null && d.getSelectedInstrumentKey() != null
-                            && d.getSelectedInstrumentKey().equals(instrumentKey))
-                    .findFirst()
-                    .ifPresent(d -> {
-                        if (d.getStrategyType() != null) trade.setStrategyType(d.getStrategyType());
-                    });
+                TradeStatus.OPEN, filledQty, fillPrice, orderEntity.getUpdatedAt(), entryReason);
+        // Use strategy type stored on the order entity at placement time
+        if (orderEntity.getStrategyType() != null && !orderEntity.getStrategyType().isBlank()) {
+            trade.setStrategyType(orderEntity.getStrategyType());
         }
         tradeRepository.save(trade);
 
@@ -443,6 +438,7 @@ public class ExecutionEngine {
     }
 
     private ExecutionResult rejectBrokerFailure(
+            StrategyDecisionEntity savedDecision,
             StrategyDecision decision,
             BigDecimal optionPremium,
             int lotSize,
@@ -457,6 +453,7 @@ public class ExecutionEngine {
                 clientOrderId, decision.selectedInstrumentKey().orElse(""), message, ex);
         errorEventRepository.save(new ErrorEventEntity(Instant.now(clock), "ExecutionEngine", message));
         List<String> reasons = List.of(message);
+        updateExecutionStage(savedDecision, "BROKER_ERROR", message);
         executionOutcomeCsvRecorder.recordEntry(decision, optionPremium, lotSize, "BROKER_ERROR", false,
                 quantity, riskAmount, estimatedCost,
                 new OrderResponse(clientOrderId, Optional.empty(), decision.selectedInstrumentKey().orElse(""),
@@ -485,6 +482,7 @@ public class ExecutionEngine {
     private int openTradeCount() {
         return (int) tradeRepository.findByStatus(TradeStatus.OPEN).stream()
                 .filter(t -> !t.isPaperTrade())
+                .filter(t -> positionSyncProperties.manageSyncedTrades() || !t.getTradeId().startsWith("SYNC-"))
                 .count();
     }
 
@@ -541,12 +539,14 @@ public class ExecutionEngine {
     private int tradesToday() {
         return (int) tradeRepository.findByEntryTimeBetween(todayStart(), tomorrowStart()).stream()
                 .filter(t -> !t.isPaperTrade())
+                .filter(t -> positionSyncProperties.manageSyncedTrades() || !t.getTradeId().startsWith("SYNC-"))
                 .count();
     }
 
     private BigDecimal dailyPnl() {
         return tradeRepository.findByEntryTimeBetween(todayStart(), tomorrowStart()).stream()
                 .filter(t -> !t.isPaperTrade())
+                .filter(t -> positionSyncProperties.manageSyncedTrades() || !t.getTradeId().startsWith("SYNC-"))
                 .map(TradeEntity::getRealizedPnl)
                 .filter(p -> p != null)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
@@ -558,6 +558,7 @@ public class ExecutionEngine {
                         todayStart().minus(Duration.ofDays(30)), tomorrowStart()).stream()
                 .filter(trade -> trade.getStatus() == TradeStatus.CLOSED)
                 .filter(trade -> !trade.isPaperTrade())
+                .filter(trade -> positionSyncProperties.manageSyncedTrades() || !trade.getTradeId().startsWith("SYNC-"))
                 .sorted((a, b) -> b.getEntryTime().compareTo(a.getEntryTime()))
                 .limit(20) // only need to check recent trades
                 .toList();

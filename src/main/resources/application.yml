@@ -34,13 +34,15 @@ trading:
   symbols:
     underlyings:
       - NIFTY
-    default-expiry: NEAREST_WEEKLY
+    default-expiry: NEAREST
     spot-quote-keys:
       NIFTY: "NSE:NIFTY 50"
       BANKNIFTY: "NSE:NIFTY BANK"
+      SENSEX: "BSE:SENSEX"
     spot-historical-keys:
       NIFTY: "NSE:NIFTY 50"
       BANKNIFTY: "NSE:NIFTY BANK"
+      SENSEX: "BSE:SENSEX"
 
   # ── Strike Selection ────────────────────────────────────────────────────
   strike:
@@ -123,6 +125,13 @@ spring:
 logging:
   level:
     com.algo.trade: INFO
+
+# ── Position Sync ─────────────────────────────────────────────────────────
+# manage-synced-trades: true  → SYNC'd positions are managed by SL/target/maxHold/squareoff (crash recovery)
+# manage-synced-trades: false → SYNC'd positions are tracked only; exit monitors skip them (manual trading)
+# FailSafeSquareoffDaemon always closes everything at 15:20 regardless of this flag.
+position-sync:
+  manage-synced-trades: false
 
 # ── Tail Hedge ────────────────────────────────────────────────────────────
 tail-hedge:

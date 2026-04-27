@@ -13,6 +13,8 @@ public interface StrategyDecisionRepository extends JpaRepository<StrategyDecisi
 
     List<StrategyDecisionEntity> findTop20ByOrderByTimestampDesc();
 
+    List<StrategyDecisionEntity> findTop50ByOrderByTimestampDesc();
+
     List<StrategyDecisionEntity> findTop200BySignalTypeInOrderByTimestampDesc(List<String> signalTypes);
 
     List<StrategyDecisionEntity> findTop200BySignalTypeOrderByTimestampDesc(String signalType);
@@ -20,8 +22,16 @@ public interface StrategyDecisionRepository extends JpaRepository<StrategyDecisi
     /** Paginated entry signals. */
     Page<StrategyDecisionEntity> findBySignalTypeInOrderByTimestampDesc(List<String> signalTypes, Pageable pageable);
 
+    /** Paginated entry signals filtered by date range. */
+    Page<StrategyDecisionEntity> findBySignalTypeInAndTimestampBetweenOrderByTimestampDesc(
+            List<String> signalTypes, java.time.Instant from, java.time.Instant to, Pageable pageable);
+
     /** Paginated rejected signals. */
     Page<StrategyDecisionEntity> findBySignalTypeOrderByTimestampDesc(String signalType, Pageable pageable);
+
+    /** Paginated rejected signals filtered by date range. */
+    Page<StrategyDecisionEntity> findBySignalTypeAndTimestampBetweenOrderByTimestampDesc(
+            String signalType, java.time.Instant from, java.time.Instant to, Pageable pageable);
 
     /** All signals for a specific strategy type, most recent first. */
     List<StrategyDecisionEntity> findTop100ByStrategyTypeOrderByTimestampDesc(String strategyType);
@@ -34,4 +44,14 @@ public interface StrategyDecisionRepository extends JpaRepository<StrategyDecisi
     @Query("SELECT s.strategyType, COUNT(s) FROM StrategyDecisionEntity s " +
            "WHERE s.timestamp >= :since GROUP BY s.strategyType ORDER BY COUNT(s) DESC")
     List<Object[]> countByStrategyTypeSince(java.time.Instant since);
+
+    /** Count entry (BUY/SELL) signals since a given instant — for live dashboard counters. */
+    @Query("SELECT COUNT(s) FROM StrategyDecisionEntity s WHERE " +
+           "(s.signalType LIKE 'BUY_%' OR s.signalType LIKE 'SELL_%') AND s.timestamp >= :since")
+    long countEntrySignalsSince(java.time.Instant since);
+
+    /** Count NO_TRADE signals since a given instant — for live dashboard counters. */
+    @Query("SELECT COUNT(s) FROM StrategyDecisionEntity s WHERE " +
+           "s.signalType = 'NO_TRADE' AND s.timestamp >= :since")
+    long countRejectedSignalsSince(java.time.Instant since);
 }

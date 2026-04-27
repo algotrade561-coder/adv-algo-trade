@@ -12,6 +12,9 @@ import com.algo.trade.reporting.ReportingService;
 import com.algo.trade.reporting.ReportingService.ReportArchiveResult;
 import com.algo.trade.risk.MarketGuard;
 import java.nio.file.Path;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -163,8 +166,12 @@ public class MonitoringController {
     @GetMapping("/signals/entries/paged")
     public org.springframework.data.domain.Page<StrategyDecisionEntity> entrySignalsPaged(
             @RequestParam(defaultValue = "0") int page,
-            @RequestParam(defaultValue = "50") int size) {
-        return reportingService.entrySignalsPaged(page, Math.min(size, 200));
+            @RequestParam(defaultValue = "50") int size,
+            @RequestParam(required = false) String period) {
+        Instant[] range = periodToRange(period);
+        return range == null
+                ? reportingService.entrySignalsPaged(page, Math.min(size, 200))
+                : reportingService.entrySignalsPaged(page, Math.min(size, 200), range[0], range[1]);
     }
 
     @GetMapping("/signals/rejected")
@@ -178,8 +185,30 @@ public class MonitoringController {
     @GetMapping("/signals/rejected/paged")
     public org.springframework.data.domain.Page<StrategyDecisionEntity> rejectedSignalsPaged(
             @RequestParam(defaultValue = "0") int page,
-            @RequestParam(defaultValue = "50") int size) {
-        return reportingService.rejectedSignalsPaged(page, Math.min(size, 200));
+            @RequestParam(defaultValue = "50") int size,
+            @RequestParam(required = false) String period) {
+        Instant[] range = periodToRange(period);
+        return range == null
+                ? reportingService.rejectedSignalsPaged(page, Math.min(size, 200))
+                : reportingService.rejectedSignalsPaged(page, Math.min(size, 200), range[0], range[1]);
+    }
+
+    private static final ZoneId IST = ZoneId.of("Asia/Kolkata");
+
+    private static Instant[] periodToRange(String period) {
+        if (period == null || period.isBlank() || "ALL".equalsIgnoreCase(period)) return null;
+        LocalDate today = LocalDate.now(IST);
+        return switch (period.toUpperCase()) {
+            case "TODAY"     -> dayRange(today);
+            case "YESTERDAY" -> dayRange(today.minusDays(1));
+            case "LAST7"     -> new Instant[]{ today.minusDays(6).atStartOfDay(IST).toInstant(), Instant.now() };
+            case "LAST30"    -> new Instant[]{ today.minusDays(29).atStartOfDay(IST).toInstant(), Instant.now() };
+            default          -> null;
+        };
+    }
+
+    private static Instant[] dayRange(LocalDate date) {
+        return new Instant[]{ date.atStartOfDay(IST).toInstant(), date.plusDays(1).atStartOfDay(IST).toInstant() };
     }
 
     /** Signals filtered by strategy type — new endpoint for strategy-aware UI. */

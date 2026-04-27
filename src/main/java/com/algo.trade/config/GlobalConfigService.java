@@ -2,6 +2,7 @@ package com.algo.trade.config;
 
 import com.algo.trade.domain.OptionType;
 import com.algo.trade.domain.Timeframe;
+import com.algo.trade.domain.UnderlyingSymbol;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -58,6 +59,14 @@ public class GlobalConfigService {
     public Timeframe getTrendTimeframe() { return cached.getTrendTimeframe(); }
 
     public List<OptionType> getEnabledOptionTypes() { return cached.getEnabledOptionTypesAsList(); }
+
+    public List<UnderlyingSymbol> getEnabledUnderlyings() { return cached.getEnabledUnderlyingsAsList(); }
+
+    public void persistEnabledUnderlyings(List<UnderlyingSymbol> underlyings) {
+        cached.setEnabledUnderlyings(underlyings);
+        repository.save(cached);
+        log.info("GlobalConfig enabledUnderlyings persisted: {}", underlyings);
+    }
 
     public boolean isVwapFilterEnabled() { return cached.isVwapFilterEnabled(); }
 

@@ -481,7 +481,6 @@ export class AppComponent {
     { label: 'Execution', path: 'execution', icon: 'play_circle' },
     { label: 'Monitoring', path: 'monitoring', icon: 'monitoring' },
     { label: 'Reports', path: 'reports', icon: 'description' },
-    { label: 'Config', path: 'config', icon: 'settings' },
     { label: 'Kite Auth', path: 'auth', icon: 'lock_open' },
     { label: 'Settings', path: 'settings', icon: 'tune' }
   ];

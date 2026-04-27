@@ -1,31 +1,31 @@
-import { Component, OnInit } from '@angular/core';
+import { ChangeDetectorRef, Component, OnDestroy, OnInit } from '@angular/core';
 import { DecimalPipe } from '@angular/common';
-import { catchError, forkJoin, of } from 'rxjs';
+import { catchError, forkJoin, interval, of, timer } from 'rxjs';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 import { MatTabsModule } from '@angular/material/tabs';
-import { ApiService } from '../core/api.service';
+import { ApiService, StrategyDto } from '../core/api.service';
 import { ApiRecord, JvmHealth, PnlSnapshot, RuntimeStatus, TradingStatus } from '../core/models';
-import { DataTableComponent } from '../shared/data-table.component';
 
 @Component({
   selector: 'app-monitoring-page',
   standalone: true,
-  imports: [DecimalPipe, MatButtonModule, MatIconModule, MatTabsModule, DataTableComponent],
+  imports: [DecimalPipe, MatButtonModule, MatIconModule, MatTabsModule],
   template: `
     <section class="page">
 
-      <!-- ── Header ─────────────────────────────────────────────────────── -->
+      <!-- Header -->
       <div class="row">
         <div>
           <h1 class="page-title">Monitoring</h1>
-          <p class="page-subtitle">Live and paper trading overview — positions, orders, trades, and PnL.</p>
+          <p class="page-subtitle">Live and paper trading overview — positions, orders, trades, and signals.</p>
         </div>
         <span class="spacer"></span>
+        @if (lastRefreshed) { <span class="refresh-ts">Updated {{ refreshedLabel }}</span> }
         <button mat-stroked-button (click)="load()"><mat-icon>refresh</mat-icon> Refresh</button>
       </div>
 
-      <!-- ── Halt / Approval Banners ──────────────────────────────────── -->
+      <!-- Banners -->
       @if (runtime?.haltMode === 'HARD') {
         <div class="banner banner-hard">
           <mat-icon>block</mat-icon>
@@ -35,96 +35,70 @@ import { DataTableComponent } from '../shared/data-table.component';
       @if (runtime?.haltMode === 'SOFT') {
         <div class="banner banner-soft">
           <mat-icon>pause_circle</mat-icon>
-          <strong>SOFT HALT ACTIVE</strong> — No new entries. Open positions are still being managed.
+          <strong>SOFT HALT ACTIVE</strong> — No new entries. Open positions are still managed.
         </div>
       }
       @if (runtime && !runtime.dailyApproved) {
         <div class="banner banner-info">
           <mat-icon>pending</mat-icon>
-          <strong>NOT APPROVED</strong> — Daily trading not approved yet. Auto-approves at 10:30 AM.
+          <strong>NOT APPROVED</strong> — Daily trading not approved. Auto-approves at 10:30 AM.
         </div>
       }
 
-      <!-- ── Live | Paper Summary ────────────────────────────────────── -->
-      <div class="summary-grid">
-
-        <!-- Live column -->
-        <div class="summary-col live-col">
-          <div class="col-header">
-            <mat-icon>wifi</mat-icon>
-            <span>Live Trading</span>
-            <span class="mode-pill live-pill">LIVE</span>
-          </div>
-          <div class="stat-row">
-            <div class="stat-card">
-              <span class="stat-label">Realized PnL</span>
-              <span class="stat-val" [class.pos]="livePnl >= 0" [class.neg]="livePnl < 0">
-                ₹{{ livePnl | number:'1.2-2' }}
-              </span>
-            </div>
-            <div class="stat-card">
-              <span class="stat-label">Unrealized PnL</span>
-              <span class="stat-val" [class.pos]="liveUnrealized >= 0" [class.neg]="liveUnrealized < 0">
-                ₹{{ liveUnrealized | number:'1.2-2' }}
-              </span>
-            </div>
-            <div class="stat-card stat-total">
-              <span class="stat-label">Total PnL</span>
-              <span class="stat-val stat-big" [class.pos]="liveTotal >= 0" [class.neg]="liveTotal < 0">
+      <!-- Metrics grid -->
+      <div class="metrics-section">
+        <div class="metrics-group">
+          <div class="group-label live-label"><mat-icon>wifi</mat-icon> Live Trading</div>
+          <div class="metrics-row">
+            <div class="metric-card live-card metric-big">
+              <span class="metric-label">Total P&amp;L</span>
+              <span class="metric-val big" [class.pos]="liveTotal >= 0" [class.neg]="liveTotal < 0">
                 ₹{{ liveTotal | number:'1.2-2' }}
               </span>
+              <span class="metric-sub">Realized ₹{{ livePnl | number:'1.2-2' }} · Unrealized ₹{{ liveUnrealized | number:'1.2-2' }}</span>
             </div>
-            <div class="stat-card">
-              <span class="stat-label">Open Positions</span>
-              <span class="stat-val">{{ tradingStatus?.openTrades ?? positions.length }}</span>
+            <div class="metric-card live-card">
+              <span class="metric-label">Open Positions</span>
+              <span class="metric-val">{{ tradingStatus?.openTrades ?? positions.length }}</span>
+              <span class="metric-sub">Live open trades</span>
             </div>
-            <div class="stat-card">
-              <span class="stat-label">Trades Today</span>
-              <span class="stat-val">{{ tradingStatus?.tradesToday ?? liveTrades.length }}</span>
-            </div>
-            <div class="stat-card">
-              <span class="stat-label">Consec. Losses</span>
-              <span class="stat-val" [class.neg]="(tradingStatus?.consecutiveLosses ?? 0) > 0">
-                {{ tradingStatus?.consecutiveLosses ?? 0 }}
-              </span>
+            <div class="metric-card live-card">
+              <span class="metric-label">Trades Today</span>
+              <span class="metric-val">{{ tradingStatus?.tradesToday ?? liveTrades.length }}</span>
+              <span class="metric-sub">Consec. losses: {{ tradingStatus?.consecutiveLosses ?? 0 }}</span>
             </div>
           </div>
         </div>
 
-        <!-- Paper column -->
-        <div class="summary-col paper-col">
-          <div class="col-header">
-            <mat-icon>description</mat-icon>
-            <span>Paper Trading</span>
-            <span class="mode-pill paper-pill">PAPER</span>
-          </div>
-          <div class="stat-row">
-            <div class="stat-card">
-              <span class="stat-label">Paper PnL</span>
-              <span class="stat-val" [class.pos]="paperPnl >= 0" [class.neg]="paperPnl < 0">
+        <div class="metrics-group">
+          <div class="group-label paper-label"><mat-icon>description</mat-icon> Paper Trading</div>
+          <div class="metrics-row">
+            <div class="metric-card paper-card metric-big">
+              <span class="metric-label">Paper P&amp;L</span>
+              <span class="metric-val big" [class.pos]="paperPnl >= 0" [class.neg]="paperPnl < 0">
                 ₹{{ paperPnl | number:'1.2-2' }}
               </span>
+              <span class="metric-sub">Closed paper trades</span>
             </div>
-            <div class="stat-card">
-              <span class="stat-label">Open Paper Trades</span>
-              <span class="stat-val">{{ tradingStatus?.openPaperTrades ?? openPaperPositions.length }}</span>
+            <div class="metric-card paper-card">
+              <span class="metric-label">Open Positions</span>
+              <span class="metric-val">{{ tradingStatus?.openPaperTrades ?? openPaperPositions.length }}</span>
+              <span class="metric-sub">Simulated open</span>
             </div>
-            <div class="stat-card">
-              <span class="stat-label">Paper Orders Today</span>
-              <span class="stat-val">{{ paperOrders.length }}</span>
+            <div class="metric-card paper-card">
+              <span class="metric-label">Total Trades</span>
+              <span class="metric-val">{{ paperTrades.length }}</span>
+              <span class="metric-sub">All simulated trades</span>
             </div>
           </div>
         </div>
-
       </div>
 
-      <!-- ── Daily Loss Progress ─────────────────────────────────────── -->
+      <!-- Daily Loss Bar -->
       @if (dailyLossLimit > 0) {
         <div class="loss-bar-wrap">
           <div class="loss-bar-hdr">
-            <span class="loss-bar-label">
-              <mat-icon>monitor_heart</mat-icon> Daily Loss Used
-            </span>
+            <span class="loss-bar-label"><mat-icon>monitor_heart</mat-icon> Daily Loss Used</span>
             <span class="loss-bar-values"
               [class.loss-critical]="lossUsedPercent >= 80"
               [class.loss-warn]="lossUsedPercent >= 50 && lossUsedPercent < 80">
@@ -136,17 +110,15 @@ import { DataTableComponent } from '../shared/data-table.component';
             </span>
           </div>
           <div class="loss-bar-track">
-            <div class="loss-bar-fill"
-              [style.width.%]="lossUsedPercent"
+            <div class="loss-bar-fill" [style.width.%]="lossUsedPercent"
               [class.fill-ok]="lossUsedPercent < 50"
               [class.fill-warn]="lossUsedPercent >= 50 && lossUsedPercent < 80"
-              [class.fill-bad]="lossUsedPercent >= 80">
-            </div>
+              [class.fill-bad]="lossUsedPercent >= 80"></div>
           </div>
         </div>
       }
 
-      <!-- ── JVM Health ──────────────────────────────────────────────── -->
+      <!-- JVM Health -->
       @if (jvm) {
         <div class="jvm-bar-wrap">
           <div class="jvm-header">
@@ -167,7 +139,7 @@ import { DataTableComponent } from '../shared/data-table.component';
               <span class="jvm-sub-label">{{ jvm.heapUsedPercent }}% of {{ jvm.heapMaxMb }} MB max</span>
             </div>
             <div class="jvm-card">
-              <span class="jvm-label">Heap Committed</span>
+              <span class="jvm-label">Committed</span>
               <span class="jvm-val">{{ jvm.heapTotalMb }} MB</span>
               <span class="jvm-sub-label">Allocated from OS</span>
             </div>
@@ -179,95 +151,321 @@ import { DataTableComponent } from '../shared/data-table.component';
             <div class="jvm-card">
               <span class="jvm-label">GC Pauses</span>
               <span class="jvm-val">{{ jvm.gcPauseMs }} ms</span>
-              <span class="jvm-sub-label">{{ jvm.gcCollections }} collections total</span>
+              <span class="jvm-sub-label">{{ jvm.gcCollections }} total</span>
             </div>
           </div>
         </div>
       }
 
-      <!-- ── Mode Toggle ─────────────────────────────────────────────── -->
-      <div class="mode-toggle-row">
-        <div class="mode-toggle">
-          <button class="mode-btn" [class.mode-live-active]="activeMode === 'live'" (click)="activeMode = 'live'">
-            <mat-icon>wifi</mat-icon> Live
-          </button>
-          <button class="mode-btn" [class.mode-paper-active]="activeMode === 'paper'" (click)="activeMode = 'paper'">
-            <mat-icon>description</mat-icon> Paper
-          </button>
-        </div>
-        <span class="mode-hint">
-          Showing <strong>{{ activeMode === 'live' ? 'live' : 'paper' }}</strong> data in the tables below
-        </span>
-      </div>
-
-      <!-- ── Detail Tabs ─────────────────────────────────────────────── -->
+      <!-- Main detail panel -->
       <div class="panel tab-panel">
+
+        <!-- Mode selector -->
+        <div class="panel-toolbar">
+          <div class="mode-seg">
+            <button class="seg-btn" [class.seg-live]="activeMode === 'live'" (click)="setMode('live')">
+              <mat-icon>wifi</mat-icon> Live
+            </button>
+            <button class="seg-btn" [class.seg-paper]="activeMode === 'paper'" (click)="setMode('paper')">
+              <mat-icon>description</mat-icon> Paper
+            </button>
+          </div>
+          <span class="mode-desc">
+            @if (activeMode === 'live') { Showing real broker positions, orders and trades }
+            @else { Showing simulated paper trades only }
+          </span>
+          @if (activeMode === 'paper' && paperStrategyTypes.size === 0 && strategiesLoaded) {
+            <span class="no-paper-hint">No strategies set to paper trading — enable paper mode on a strategy first</span>
+          }
+        </div>
+
         <mat-tab-group animationDuration="200ms">
 
+          <!-- Positions -->
           <mat-tab>
             <ng-template mat-tab-label>
               <mat-icon>receipt_long</mat-icon> Positions
-              <span class="tab-count">{{ activePositions.length }}</span>
+              <span class="tab-count">{{ activeMode === 'live' ? positions.length : openPaperPositions.length }}</span>
             </ng-template>
-            @if (activePositions.length === 0) {
-              <div class="empty-state">
-                <mat-icon>inbox</mat-icon>
-                <span>No open {{ activeMode }} positions</span>
-                @if (activeMode === 'paper') {
-                  <span class="empty-hint">Paper positions are simulated open trades — none are currently open.</span>
-                }
-              </div>
+            @if (activeMode === 'live') {
+              @if (positions.length === 0) {
+                <div class="empty-state"><mat-icon>inbox</mat-icon><span>No open live positions</span></div>
+              } @else {
+                <div class="table-wrap">
+                  <table class="mon-table">
+                    <thead><tr>
+                      <th>Instrument</th><th>Status</th><th>Qty</th><th>Avg ₹</th><th>Last ₹</th><th>Day P&L</th>
+                    </tr></thead>
+                    <tbody>
+                      @for (r of positions; track r['instrumentKey']) {
+                        <tr [class.row-closed-pos]="num(r['quantity']) === 0">
+                          <td class="inst-cell">{{ r['instrumentKey'] }}</td>
+                          <td>
+                            @if (num(r['quantity']) > 0) {
+                              <span class="status-badge status-open">OPEN</span>
+                            } @else {
+                              <span class="status-badge status-closed">CLOSED</span>
+                            }
+                          </td>
+                          <td class="mono">{{ r['quantity'] }}</td>
+                          <td class="mono">{{ fmtNum(r['averagePrice']) }}</td>
+                          <td class="mono">{{ fmtNum(r['lastPrice']) }}</td>
+                          <td class="mono" [class.pos]="num(r['unrealizedPnl']) >= 0" [class.neg]="num(r['unrealizedPnl']) < 0">
+                            {{ fmtNum(r['unrealizedPnl']) }}
+                          </td>
+                        </tr>
+                      }
+                    </tbody>
+                  </table>
+                </div>
+              }
             } @else {
-              <app-data-table [rows]="activePositions"></app-data-table>
+              @if (openPaperPositions.length === 0) {
+                <div class="empty-state">
+                  <mat-icon>description</mat-icon>
+                  <span>No open paper positions</span>
+                  <span class="empty-hint">Enable paper trading on a strategy via the Strategies page.</span>
+                </div>
+              } @else {
+                <div class="table-wrap">
+                  <table class="mon-table">
+                    <thead><tr>
+                      <th>Entry Time</th><th>Underlying</th><th>Type</th><th>Instrument</th><th>Entry ₹</th><th>Qty</th>
+                    </tr></thead>
+                    <tbody>
+                      @for (r of openPaperPositions; track r['tradeId']) {
+                        <tr>
+                          <td class="mono time-cell">{{ fmtTime(r['entryTime']) }}</td>
+                          <td>{{ r['underlying'] }}</td>
+                          <td><span [class]="'type-badge ' + typeCls(r['optionType'])">{{ r['optionType'] }}</span></td>
+                          <td class="inst-cell">{{ r['instrumentKey'] }}</td>
+                          <td class="mono">{{ fmtNum(r['entryPrice']) }}</td>
+                          <td class="mono">{{ r['quantity'] }}</td>
+                        </tr>
+                      }
+                    </tbody>
+                  </table>
+                </div>
+              }
             }
           </mat-tab>
 
+          <!-- Orders -->
           <mat-tab>
             <ng-template mat-tab-label>
               <mat-icon>list_alt</mat-icon> Orders
-              <span class="tab-count">{{ activeOrders.length }}</span>
+              <span class="tab-count">{{ activeMode === 'live' ? liveOrders.length : 0 }}</span>
             </ng-template>
-            @if (activeOrders.length === 0) {
-              <div class="empty-state">
-                <mat-icon>inbox</mat-icon>
-                <span>No {{ activeMode }} orders today</span>
-              </div>
+            @if (activeMode === 'live') {
+              @if (liveOrders.length === 0) {
+                <div class="empty-state"><mat-icon>inbox</mat-icon><span>No live orders today</span></div>
+              } @else {
+                <div class="table-wrap">
+                  <table class="mon-table">
+                    <thead><tr>
+                      <th>Time</th><th>Strategy</th><th>Instrument</th><th>Side</th>
+                      <th>Req Qty</th><th>Filled Qty</th><th>Fill ₹</th><th>Status</th><th>Rejection</th>
+                    </tr></thead>
+                    <tbody>
+                      @for (r of liveOrders; track r['clientOrderId']) {
+                        <tr>
+                          <td class="mono time-cell">{{ fmtTime(r['orderPlacedAt'] ?? r['updatedAt']) }}</td>
+                          <td>{{ fmtStrategy(r['strategyType']) }}</td>
+                          <td class="inst-cell">{{ r['instrumentKey'] }}</td>
+                          <td><span [class]="'side-badge side-' + str(r['side']).toLowerCase()">{{ r['side'] }}</span></td>
+                          <td class="mono">{{ r['requestedQuantity'] }}</td>
+                          <td class="mono">{{ r['filledQuantity'] }}</td>
+                          <td class="mono">{{ fmtNum(r['averageFillPrice']) }}</td>
+                          <td><span [class]="'status-badge status-' + str(r['status']).toLowerCase()">{{ r['status'] }}</span></td>
+                          <td class="reason-cell" [title]="str(r['rejectionReason'])">{{ truncate(r['rejectionReason'], 30) }}</td>
+                        </tr>
+                      }
+                    </tbody>
+                  </table>
+                </div>
+              }
             } @else {
-              <app-data-table [rows]="activeOrders"></app-data-table>
+              <div class="empty-state">
+                <mat-icon>info</mat-icon>
+                <span>Paper trades are fully simulated — no broker orders are placed</span>
+                <span class="empty-hint">Switch to Live mode to see real broker orders.</span>
+              </div>
             }
           </mat-tab>
 
+          <!-- Trades -->
           <mat-tab>
             <ng-template mat-tab-label>
               <mat-icon>swap_vert</mat-icon> Trades
-              <span class="tab-count">{{ activeTrades.length }}</span>
+              <span class="tab-count">{{ activeMode === 'live' ? liveTrades.length : paperTrades.length }}</span>
             </ng-template>
-            @if (activeTrades.length === 0) {
-              <div class="empty-state">
-                <mat-icon>inbox</mat-icon>
-                <span>No {{ activeMode }} trades today</span>
-              </div>
+            @if (activeMode === 'live') {
+              @if (liveTrades.length === 0) {
+                <div class="empty-state"><mat-icon>inbox</mat-icon><span>No live trades today</span></div>
+              } @else {
+                <div class="table-wrap">
+                  <table class="mon-table">
+                    <thead><tr>
+                      <th>Entry</th><th>Exit</th><th>Underlying</th><th>Type</th>
+                      <th>Instrument</th><th>Entry ₹</th><th>Exit ₹</th><th>Qty</th><th>P&L</th><th>Status</th>
+                    </tr></thead>
+                    <tbody>
+                      @for (r of liveTrades; track r['tradeId']) {
+                        <tr>
+                          <td class="mono time-cell">{{ fmtTime(r['entryTime']) }}</td>
+                          <td class="mono time-cell">{{ r['exitTime'] ? fmtTime(r['exitTime']) : '-' }}</td>
+                          <td>{{ r['underlying'] }}</td>
+                          <td><span [class]="'type-badge ' + typeCls(r['optionType'])">{{ r['optionType'] }}</span></td>
+                          <td class="inst-cell">{{ r['instrumentKey'] }}</td>
+                          <td class="mono">{{ fmtNum(r['entryPrice']) }}</td>
+                          <td class="mono">{{ r['exitPrice'] ? fmtNum(r['exitPrice']) : '-' }}</td>
+                          <td class="mono">{{ r['quantity'] }}</td>
+                          <td class="mono" [class.pos]="num(r['realizedPnl']) >= 0" [class.neg]="num(r['realizedPnl']) < 0">
+                            {{ r['realizedPnl'] ? fmtNum(r['realizedPnl']) : '-' }}
+                          </td>
+                          <td><span [class]="'status-badge status-' + str(r['status']).toLowerCase()">{{ r['status'] }}</span></td>
+                        </tr>
+                      }
+                    </tbody>
+                  </table>
+                </div>
+              }
             } @else {
-              <app-data-table [rows]="activeTrades"></app-data-table>
+              @if (paperTrades.length === 0) {
+                <div class="empty-state">
+                  <mat-icon>description</mat-icon>
+                  <span>No paper trades yet</span>
+                  <span class="empty-hint">Enable paper trading on a strategy via the Strategies page.</span>
+                </div>
+              } @else {
+                <div class="table-wrap">
+                  <table class="mon-table">
+                    <thead><tr>
+                      <th>Entry</th><th>Exit</th><th>Underlying</th><th>Type</th>
+                      <th>Instrument</th><th>Entry ₹</th><th>Exit ₹</th><th>Qty</th><th>P&L</th><th>Status</th>
+                    </tr></thead>
+                    <tbody>
+                      @for (r of paperTrades; track r['tradeId']) {
+                        <tr>
+                          <td class="mono time-cell">{{ fmtTime(r['entryTime']) }}</td>
+                          <td class="mono time-cell">{{ r['exitTime'] ? fmtTime(r['exitTime']) : '-' }}</td>
+                          <td>{{ r['underlying'] }}</td>
+                          <td><span [class]="'type-badge ' + typeCls(r['optionType'])">{{ r['optionType'] }}</span></td>
+                          <td class="inst-cell">{{ r['instrumentKey'] }}</td>
+                          <td class="mono">{{ fmtNum(r['entryPrice']) }}</td>
+                          <td class="mono">{{ r['exitPrice'] ? fmtNum(r['exitPrice']) : '-' }}</td>
+                          <td class="mono">{{ r['quantity'] }}</td>
+                          <td class="mono" [class.pos]="num(r['realizedPnl']) >= 0" [class.neg]="num(r['realizedPnl']) < 0">
+                            {{ r['realizedPnl'] ? fmtNum(r['realizedPnl']) : '-' }}
+                          </td>
+                          <td><span [class]="'status-badge status-' + str(r['status']).toLowerCase()">{{ r['status'] }}</span></td>
+                        </tr>
+                      }
+                    </tbody>
+                  </table>
+                </div>
+              }
             }
           </mat-tab>
 
+          <!-- Signals -->
           <mat-tab>
             <ng-template mat-tab-label>
               <mat-icon>notifications</mat-icon> Signals
               <span class="tab-count">{{ filteredSignals.length }}</span>
             </ng-template>
-            <div class="signal-filters">
-              @for (st of signalTypeOptions; track st) {
-                <button class="filter-chip" [class.chip-active]="selectedSignalTypes.has(st)" (click)="toggleSignalType(st)">
-                  {{ st }}
+
+            <!-- Strategy filter -->
+            <div class="filter-row">
+              <span class="filter-label">Strategy</span>
+              <button class="filter-chip" [class.chip-active]="selectedStrategyTypes.size === 0" (click)="clearStrategyFilter()">All</button>
+              @for (s of modeStrategyTypeOptions; track s) {
+                <button class="filter-chip" [class.chip-active]="selectedStrategyTypes.has(s)" (click)="toggleStrategyType(s)">
+                  {{ fmtStrategy(s) }}
                 </button>
               }
             </div>
+
+            <!-- Underlying filter -->
+            <div class="filter-row">
+              <span class="filter-label">Index</span>
+              <button class="filter-chip" [class.chip-active]="selectedUnderlyings.size === 0" (click)="clearUnderlyingFilter()">All</button>
+              @for (u of underlyingOptions; track u) {
+                <button class="filter-chip" [class.chip-active]="selectedUnderlyings.has(u)" (click)="toggleUnderlying(u)">{{ u }}</button>
+              }
+            </div>
+
+            <!-- Signal type filter -->
+            <div class="filter-row">
+              <span class="filter-label">Signal</span>
+              @for (s of signalTypeOptions; track s) {
+                <button class="filter-chip" [class.chip-active]="selectedSignalTypes.has(s)" (click)="toggleSignalType(s)">{{ s }}</button>
+              }
+            </div>
+
             @if (filteredSignals.length === 0) {
-              <div class="empty-state"><mat-icon>inbox</mat-icon><span>No signals match the selected filters</span></div>
+              <div class="empty-state">
+                <mat-icon>inbox</mat-icon>
+                <span>{{ signals.length === 0
+                  ? 'No signals yet — scanner has not run or data failed to load'
+                  : 'No signals match the current filters' }}</span>
+              </div>
             } @else {
-              <app-data-table [rows]="filteredSignals"></app-data-table>
+              <!-- Outcome summary strip -->
+              <div class="sig-summary-bar">
+                @if (signalSummary.filled > 0) {
+                  <span class="sum-chip sum-filled">Filled: {{ signalSummary.filled }}</span>
+                }
+                @if (signalSummary.inOrder > 0) {
+                  <span class="sum-chip sum-inorder">In Order: {{ signalSummary.inOrder }}</span>
+                }
+                @if (signalSummary.execRejected > 0) {
+                  <span class="sum-chip sum-rejected">Exec Rejected: {{ signalSummary.execRejected }}</span>
+                }
+                @if (signalSummary.notFilled > 0) {
+                  <span class="sum-chip sum-warn">Not Filled: {{ signalSummary.notFilled }}</span>
+                }
+                <span class="sum-chip sum-notrade">No-Trade: {{ signalSummary.noTrade }}</span>
+                <span class="sum-divider"></span>
+                <span class="sum-total">{{ filteredSignals.length }} signals</span>
+              </div>
+
+              <div class="table-wrap">
+                <table class="mon-table">
+                  <thead><tr>
+                    <th>Time</th><th>Strategy</th><th>Signal</th><th>Outcome</th><th>Underlying</th><th>Type</th>
+                    <th>Strike</th><th>Price</th><th>Score</th><th>Reason / Filter</th>
+                  </tr></thead>
+                  <tbody>
+                    @for (s of filteredSignals; track s['id']) {
+                      <tr [class]="'row-' + outcomeCls(s)">
+                        <td class="mono time-cell">{{ fmtTime(s['timestamp']) }}</td>
+                        <td>{{ fmtStrategy(s['strategyType']) }}</td>
+                        <td><span [class]="'sig-badge sig-' + sigCls(s['signalType'])">{{ s['signalType'] }}</span></td>
+                        <td><span [class]="'outcome-badge outcome-' + outcomeCls(s)">{{ outcomeLabel(s) }}</span></td>
+                        <td>{{ s['underlying'] ?? '-' }}</td>
+                        <td>
+                          @if (s['optionType']) {
+                            <span [class]="'type-badge ' + typeCls(s['optionType'])">{{ s['optionType'] }}</span>
+                          } @else { <span class="muted">-</span> }
+                        </td>
+                        <td class="mono">{{ s['selectedStrike'] ?? '-' }}</td>
+                        <td class="mono">
+                          @if (num(s['optionPrice']) > 0) {
+                            {{ fmtNum(s['optionPrice']) }}
+                          } @else if (num(s['underlyingPrice']) > 0) {
+                            <span class="spot-price" title="Underlying spot price">{{ fmtNum(s['underlyingPrice']) }}<sup>sp</sup></span>
+                          } @else { <span class="muted">-</span> }
+                        </td>
+                        <td class="mono">{{ fmtScore(s['confidenceScore']) }}</td>
+                        <td class="reason-cell" [title]="str(s['executionReason'] ?? s['firstFailedFilter'] ?? s['reasons'])">
+                          {{ truncate(s['executionReason'] ?? s['firstFailedFilter'] ?? s['reasons'], 50) }}
+                        </td>
+                      </tr>
+                    }
+                  </tbody>
+                </table>
+              </div>
             }
           </mat-tab>
 
@@ -281,209 +479,210 @@ import { DataTableComponent } from '../shared/data-table.component';
     .spacer { flex: 1; }
     .page-title { font-size: 22px; font-weight: 800; color: var(--ink); margin: 0 0 4px; }
     .page-subtitle { color: var(--muted); font-size: 13px; margin: 0; }
+    .refresh-ts { font-size: 11px; color: var(--muted); }
+    .muted { color: var(--muted); }
 
-    /* ── Banners ──────────────────────────────────────────────── */
-    .banner {
-      display: flex; align-items: center; gap: 10px;
-      padding: 12px 16px; border-radius: 10px; font-size: 13px; margin-bottom: 12px;
-    }
+    /* Banners */
+    .banner { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-radius: 10px; font-size: 13px; margin-bottom: 12px; }
     .banner mat-icon { font-size: 18px; width: 18px; height: 18px; flex-shrink: 0; }
-    .banner-hard  { background: rgba(255,113,106,.1);  border: 1px solid rgba(255,113,106,.4); color: var(--bad); }
-    .banner-soft  { background: rgba(242,189,75,.08);  border: 1px solid rgba(242,189,75,.35); color: var(--warn); }
-    .banner-info  { background: rgba(97,168,255,.07);  border: 1px solid rgba(97,168,255,.3);  color: var(--accent); }
+    .banner-hard { background: rgba(255,113,106,.1);  border: 1px solid rgba(255,113,106,.4); color: var(--bad); }
+    .banner-soft { background: rgba(242,189,75,.08);  border: 1px solid rgba(242,189,75,.35); color: var(--warn); }
+    .banner-info { background: rgba(97,168,255,.07);  border: 1px solid rgba(97,168,255,.3);  color: var(--accent); }
 
-    /* ── Summary Grid ─────────────────────────────────────────── */
-    .summary-grid {
-      display: grid;
-      grid-template-columns: 2fr 1fr;
-      gap: 14px;
-      margin-bottom: 16px;
-    }
-    @media (max-width: 900px) {
-      .summary-grid { grid-template-columns: 1fr; }
-    }
-
-    .summary-col {
-      border-radius: 12px;
-      border: 1px solid var(--line);
-      padding: 16px;
-    }
-    .live-col  { border-color: rgba(97,168,255,.3);  background: rgba(97,168,255,.04); }
-    .paper-col { border-color: rgba(230,183,76,.28); background: rgba(230,183,76,.04); }
-
-    .col-header {
-      display: flex; align-items: center; gap: 8px;
-      font-size: 12px; font-weight: 800; text-transform: uppercase;
-      letter-spacing: .06em; margin-bottom: 14px;
-    }
-    .live-col  .col-header { color: var(--accent); }
-    .paper-col .col-header { color: var(--gold); }
-    .col-header mat-icon { font-size: 16px; width: 16px; height: 16px; }
-
-    .mode-pill {
-      margin-left: auto; padding: 2px 8px; border-radius: 20px;
-      font-size: 10px; font-weight: 800; letter-spacing: .08em;
-    }
-    .live-pill  { background: rgba(97,168,255,.15);  color: var(--accent); border: 1px solid rgba(97,168,255,.3); }
-    .paper-pill { background: rgba(230,183,76,.14);  color: var(--gold);   border: 1px solid rgba(230,183,76,.28); }
-
-    .stat-row {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
-      gap: 10px;
-    }
-    .stat-card {
-      display: flex; flex-direction: column; gap: 4px;
-      padding: 10px 12px; border-radius: 8px;
-      background: rgba(255,255,255,.03); border: 1px solid var(--line);
-    }
-    .stat-total { border-color: rgba(97,168,255,.22); background: rgba(97,168,255,.06); }
-    .stat-label {
-      font-size: 10px; font-weight: 700; text-transform: uppercase;
-      letter-spacing: .05em; color: var(--muted);
-    }
-    .stat-val { font-size: 17px; font-weight: 700; color: var(--ink); }
-    .stat-big { font-size: 20px; }
+    /* Metrics */
+    .metrics-section { display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; }
+    .group-label { display: flex; align-items: center; gap: 6px; font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; margin-bottom: 6px; padding: 0 2px; }
+    .group-label mat-icon { font-size: 13px; width: 13px; height: 13px; }
+    .live-label  { color: var(--accent); }
+    .paper-label { color: var(--gold, #e6b74c); }
+    .metrics-row { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 10px; }
+    @media (max-width: 700px) { .metrics-row { grid-template-columns: 1fr 1fr; } }
+    .metric-card { display: flex; flex-direction: column; gap: 3px; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--line); background: rgba(255,255,255,.03); }
+    .live-card  { border-color: rgba(97,168,255,.2);  background: rgba(97,168,255,.03); }
+    .paper-card { border-color: rgba(230,183,76,.2);  background: rgba(230,183,76,.03); }
+    .metric-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+    .metric-val   { font-size: 20px; font-weight: 800; color: var(--ink); line-height: 1.2; }
+    .metric-val.big { font-size: 24px; }
+    .metric-sub   { font-size: 10px; color: var(--muted); margin-top: 2px; }
     .pos { color: var(--ok) !important; }
     .neg { color: var(--bad) !important; }
 
-    /* ── Daily Loss ───────────────────────────────────────────── */
-    .loss-bar-wrap {
-      background: var(--panel); border: 1px solid var(--line);
-      border-radius: 10px; padding: 14px 16px; margin-bottom: 16px;
-    }
-    .loss-bar-hdr {
-      display: flex; align-items: center; justify-content: space-between;
-      margin-bottom: 10px; flex-wrap: wrap; gap: 8px;
-    }
-    .loss-bar-label {
-      display: flex; align-items: center; gap: 6px;
-      font-size: 12px; font-weight: 700; color: var(--muted);
-      text-transform: uppercase; letter-spacing: .05em;
-    }
-    .loss-bar-label mat-icon { font-size: 15px; width: 15px; height: 15px; }
+    /* Loss bar */
+    .loss-bar-wrap { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 16px; margin-bottom: 14px; }
+    .loss-bar-hdr { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; flex-wrap: wrap; gap: 8px; }
+    .loss-bar-label { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+    .loss-bar-label mat-icon { font-size: 14px; width: 14px; height: 14px; }
     .loss-bar-values { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--ink); }
     .loss-critical { color: var(--bad) !important; }
     .loss-warn     { color: var(--warn) !important; }
-    .loss-pct      { font-size: 11px; color: var(--muted); }
-    .ext-badge {
-      font-size: 11px; padding: 2px 8px; border-radius: 20px;
-      background: rgba(242,189,75,.12); color: var(--warn); border: 1px solid rgba(242,189,75,.3);
-    }
+    .loss-pct { font-size: 11px; color: var(--muted); }
+    .ext-badge { font-size: 11px; padding: 2px 8px; border-radius: 20px; background: rgba(242,189,75,.12); color: var(--warn); border: 1px solid rgba(242,189,75,.3); }
     .loss-bar-track { height: 8px; background: rgba(255,255,255,.06); border-radius: 4px; overflow: hidden; }
     .loss-bar-fill  { height: 100%; border-radius: 4px; transition: width 600ms ease, background 400ms; }
     .fill-ok   { background: var(--ok); }
     .fill-warn { background: var(--warn); }
     .fill-bad  { background: var(--bad); }
 
-    /* ── Mode Toggle ──────────────────────────────────────────── */
-    .mode-toggle-row {
-      display: flex; align-items: center; gap: 14px;
-      margin-bottom: 16px; flex-wrap: wrap;
-    }
-    .mode-toggle {
-      display: flex; border-radius: 10px;
-      border: 1px solid var(--line); overflow: hidden;
-      background: rgba(255,255,255,.03);
-    }
-    .mode-btn {
-      display: flex; align-items: center; gap: 6px;
-      padding: 8px 18px; border: none; cursor: pointer;
-      background: transparent; color: var(--muted);
-      font-size: 13px; font-weight: 700; font-family: inherit;
-      transition: background 180ms, color 180ms;
-    }
-    .mode-btn mat-icon { font-size: 15px; width: 15px; height: 15px; }
-    .mode-btn:hover { background: rgba(255,255,255,.06); color: var(--ink); }
-    .mode-live-active  { background: rgba(97,168,255,.16) !important; color: var(--accent) !important; }
-    .mode-paper-active { background: rgba(230,183,76,.16) !important; color: var(--gold) !important; }
-    .mode-hint { font-size: 12px; color: var(--muted); }
-    .mode-hint strong { color: var(--ink); }
-
-    /* ── Tabs ─────────────────────────────────────────────────── */
-    .tab-panel { padding: 0; }
-    .tab-panel mat-tab-group { min-height: 200px; }
-    .tab-panel mat-icon { font-size: 16px; width: 16px; height: 16px; margin-right: 6px; vertical-align: middle; }
-    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 20px; }
-
-    .tab-count {
-      display: inline-flex; align-items: center; justify-content: center;
-      min-width: 20px; height: 18px; padding: 0 5px;
-      margin-left: 6px; border-radius: 10px;
-      background: rgba(255,255,255,.1); border: 1px solid var(--line);
-      font-size: 10px; font-weight: 800; color: var(--muted);
-      vertical-align: middle;
-    }
-
-    /* ── Signal filters ───────────────────────────────────────── */
-    .signal-filters {
-      display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-      margin: 14px 16px; padding: 10px 14px;
-      border: 1px solid var(--line); border-radius: 8px;
-      background: rgba(255,255,255,.03);
-    }
-    .filter-chip {
-      padding: 4px 12px; border-radius: 20px; cursor: pointer;
-      background: transparent; border: 1px solid var(--line);
-      color: var(--muted); font-size: 12px; font-weight: 700;
-      font-family: inherit; transition: background 160ms, color 160ms, border-color 160ms;
-    }
-    .filter-chip:hover { border-color: var(--accent); color: var(--ink); }
-    .chip-active { background: rgba(97,168,255,.14) !important; border-color: rgba(97,168,255,.4) !important; color: var(--accent) !important; }
-
-    /* ── JVM Health ──────────────────────────────────────────── */
-    .jvm-bar-wrap {
-      background: var(--panel); border: 1px solid var(--line);
-      border-radius: 10px; padding: 14px 16px; margin-bottom: 16px;
-    }
-    .jvm-header {
-      display: flex; align-items: center; gap: 8px; margin-bottom: 12px;
-      font-size: 12px; font-weight: 700; color: var(--muted);
-      text-transform: uppercase; letter-spacing: .05em;
-    }
-    .jvm-header mat-icon { font-size: 15px; width: 15px; height: 15px; color: var(--accent); }
+    /* JVM */
+    .jvm-bar-wrap { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 16px; margin-bottom: 14px; }
+    .jvm-header { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+    .jvm-header mat-icon { font-size: 14px; width: 14px; height: 14px; color: var(--accent); }
     .jvm-title { color: var(--ink); }
     .jvm-uptime { margin-left: auto; font-size: 11px; color: var(--muted); font-weight: 400; text-transform: none; letter-spacing: 0; }
-    .jvm-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
-    .jvm-card {
-      display: flex; flex-direction: column; gap: 4px;
-      padding: 10px 12px; border-radius: 8px;
-      background: rgba(255,255,255,.03); border: 1px solid var(--line);
-    }
+    .jvm-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+    .jvm-card { display: flex; flex-direction: column; gap: 3px; padding: 10px 12px; border-radius: 8px; background: rgba(255,255,255,.03); border: 1px solid var(--line); }
     .jvm-warn { border-color: rgba(242,189,75,.35) !important; }
     .jvm-bad  { border-color: rgba(255,113,106,.35) !important; }
     .jvm-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
-    .jvm-val   { font-size: 18px; font-weight: 700; color: var(--ink); }
+    .jvm-val   { font-size: 17px; font-weight: 700; color: var(--ink); }
     .jvm-sub-label { font-size: 10px; color: var(--muted); }
     .jvm-sub-bar { height: 4px; background: rgba(255,255,255,.06); border-radius: 2px; overflow: hidden; margin: 2px 0; }
     .jvm-sub-fill { height: 100%; border-radius: 2px; transition: width 600ms ease; }
 
-    /* ── Empty state ──────────────────────────────────────────── */
-    .empty-state {
-      display: flex; flex-direction: column; align-items: center;
-      gap: 8px; padding: 48px 0; color: var(--muted); font-size: 14px;
-    }
+    /* Panel */
+    .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 0; }
+    .tab-panel mat-tab-group { min-height: 200px; }
+    .tab-panel mat-icon { font-size: 16px; width: 16px; height: 16px; margin-right: 6px; vertical-align: middle; }
+
+    /* Mode toolbar */
+    .panel-toolbar { display: flex; align-items: center; gap: 14px; padding: 12px 16px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+    .mode-seg { display: flex; border-radius: 8px; border: 1px solid var(--line); overflow: hidden; background: rgba(255,255,255,.03); }
+    .seg-btn { display: flex; align-items: center; gap: 6px; padding: 7px 16px; border: none; cursor: pointer; background: transparent; color: var(--muted); font-size: 12px; font-weight: 700; font-family: inherit; transition: background 160ms, color 160ms; }
+    .seg-btn mat-icon { font-size: 14px; width: 14px; height: 14px; }
+    .seg-btn:hover { background: rgba(255,255,255,.05); color: var(--ink); }
+    .seg-live  { background: rgba(97,168,255,.16) !important;  color: var(--accent) !important; }
+    .seg-paper { background: rgba(230,183,76,.16) !important;  color: var(--gold, #e6b74c) !important; }
+    .mode-desc { font-size: 12px; color: var(--muted); }
+    .no-paper-hint { font-size: 11px; color: var(--warn); margin-left: auto; }
+
+    .tab-count { display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 18px; padding: 0 5px; margin-left: 6px; border-radius: 10px; background: rgba(255,255,255,.1); border: 1px solid var(--line); font-size: 10px; font-weight: 800; color: var(--muted); vertical-align: middle; }
+
+    /* Signal filters */
+    .filter-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 8px 16px; border-bottom: 1px solid rgba(255,255,255,.05); }
+    .filter-label { font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); min-width: 54px; }
+    .filter-chip { padding: 3px 10px; border-radius: 20px; cursor: pointer; background: transparent; border: 1px solid var(--line); color: var(--muted); font-size: 11px; font-weight: 700; font-family: inherit; transition: background 140ms, color 140ms, border-color 140ms; }
+    .filter-chip:hover { border-color: var(--accent); color: var(--ink); }
+    .chip-active { background: rgba(97,168,255,.14) !important; border-color: rgba(97,168,255,.4) !important; color: var(--accent) !important; }
+
+    /* Empty state */
+    .empty-state { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 48px 0; color: var(--muted); font-size: 14px; }
     .empty-state mat-icon { font-size: 36px; width: 36px; height: 36px; opacity: .4; }
-    .empty-hint { font-size: 12px; color: var(--muted); opacity: .7; text-align: center; max-width: 300px; }
+    .empty-hint { font-size: 12px; color: var(--muted); opacity: .7; text-align: center; max-width: 360px; }
+
+    /* Table */
+    .table-wrap { overflow-x: auto; max-height: 520px; overflow-y: auto; padding: 0 4px 4px; }
+    .mon-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .mon-table th { position: sticky; top: 0; z-index: 1; padding: 10px 12px; background: var(--panel); text-align: left; font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); border-bottom: 1px solid var(--line); white-space: nowrap; }
+    .mon-table td { padding: 9px 12px; border-bottom: 1px solid rgba(255,255,255,.04); color: var(--ink); vertical-align: middle; }
+    .mon-table tbody tr:hover { background: rgba(255,255,255,.03); }
+    .mon-table tbody tr:last-child td { border-bottom: none; }
+    .mono { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 11px; }
+    .time-cell { color: var(--muted); white-space: nowrap; }
+    .inst-cell { font-size: 11px; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .reason-cell { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11px; }
+    .stage-cell { font-size: 10px; color: var(--muted); white-space: nowrap; }
+
+    /* Signal badges */
+    .sig-badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 10px; font-weight: 800; letter-spacing: .03em; white-space: nowrap; }
+    .sig-ce  { background: rgba(82,196,120,.15); color: #52c478; border: 1px solid rgba(82,196,120,.3); }
+    .sig-pe  { background: rgba(255,113,106,.15); color: var(--bad); border: 1px solid rgba(255,113,106,.3); }
+    .sig-no  { background: rgba(255,255,255,.06); color: var(--muted); border: 1px solid var(--line); }
+
+    /* Type / Status / Side badges */
+    .type-badge { display: inline-block; padding: 2px 7px; border-radius: 10px; font-size: 10px; font-weight: 800; }
+    .type-ce { background: rgba(82,196,120,.12); color: #52c478; }
+    .type-pe { background: rgba(255,113,106,.12); color: var(--bad); }
+    .status-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 800; text-transform: uppercase; }
+    .status-open    { background: rgba(97,168,255,.12); color: var(--accent); }
+    .status-closed  { background: rgba(255,255,255,.06); color: var(--muted); }
+    .status-complete { background: rgba(82,196,120,.12); color: #52c478; }
+    .status-rejected { background: rgba(255,113,106,.12); color: var(--bad); }
+    .side-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 800; text-transform: uppercase; }
+    .side-buy  { background: rgba(82,196,120,.12); color: #52c478; }
+    .side-sell { background: rgba(255,113,106,.12); color: var(--bad); }
+
+    /* Outcome badges */
+    .outcome-badge { display: inline-block; padding: 2px 9px; border-radius: 12px; font-size: 10px; font-weight: 800; letter-spacing: .02em; white-space: nowrap; }
+    .outcome-filled   { background: rgba(82,196,120,.15);  color: #52c478; border: 1px solid rgba(82,196,120,.3); }
+    .outcome-inorder  { background: rgba(97,168,255,.15);  color: var(--accent); border: 1px solid rgba(97,168,255,.3); }
+    .outcome-rejected { background: rgba(255,113,106,.15); color: var(--bad); border: 1px solid rgba(255,113,106,.3); }
+    .outcome-warn     { background: rgba(242,189,75,.15);  color: var(--warn); border: 1px solid rgba(242,189,75,.3); }
+    .outcome-scan     { background: rgba(255,255,255,.05); color: var(--muted); border: 1px solid var(--line); }
+
+    /* Row tinting by outcome */
+    .row-filled   { background: rgba(82,196,120,.025) !important; }
+    .row-inorder  { background: rgba(97,168,255,.025) !important; }
+    .row-rejected { background: rgba(255,113,106,.025) !important; }
+    .row-warn     { background: rgba(242,189,75,.025)  !important; }
+
+    /* Signal summary strip */
+    .sig-summary-bar { display: flex; align-items: center; gap: 6px; padding: 8px 16px; border-bottom: 1px solid rgba(255,255,255,.05); flex-wrap: wrap; }
+    .sum-chip { display: inline-block; padding: 2px 10px; border-radius: 14px; font-size: 11px; font-weight: 800; }
+    .sum-filled   { background: rgba(82,196,120,.12);  color: #52c478; }
+    .sum-inorder  { background: rgba(97,168,255,.12);  color: var(--accent); }
+    .sum-rejected { background: rgba(255,113,106,.12); color: var(--bad); }
+    .sum-warn     { background: rgba(242,189,75,.12);  color: var(--warn); }
+    .sum-notrade  { background: rgba(255,255,255,.06); color: var(--muted); }
+    .sum-divider  { flex: 1; }
+    .sum-total    { font-size: 11px; color: var(--muted); }
+
+    /* Closed position row */
+    .row-closed-pos { opacity: 0.55; }
+    .row-closed-pos:hover { opacity: 0.75 !important; }
+
+    /* Spot price indicator in signals table */
+    .spot-price { color: var(--muted); }
+    .spot-price sup { font-size: 8px; margin-left: 1px; opacity: 0.7; }
   `]
 })
-export class MonitoringPageComponent implements OnInit {
-  activeMode: 'live' | 'paper' = 'live';
+export class MonitoringPageComponent implements OnInit, OnDestroy {
+  private _activeMode: 'live' | 'paper' = 'live';
+  get activeMode(): 'live' | 'paper' { return this._activeMode; }
+
+  setMode(m: 'live' | 'paper'): void {
+    this._activeMode = m;
+    this.selectedStrategyTypes.clear();
+    this.selectedUnderlyings.clear();
+  }
 
   signalTypeOptions: string[] = ['BUY_CE', 'BUY_PE', 'NO_TRADE'];
   selectedSignalTypes = new Set<string>(this.signalTypeOptions);
+
+  strategyTypeOptions: string[] = [];
+  selectedStrategyTypes = new Set<string>();
+
+  underlyingOptions: string[] = ['NIFTY', 'BANKNIFTY', 'SENSEX'];
+  selectedUnderlyings = new Set<string>();
 
   positions: ApiRecord[] = [];
   orders: ApiRecord[] = [];
   trades: ApiRecord[] = [];
   signals: ApiRecord[] = [];
+  strategies: StrategyDto[] = [];
+  strategiesLoaded = false;
   pnl?: PnlSnapshot;
   runtime?: RuntimeStatus;
   tradingStatus?: TradingStatus;
   jvm?: JvmHealth;
+  lastRefreshed?: Date;
+
+  private jvmSub?: import('rxjs').Subscription;
+  private mainDataSub?: import('rxjs').Subscription;
 
   dailyLossLimit = 0;
   dailyLossUsed = 0;
+
+  get paperStrategyTypes(): Set<string> {
+    return new Set(this.strategies.filter(s => s.paperTrading).map(s => s.type));
+  }
+
+  get modeStrategyTypeOptions(): string[] {
+    if (!this.strategiesLoaded || this.paperStrategyTypes.size === 0) return this.strategyTypeOptions;
+    const paperTypes = this.paperStrategyTypes;
+    return this.strategyTypeOptions.filter(t =>
+      this.activeMode === 'paper' ? paperTypes.has(t) : !paperTypes.has(t)
+    );
+  }
 
   get uptimeLabel(): string {
     if (!this.jvm) return '';
@@ -493,96 +692,218 @@ export class MonitoringPageComponent implements OnInit {
     return h > 0 ? `${h}h ${m}m` : `${m}m`;
   }
 
-  get livePnl(): number      { return Number(this.pnl?.realizedPnl ?? 0); }
-  get liveUnrealized(): number { return Number(this.pnl?.unrealizedPnl ?? 0); }
-  get liveTotal(): number    { return Number(this.pnl?.totalPnl ?? 0); }
-  get paperPnl(): number     { return this.tradingStatus?.paperPnl ?? 0; }
-
-  get liveTrades(): ApiRecord[] {
-    return this.trades.filter(t => !String(t['tradeId'] ?? '').startsWith('PAPER-'));
-  }
-
-  get paperTrades(): ApiRecord[] {
-    return this.trades.filter(t => String(t['tradeId'] ?? '').startsWith('PAPER-'));
-  }
-
-  get openPaperPositions(): ApiRecord[] {
-    return this.paperTrades.filter(t => String(t['status'] ?? '').toUpperCase() === 'OPEN');
-  }
-
-  get liveOrders(): ApiRecord[] {
-    return this.orders.filter(o => !String(o['clientOrderId'] ?? '').startsWith('PAPER-'));
-  }
-
-  get paperOrders(): ApiRecord[] {
-    return this.orders.filter(o => String(o['clientOrderId'] ?? '').startsWith('PAPER-'));
-  }
-
-  get activePositions(): ApiRecord[] {
-    return this.activeMode === 'live' ? this.positions : this.openPaperPositions;
-  }
-
-  get activeOrders(): ApiRecord[] {
-    return this.activeMode === 'live' ? this.liveOrders : this.paperOrders;
-  }
-
-  get activeTrades(): ApiRecord[] {
-    return this.activeMode === 'live' ? this.liveTrades : this.paperTrades;
-  }
-
-  get effectiveLossLimit(): number {
-    return this.dailyLossLimit + (this.runtime?.dailyLossExtension ?? 0);
-  }
-
+  get refreshedLabel(): string   { return this.lastRefreshed ? this.lastRefreshed.toLocaleTimeString() : ''; }
+  get livePnl(): number          { return Number(this.pnl?.realizedPnl ?? 0); }
+  get liveUnrealized(): number   { return Number(this.pnl?.unrealizedPnl ?? 0); }
+  get liveTotal(): number        { return Number(this.pnl?.totalPnl ?? 0); }
+  get paperPnl(): number         { return Number((this.tradingStatus as any)?.paperPnl ?? 0); }
+  get effectiveLossLimit(): number { return this.dailyLossLimit + (this.runtime?.dailyLossExtension ?? 0); }
   get lossUsedPercent(): number {
     if (this.effectiveLossLimit <= 0) return 0;
     return Math.min(100, (this.dailyLossUsed / this.effectiveLossLimit) * 100);
   }
 
-  get filteredSignals(): ApiRecord[] {
-    return this.signals.filter(s => this.selectedSignalTypes.has(String(s['signalType'] ?? '')));
+  get liveTrades(): ApiRecord[] {
+    return this.trades.filter(t => !String(t['tradeId'] ?? '').startsWith('PAPER-'));
+  }
+  get paperTrades(): ApiRecord[] {
+    return this.trades.filter(t => String(t['tradeId'] ?? '').startsWith('PAPER-'));
+  }
+  get openPaperPositions(): ApiRecord[] {
+    return this.paperTrades.filter(t => String(t['status'] ?? '').toUpperCase() === 'OPEN');
+  }
+  get liveOrders(): ApiRecord[] {
+    return this.orders.filter(o => !String(o['clientOrderId'] ?? '').startsWith('PAPER-'));
   }
 
-  constructor(private readonly api: ApiService) {}
+  get filteredSignals(): ApiRecord[] {
+    const paperTypes = this.paperStrategyTypes;
+    return this.signals.filter(s => {
+      const sigType  = String(s['signalType']  ?? '');
+      const stratType = String(s['strategyType'] ?? '');
 
-  ngOnInit(): void { this.load(); }
+      // Mode filter — only when strategies have loaded and some are paper
+      if (this.strategiesLoaded && paperTypes.size > 0) {
+        const isPaper = paperTypes.has(stratType);
+        if (this.activeMode === 'paper' && !isPaper) return false;
+        if (this.activeMode === 'live'  &&  isPaper) return false;
+      }
+
+      const sigMatch        = this.selectedSignalTypes.has(sigType);
+      const stratMatch      = this.selectedStrategyTypes.size === 0 || this.selectedStrategyTypes.has(stratType);
+      const underlyingMatch = this.selectedUnderlyings.size === 0 || this.selectedUnderlyings.has(String(s['underlying'] ?? ''));
+      return sigMatch && stratMatch && underlyingMatch;
+    });
+  }
+
+  constructor(private readonly api: ApiService, private readonly cd: ChangeDetectorRef) {}
+
+  ngOnInit(): void {
+    this.load();
+    this.loadJvm();
+    // Retry positions once after 4s — broker client may not be ready on cold start
+    timer(4000).subscribe(() => {
+      if (this.positions.length === 0) { this.loadPositions(); }
+    });
+    this.jvmSub    = interval(15000).subscribe(() => this.loadJvm());
+    this.mainDataSub = interval(60000).subscribe(() => this.load());
+  }
+
+  ngOnDestroy(): void {
+    this.jvmSub?.unsubscribe();
+    this.mainDataSub?.unsubscribe();
+  }
+
+  private loadJvm(): void {
+    this.api.jvmHealth()
+      .pipe(catchError(() => of(null as JvmHealth | null)))
+      .subscribe(j => { if (j) { this.jvm = j; this.cd.detectChanges(); } });
+  }
+
+  private loadPositions(): void {
+    this.api.positions()
+      .pipe(catchError(() => of([] as ApiRecord[])))
+      .subscribe(p => { this.positions = p; });
+  }
 
   load(): void {
     forkJoin({
-      config: this.api.config(),
-      positions: this.api.positions(),
-      orders: this.api.orders(),
-      trades: this.api.trades(),
-      pnl: this.api.pnl(),
-      signals: this.api.recentSignals(),
-      status: this.api.tradingStatus(),
-      jvm: this.api.jvmHealth().pipe(catchError(() => of(null as JvmHealth | null)))
+      config:     this.api.config().pipe(catchError(() => of(null))),
+      positions:  this.api.positions().pipe(catchError(() => of([] as ApiRecord[]))),
+      orders:     this.api.orders().pipe(catchError(() => of([] as ApiRecord[]))),
+      trades:     this.api.trades().pipe(catchError(() => of([] as ApiRecord[]))),
+      pnl:        this.api.pnl().pipe(catchError(() => of(null))),
+      signals:    this.api.recentSignals().pipe(catchError(() => of([] as ApiRecord[]))),
+      status:     this.api.tradingStatus().pipe(catchError(() => of(null))),
+      strategies: this.api.getStrategies().pipe(catchError(() => of([] as StrategyDto[])))
     }).subscribe(r => {
-      this.runtime = r.config.runtime as unknown as RuntimeStatus;
-      this.positions = r.positions;
-      this.orders = r.orders;
-      this.trades = r.trades;
-      this.pnl = r.pnl;
-      this.signals = r.signals as ApiRecord[];
-      this.tradingStatus = r.status;
-      if (r.jvm) this.jvm = r.jvm;
+      this.runtime        = r.config?.runtime as unknown as RuntimeStatus;
+      this.positions      = r.positions;
+      this.orders         = r.orders;
+      this.trades         = r.trades;
+      this.pnl            = r.pnl ?? undefined;
+      this.signals        = r.signals as ApiRecord[];
+      this.tradingStatus  = r.status ?? undefined;
+      this.strategies     = r.strategies;
+      this.strategiesLoaded = true;
 
-      const params = r.config.parameters ?? [];
+      const params  = r.config?.parameters ?? [];
       const capital = Number(params.find(p => p.path === 'trading.risk.total-capital')?.value ?? 0);
-      const pct = Number(params.find(p => p.path === 'trading.risk.max-daily-loss-percent')?.value ?? 0);
+      const pct     = Number(params.find(p => p.path === 'trading.risk.max-daily-loss-percent')?.value ?? 0);
       this.dailyLossLimit = capital * pct / 100;
 
       const realized = Number(r.pnl?.realizedPnl ?? 0);
       this.dailyLossUsed = realized < 0 ? Math.abs(realized) : 0;
 
-      const types = new Set<string>(this.signalTypeOptions);
-      this.signals.forEach(s => { if (s['signalType']) types.add(String(s['signalType'])); });
-      this.signalTypeOptions = Array.from(types).sort();
-      types.forEach(t => this.selectedSignalTypes.add(t));
+      // Derive signal type options from data
+      const sigTypes = new Set<string>(this.signalTypeOptions);
+      this.signals.forEach(s => { if (s['signalType']) sigTypes.add(String(s['signalType'])); });
+      this.signalTypeOptions = Array.from(sigTypes).sort();
+      sigTypes.forEach(t => this.selectedSignalTypes.add(t));
+
+      // Derive strategy type options from signal data
+      const stratTypes = new Set<string>();
+      this.signals.forEach(s => { if (s['strategyType']) stratTypes.add(String(s['strategyType'])); });
+      this.strategyTypeOptions = Array.from(stratTypes).sort();
+
+      this.lastRefreshed = new Date();
     });
   }
 
   toggleSignalType(st: string): void {
     this.selectedSignalTypes.has(st) ? this.selectedSignalTypes.delete(st) : this.selectedSignalTypes.add(st);
+  }
+
+  toggleStrategyType(st: string): void {
+    this.selectedStrategyTypes.has(st) ? this.selectedStrategyTypes.delete(st) : this.selectedStrategyTypes.add(st);
+  }
+
+  clearStrategyFilter(): void { this.selectedStrategyTypes.clear(); }
+
+  toggleUnderlying(u: string): void {
+    this.selectedUnderlyings.has(u) ? this.selectedUnderlyings.delete(u) : this.selectedUnderlyings.add(u);
+  }
+
+  clearUnderlyingFilter(): void { this.selectedUnderlyings.clear(); }
+
+  fmtStrategy(s: unknown): string {
+    if (!s) return '-';
+    return String(s).toLowerCase().replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  }
+
+  fmtTime(v: unknown): string {
+    if (!v) return '-';
+    try {
+      const d = new Date(String(v));
+      return d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+    } catch { return String(v); }
+  }
+
+  fmtNum(v: unknown): string {
+    if (v === null || v === undefined || v === '') return '-';
+    const n = Number(v);
+    return isNaN(n) ? '-' : n.toFixed(2);
+  }
+
+  fmtScore(v: unknown): string {
+    const n = Number(v);
+    return isNaN(n) || n === 0 ? '-' : n.toFixed(1);
+  }
+
+  num(v: unknown): number { return Number(v) || 0; }
+
+  str(v: unknown): string { return v == null ? '' : String(v); }
+
+  truncate(v: unknown, max = 45): string {
+    const s = v == null ? '' : String(v);
+    return s.length > max ? s.slice(0, max) + '…' : s;
+  }
+
+  sigCls(type: unknown): string {
+    const t = String(type ?? '');
+    if (t === 'BUY_CE') return 'ce';
+    if (t === 'BUY_PE') return 'pe';
+    return 'no';
+  }
+
+  typeCls(type: unknown): string {
+    return String(type ?? '').toUpperCase() === 'CE' ? 'type-ce' : 'type-pe';
+  }
+
+  outcomeCls(s: ApiRecord): string {
+    const stage = String(s['executionStage'] ?? '');
+    if (stage === 'ORDER_FILLED' || stage === 'PAPER_FILLED') return 'filled';
+    if (stage === 'ORDER_OPEN') return 'inorder';
+    if (stage === 'ORDER_NOT_FILLED' || stage === 'BROKER_ERROR') return 'warn';
+    if (stage.includes('REJECTED') || stage === 'TRADING_STOPPED') return 'rejected';
+    return 'scan';
+  }
+
+  outcomeLabel(s: ApiRecord): string {
+    const stage = String(s['executionStage'] ?? '');
+    switch (stage) {
+      case 'ORDER_FILLED':           return 'Filled';
+      case 'PAPER_FILLED':           return 'Paper Filled';
+      case 'ORDER_OPEN':             return 'In Order';
+      case 'ORDER_NOT_FILLED':       return 'Not Filled';
+      case 'RISK_REJECTED':          return 'Risk ✗';
+      case 'SIZING_REJECTED':        return 'Size ✗';
+      case 'PAPER_SIZING_REJECTED':  return 'Size ✗';
+      case 'ORDER_GUARD_REJECTED':   return 'Guard ✗';
+      case 'TRADING_STOPPED':        return 'Stopped';
+      case 'BROKER_ERROR':           return 'Broker ✗';
+      default:                       return stage || 'Scanner ✗';
+    }
+  }
+
+  get signalSummary(): { filled: number; inOrder: number; execRejected: number; notFilled: number; noTrade: number } {
+    const f = this.filteredSignals;
+    return {
+      filled:       f.filter(s => ['ORDER_FILLED','PAPER_FILLED'].includes(String(s['executionStage'] ?? ''))).length,
+      inOrder:      f.filter(s => String(s['executionStage'] ?? '') === 'ORDER_OPEN').length,
+      execRejected: f.filter(s => { const st = String(s['executionStage'] ?? ''); return st.includes('REJECTED') || st === 'TRADING_STOPPED'; }).length,
+      notFilled:    f.filter(s => ['ORDER_NOT_FILLED','BROKER_ERROR'].includes(String(s['executionStage'] ?? ''))).length,
+      noTrade:      f.filter(s => String(s['signalType'] ?? '') === 'NO_TRADE').length
+    };
   }
 }

@@ -26,7 +26,7 @@ public class RegimeFilter {
      *   <li>Base: 50</li>
      *   <li>VIX 13–18: +15 | VIX 11–21: +8 | VIX > 22: −20</li>
      *   <li>IV rank 30–70: +10 | IV rank > 80: −10</li>
-     *   <li>PCR 0.8–1.3: +10 | PCR > 1.5 or < 0.5: −15</li>
+     *   <li>PCR 0.8–1.3: +10 | PCR > 1.5 or < 0.5: −15 | PCR = 0 (no data): neutral</li>
      *   <li>Trend signal 0 (range-bound): +10</li>
      *   <li>OI wall distance: +5 to +15 based on proximity</li>
      *   <li>VIX trend: rising −10, falling +5</li>
@@ -62,11 +62,13 @@ public class RegimeFilter {
             score -= 10;
         }
 
-        // PCR contribution
-        if (pcr >= 0.8 && pcr <= 1.3) {
-            score += 10;
-        } else if (pcr > 1.5 || pcr < 0.5) {
-            score -= 15;
+        // PCR contribution — skip if not yet populated (0 = sentinel "no data")
+        if (pcr > 0) {
+            if (pcr >= 0.8 && pcr <= 1.3) {
+                score += 10;
+            } else if (pcr > 1.5 || pcr < 0.5) {
+                score -= 15;
+            }
         }
 
         // Trend signal contribution

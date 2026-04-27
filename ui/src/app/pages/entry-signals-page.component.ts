@@ -3,7 +3,7 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { MatButtonModule } from '@angular/material/button';
 import { MatCheckboxModule } from '@angular/material/checkbox';
 import { MatIconModule } from '@angular/material/icon';
-import { ApiService } from '../core/api.service';
+import { ApiService, StrategyDto } from '../core/api.service';
 import { ApiRecord, StrategyDecision } from '../core/models';
 
 @Component({
@@ -16,17 +16,34 @@ import { ApiRecord, StrategyDecision } from '../core/models';
         <div><h1 class="title">Entry Signals</h1><p class="sub">BUY_CE / BUY_PE signals that passed evaluation.</p></div>
         <span class="spacer"></span>
         <span class="count">{{ totalElements }} total · Page {{ currentPage + 1 }}/{{ totalPages || 1 }}</span>
-        <button mat-stroked-button (click)="loadPage(0)"><mat-icon>refresh</mat-icon> Refresh</button>
       </div>
 
       <div class="filter-bar">
+        <label class="fi"><span class="fl">Date</span>
+          <select [value]="selectedPeriod" (change)="onPeriodChange($any($event.target).value)">
+            @for (p of periodOpts; track p.value) { <option [value]="p.value">{{ p.label }}</option> }
+          </select>
+        </label>
+        <label class="fi"><span class="fl">Index</span>
+          <select [value]="selectedUnderlying" (change)="selectedUnderlying = $any($event.target).value">
+            <option value="ALL">All</option>
+            @for (u of underlyingOpts; track u) { <option [value]="u">{{ u }}</option> }
+          </select>
+        </label>
         <label class="fi"><span class="fl">Strategy</span>
           <select [value]="selectedStrategy" (change)="selectedStrategy = $any($event.target).value">
             <option value="ALL">All</option>
             @for (s of strategyOpts; track s) { <option [value]="s">{{ s }}</option> }
           </select>
         </label>
-        <div class="fi"><span class="fl">Type</span>
+        <label class="fi"><span class="fl">Mode</span>
+          <select [value]="selectedMode" (change)="selectedMode = $any($event.target).value">
+            <option value="ALL">All</option>
+            <option value="LIVE">Live</option>
+            <option value="PAPER">Paper</option>
+          </select>
+        </label>
+        <div class="fi"><span class="fl">Symbol</span>
           <div class="cb-row">
             @for (st of signalOpts; track st) {
               <mat-checkbox [checked]="selTypes.has(st)" (change)="toggle(st, $event.checked)">{{ st }}</mat-checkbox>
@@ -46,6 +63,11 @@ import { ApiRecord, StrategyDecision } from '../core/models';
             <span class="badge badge-strat">{{ s['strategyType'] }}</span>
             <span class="badge">{{ s['underlying'] }}</span>
             @if (s['optionType']) { <span class="badge">{{ s['optionType'] }}</span> }
+            @if (paperStrategyTypes.size > 0) {
+              <span [class]="paperStrategyTypes.has(str(s['strategyType'])) ? 'badge badge-paper' : 'badge badge-live'">
+                {{ paperStrategyTypes.has(str(s['strategyType'])) ? 'PAPER' : 'LIVE' }}
+              </span>
+            }
             <span class="spacer"></span>
             <span class="ts">{{ s['_display_ts'] }}</span>
           </div>
@@ -79,8 +101,14 @@ import { ApiRecord, StrategyDecision } from '../core/models';
                 @if (s['vwapConditionPassed'] != null) { <div class="f"><span>VWAP</span><strong [class.pos]="s['vwapConditionPassed']" [class.neg]="!s['vwapConditionPassed']">{{ s['vwapConditionPassed'] ? 'Passed' : 'Failed' }}</strong></div> }
                 @if (s['volumeSpike'] != null) { <div class="f"><span>Vol Spike</span><strong [class.pos]="s['volumeSpike']">{{ s['volumeSpike'] ? 'Yes' : 'No' }}</strong></div> }
                 @if (s['imbalance'] != null) { <div class="f"><span>OI Imbalance</span><strong>{{ s['imbalance'] }}</strong></div> }
-                @if (s['executionStage']) { <div class="f"><span>Exec Stage</span><strong>{{ s['executionStage'] }}</strong></div> }
               </div>
+            }
+            <div class="sl">Execution Outcome</div>
+            <div class="field-grid">
+              <div class="f"><span>Stage</span><strong [class]="execClass(s['executionStage'])">{{ s['executionStage'] || '—' }}</strong></div>
+            </div>
+            @if (s['executionReason']) {
+              <div class="exec-reason"><mat-icon class="exec-ri">info_outline</mat-icon>{{ s['executionReason'] }}</div>
             }
             @if (s['reasons']) { <div class="reasons">{{ s['reasons'] }}</div> }
           </div>
@@ -119,6 +147,8 @@ import { ApiRecord, StrategyDecision } from '../core/models';
     .badge { padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; background: rgba(255,255,255,.04); border: 1px solid var(--line); color: var(--muted); }
     .badge-signal { background: rgba(69,209,140,.1); border-color: rgba(69,209,140,.3); color: var(--ok); }
     .badge-strat { background: rgba(97,168,255,.1); border-color: rgba(97,168,255,.3); color: var(--accent); }
+    .badge-live { background: rgba(69,209,140,.1); border-color: rgba(69,209,140,.3); color: var(--ok); }
+    .badge-paper { background: rgba(242,189,75,.1); border-color: rgba(242,189,75,.3); color: var(--warn, #f2bd4b); }
     .ts { font-size: 12px; color: var(--muted); }
     .field-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 6px; }
     .f { padding: 7px 10px; border-radius: 6px; background: rgba(255,255,255,.02); border: 1px solid rgba(255,255,255,.04); }
@@ -129,6 +159,9 @@ import { ApiRecord, StrategyDecision } from '../core/models';
     .neg { color: var(--bad) !important; }
     .sl { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--accent); margin: 10px 0 4px; }
     .reasons { font-size: 12px; color: var(--muted); margin-top: 10px; padding: 10px 12px; border-radius: 6px; background: rgba(255,255,255,.02); border: 1px solid rgba(255,255,255,.04); line-height: 1.5; word-break: break-word; }
+    .warn { color: var(--warn, #f2bd4b) !important; }
+    .exec-reason { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; color: var(--muted); margin-top: 6px; padding: 8px 10px; border-radius: 6px; background: rgba(97,168,255,.03); border: 1px solid rgba(97,168,255,.1); line-height: 1.5; word-break: break-word; }
+    .exec-ri { font-size: 14px; width: 14px; height: 14px; color: var(--accent); margin-top: 1px; flex-shrink: 0; }
     .pager { display: flex; align-items: center; justify-content: center; gap: 16px; margin-top: 20px; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
     .pager-info { font-size: 13px; font-weight: 600; color: var(--muted); }
   `]
@@ -136,8 +169,20 @@ import { ApiRecord, StrategyDecision } from '../core/models';
 export class EntrySignalsPageComponent implements OnInit {
   readonly signalOpts = ['BUY_CE', 'BUY_PE'];
   readonly strategyOpts = ['DIRECTIONAL_BUY','SCALPING','VOLATILITY_BREAKOUT','EVENT_DRIVEN_BUY','BULL_CALL_SPREAD','BEAR_PUT_SPREAD','LONG_STRADDLE','LONG_STRANGLE','SHORT_STRADDLE','SHORT_STRANGLE','IRON_CONDOR','BUTTERFLY','CALENDAR_SPREAD','DIAGONAL_SPREAD','JADE_LIZARD','SYNTHETIC_FUTURES'];
+  readonly underlyingOpts = ['NIFTY', 'BANKNIFTY', 'SENSEX'];
+  readonly periodOpts = [
+    { value: 'TODAY', label: 'Today' },
+    { value: 'YESTERDAY', label: 'Yesterday' },
+    { value: 'LAST7', label: 'Last 7 days' },
+    { value: 'LAST30', label: 'Last 30 days' },
+    { value: 'ALL', label: 'All time' }
+  ];
   readonly selTypes = new Set<string>(this.signalOpts);
   selectedStrategy = 'ALL';
+  selectedUnderlying = 'ALL';
+  selectedMode = 'ALL';
+  selectedPeriod = 'TODAY';
+  paperStrategyTypes = new Set<string>();
   signals: ApiRecord[] = [];
   currentPage = 0;
   totalPages = 0;
@@ -149,13 +194,28 @@ export class EntrySignalsPageComponent implements OnInit {
   get filtered(): ApiRecord[] {
     return this.signals
       .filter(s => this.selTypes.has(String(s['signalType'] ?? '')))
-      .filter(s => this.selectedStrategy === 'ALL' || String(s['strategyType'] ?? '') === this.selectedStrategy);
+      .filter(s => this.selectedStrategy === 'ALL' || String(s['strategyType'] ?? '') === this.selectedStrategy)
+      .filter(s => this.selectedUnderlying === 'ALL' || String(s['underlying'] ?? '') === this.selectedUnderlying)
+      .filter(s => {
+        if (this.selectedMode === 'ALL' || this.paperStrategyTypes.size === 0) return true;
+        const isPaper = this.paperStrategyTypes.has(String(s['strategyType'] ?? ''));
+        return this.selectedMode === 'PAPER' ? isPaper : !isPaper;
+      });
   }
 
-  ngOnInit(): void { setTimeout(() => this.loadPage(0), 0); }
+  ngOnInit(): void {
+    this.api.getStrategies().subscribe(strategies => {
+      this.paperStrategyTypes = new Set(strategies.filter((s: StrategyDto) => s.paperTrading).map((s: StrategyDto) => s.type));
+    });
+    setTimeout(() => this.loadPage(0), 0);
+  }
+
+  onPeriodChange(val: string): void { this.selectedPeriod = val; this.loadPage(0); }
+
+  str(v: unknown): string { return String(v ?? ''); }
 
   loadPage(page: number): void {
-    this.api.entrySignalsPaged(page, this.pageSize).pipe(takeUntilDestroyed(this.dr)).subscribe({
+    this.api.entrySignalsPaged(page, this.pageSize, this.selectedPeriod).pipe(takeUntilDestroyed(this.dr)).subscribe({
       next: r => {
         this.signals = (r.content as ApiRecord[]).map((s, i) => norm(s, page * this.pageSize + i));
         this.currentPage = r.number;
@@ -169,6 +229,14 @@ export class EntrySignalsPageComponent implements OnInit {
   toggle(st: string, v: boolean): void { v ? this.selTypes.add(st) : this.selTypes.delete(st); }
 
   fmt(v: unknown): string { return v != null && v !== '' ? '₹' + v : '-'; }
+
+  execClass(stage: unknown): string {
+    const s = String(stage ?? '');
+    if (!s || s === 'null' || s === 'undefined') return '';
+    if (s === 'ORDER_FILLED' || s === 'PAPER_FILLED') return 'pos';
+    if (s === 'ORDER_OPEN') return 'warn';
+    return 'neg';
+  }
 }
 
 function norm(s: ApiRecord, idx: number): ApiRecord {

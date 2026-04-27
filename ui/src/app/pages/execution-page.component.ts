@@ -395,7 +395,7 @@ export class ExecutionPageComponent implements OnInit {
   readonly tradingModes: TradingMode[] = ['PAPER', 'BACKTEST', 'LIVE'];
   readonly marketDataModes: MarketDataMode[] = ['MOCK', 'ZERODHA'];
   readonly executionModes: ExecutionMode[] = ['PAPER', 'ZERODHA'];
-  readonly underlyings: UnderlyingSymbol[] = ['NIFTY', 'BANKNIFTY'];
+  readonly underlyings: UnderlyingSymbol[] = ['NIFTY', 'BANKNIFTY', 'SENSEX'];
 
   runtime?: RuntimeStatus;
   strategies = signal<StrategyDto[]>([]);

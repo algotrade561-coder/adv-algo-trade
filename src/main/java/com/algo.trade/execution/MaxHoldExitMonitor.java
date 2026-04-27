@@ -1,6 +1,7 @@
 package com.algo.trade.execution;
 
 import com.algo.trade.config.GlobalConfigService;
+import com.algo.trade.config.PositionSyncProperties;
 import com.algo.trade.config.TradingProperties;
 import com.algo.trade.domain.TradeStatus;
 import com.algo.trade.marketdata.MarketDataService;
@@ -35,6 +36,7 @@ public class MaxHoldExitMonitor {
     private final MarketDataService marketDataService;
     private final TradingProperties properties;
     private final GlobalConfigService globalConfigService;
+    private final PositionSyncProperties positionSyncProperties;
     private final Clock clock;
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -43,8 +45,9 @@ public class MaxHoldExitMonitor {
                                StrategyConfigService strategyConfigService,
                                MarketDataService marketDataService,
                                TradingProperties properties,
-                               GlobalConfigService globalConfigService) {
-        this(tradeRepository, executionEngine, strategyConfigService, marketDataService, properties, globalConfigService, Clock.systemUTC());
+                               GlobalConfigService globalConfigService,
+                               PositionSyncProperties positionSyncProperties) {
+        this(tradeRepository, executionEngine, strategyConfigService, marketDataService, properties, globalConfigService, positionSyncProperties, Clock.systemUTC());
     }
 
     MaxHoldExitMonitor(TradeRepository tradeRepository,
@@ -53,6 +56,7 @@ public class MaxHoldExitMonitor {
                        MarketDataService marketDataService,
                        TradingProperties properties,
                        GlobalConfigService globalConfigService,
+                       PositionSyncProperties positionSyncProperties,
                        Clock clock) {
         this.tradeRepository = tradeRepository;
         this.executionEngine = executionEngine;
@@ -60,6 +64,7 @@ public class MaxHoldExitMonitor {
         this.marketDataService = marketDataService;
         this.properties = properties;
         this.globalConfigService = globalConfigService;
+        this.positionSyncProperties = positionSyncProperties;
         this.clock = clock;
     }
 
@@ -71,6 +76,7 @@ public class MaxHoldExitMonitor {
         Instant now = clock.instant();
 
         for (TradeEntity trade : openTrades) {
+            if (!positionSyncProperties.manageSyncedTrades() && trade.getTradeId().startsWith("SYNC-")) continue;
             int maxHold = resolveMaxHoldMinutes(trade);
             if (maxHold <= 0) continue;
 

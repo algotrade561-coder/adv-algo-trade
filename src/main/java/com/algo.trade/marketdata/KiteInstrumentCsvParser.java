@@ -14,7 +14,10 @@ import java.util.Optional;
  */
 public class KiteInstrumentCsvParser {
 
-    private static final String DERIVATIVE_SEGMENT = "NFO-OPT";
+    private static boolean isTradableOption(String segment) {
+        return "NFO-OPT".equals(segment) || "BFO-OPT".equals(segment);
+    }
+
 
     public List<Instrument> parse(String csv) {
         if (csv == null || csv.isBlank()) {
@@ -56,7 +59,7 @@ public class KiteInstrumentCsvParser {
         Optional<LocalDate> expiry = expiryText.isBlank() ? Optional.empty() : Optional.of(LocalDate.parse(expiryText));
         Optional<BigDecimal> strike = strikeText.isBlank() ? Optional.empty() : Optional.of(decimalOrZero(strikeText));
         Optional<OptionType> optionType = parseOptionType(instrumentType);
-        boolean tradableOption = DERIVATIVE_SEGMENT.equals(segment) && optionType.isPresent();
+        boolean tradableOption = isTradableOption(segment) && optionType.isPresent();
 
         return new Instrument(instrumentToken, exchange, tradingSymbol, name, underlying, expiry, strike,
                 optionType, lotSize, tickSize, tradableOption);

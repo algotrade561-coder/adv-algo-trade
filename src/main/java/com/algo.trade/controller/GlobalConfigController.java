@@ -57,6 +57,7 @@ public class GlobalConfigController {
         m.put("timeframe", c.getTimeframe().name());
         m.put("trendTimeframe", c.getTrendTimeframe().name());
         m.put("enabledOptionTypes", c.getEnabledOptionTypes());
+        m.put("enabledUnderlyings", c.getEnabledUnderlyings());
         m.put("vwapFilterEnabled", c.isVwapFilterEnabled());
         m.put("trendFilterEnabled", c.isTrendFilterEnabled());
         m.put("volumeSpikeMultiplier", c.getVolumeSpikeMultiplier());

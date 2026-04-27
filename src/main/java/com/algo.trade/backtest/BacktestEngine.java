@@ -402,7 +402,7 @@ public class BacktestEngine {
                 candle.instrumentKey(), null,
                 activeProperties.backtest().lotSize(),
                 optionType,
-                syntheticQuote, Optional.ofNullable(previousSelectedQuote));
+                syntheticQuote, Optional.ofNullable(previousSelectedQuote), 0.0);
         StrategyDecision decision = activeStrategy.evaluateEntryWithoutRecording(request);
         return decision.signalType() == (optionType == OptionType.CE ? SignalType.BUY_CE : SignalType.BUY_PE);
     }

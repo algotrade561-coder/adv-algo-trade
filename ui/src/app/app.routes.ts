@@ -1,7 +1,6 @@
 import { Routes } from '@angular/router';
 import { DashboardPageComponent } from './pages/dashboard-page.component';
 import { ExecutionPageComponent } from './pages/execution-page.component';
-import { ConfigPageComponent } from './pages/config-page.component';
 import { MonitoringPageComponent } from './pages/monitoring-page.component';
 import { ReportsPageComponent } from './pages/reports-page.component';
 import { AuthPageComponent } from './pages/auth-page.component';
@@ -16,7 +15,6 @@ export const routes: Routes = [
   { path: 'strategies', component: StrategiesPageComponent },
   { path: 'settings', component: SettingsPageComponent },
   { path: 'execution', component: ExecutionPageComponent },
-  { path: 'config', component: ConfigPageComponent },
   { path: 'monitoring', component: MonitoringPageComponent },
   { path: 'entry-signals', component: EntrySignalsPageComponent },
   { path: 'rejected-signals', component: RejectedSignalsPageComponent },

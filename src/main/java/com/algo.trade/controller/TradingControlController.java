@@ -138,14 +138,11 @@ public class TradingControlController {
                 .filter(p -> p != null)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
         result.put("paperPnl", paperPnl);
-        // Signal counts today
-        var recentDecisions = reportingService.recentDecisions();
-        long entrySignals = recentDecisions.stream()
-                .filter(d -> d.getSignalType() != null && (d.getSignalType().startsWith("BUY_") || d.getSignalType().startsWith("SELL_")))
-                .count();
-        long rejectedSignals = recentDecisions.stream()
-                .filter(d -> "NO_TRADE".equals(d.getSignalType()))
-                .count();
+        // Signal counts today — query DB directly to avoid the recentDecisions() cap of 20
+        java.time.Instant todayStart = java.time.LocalDate.now(tradingProperties.timezone())
+                .atStartOfDay(tradingProperties.timezone()).toInstant();
+        long entrySignals = reportingService.countEntrySignalsSince(todayStart);
+        long rejectedSignals = reportingService.countRejectedSignalsSince(todayStart);
         result.put("entrySignals", entrySignals);
         result.put("rejectedSignals", rejectedSignals);
         result.put("lastScanAt", tradingStateService.lastScanAt());
