@@ -115,6 +115,9 @@ public class GlobalConfig {
     private boolean partialProfitBookingEnabled = false;
     private int maxHoldMinutes = 0;
 
+    /** Exit long option positions when underlying crosses back through VWAP (thesis reversal). */
+    private boolean vwapExitEnabled = false;
+
     // ── Risk Fields ───────────────────────────────────────────
 
     @Column(precision = 19, scale = 4)
@@ -132,9 +135,9 @@ public class GlobalConfig {
     private int maxOpenTrades = 1;
 
     @Column(precision = 19, scale = 4)
-    private BigDecimal sameInstrumentReentryMinPriceMovePercent = BigDecimal.TEN;
+    private BigDecimal sameInstrumentReentryMinPriceMovePercent = BigDecimal.valueOf(3l);
 
-    private int cooldownMinutes = 10;
+    private int cooldownMinutes = 0;
 
     @Column(precision = 19, scale = 4)
     private BigDecimal dailyProfitTarget = BigDecimal.ZERO;
@@ -375,6 +378,9 @@ public class GlobalConfig {
 
     public int getMaxHoldMinutes() { return maxHoldMinutes; }
     public void setMaxHoldMinutes(int maxHoldMinutes) { this.maxHoldMinutes = maxHoldMinutes; }
+
+    public boolean isVwapExitEnabled() { return vwapExitEnabled; }
+    public void setVwapExitEnabled(boolean vwapExitEnabled) { this.vwapExitEnabled = vwapExitEnabled; }
 
     // Risk getters/setters
 

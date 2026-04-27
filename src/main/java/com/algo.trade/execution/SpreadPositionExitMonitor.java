@@ -42,17 +42,21 @@ public class SpreadPositionExitMonitor {
     private final PositionGroupRepository positionGroupRepository;
     private final SpreadStrategyRegistry registry;
     private final MarketDataService marketDataService;
+    private final TradingStateService tradingStateService;
 
     public SpreadPositionExitMonitor(PositionGroupRepository positionGroupRepository,
                                      SpreadStrategyRegistry registry,
-                                     MarketDataService marketDataService) {
+                                     MarketDataService marketDataService,
+                                     TradingStateService tradingStateService) {
         this.positionGroupRepository = positionGroupRepository;
         this.registry = registry;
         this.marketDataService = marketDataService;
+        this.tradingStateService = tradingStateService;
     }
 
     @EventListener
     public void onCandleClose(CandleClosedEvent event) {
+        if (!tradingStateService.isExitAllowed()) return;
         List<PositionGroupEntity> openGroups = positionGroupRepository.findByOpenTrue();
         if (openGroups.isEmpty()) return;
 

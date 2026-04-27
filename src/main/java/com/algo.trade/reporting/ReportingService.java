@@ -164,25 +164,60 @@ public class ReportingService {
 
     public String tradeJournalCsv() {
         log.debug("Reporting trade journal CSV generation started");
-        StringBuilder csv = new StringBuilder("tradeId,instrumentKey,underlying,optionType,status,quantity,entryPrice,exitPrice,entryTime,exitTime,realizedPnl,entryReason,exitReason\n");
-        for (TradeEntity trade : tradeRepository.findAll()) {
-            csv.append(trade.getTradeId()).append(',')
-                    .append(trade.getInstrumentKey()).append(',')
-                    .append(trade.getUnderlying()).append(',')
-                    .append(trade.getOptionType()).append(',')
-                    .append(trade.getStatus()).append(',')
-                    .append(trade.getQuantity()).append(',')
-                    .append(trade.getEntryPrice()).append(',')
-                    .append(trade.getExitPrice()).append(',')
-                    .append(trade.getEntryTime()).append(',')
-                    .append(trade.getExitTime()).append(',')
-                    .append(trade.getRealizedPnl()).append(',')
-                    .append(escape(trade.getEntryReason())).append(',')
-                    .append(escape(trade.getExitReason())).append('\n');
+        java.time.ZoneId ist = java.time.ZoneId.of("Asia/Kolkata");
+        java.time.Instant startOfDay = java.time.LocalDate.now(ist).atStartOfDay(ist).toInstant();
+
+        // ── Section 1: All signals today (entries + rejections) ────────────────
+        StringBuilder csv = new StringBuilder();
+        csv.append("=== SIGNALS (Today) ===\n");
+        csv.append("timestamp,strategyType,signalType,underlying,optionType,instrument,strike,")
+           .append("underlyingPrice,optionPrice,confidenceScore,executionStage,executionReason,firstFailedFilter,reasons\n");
+        java.util.List<com.algo.trade.persistence.StrategyDecisionEntity> signals =
+                decisionRepository.findByTimestampGreaterThanEqualOrderByTimestampAsc(startOfDay);
+        for (com.algo.trade.persistence.StrategyDecisionEntity s : signals) {
+            csv.append(s.getTimestamp()).append(',')
+               .append(nullSafe(s.getStrategyType())).append(',')
+               .append(nullSafe(s.getSignalType())).append(',')
+               .append(nullSafe(s.getUnderlying())).append(',')
+               .append(nullSafe(s.getOptionType())).append(',')
+               .append(nullSafe(s.getSelectedInstrumentKey())).append(',')
+               .append(nullSafe(s.getSelectedStrike())).append(',')
+               .append(nullSafe(s.getUnderlyingPrice())).append(',')
+               .append(nullSafe(s.getOptionPrice())).append(',')
+               .append(nullSafe(s.getConfidenceScore())).append(',')
+               .append(nullSafe(s.getExecutionStage())).append(',')
+               .append(escape(s.getExecutionReason())).append(',')
+               .append(nullSafe(s.getFirstFailedFilter())).append(',')
+               .append(escape(s.getReasons())).append('\n');
         }
-        log.debug("Reporting trade journal CSV generation completed: bytes={}", csv.length());
+
+        // ── Section 2: All trades today ────────────────────────────────────────
+        csv.append("\n=== TRADES (Today) ===\n");
+        csv.append("tradeId,instrumentKey,underlying,optionType,status,quantity,")
+           .append("entryPrice,exitPrice,entryTime,exitTime,realizedPnl,strategyType,entryReason,exitReason\n");
+        for (TradeEntity trade : tradeRepository.findAll()) {
+            if (trade.getEntryTime() == null || trade.getEntryTime().isBefore(startOfDay)) continue;
+            csv.append(trade.getTradeId()).append(',')
+               .append(nullSafe(trade.getInstrumentKey())).append(',')
+               .append(nullSafe(trade.getUnderlying())).append(',')
+               .append(nullSafe(trade.getOptionType())).append(',')
+               .append(nullSafe(trade.getStatus())).append(',')
+               .append(trade.getQuantity()).append(',')
+               .append(nullSafe(trade.getEntryPrice())).append(',')
+               .append(nullSafe(trade.getExitPrice())).append(',')
+               .append(nullSafe(trade.getEntryTime())).append(',')
+               .append(nullSafe(trade.getExitTime())).append(',')
+               .append(nullSafe(trade.getRealizedPnl())).append(',')
+               .append(nullSafe(trade.getStrategyType())).append(',')
+               .append(escape(trade.getEntryReason())).append(',')
+               .append(escape(trade.getExitReason())).append('\n');
+        }
+
+        log.debug("Reporting trade journal CSV generation completed: signals={} bytes={}", signals.size(), csv.length());
         return csv.toString();
     }
+
+    private static String nullSafe(Object v) { return v == null ? "" : v.toString(); }
 
     public synchronized ReportArchiveResult archiveEntrySignalReports() {
         log.info("Entry signal report archive requested: sourceDir={}", ENTRY_SIGNALS_DIR);

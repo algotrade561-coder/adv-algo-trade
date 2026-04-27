@@ -75,6 +75,7 @@ export interface GlobalConfigDto {
   forcedExitTime: string;
   partialProfitBookingEnabled: boolean;
   maxHoldMinutes: number;
+  vwapExitEnabled: boolean;
   // Risk
   totalCapital: number;
   maxRiskPerTradePercent: number;
@@ -106,6 +107,7 @@ export class ApiService {
   setKillSwitch(enabled: boolean): Observable<RuntimeStatus> { return this.http.post<RuntimeStatus>(`${this.base}/kill-switch`, { enabled }); }
   setScheduler(enabled: boolean): Observable<RuntimeStatus> { return this.http.post<RuntimeStatus>(`${this.base}/scheduler`, { enabled }); }
   softHalt(reason: string): Observable<RuntimeStatus> { return this.http.post<RuntimeStatus>(`${this.base}/halt/soft`, { reason }); }
+  hardHalt(reason: string): Observable<RuntimeStatus> { return this.http.post<RuntimeStatus>(`${this.base}/halt/hard`, { reason }); }
   resumeFromHalt(): Observable<RuntimeStatus> { return this.http.post<RuntimeStatus>(`${this.base}/halt/resume`, {}); }
   approveToday(): Observable<RuntimeStatus> { return this.http.post<RuntimeStatus>(`${this.base}/daily/approve`, {}); }
   revokeApproval(): Observable<RuntimeStatus> { return this.http.post<RuntimeStatus>(`${this.base}/daily/revoke`, {}); }

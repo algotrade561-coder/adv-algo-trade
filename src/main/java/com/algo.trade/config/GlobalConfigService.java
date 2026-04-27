@@ -135,6 +135,7 @@ public class GlobalConfigService {
     public LocalTime getForcedExitTime() { return cached.getForcedExitTimeAsLocalTime(); }
 
     public boolean isPartialProfitBookingEnabled() { return cached.isPartialProfitBookingEnabled(); }
+    public boolean isVwapExitEnabled() { return cached.isVwapExitEnabled(); }
 
     public int getMaxHoldMinutes() { return cached.getMaxHoldMinutes(); }
 

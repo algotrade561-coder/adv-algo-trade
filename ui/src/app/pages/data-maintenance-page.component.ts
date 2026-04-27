@@ -107,6 +107,7 @@ export class DataMaintenancePageComponent {
 
   append(): void {
     const r = this.form.getRawValue();
+    this.result = undefined;
     this.running.set(true);
     this.api.appendZerodhaOptions({
       ...r,

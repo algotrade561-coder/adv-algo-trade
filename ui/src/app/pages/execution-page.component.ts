@@ -33,6 +33,34 @@ import { ApiRecord, ExecutionMode, MarketDataMode, RuntimeStatus, TradingMode, U
       @if (toast()) { <div class="toast ok">{{ toast() }}</div> }
       @if (toastErr()) { <div class="toast bad">{{ toastErr() }}</div> }
 
+      <!-- ── Emergency Stop ─────────────────────────────────────────── -->
+      <div class="e-stop-panel" [class.e-stop-active]="runtime?.haltMode === 'HARD'">
+        <div class="e-stop-left">
+          <mat-icon class="e-stop-icon">emergency</mat-icon>
+          <div>
+            <div class="e-stop-title">
+              {{ runtime?.haltMode === 'HARD' ? '🚨 HARD HALT ACTIVE — ALL ACTIVITY STOPPED' : 'Emergency Stop' }}
+            </div>
+            <div class="e-stop-desc">
+              {{ runtime?.haltMode === 'HARD'
+                ? 'Scanner, entries, and exits are all frozen. Use Resume to restore normal operation.'
+                : 'Immediately freezes the scanner, blocks all new entries, and stops all exit monitors. Use only for serious issues.' }}
+            </div>
+          </div>
+        </div>
+        <div class="e-stop-btns">
+          @if (runtime?.haltMode !== 'HARD') {
+            <button class="e-stop-btn" (click)="hardStop()">
+              <mat-icon>dangerous</mat-icon> EMERGENCY STOP
+            </button>
+          } @else {
+            <button class="e-stop-resume" (click)="resumeHalt()">
+              <mat-icon>play_circle</mat-icon> Resume
+            </button>
+          }
+        </div>
+      </div>
+
       <!-- ── Status Chips ──────────────────────────────────────────── -->
       <div class="chip-row">
         <div class="chip" [class.c-ok]="runtime?.running" [class.c-warn]="runtime && !runtime.running">
@@ -296,6 +324,29 @@ import { ApiRecord, ExecutionMode, MarketDataMode, RuntimeStatus, TradingMode, U
     .toast.ok { background: rgba(69,209,140,.08); color: var(--ok); border: 1px solid rgba(69,209,140,.3); }
     .toast.bad { background: rgba(242,189,75,.08); color: var(--warn); border: 1px solid rgba(242,189,75,.3); }
 
+    /* Emergency Stop */
+    .e-stop-panel { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+      padding: 16px 20px; border-radius: 12px; margin-bottom: 20px;
+      border: 1.5px solid rgba(255,113,106,.3); background: rgba(255,113,106,.04); }
+    .e-stop-active { border-color: rgba(255,113,106,.8) !important; background: rgba(255,113,106,.12) !important;
+      animation: pulse-border 2s ease-in-out infinite; }
+    @keyframes pulse-border { 0%,100% { box-shadow: 0 0 0 0 rgba(255,113,106,0); } 50% { box-shadow: 0 0 0 6px rgba(255,113,106,.15); } }
+    .e-stop-left { display: flex; align-items: flex-start; gap: 12px; flex: 1; min-width: 0; }
+    .e-stop-icon { font-size: 28px; width: 28px; height: 28px; color: var(--bad); flex-shrink: 0; margin-top: 2px; }
+    .e-stop-title { font-size: 13px; font-weight: 700; color: var(--bad); margin-bottom: 3px; }
+    .e-stop-desc { font-size: 12px; color: var(--muted); line-height: 1.4; }
+    .e-stop-btns { display: flex; gap: 8px; flex-shrink: 0; }
+    .e-stop-btn { display: flex; align-items: center; gap: 6px; padding: 10px 20px; border-radius: 8px; border: none; cursor: pointer;
+      background: var(--bad); color: #fff; font-size: 13px; font-weight: 800; letter-spacing: .04em;
+      transition: filter .15s; }
+    .e-stop-btn:hover { filter: brightness(1.15); }
+    .e-stop-btn mat-icon { font-size: 18px; width: 18px; height: 18px; }
+    .e-stop-resume { display: flex; align-items: center; gap: 6px; padding: 10px 20px; border-radius: 8px; border: none; cursor: pointer;
+      background: var(--ok); color: #071018; font-size: 13px; font-weight: 800;
+      transition: filter .15s; }
+    .e-stop-resume:hover { filter: brightness(1.1); }
+    .e-stop-resume mat-icon { font-size: 18px; width: 18px; height: 18px; }
+
     /* Chips */
     .chip-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 20px; }
     .chip { display: flex; align-items: center; gap: 5px; padding: 6px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; border: 1px solid var(--line); background: var(--panel); }
@@ -412,6 +463,7 @@ export class ExecutionPageComponent implements OnInit {
   ngOnInit(): void { this.load(); }
 
   load(): void {
+    this.toast.set(''); this.toastErr.set('');
     this.api.config().subscribe({ next: c => this.setRuntime(c.runtime), error: () => this.toastErr.set('Failed to load') });
     this.api.getStrategies().subscribe({ next: s => this.strategies.set(s) });
   }
@@ -420,6 +472,10 @@ export class ExecutionPageComponent implements OnInit {
   stop(): void { this.api.stop().subscribe(r => this.setRuntime(r)); }
   setKillSwitch(v: boolean): void { this.api.setKillSwitch(v).subscribe(r => this.setRuntime(r)); }
   softHalt(): void { this.api.softHalt('Manual soft halt from UI').subscribe({ next: r => { this.setRuntime(r); this.toast.set('Soft halt — no new entries'); }, error: () => this.toastErr.set('Soft halt failed') }); }
+  hardStop(): void {
+    if (!confirm('EMERGENCY STOP: This will immediately freeze the scanner, block all entries, AND stop all exit monitors. Continue?')) return;
+    this.api.hardHalt('Emergency stop triggered from UI').subscribe({ next: r => { this.setRuntime(r); this.toastErr.set('🚨 HARD HALT ACTIVE — everything stopped'); }, error: () => this.toastErr.set('Emergency stop failed') });
+  }
   resumeHalt(): void { this.api.resumeFromHalt().subscribe({ next: r => { this.setRuntime(r); this.toast.set('Halt cleared — trading resumed'); }, error: () => this.toastErr.set('Resume failed') }); }
   approveToday(): void { this.api.approveToday().subscribe({ next: r => { this.setRuntime(r); this.toast.set('Daily trading approved'); }, error: () => this.toastErr.set('Approve failed') }); }
   revokeApproval(): void { this.api.revokeApproval().subscribe({ next: r => { this.setRuntime(r); this.toast.set('Daily approval revoked'); }, error: () => this.toastErr.set('Revoke failed') }); }

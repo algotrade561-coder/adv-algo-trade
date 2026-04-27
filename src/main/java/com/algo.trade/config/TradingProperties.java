@@ -298,7 +298,7 @@ public record TradingProperties(
 
         public static Risk defaults() {
             return new Risk(BigDecimal.valueOf(60_000), BigDecimal.valueOf(5), BigDecimal.valueOf(5),
-                    4, 4, 2, 1, BigDecimal.TEN, 10, BigDecimal.ZERO);
+                    4, 4, 2, 1, BigDecimal.valueOf(3), 0, BigDecimal.ZERO);
         }
     }
 

@@ -416,6 +416,7 @@ export class StrategiesPageComponent implements OnInit {
   ngOnInit() { this.load(); }
 
   load() {
+    this.msg.set(''); this.error.set('');
     this.api.getStrategies().subscribe({
       next: s => this.strategies.set(s),
       error: () => this.error.set('Failed to load strategies')

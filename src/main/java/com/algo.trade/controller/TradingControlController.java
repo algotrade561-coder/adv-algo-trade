@@ -203,6 +203,14 @@ public class TradingControlController {
         return status();
     }
 
+    @PostMapping("/halt/hard")
+    public Map<String, Object> hardHalt(@RequestBody HaltRequest request) {
+        String reason = request.reason() != null ? request.reason() : "Emergency stop — all activity halted";
+        tradingStateService.hardHalt(reason);
+        telegramAlertService.tradingStateChanged("🚨 EMERGENCY STOP: " + reason, status());
+        return status();
+    }
+
     @PostMapping("/halt/resume")
     public Map<String, Object> resumeFromHalt() {
         tradingStateService.resumeFromHalt();

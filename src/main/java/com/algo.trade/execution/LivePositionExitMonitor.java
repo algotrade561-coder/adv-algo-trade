@@ -1,10 +1,13 @@
 package com.algo.trade.execution;
 
+import com.algo.trade.config.GlobalConfigService;
 import com.algo.trade.config.PositionSyncProperties;
 import com.algo.trade.domain.CandleClosedEvent;
 import com.algo.trade.domain.IndexType;
 import com.algo.trade.domain.Quote;
+import com.algo.trade.domain.Timeframe;
 import com.algo.trade.domain.TradeStatus;
+import com.algo.trade.indicator.VwapIndicator;
 import com.algo.trade.marketdata.ExpiryCalendar;
 import com.algo.trade.marketdata.MarketDataService;
 import com.algo.trade.notification.TelegramAlertService;
@@ -52,6 +55,9 @@ public class LivePositionExitMonitor {
     private final com.algo.trade.strategy.DynamicExitManager dynamicExitManager;
     private final com.algo.trade.marketdata.LiveCandleBuilder liveCandleBuilder;
     private final PositionSyncProperties positionSyncProperties;
+    private final GlobalConfigService globalConfigService;
+    private final TradingStateService tradingStateService;
+    private final VwapIndicator vwapIndicator;
 
     // tradeId → highest price seen since entry
     private final Map<String, BigDecimal> peakPrices = new ConcurrentHashMap<>();
@@ -69,7 +75,10 @@ public class LivePositionExitMonitor {
                                     ExpiryCalendar expiryCalendar,
                                     com.algo.trade.strategy.DynamicExitManager dynamicExitManager,
                                     com.algo.trade.marketdata.LiveCandleBuilder liveCandleBuilder,
-                                    PositionSyncProperties positionSyncProperties) {
+                                    PositionSyncProperties positionSyncProperties,
+                                    GlobalConfigService globalConfigService,
+                                    TradingStateService tradingStateService,
+                                    VwapIndicator vwapIndicator) {
         this.tradeRepository = tradeRepository;
         this.executionEngine = executionEngine;
         this.marketDataService = marketDataService;
@@ -80,10 +89,14 @@ public class LivePositionExitMonitor {
         this.dynamicExitManager = dynamicExitManager;
         this.liveCandleBuilder = liveCandleBuilder;
         this.positionSyncProperties = positionSyncProperties;
+        this.globalConfigService = globalConfigService;
+        this.tradingStateService = tradingStateService;
+        this.vwapIndicator = vwapIndicator;
     }
 
     @EventListener
     public void onCandleClose(CandleClosedEvent event) {
+        if (!tradingStateService.isExitAllowed()) return;
         List<TradeEntity> openTrades = tradeRepository.findByStatus(TradeStatus.OPEN);
         if (openTrades.isEmpty()) return;
         for (TradeEntity trade : openTrades) {
@@ -284,7 +297,53 @@ public class LivePositionExitMonitor {
                         "⚡ Breakout Exit: %s | Market moved > 2.5x ATR — exiting short premium position",
                         trade.getInstrumentKey()));
                 close(trade, currentPrice, "MOMENTUM_BREAKOUT_EXIT");
+                return;
             }
+        }
+
+        // ── 7. VWAP reversal exit — close long options when underlying crosses back through VWAP ──
+        if (globalConfigService.isVwapExitEnabled() && profitPct > 0) {
+            checkVwapReversal(trade, currentPrice, profitPct);
+        }
+    }
+
+    /**
+     * Exit a profitable long position when the underlying spot crosses back through VWAP,
+     * indicating the directional thesis has reversed.
+     * CE: exit when spot drops back below VWAP (bullish momentum broken).
+     * PE: exit when spot rallies back above VWAP (bearish momentum broken).
+     */
+    private void checkVwapReversal(TradeEntity trade, BigDecimal currentPrice, double profitPct) {
+        try {
+            long spotToken = IndexType.fromName(trade.getUnderlying()).spotToken();
+            List<com.algo.trade.domain.Candle> spotCandles = liveCandleBuilder.getHistory(spotToken, Timeframe.ONE_MINUTE);
+            if (spotCandles.isEmpty()) return;
+
+            BigDecimal vwap = vwapIndicator.calculateSessionAnchored(
+                    spotCandles, java.time.ZoneId.of("Asia/Kolkata"));
+            if (vwap == null || vwap.signum() <= 0) return;
+
+            BigDecimal spotPrice = spotCandles.getLast().close();
+            String optionType = trade.getOptionType();
+            boolean triggered = false;
+
+            if ("CE".equalsIgnoreCase(optionType) && spotPrice.compareTo(vwap) < 0) {
+                triggered = true; // spot below VWAP — bullish CE thesis broken
+            } else if ("PE".equalsIgnoreCase(optionType) && spotPrice.compareTo(vwap) > 0) {
+                triggered = true; // spot above VWAP — bearish PE thesis broken
+            }
+
+            if (triggered) {
+                log.info("[ExitMonitor] VWAP REVERSAL: tradeId={} instrument={} optionType={} spot={} vwap={} profit={}%",
+                        trade.getTradeId(), trade.getInstrumentKey(), optionType,
+                        spotPrice, vwap, String.format("%.1f", profitPct));
+                telegramAlertService.systemAlert(String.format(
+                        "🔄 VWAP Reversal Exit: %s | Spot ₹%.2f crossed VWAP ₹%.2f | P&L +%.1f%%",
+                        trade.getInstrumentKey(), spotPrice.doubleValue(), vwap.doubleValue(), profitPct));
+                close(trade, currentPrice, "VWAP_REVERSAL");
+            }
+        } catch (Exception e) {
+            log.debug("[ExitMonitor] VWAP reversal check error for {}: {}", trade.getTradeId(), e.getMessage());
         }
     }
 

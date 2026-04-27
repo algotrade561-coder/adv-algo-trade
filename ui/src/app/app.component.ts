@@ -1,6 +1,6 @@
-import { Component, HostListener, Inject, ViewChild } from '@angular/core';
+import { Component, HostListener, Inject, OnDestroy, OnInit, ViewChild } from '@angular/core';
 import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
-import { catchError, forkJoin, of } from 'rxjs';
+import { catchError, forkJoin, interval, of, Subscription } from 'rxjs';
 import { MatButtonModule } from '@angular/material/button';
 import { MAT_DIALOG_DATA, MatDialog, MatDialogModule } from '@angular/material/dialog';
 import { MatIconModule } from '@angular/material/icon';
@@ -8,6 +8,7 @@ import { MatSidenav, MatSidenavModule } from '@angular/material/sidenav';
 import { MatToolbarModule } from '@angular/material/toolbar';
 import { MatListModule } from '@angular/material/list';
 import { ApiService } from './core/api.service';
+import { ServerStatusService } from './core/server-status.service';
 import { HealthResponse } from './core/models';
 
 interface NavItem {
@@ -273,6 +274,12 @@ export class HealthDialogComponent {
             <span class="health-label">API Health</span>
           </button>
         </mat-toolbar>
+        @if (!serverStatus.online()) {
+          <div class="offline-bar">
+            <mat-icon>cloud_off</mat-icon>
+            <span>Cannot reach server — check that the backend is running. Retrying automatically every 15s.</span>
+          </div>
+        }
         <router-outlet></router-outlet>
       </mat-sidenav-content>
     </mat-sidenav-container>
@@ -445,20 +452,46 @@ export class HealthDialogComponent {
         padding: 0 8px;
       }
     }
+
+    /* ── Offline banner ── */
+    .offline-bar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 24px;
+      background: rgba(255,113,106,.12);
+      border-bottom: 1px solid rgba(255,113,106,.35);
+      color: var(--bad);
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .offline-bar mat-icon { font-size: 18px; width: 18px; height: 18px; flex-shrink: 0; }
   `]
 })
-export class AppComponent {
+export class AppComponent implements OnInit, OnDestroy {
   @ViewChild('sidenav') sidenav!: MatSidenav;
   mobile = false;
 
   private static readonly MOBILE_BREAKPOINT = 768;
+  private healthSub?: Subscription;
 
   constructor(
     private readonly api: ApiService,
-    private readonly dialog: MatDialog
+    private readonly dialog: MatDialog,
+    readonly serverStatus: ServerStatusService
   ) {
     this.checkMobile();
   }
+
+  ngOnInit(): void {
+    this.healthSub = interval(15000).subscribe(() => {
+      this.api.health().pipe(catchError(() => of(null))).subscribe(r => {
+        if (r?.status) this.serverStatus.markOnline();
+      });
+    });
+  }
+
+  ngOnDestroy(): void { this.healthSub?.unsubscribe(); }
 
   @HostListener('window:resize')
   onResize(): void {

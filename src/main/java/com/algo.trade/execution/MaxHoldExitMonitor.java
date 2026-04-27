@@ -36,6 +36,7 @@ public class MaxHoldExitMonitor {
     private final MarketDataService marketDataService;
     private final TradingProperties properties;
     private final GlobalConfigService globalConfigService;
+    private final TradingStateService tradingStateService;
     private final PositionSyncProperties positionSyncProperties;
     private final Clock clock;
 
@@ -46,8 +47,9 @@ public class MaxHoldExitMonitor {
                                MarketDataService marketDataService,
                                TradingProperties properties,
                                GlobalConfigService globalConfigService,
+                               TradingStateService tradingStateService,
                                PositionSyncProperties positionSyncProperties) {
-        this(tradeRepository, executionEngine, strategyConfigService, marketDataService, properties, globalConfigService, positionSyncProperties, Clock.systemUTC());
+        this(tradeRepository, executionEngine, strategyConfigService, marketDataService, properties, globalConfigService, tradingStateService, positionSyncProperties, Clock.systemUTC());
     }
 
     MaxHoldExitMonitor(TradeRepository tradeRepository,
@@ -56,6 +58,7 @@ public class MaxHoldExitMonitor {
                        MarketDataService marketDataService,
                        TradingProperties properties,
                        GlobalConfigService globalConfigService,
+                       TradingStateService tradingStateService,
                        PositionSyncProperties positionSyncProperties,
                        Clock clock) {
         this.tradeRepository = tradeRepository;
@@ -64,12 +67,14 @@ public class MaxHoldExitMonitor {
         this.marketDataService = marketDataService;
         this.properties = properties;
         this.globalConfigService = globalConfigService;
+        this.tradingStateService = tradingStateService;
         this.positionSyncProperties = positionSyncProperties;
         this.clock = clock;
     }
 
     @Scheduled(fixedDelay = 60_000)
     public void check() {
+        if (!tradingStateService.isExitAllowed()) return;
         List<TradeEntity> openTrades = tradeRepository.findByStatus(TradeStatus.OPEN);
         if (openTrades.isEmpty()) return;
 

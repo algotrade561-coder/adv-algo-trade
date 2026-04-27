@@ -54,4 +54,7 @@ public interface StrategyDecisionRepository extends JpaRepository<StrategyDecisi
     @Query("SELECT COUNT(s) FROM StrategyDecisionEntity s WHERE " +
            "s.signalType = 'NO_TRADE' AND s.timestamp >= :since")
     long countRejectedSignalsSince(java.time.Instant since);
+
+    /** All signals (entries + rejections) since a given instant, oldest first — for trade journal CSV. */
+    List<StrategyDecisionEntity> findByTimestampGreaterThanEqualOrderByTimestampAsc(java.time.Instant since);
 }

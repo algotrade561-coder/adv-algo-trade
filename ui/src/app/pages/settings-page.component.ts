@@ -205,6 +205,10 @@ import { ApiService, GlobalConfigDto } from '../core/api.service';
               <span>Partial Profit Booking</span>
               <mat-slide-toggle [(ngModel)]="config.partialProfitBookingEnabled" color="primary"></mat-slide-toggle>
             </div>
+            <div class="toggle-row">
+              <span>VWAP Reversal Exit <span class="toggle-hint">Close profitable long positions when spot crosses back through VWAP</span></span>
+              <mat-slide-toggle [(ngModel)]="config.vwapExitEnabled" color="primary"></mat-slide-toggle>
+            </div>
             <mat-form-field appearance="outline">
               <mat-label>Max Hold Minutes (0 = no limit)</mat-label>
               <input matInput type="number" min="0" [(ngModel)]="config.maxHoldMinutes">
@@ -314,6 +318,7 @@ import { ApiService, GlobalConfigDto } from '../core/api.service';
       padding: 12px 16px; border: 1px solid var(--line); border-radius: 8px;
       background: rgba(255,255,255,.04); font-size: 13px; color: var(--text);
     }
+    .toggle-hint { display: block; font-size: 11px; color: var(--muted); margin-top: 2px; }
 
     .actions { display: flex; gap: 12px; margin-top: 24px; padding-bottom: 32px; }
     .actions button:first-child { min-width: 120px; }
