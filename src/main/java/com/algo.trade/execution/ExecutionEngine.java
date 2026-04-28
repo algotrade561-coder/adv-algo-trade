@@ -119,6 +119,11 @@ public class ExecutionEngine {
                 lotSize,
                 tradingStateService.running(),
                 tradingStateService.killSwitchEnabled());
+        if (optionPremium == null || optionPremium.signum() <= 0) {
+            log.warn("Entry execution rejected: optionPremium is zero or null for instrument={}",
+                    decision.selectedInstrumentKey().orElse(""));
+            return ExecutionResult.rejected(List.of("Option premium is zero or unavailable — cannot place order"));
+        }
         StrategyDecisionEntity savedDecision = persistDecision(decision);
         if (!tradingStateService.running()) {
             log.warn("Entry execution rejected: trading engine is stopped");
@@ -316,9 +321,18 @@ public class ExecutionEngine {
             return new ExecutionResult(true, Optional.empty(), List.of("Paper trade closed: P&L=" + realizedPnl));
         }
 
-        OrderRequest orderRequest = new OrderRequest("EXIT-" + UUID.randomUUID(), trade.getInstrumentKey(),
-                OrderSide.SELL, OrderType.LIMIT, ProductType.MIS, trade.getQuantity(), Optional.of(lastPrice),
-                "strategy-exit");
+        boolean validLastPrice = lastPrice != null && lastPrice.signum() > 0;
+        if (!validLastPrice) {
+            log.warn("doCloseTrade: lastPrice is zero/null for tradeId={} instrument={} — using MARKET order",
+                    tradeId, trade.getInstrumentKey());
+        }
+        OrderRequest orderRequest = validLastPrice
+                ? new OrderRequest("EXIT-" + UUID.randomUUID(), trade.getInstrumentKey(),
+                        OrderSide.SELL, OrderType.LIMIT, ProductType.MIS, trade.getQuantity(), Optional.of(lastPrice),
+                        "strategy-exit")
+                : new OrderRequest("EXIT-MKT-" + UUID.randomUUID(), trade.getInstrumentKey(),
+                        OrderSide.SELL, OrderType.MARKET, ProductType.MIS, trade.getQuantity(), Optional.empty(),
+                        "strategy-exit-market");
         log.info("Placing exit order: tradeId={}, clientOrderId={}, instrument={}, quantity={}",
                 tradeId, orderRequest.clientOrderId(), orderRequest.instrumentKey(), orderRequest.quantity());
         OrderResponse order;
@@ -485,8 +499,14 @@ public class ExecutionEngine {
     public void openTradeFromFilledOrder(OrderEntity orderEntity) {
         String tradeId = "TRD-" + UUID.randomUUID();
         String instrumentKey = orderEntity.getInstrumentKey();
-        BigDecimal fillPrice = orderEntity.getAverageFillPrice() != null
-                ? orderEntity.getAverageFillPrice() : BigDecimal.ZERO;
+        if (orderEntity.getAverageFillPrice() == null || orderEntity.getAverageFillPrice().signum() <= 0) {
+            log.error("openTradeFromFilledOrder skipped: fill price is null/zero for clientOrderId={} instrument={}",
+                    orderEntity.getClientOrderId(), instrumentKey);
+            telegramAlertService.systemAlert("🚨 Watchdog: fill price missing for " + instrumentKey
+                    + " order=" + orderEntity.getClientOrderId() + " — trade NOT opened, manual review needed");
+            return;
+        }
+        BigDecimal fillPrice = orderEntity.getAverageFillPrice();
         int filledQty = orderEntity.getFilledQuantity();
 
         // Derive underlying and option type from instrument key using UnderlyingSymbol enum

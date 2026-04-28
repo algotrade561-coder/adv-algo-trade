@@ -92,25 +92,47 @@ public class IVRankTracker {
         return getIVRank(indexType) <= maxRank;
     }
 
+    /** Persist current IV to DB every hour during market hours so restarts recover at most 1 hour of data. */
+    @Scheduled(cron = "0 0 10,11,12,13,14 * * MON-FRI", zone = "Asia/Kolkata")
+    public void recordIntradaySnapshot() {
+        persistCurrentIV(false);
+    }
+
+    /** End-of-day persistence with log + cleanup. */
     @Scheduled(cron = "0 30 15 * * MON-FRI", zone = "Asia/Kolkata")
     public void recordDailySnapshot() {
         history.forEach((index, samples) -> {
             if (!samples.isEmpty()) {
-                double iv = samples.peekLast().iv();
                 log.info("[IVRank] {} IV={}% rank={}% pct={}%", index,
-                        String.format("%.1f", iv),
+                        String.format("%.1f", samples.peekLast().iv()),
                         String.format("%.0f", getIVRank(index)),
                         String.format("%.0f", getIVPercentile(index)));
-                // Persist to DB for restart recovery
-                try {
-                    ivSampleRepository.save(new com.algo.trade.persistence.IVSampleEntity(
-                            index.name(), LocalDate.now(), iv));
-                    // Cleanup old samples (keep 1 year)
+            }
+        });
+        persistCurrentIV(true);
+    }
+
+    private void persistCurrentIV(boolean cleanup) {
+        history.forEach((index, samples) -> {
+            if (samples.isEmpty()) return;
+            double iv = samples.peekLast().iv();
+            try {
+                // Upsert: update today's row if it exists, otherwise insert
+                var existing = ivSampleRepository.findByIndexTypeAndSampleDate(
+                        index.name(), LocalDate.now());
+                if (existing.isPresent()) {
+                    existing.get().setIv(iv);
+                    ivSampleRepository.save(existing.get());
+                } else {
+                    ivSampleRepository.save(
+                            new com.algo.trade.persistence.IVSampleEntity(index.name(), LocalDate.now(), iv));
+                }
+                if (cleanup) {
                     ivSampleRepository.deleteByIndexTypeAndSampleDateBefore(
                             index.name(), LocalDate.now().minusDays(365));
-                } catch (Exception e) {
-                    log.debug("[IVRank] Failed to persist IV sample for {}: {}", index, e.getMessage());
                 }
+            } catch (Exception e) {
+                log.debug("[IVRank] Failed to persist IV sample for {}: {}", index, e.getMessage());
             }
         });
     }

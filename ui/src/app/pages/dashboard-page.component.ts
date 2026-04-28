@@ -221,6 +221,11 @@ import { MarketSnapshot, PnlSnapshot, RuntimeStatus, StrategyDecision, TradingSt
               <div class="scan-last-signal">
                 <span class="sb" [class.sb-buy]="latestSignal.signalType?.startsWith('BUY')" [class.sb-no]="latestSignal.signalType === 'NO_TRADE'">{{ latestSignal.signalType }}</span>
                 <span class="sb">{{ latestSignal.underlying }}</span>
+                @if (asAny(latestSignal)?.ivRankSource) {
+                  <span [class]="asAny(latestSignal).ivRankSource === 'TRACKER' ? 'sb sb-tracker' : 'sb sb-neutral'">
+                    IV {{ asAny(latestSignal).ivRankSource }}
+                  </span>
+                }
                 <span class="scan-time">{{ latestSignal.selectedInstrumentKey ?? '' }}</span>
               </div>
             } @else {
@@ -322,6 +327,8 @@ import { MarketSnapshot, PnlSnapshot, RuntimeStatus, StrategyDecision, TradingSt
     .reasons { font-size: 12px; color: var(--muted); margin: 12px 0 0; line-height: 1.5; word-break: break-word; }
     .empty { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 36px 0; color: var(--muted); font-size: 13px; }
     .empty mat-icon { font-size: 32px; width: 32px; height: 32px; opacity: .35; }
+    .sb-tracker { background: rgba(69,209,140,.1)  !important; border-color: rgba(69,209,140,.3)  !important; color: var(--ok)   !important; }
+    .sb-neutral { background: rgba(242,189,75,.1)  !important; border-color: rgba(242,189,75,.3)  !important; color: var(--warn) !important; }
   `]
 })
 export class DashboardPageComponent implements OnInit, OnDestroy {
@@ -415,6 +422,8 @@ export class DashboardPageComponent implements OnInit, OnDestroy {
       this.cd.detectChanges();
     });
   }
+
+  asAny(v: unknown): any { return v as any; }
 
   private fail(msg = 'Unable to reach server. Click Refresh.'): void {
     this.loading = false;

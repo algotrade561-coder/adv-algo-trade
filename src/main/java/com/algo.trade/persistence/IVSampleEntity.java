@@ -32,4 +32,5 @@ public class IVSampleEntity {
     public String getIndexType() { return indexType; }
     public LocalDate getSampleDate() { return sampleDate; }
     public double getIv() { return iv; }
+    public void setIv(double iv) { this.iv = iv; }
 }

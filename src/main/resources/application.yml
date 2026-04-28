@@ -34,6 +34,8 @@ trading:
   symbols:
     underlyings:
       - NIFTY
+      - BANKNIFTY
+      - SENSEX
     default-expiry: NEAREST
     spot-quote-keys:
       NIFTY: "NSE:NIFTY 50"

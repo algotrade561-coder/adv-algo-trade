@@ -76,9 +76,16 @@ public class AlgoTradingScheduler {
     private final com.algo.trade.news.NewsFeedService newsFeedService;
     private final com.algo.trade.risk.WeeklyExposureTracker weeklyExposureTracker;
     private final com.algo.trade.risk.SafeWeekPredictor safeWeekPredictor;
+    private final com.algo.trade.indicator.IVRankTracker ivRankTracker;
     private final Map<String, Quote> previousQuotes = new ConcurrentHashMap<>();
     private final AtomicBoolean scanInProgress = new AtomicBoolean(false);
     private final Map<StrategyType, AbstractSpreadStrategy> spreadStrategyMap;
+
+    // Short-lived cache for underlying REST candles — avoids repeated REST calls within the same candle period.
+    // Keyed by "instrumentKey:TIMEFRAME", expires after 60 seconds.
+    private record CachedCandles(List<Candle> candles, Instant fetchedAt) {}
+    private final Map<String, CachedCandles> candleRestCache = new ConcurrentHashMap<>();
+    private static final Duration CANDLE_CACHE_TTL = Duration.ofSeconds(60);
 
     public AlgoTradingScheduler(
             TradingProperties properties,
@@ -104,6 +111,7 @@ public class AlgoTradingScheduler {
             com.algo.trade.news.NewsFeedService newsFeedService,
             com.algo.trade.risk.WeeklyExposureTracker weeklyExposureTracker,
             com.algo.trade.risk.SafeWeekPredictor safeWeekPredictor,
+            com.algo.trade.indicator.IVRankTracker ivRankTracker,
             java.util.List<AbstractSpreadStrategy> spreadStrategies
     ) {
         this.properties = properties;
@@ -129,6 +137,7 @@ public class AlgoTradingScheduler {
         this.newsFeedService = newsFeedService;
         this.weeklyExposureTracker = weeklyExposureTracker;
         this.safeWeekPredictor = safeWeekPredictor;
+        this.ivRankTracker = ivRankTracker;
         Map<StrategyType, AbstractSpreadStrategy> map = new java.util.EnumMap<>(StrategyType.class);
         for (AbstractSpreadStrategy s : spreadStrategies) {
             map.put(s.strategyType(), s);
@@ -278,7 +287,7 @@ public class AlgoTradingScheduler {
                 }
 
                 List<Candle> dbDefaultCandles = candles(underlyingHistoricalKey(underlying), Timeframe.FIVE_MINUTE);
-                double dbIvRank = computeLiveIvRank(underlying, dbDefaultCandles);
+                double dbIvRank = computeLiveIvRank(underlying, dbDefaultCandles).rank();
                 entriesSubmitted += evaluateAndExecute(underlying, context.get(), marketTime,
                         properties.algo().maxEntriesPerScan() - entriesSubmitted, dbIvRank);
                 // Evict stale keys (expired strikes from prior weeks) before recording current quotes
@@ -319,7 +328,9 @@ public class AlgoTradingScheduler {
             // Compute IV rank from live option chain
             List<Candle> defaultCandles = candles(underlyingHistoricalKey(underlying),
                     com.algo.trade.domain.Timeframe.FIVE_MINUTE);
-            double ivRank = computeLiveIvRank(underlying, defaultCandles);
+            IvRankResult ivRankResult = computeLiveIvRank(underlying, defaultCandles);
+            double ivRank = ivRankResult.rank();
+            String ivRankSource = ivRankResult.source();
 
             for (StrategyConfig config : enabledConfigs) {
                 if (!config.getUnderlying().equals(underlying.name())) continue;
@@ -388,7 +399,8 @@ public class AlgoTradingScheduler {
                         case EVENT_DRIVEN_BUY -> {
                             if (!matchesConfiguredTimeframe(config, triggerTimeframe)) { yield Optional.empty(); }
                             evaluated[0] = true;
-                            yield eventDrivenBuyStrategy.evaluate(ivRank, config, underlying);
+                            BigDecimal eventSpotPrice = trendCandles.isEmpty() ? BigDecimal.ZERO : trendCandles.getLast().close();
+                            yield eventDrivenBuyStrategy.evaluate(ivRank, config, underlying, eventSpotPrice);
                         }
                         case BULL_CALL_SPREAD, BEAR_PUT_SPREAD,
                              LONG_STRADDLE, LONG_STRANGLE,
@@ -429,7 +441,7 @@ public class AlgoTradingScheduler {
                         // and in-memory state. Bypass enrichment (which would replace groupId with a phantom
                         // CE instrument) and skip single-leg execution engine routing entirely.
                         if (spreadStrategyMap.containsKey(type)) {
-                            StrategyDecisionEntity spreadEntity = persistStrategyDecision(signal.get(), type.name(), config);
+                            StrategyDecisionEntity spreadEntity = persistStrategyDecision(signal.get(), type.name(), config, ivRankSource);
                             spreadEntity.setExecutionStage("NOT_EXECUTED");
                             spreadEntity.setExecutionReason("Spread recorded — multi-leg broker execution not yet implemented");
                             decisionRepository.save(spreadEntity);
@@ -448,7 +460,7 @@ public class AlgoTradingScheduler {
                             log.info("Entry blocked: weekly exposure cap reached (₹{}/₹{})",
                                     weeklyExposureTracker.getWeeklyExposure().setScale(0, java.math.RoundingMode.HALF_UP),
                                     weeklyExposureTracker.getWeeklyExposureCap().setScale(0, java.math.RoundingMode.HALF_UP));
-                            StrategyDecisionEntity blockedEntity = persistStrategyDecision(enriched, type.name(), config);
+                            StrategyDecisionEntity blockedEntity = persistStrategyDecision(enriched, type.name(), config, ivRankSource);
                             blockedEntity.setExecutionStage("NOT_EXECUTED");
                             blockedEntity.setExecutionReason("Weekly exposure cap reached");
                             decisionRepository.save(blockedEntity);
@@ -516,10 +528,17 @@ public class AlgoTradingScheduler {
                                     type.name(), Instant.now(), underlying.name(), "NO_TRADE",
                                     ot.name(), spotPrice, BigDecimal.ZERO, noTradeReason);
                             noTrade.setIvRank(ivRank);
+                            noTrade.setIvRankSource(ivRankSource);
                             noTrade.setFirstFailedFilter(diag.firstFailedFilter());
                             if (diag.ema9() != null) noTrade.setFastEma(diag.ema9());
                             if (diag.ema21() != null) noTrade.setSlowEma(diag.ema21());
+                            if (diag.emaCrossType() != null) noTrade.setEmaCrossType(diag.emaCrossType());
+                            if (diag.emaCrossConfirmCount() != null) noTrade.setEmaCrossConfirmCount(diag.emaCrossConfirmCount());
                             if (diag.bbBandwidth() != null) noTrade.setBollingerBandwidth(diag.bbBandwidth());
+                            if (diag.bbUpper() != null) noTrade.setBbUpper(diag.bbUpper());
+                            if (diag.bbLower() != null) noTrade.setBbLower(diag.bbLower());
+                            if (diag.bbSqueeze() != null) noTrade.setBbSqueeze(diag.bbSqueeze());
+                            noTrade.setConfigSnapshot(configToSnapshot(config));
                             if (atmInst != null) {
                                 noTrade.setSelectedInstrumentKey(atmInst.instrumentKey());
                                 noTrade.setSelectedStrike(atmInst.strike().orElse(null));
@@ -542,6 +561,10 @@ public class AlgoTradingScheduler {
 
     /** Persist a signal from any strategy type to H2. */
     private StrategyDecisionEntity persistStrategyDecision(StrategyDecision decision, String strategyType, StrategyConfig config) {
+        return persistStrategyDecision(decision, strategyType, config, null);
+    }
+
+    private StrategyDecisionEntity persistStrategyDecision(StrategyDecision decision, String strategyType, StrategyConfig config, String ivRankSrc) {
         StrategyDecisionEntity entity = StrategyDecisionEntity.forStrategy(
                 strategyType,
                 decision.timestamp(),
@@ -586,6 +609,21 @@ public class AlgoTradingScheduler {
                 } catch (NumberFormatException ignored) {}
             }
         }
+
+        // Capture IV rank source
+        if (ivRankSrc != null) entity.setIvRankSource(ivRankSrc);
+
+        // Capture config snapshot for replay/audit
+        entity.setConfigSnapshot(configToSnapshot(config));
+
+        // Capture bid/ask/ATP from live WebSocket cache for the selected instrument
+        decision.selectedInstrumentKey().ifPresent(key -> {
+            marketDataService.quote(key).ifPresent(q -> {
+                q.bid().ifPresent(entity::setOptionBid);
+                q.ask().ifPresent(entity::setOptionAsk);
+                q.averageTradedPrice().ifPresent(entity::setOptionAtp);
+            });
+        });
 
         return decisionRepository.save(entity);
     }
@@ -1046,14 +1084,25 @@ public class AlgoTradingScheduler {
         if (instrumentKey == null || instrumentKey.isBlank()) {
             return List.of();
         }
+        String cacheKey = instrumentKey + ":" + timeframe.name();
+        CachedCandles cached = candleRestCache.get(cacheKey);
+        if (cached != null && cached.fetchedAt().plus(CANDLE_CACHE_TTL).isAfter(Instant.now())) {
+            return cached.candles();
+        }
         Instant to = Instant.now();
         Instant from = to.minus(timeframe.duration().multipliedBy(properties.algo().candleLookback()));
         try {
-            return marketDataService.historicalCandles(new HistoricalDataRequest(instrumentKey, from, to, timeframe, true));
+            List<Candle> result = marketDataService.historicalCandles(
+                    new HistoricalDataRequest(instrumentKey, from, to, timeframe, true));
+            if (!result.isEmpty()) {
+                candleRestCache.put(cacheKey, new CachedCandles(result, Instant.now()));
+            }
+            return result;
         } catch (Exception ex) {
             log.warn("Historical candle request failed: instrumentKey={}, timeframe={}, message={}",
                     instrumentKey, timeframe, ex.getMessage());
-            return List.of();
+            // Return stale cache rather than empty — stale candles are better than no candles
+            return cached != null ? cached.candles() : List.of();
         }
     }
 
@@ -1133,8 +1182,16 @@ public class AlgoTradingScheduler {
         // Try LiveCandleBuilder history first
         List<Candle> history = candleBuilder.getHistory(
                 instrument.instrumentToken(), optionTf);
-        if (!history.isEmpty()) return history;
+        if (!history.isEmpty()) {
+            log.info("buildOptionCandles: token={} symbol={} tf={} wsHistory={}",
+                    instrument.instrumentToken(), instrument.tradingSymbol(), optionTf, history.size());
+            return history;
+        }
         // Fall back: single synthetic candle from live quote so scan is not skipped
+        boolean hasOpenCandle = candleBuilder.hasOpenCandle(instrument.instrumentToken(), optionTf);
+        log.info("buildOptionCandles: token={} symbol={} tf={} wsHistory=0 openCandle={} → synthetic fallback" +
+                        " (openCandle=false means token is NOT subscribed to WebSocket)",
+                instrument.instrumentToken(), instrument.tradingSymbol(), optionTf, hasOpenCandle);
         if (liveQuote != null && liveQuote.lastPrice() != null && liveQuote.lastPrice().signum() > 0) {
             Candle synthetic = new Candle(
                     instrument.instrumentKey(), liveQuote.timestamp(),
@@ -1184,62 +1241,43 @@ public class AlgoTradingScheduler {
     }
 
     /**
-     * Compute IV rank from live option chain data.
-     * Uses ATM straddle price / underlying price as a simplified IV proxy.
-     * Returns 50 (neutral) if no option data is available.
+     * Compute IV rank from IVRankTracker (proper Black-Scholes IV percentile, persisted across sessions).
+     * Falls back to ATM straddle/spot proxy when tracker has no history yet (early in session or first day).
      */
-    private double computeLiveIvRank(UnderlyingSymbol underlying, List<Candle> candles) {
-        if (candles.isEmpty()) return 50.0;
-        BigDecimal spotPrice = candles.getLast().close();
-        if (spotPrice.signum() <= 0) return 50.0;
+    private record IvRankResult(double rank, String source) {}
 
-        try {
-            Optional<LocalDate> expiry = instrumentCache.nearestExpiry(
-                    underlying, LocalDate.now(properties.timezone()), properties.symbols().defaultExpiry());
-            if (expiry.isEmpty()) return 50.0;
+    /** Serializes the key StrategyConfig fields as a compact JSON-like string for audit replay. */
+    private static String configToSnapshot(com.algo.trade.strategy.StrategyConfig c) {
+        if (c == null) return null;
+        return String.format(
+            "{\"type\":\"%s\",\"underlying\":\"%s\",\"lots\":%d,\"sl\":%.0f,\"target\":%.0f," +
+            "\"maxHold\":%d,\"paper\":%b,\"otm\":%d,\"spread\":%d," +
+            "\"maxIvBuy\":%s,\"minIvSell\":%s,\"candle\":\"%s\",\"trend\":\"%s\"}",
+            c.getStrategyType() != null ? c.getStrategyType().name() : "",
+            c.getUnderlying() != null ? c.getUnderlying() : "",
+            c.getLots(),
+            c.getStopLossPercent() != null ? c.getStopLossPercent().doubleValue() : 0,
+            c.getTargetPercent() != null ? c.getTargetPercent().doubleValue() : 0,
+            c.getMaxHoldMinutes(),
+            c.isPaperTrading(),
+            c.getOtmStrikes(),
+            c.getSpreadStrikes(),
+            c.getMaxIvRankForBuying() != null ? c.getMaxIvRankForBuying().toPlainString() : "null",
+            c.getMinCombinedPremium() != null ? c.getMinCombinedPremium().toPlainString() : "null",
+            c.getCandleTimeframe() != null ? c.getCandleTimeframe() : "",
+            c.getTrendTimeframe() != null ? c.getTrendTimeframe() : ""
+        );
+    }
 
-            List<Instrument> options = instrumentCache.all().stream()
-                    .filter(Instrument::tradable)
-                    .filter(i -> i.underlying().filter(underlying::equals).isPresent())
-                    .filter(i -> i.expiry().filter(expiry.get()::equals).isPresent())
-                    .filter(i -> i.strike().isPresent())
-                    .toList();
-            if (options.isEmpty()) return 50.0;
-
-            // Find ATM strike
-            BigDecimal atmStrike = options.stream()
-                    .flatMap(i -> i.strike().stream())
-                    .distinct()
-                    .min(Comparator.comparing(s -> s.subtract(spotPrice).abs()))
-                    .orElse(null);
-            if (atmStrike == null) return 50.0;
-
-            // Get ATM CE and PE prices
-            BigDecimal cePrice = options.stream()
-                    .filter(i -> i.strike().filter(atmStrike::equals).isPresent())
-                    .filter(i -> i.optionType().filter(OptionType.CE::equals).isPresent())
-                    .findFirst()
-                    .flatMap(i -> marketDataService.quote(i.instrumentKey()))
-                    .map(Quote::lastPrice)
-                    .orElse(BigDecimal.ZERO);
-            BigDecimal pePrice = options.stream()
-                    .filter(i -> i.strike().filter(atmStrike::equals).isPresent())
-                    .filter(i -> i.optionType().filter(OptionType.PE::equals).isPresent())
-                    .findFirst()
-                    .flatMap(i -> marketDataService.quote(i.instrumentKey()))
-                    .map(Quote::lastPrice)
-                    .orElse(BigDecimal.ZERO);
-
-            BigDecimal straddle = cePrice.add(pePrice);
-            if (straddle.signum() <= 0) return 50.0;
-
-            // IV rank ≈ (straddle / spot) × 1000, scaled to 0-100
-            double rawRank = straddle.divide(spotPrice, MATH_CONTEXT).doubleValue() * 1000;
-            return Math.max(0, Math.min(100, rawRank));
-        } catch (Exception e) {
-            log.debug("IV rank computation failed for {}: {}", underlying, e.getMessage());
-            return 50.0;
+    private IvRankResult computeLiveIvRank(UnderlyingSymbol underlying, List<Candle> candles) {
+        com.algo.trade.domain.IndexType indexType = com.algo.trade.domain.IndexType.from(underlying);
+        // Prefer IVRankTracker: real IV rank computed from GreeksCalculator IV, loaded from DB on startup
+        if (ivRankTracker.getCurrentIV(indexType) > 0) {
+            return new IvRankResult(ivRankTracker.getIVRank(indexType), "TRACKER");
         }
+        // IVRankTracker not yet warmed up — return neutral 50.0 until history accumulates.
+        log.debug("IV rank unavailable for {} (IVRankTracker not warmed up) — using neutral 50.0", underlying);
+        return new IvRankResult(50.0, "NEUTRAL");
     }
 
     private record ScanContext(

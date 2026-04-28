@@ -14,11 +14,17 @@ import org.springframework.stereotype.Component;
 
 /**
  * Blocks application startup in LIVE mode until Kite auth is ready.
+ * Also maintains option WebSocket subscription as the underlying spot price moves.
  */
 @Component
 public class KiteStartupLogin implements ApplicationRunner, Ordered {
 
     private static final Logger log = LoggerFactory.getLogger(KiteStartupLogin.class);
+    private static final int RESUBSCRIBE_STRIKE_THRESHOLD = 5; // re-subscribe when ATM drifts > 5 strikes
+
+    private final java.util.Map<com.algo.trade.domain.IndexType, Integer> lastSubscribedAtm =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private volatile boolean webSocketConnected = false;
 
     private final TradingProperties properties;
     private final KiteAccessTokenStore tokenStore;
@@ -28,6 +34,7 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
     private final com.algo.trade.marketdata.LiveInstrumentCache liveInstrumentCache;
     private final com.algo.trade.marketdata.InstrumentCache instrumentCache;
     private final com.algo.trade.marketdata.MarketDataService marketDataService;
+    private final com.algo.trade.marketdata.LiveCandleBuilder candleBuilder;
 
     public KiteStartupLogin(
             TradingProperties properties,
@@ -37,7 +44,8 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
             KiteWebSocketClient webSocketClient,
             com.algo.trade.marketdata.LiveInstrumentCache liveInstrumentCache,
             com.algo.trade.marketdata.InstrumentCache instrumentCache,
-            com.algo.trade.marketdata.MarketDataService marketDataService
+            com.algo.trade.marketdata.MarketDataService marketDataService,
+            com.algo.trade.marketdata.LiveCandleBuilder candleBuilder
     ) {
         this.properties = properties;
         this.tokenStore = tokenStore;
@@ -47,6 +55,7 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
         this.liveInstrumentCache = liveInstrumentCache;
         this.instrumentCache = instrumentCache;
         this.marketDataService = marketDataService;
+        this.candleBuilder = candleBuilder;
     }
 
     @Override
@@ -170,13 +179,25 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
                             subscriptionTokens = liveInstrumentCache.getSubscriptionTokens(indexType, expiry, 10);
                         }
                         optionTokens.addAll(subscriptionTokens);
-                        log.info("Option tokens for {}: {}", underlying, subscriptionTokens.size());
+                        double subSpot = liveInstrumentCache.getFuturesPrice(indexType);
+                        int subAtm = subSpot > 0 ? indexType.roundToATM(subSpot) : 0;
+                        int interval = indexType.strikeInterval();
+                        log.info("Option subscription for {}: spot={} atm={} range=[{},{}] tokens={}",
+                                underlying, subSpot, subAtm,
+                                subAtm - 10 * interval, subAtm + 10 * interval,
+                                subscriptionTokens.size());
+                        if (subAtm > 0) lastSubscribedAtm.put(indexType, subAtm);
                     }
                     if (!optionTokens.isEmpty()) {
                         var allTokens = new java.util.ArrayList<>(tokens);
                         allTokens.addAll(optionTokens);
                         webSocketClient.subscribe(allTokens);
                         log.info("WebSocket re-subscribed with {} option tokens", optionTokens.size());
+                    }
+                    webSocketConnected = true;
+                    // Seed candle history from REST if app was restarted during market hours
+                    if (isMarketHours()) {
+                        seedCandleHistory(optionTokens);
                     }
                 } catch (Exception e) {
                     log.warn("Option token subscription failed: {}", e.getMessage());
@@ -185,6 +206,111 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
 
         } catch (Exception e) {
             log.warn("WebSocket connection failed on startup (will use REST fallback): {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Seeds candle history from REST historical API for subscribed option tokens and VIX.
+     * Called only during market hours on startup to recover in-memory state after a mid-session restart.
+     * Seeds 1-minute candles for options (used by DIRECTIONAL_BUY volume analysis)
+     * and 15-minute candles for VIX (used by detectVixTrend).
+     * Limits to 40 option tokens max and throttles at ~2 REST calls/second to respect Zerodha rate limits.
+     */
+    private void seedCandleHistory(java.util.List<Long> optionTokens) {
+        log.info("Market-hours restart detected — seeding candle history from REST for {} option tokens + VIX",
+                Math.min(optionTokens.size(), 40));
+
+        // Seed VIX 15-minute candles for detectVixTrend()
+        seedTokenCandles(264969L, "NSE:INDIA VIX", com.algo.trade.domain.Timeframe.FIFTEEN_MINUTE);
+
+        // Seed 1-minute candles for up to 40 option tokens (ATM-nearest first)
+        int seeded = 0;
+        for (Long token : optionTokens) {
+            if (seeded >= 40) break;
+            var opt = liveInstrumentCache.getByToken(token);
+            if (opt.isEmpty()) continue;
+            String instrumentKey = opt.get().getExchange() + ":" + opt.get().getTradingSymbol();
+            seedTokenCandles(token, instrumentKey, com.algo.trade.domain.Timeframe.ONE_MINUTE);
+            seeded++;
+            try { Thread.sleep(500); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
+        }
+        log.info("Candle history seeding complete: seeded {} option tokens + VIX", seeded);
+    }
+
+    private void seedTokenCandles(long token, String instrumentKey, com.algo.trade.domain.Timeframe tf) {
+        try {
+            var candles = marketDataService.historicalCandles(instrumentKey, tf);
+            if (!candles.isEmpty()) {
+                candleBuilder.seedHistory(token, tf, candles);
+                log.info("Seeded {} {} candles: token={} key={}", candles.size(), tf, token, instrumentKey);
+            } else {
+                log.debug("No REST historical candles available for seed: key={} tf={}", instrumentKey, tf);
+            }
+        } catch (Exception e) {
+            log.debug("Candle seed failed for {}: {}", instrumentKey, e.getMessage());
+        }
+    }
+
+    private boolean isMarketHours() {
+        var ist = java.time.ZoneId.of("Asia/Kolkata");
+        var now = java.time.LocalTime.now(ist);
+        return now.isAfter(java.time.LocalTime.of(9, 15)) && now.isBefore(java.time.LocalTime.of(15, 30));
+    }
+
+    /**
+     * Re-subscribes option tokens when the underlying spot price moves more than RESUBSCRIBE_STRIKE_THRESHOLD
+     * strikes from the ATM used at startup. Runs every 5 minutes during market hours.
+     * Ensures that selected options remain within the WebSocket subscription window as NIFTY/BANKNIFTY move.
+     */
+    @org.springframework.scheduling.annotation.Scheduled(fixedDelay = 5 * 60 * 1000)
+    public void resubscribeIfAtmMoved() {
+        if (!webSocketConnected || lastSubscribedAtm.isEmpty()) return;
+
+        var baseTokens = new java.util.ArrayList<Long>();
+        baseTokens.add(264969L); // India VIX
+        for (var idx : com.algo.trade.domain.IndexType.values()) {
+            baseTokens.add(idx.spotToken());
+        }
+
+        var newOptionTokens = new java.util.ArrayList<Long>();
+        boolean anyMoved = false;
+
+        for (var underlying : properties.symbols().underlyings()) {
+            var indexType = com.algo.trade.domain.IndexType.from(underlying);
+            double currentSpot = liveInstrumentCache.getFuturesPrice(indexType);
+            if (currentSpot <= 0) continue;
+
+            int currentAtm = indexType.roundToATM(currentSpot);
+            Integer prevAtm = lastSubscribedAtm.get(indexType);
+            if (prevAtm == null) continue;
+
+            int strikeDrift = Math.abs(currentAtm - prevAtm) / indexType.strikeInterval();
+            if (strikeDrift >= RESUBSCRIBE_STRIKE_THRESHOLD) {
+                anyMoved = true;
+                log.info("ATM moved {} strikes for {} (prev={} curr={}) — re-subscribing options",
+                        strikeDrift, underlying, prevAtm, currentAtm);
+                lastSubscribedAtm.put(indexType, currentAtm);
+            }
+
+            try {
+                var expiryCal = new com.algo.trade.marketdata.ExpiryCalendar();
+                var expiry = expiryCal.getCurrentWeeklyExpiry(indexType);
+                var tokens = liveInstrumentCache.getSubscriptionTokens(indexType, expiry, 10);
+                newOptionTokens.addAll(tokens);
+            } catch (Exception e) {
+                log.warn("Re-subscription token fetch failed for {}: {}", underlying, e.getMessage());
+            }
+        }
+
+        if (anyMoved && !newOptionTokens.isEmpty()) {
+            var allTokens = new java.util.ArrayList<>(baseTokens);
+            allTokens.addAll(newOptionTokens);
+            try {
+                webSocketClient.subscribe(allTokens);
+                log.info("WebSocket re-subscribed: {} option tokens after ATM drift", newOptionTokens.size());
+            } catch (Exception e) {
+                log.warn("WebSocket re-subscription failed: {}", e.getMessage());
+            }
         }
     }
 }

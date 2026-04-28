@@ -7,6 +7,8 @@ import { MatTabsModule } from '@angular/material/tabs';
 import { ApiService, StrategyDto } from '../core/api.service';
 import { ApiRecord, JvmHealth, PnlSnapshot, RuntimeStatus, TradingStatus } from '../core/models';
 
+type ScorecardRow = { strategyType: string; totalEntries: number; filled: number; rejected: number; fillRate: number; avgIvRank: number; avgSpread: number; ivRankSource: string };
+
 @Component({
   selector: 'app-monitoring-page',
   standalone: true,
@@ -469,6 +471,110 @@ import { ApiRecord, JvmHealth, PnlSnapshot, RuntimeStatus, TradingStatus } from 
             }
           </mat-tab>
 
+          <!-- Scorecard -->
+          <mat-tab>
+            <ng-template mat-tab-label>
+              <mat-icon>leaderboard</mat-icon> Scorecard
+              <span class="tab-count">{{ scorecard.length }}</span>
+            </ng-template>
+            <div class="filter-row" style="gap:8px">
+              <span class="filter-label">Period</span>
+              @for (p of scorecardPeriods; track p.value) {
+                <button class="filter-chip" [class.chip-active]="scorecardPeriod === p.value" (click)="setScorecardPeriod(p.value)">{{ p.label }}</button>
+              }
+            </div>
+            @if (scorecard.length === 0) {
+              <div class="empty-state"><mat-icon>inbox</mat-icon><span>No entry signal data for the selected period</span></div>
+            } @else {
+              <div class="table-wrap">
+                <table class="mon-table">
+                  <thead><tr>
+                    <th>Strategy</th><th>Entries</th><th>Fills</th><th>Rejected</th>
+                    <th>Fill %</th><th>Avg IV Rank</th><th>Avg Spread ₹</th><th>IV Source</th>
+                  </tr></thead>
+                  <tbody>
+                    @for (r of scorecard; track r.strategyType) {
+                      <tr>
+                        <td>{{ fmtStrategy(r.strategyType) }}</td>
+                        <td class="mono">{{ r.totalEntries }}</td>
+                        <td class="mono pos">{{ r.filled }}</td>
+                        <td class="mono" [class.neg]="r.rejected > 0">{{ r.rejected }}</td>
+                        <td>
+                          <div class="fill-bar-row">
+                            <div class="fill-bar-track">
+                              <div class="fill-bar-fill"
+                                [style.width.%]="r.fillRate"
+                                [class.fill-ok]="r.fillRate >= 50"
+                                [class.fill-warn]="r.fillRate > 0 && r.fillRate < 50"
+                                [class.fill-bad]="r.fillRate === 0"></div>
+                            </div>
+                            <span class="fill-pct">{{ r.fillRate }}%</span>
+                          </div>
+                        </td>
+                        <td class="mono">{{ r.avgIvRank > 0 ? r.avgIvRank.toFixed(1) : '—' }}</td>
+                        <td class="mono" [class.warn]="r.avgSpread > 3 && r.avgSpread <= 6" [class.neg]="r.avgSpread > 6">
+                          {{ r.avgSpread > 0 ? r.avgSpread.toFixed(2) : '—' }}
+                        </td>
+                        <td>
+                          <span [class]="r.ivRankSource === 'TRACKER' ? 'iv-badge iv-tracker' : 'iv-badge iv-neutral'">
+                            {{ r.ivRankSource }}
+                          </span>
+                        </td>
+                      </tr>
+                    }
+                  </tbody>
+                </table>
+              </div>
+            }
+          </mat-tab>
+
+          <!-- Quality -->
+          <mat-tab>
+            <ng-template mat-tab-label>
+              <mat-icon>insights</mat-icon> Quality
+            </ng-template>
+            @if (scorecard.length === 0) {
+              <div class="empty-state"><mat-icon>inbox</mat-icon><span>No quality data yet</span></div>
+            } @else {
+              <div class="quality-grid">
+                @for (r of scorecard; track r.strategyType) {
+                  @if (r.totalEntries > 0) {
+                    <div class="q-card">
+                      <div class="q-title">{{ fmtStrategy(r.strategyType) }}</div>
+                      <div class="q-row">
+                        <span class="q-label">Fill Rate</span>
+                        <div class="q-bar-wrap">
+                          <div class="q-bar" [style.width.%]="r.fillRate"
+                            [class.q-ok]="r.fillRate >= 50"
+                            [class.q-warn]="r.fillRate > 0 && r.fillRate < 50"
+                            [class.q-bad]="r.fillRate === 0"></div>
+                        </div>
+                        <span class="q-val">{{ r.fillRate }}%</span>
+                      </div>
+                      <div class="q-row">
+                        <span class="q-label">Avg Spread ₹</span>
+                        <span class="q-val-big"
+                          [class.pos]="r.avgSpread > 0 && r.avgSpread < 2"
+                          [class.warn]="r.avgSpread >= 2 && r.avgSpread < 5"
+                          [class.neg]="r.avgSpread >= 5">
+                          {{ r.avgSpread > 0 ? r.avgSpread.toFixed(2) : '—' }}
+                        </span>
+                      </div>
+                      <div class="q-row">
+                        <span class="q-label">Avg IV Rank</span>
+                        <span class="q-val-big">{{ r.avgIvRank > 0 ? r.avgIvRank.toFixed(1) : '—' }}</span>
+                      </div>
+                      <div class="q-footer">
+                        <span class="q-entries">{{ r.totalEntries }} entries</span>
+                        <span [class]="r.ivRankSource === 'TRACKER' ? 'iv-badge iv-tracker' : 'iv-badge iv-neutral'">{{ r.ivRankSource }}</span>
+                      </div>
+                    </div>
+                  }
+                }
+              </div>
+            }
+          </mat-tab>
+
         </mat-tab-group>
       </div>
     </section>
@@ -633,6 +739,33 @@ import { ApiRecord, JvmHealth, PnlSnapshot, RuntimeStatus, TradingStatus } from 
     /* Spot price indicator in signals table */
     .spot-price { color: var(--muted); }
     .spot-price sup { font-size: 8px; margin-left: 1px; opacity: 0.7; }
+
+    /* IV rank source badges */
+    .iv-badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 10px; font-weight: 800; }
+    .iv-tracker { background: rgba(69,209,140,.12); color: var(--ok); border: 1px solid rgba(69,209,140,.3); }
+    .iv-neutral  { background: rgba(242,189,75,.12); color: var(--warn); border: 1px solid rgba(242,189,75,.3); }
+
+    /* Scorecard fill bar */
+    .fill-bar-row { display: flex; align-items: center; gap: 8px; }
+    .fill-bar-track { width: 80px; height: 8px; background: rgba(255,255,255,.06); border-radius: 4px; overflow: hidden; flex-shrink: 0; }
+    .fill-bar-fill { height: 100%; border-radius: 4px; transition: width 400ms; }
+    .fill-pct { font-size: 11px; color: var(--muted); min-width: 28px; }
+
+    /* Quality cards grid */
+    .quality-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; padding: 16px; }
+    .q-card { background: rgba(255,255,255,.025); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+    .q-title { font-size: 12px; font-weight: 700; color: var(--ink); padding-bottom: 6px; border-bottom: 1px solid rgba(255,255,255,.05); }
+    .q-row { display: flex; align-items: center; gap: 8px; }
+    .q-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); min-width: 80px; }
+    .q-bar-wrap { flex: 1; height: 6px; background: rgba(255,255,255,.05); border-radius: 3px; overflow: hidden; }
+    .q-bar { height: 100%; border-radius: 3px; transition: width 400ms; }
+    .q-val { font-size: 11px; color: var(--muted); min-width: 30px; text-align: right; }
+    .q-val-big { font-size: 14px; font-weight: 700; color: var(--ink); margin-left: auto; }
+    .q-footer { display: flex; align-items: center; justify-content: space-between; margin-top: 2px; padding-top: 6px; border-top: 1px solid rgba(255,255,255,.04); }
+    .q-entries { font-size: 10px; color: var(--muted); }
+    .q-ok  { background: var(--ok); }
+    .q-warn { background: var(--warn); }
+    .q-bad { background: var(--bad); }
   `]
 })
 export class MonitoringPageComponent implements OnInit, OnDestroy {
@@ -665,6 +798,13 @@ export class MonitoringPageComponent implements OnInit, OnDestroy {
   tradingStatus?: TradingStatus;
   jvm?: JvmHealth;
   lastRefreshed?: Date;
+  scorecard: ScorecardRow[] = [];
+  scorecardPeriod = 'LAST30';
+  readonly scorecardPeriods = [
+    { value: 'TODAY', label: 'Today' },
+    { value: 'LAST7', label: '7 days' },
+    { value: 'LAST30', label: '30 days' }
+  ];
 
   private jvmSub?: import('rxjs').Subscription;
   private mainDataSub?: import('rxjs').Subscription;
@@ -775,7 +915,8 @@ export class MonitoringPageComponent implements OnInit, OnDestroy {
       pnl:        this.api.pnl().pipe(catchError(() => of(null))),
       signals:    this.api.recentSignals().pipe(catchError(() => of([] as ApiRecord[]))),
       status:     this.api.tradingStatus().pipe(catchError(() => of(null))),
-      strategies: this.api.getStrategies().pipe(catchError(() => of([] as StrategyDto[])))
+      strategies: this.api.getStrategies().pipe(catchError(() => of([] as StrategyDto[]))),
+      scorecard:  this.api.strategyScorecard(this.scorecardPeriod).pipe(catchError(() => of([] as ScorecardRow[])))
     }).subscribe(r => {
       this.runtime        = r.config?.runtime as unknown as RuntimeStatus;
       this.positions      = r.positions;
@@ -786,6 +927,7 @@ export class MonitoringPageComponent implements OnInit, OnDestroy {
       this.tradingStatus  = r.status ?? undefined;
       this.strategies     = r.strategies;
       this.strategiesLoaded = true;
+      this.scorecard      = r.scorecard;
 
       const params  = r.config?.parameters ?? [];
       const capital = Number(params.find(p => p.path === 'trading.risk.total-capital')?.value ?? 0);
@@ -808,6 +950,13 @@ export class MonitoringPageComponent implements OnInit, OnDestroy {
 
       this.lastRefreshed = new Date();
     });
+  }
+
+  setScorecardPeriod(period: string): void {
+    this.scorecardPeriod = period;
+    this.api.strategyScorecard(period)
+      .pipe(catchError(() => of([] as ScorecardRow[])))
+      .subscribe(data => { this.scorecard = data; this.cd.detectChanges(); });
   }
 
   toggleSignalType(st: string): void {

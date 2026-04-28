@@ -60,15 +60,31 @@ public class StrategyDecisionEntity {
 
     // ── Volatility / IV fields ────────────────────────────────────────────────
     private Double ivRank;
+    /** "TRACKER" = real Black-Scholes IV rank from IVRankTracker; "NEUTRAL" = 50.0 default (no history yet) */
+    private String ivRankSource;
     private Double bollingerBandwidth;
+    private Double bbUpper;
+    private Double bbLower;
+    private Boolean bbSqueeze;
 
     // ── Scalping fields ───────────────────────────────────────────────────────
     private Double fastEma;
     private Double slowEma;
+    private String emaCrossType;
+    private Integer emaCrossConfirmCount;
+
+    // ── Option quote depth (bid/ask/ATP at decision time) ─────────────────────
+    private BigDecimal optionBid;
+    private BigDecimal optionAsk;
+    private BigDecimal optionAtp;
 
     // ── Diagnostic fields (filter-level analysis) ─────────────────────────────
     /** Machine-readable first gate that blocked entry: noEmaCross, thetaGuard, noSqueeze, etc. */
     private String firstFailedFilter;
+
+    // ── Config snapshot (key params active at decision time — for replay/audit) ─
+    @Lob
+    private String configSnapshot;
 
     // ── Execution outcome (populated after execution attempt) ─────────────────
     /** RISK_REJECTED, SIZING_REJECTED, ORDER_FILLED, ORDER_NOT_FILLED, BROKER_ERROR, NOT_EXECUTED */
@@ -159,12 +175,22 @@ public class StrategyDecisionEntity {
     public BigDecimal getNetPremium() { return netPremium; }
     public Integer getSpreadStrikes() { return spreadStrikes; }
     public Double getIvRank() { return ivRank; }
+    public String getIvRankSource() { return ivRankSource; }
     public Double getBollingerBandwidth() { return bollingerBandwidth; }
+    public Double getBbUpper() { return bbUpper; }
+    public Double getBbLower() { return bbLower; }
+    public Boolean getBbSqueeze() { return bbSqueeze; }
     public Double getFastEma() { return fastEma; }
     public Double getSlowEma() { return slowEma; }
+    public String getEmaCrossType() { return emaCrossType; }
+    public Integer getEmaCrossConfirmCount() { return emaCrossConfirmCount; }
+    public BigDecimal getOptionBid() { return optionBid; }
+    public BigDecimal getOptionAsk() { return optionAsk; }
+    public BigDecimal getOptionAtp() { return optionAtp; }
     public String getFirstFailedFilter() { return firstFailedFilter; }
     public String getExecutionStage() { return executionStage; }
     public String getExecutionReason() { return executionReason; }
+    public String getConfigSnapshot() { return configSnapshot; }
 
     // ── Setters for enrichment ────────────────────────────────────────────────
     public void setStrategyType(String v) { this.strategyType = v; }
@@ -176,10 +202,20 @@ public class StrategyDecisionEntity {
     public void setNetPremium(BigDecimal v) { this.netPremium = v; }
     public void setSpreadStrikes(Integer v) { this.spreadStrikes = v; }
     public void setIvRank(Double v) { this.ivRank = v; }
+    public void setIvRankSource(String v) { this.ivRankSource = v; }
     public void setBollingerBandwidth(Double v) { this.bollingerBandwidth = v; }
+    public void setBbUpper(Double v) { this.bbUpper = v; }
+    public void setBbLower(Double v) { this.bbLower = v; }
+    public void setBbSqueeze(Boolean v) { this.bbSqueeze = v; }
     public void setFastEma(Double v) { this.fastEma = v; }
     public void setSlowEma(Double v) { this.slowEma = v; }
+    public void setEmaCrossType(String v) { this.emaCrossType = v; }
+    public void setEmaCrossConfirmCount(Integer v) { this.emaCrossConfirmCount = v; }
+    public void setOptionBid(BigDecimal v) { this.optionBid = v; }
+    public void setOptionAsk(BigDecimal v) { this.optionAsk = v; }
+    public void setOptionAtp(BigDecimal v) { this.optionAtp = v; }
     public void setFirstFailedFilter(String v) { this.firstFailedFilter = v; }
+    public void setConfigSnapshot(String v) { this.configSnapshot = v; }
     public void setLotSize(Integer v) { this.lotSize = v; }
     public void setOptionOpenInterest(Long v) { this.optionOpenInterest = v; }
     public void setVwapConditionPassed(boolean v) { this.vwapConditionPassed = v; }

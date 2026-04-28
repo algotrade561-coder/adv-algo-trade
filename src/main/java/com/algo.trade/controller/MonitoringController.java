@@ -32,14 +32,17 @@ public class MonitoringController {
     private final MarketGuard marketGuard;
     private final LiveInstrumentCache liveInstrumentCache;
     private final com.algo.trade.marketdata.ExpiryCalendar expiryCalendar;
+    private final com.algo.trade.persistence.StrategyDecisionRepository decisionRepository;
 
     public MonitoringController(ReportingService reportingService, MarketGuard marketGuard,
                                  LiveInstrumentCache liveInstrumentCache,
-                                 com.algo.trade.marketdata.ExpiryCalendar expiryCalendar) {
+                                 com.algo.trade.marketdata.ExpiryCalendar expiryCalendar,
+                                 com.algo.trade.persistence.StrategyDecisionRepository decisionRepository) {
         this.reportingService = reportingService;
         this.marketGuard = marketGuard;
         this.liveInstrumentCache = liveInstrumentCache;
         this.expiryCalendar = expiryCalendar;
+        this.decisionRepository = decisionRepository;
     }
 
     @GetMapping("/market")
@@ -223,6 +226,76 @@ public class MonitoringController {
     public List<java.util.Map<String, Object>> signalSummary() {
         log.info("Signal summary endpoint called");
         return reportingService.signalSummaryToday();
+    }
+
+    /** Filter funnel — why NO_TRADE? Returns counts grouped by firstFailedFilter. */
+    @GetMapping("/signals/filter-funnel")
+    public List<Map<String, Object>> filterFunnel(
+            @RequestParam(defaultValue = "TODAY") String period) {
+        Instant[] range = periodToRange(period);
+        Instant since = range != null ? range[0]
+                : LocalDate.now(IST).atStartOfDay(IST).toInstant();
+        List<Object[]> rows = decisionRepository.countByFirstFailedFilterSince(since);
+        return rows.stream().map(r -> {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("filter", r[0] != null ? r[0].toString() : "unknown");
+            m.put("count", ((Number) r[1]).longValue());
+            return m;
+        }).collect(java.util.stream.Collectors.toList());
+    }
+
+    /** Strategy scorecard — fill rate, avg IV rank, avg spread per strategy type. */
+    @GetMapping("/signals/strategy-scorecard")
+    public List<Map<String, Object>> strategyScorecard(
+            @RequestParam(defaultValue = "LAST30") String period) {
+        Instant[] range = periodToRange(period);
+        Instant since = range != null ? range[0]
+                : Instant.now().minus(30, java.time.temporal.ChronoUnit.DAYS);
+        List<com.algo.trade.persistence.StrategyDecisionEntity> entries =
+                decisionRepository.findEntrySignalsSince(since);
+        Map<String, List<com.algo.trade.persistence.StrategyDecisionEntity>> byStrategy =
+                entries.stream().collect(java.util.stream.Collectors.groupingBy(
+                        e -> e.getStrategyType() != null ? e.getStrategyType() : "UNKNOWN"));
+        List<Map<String, Object>> result = new java.util.ArrayList<>();
+        for (var kv : byStrategy.entrySet()) {
+            List<com.algo.trade.persistence.StrategyDecisionEntity> list = kv.getValue();
+            long filled   = list.stream().filter(e -> isFilledStage(e.getExecutionStage())).count();
+            long rejected = list.stream().filter(e -> isRejectedStage(e.getExecutionStage())).count();
+            double avgIvRank = list.stream()
+                    .filter(e -> e.getIvRank() != null && e.getIvRank() > 0)
+                    .mapToDouble(com.algo.trade.persistence.StrategyDecisionEntity::getIvRank)
+                    .average().orElse(0);
+            double avgSpread = list.stream()
+                    .filter(e -> e.getOptionAsk() != null && e.getOptionBid() != null
+                              && e.getOptionAsk().compareTo(java.math.BigDecimal.ZERO) > 0)
+                    .mapToDouble(e -> e.getOptionAsk().subtract(e.getOptionBid()).doubleValue())
+                    .average().orElse(0);
+            String ivSrc = list.stream()
+                    .filter(e -> "TRACKER".equals(e.getIvRankSource())).findAny()
+                    .map(e -> "TRACKER").orElse("NEUTRAL");
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("strategyType", kv.getKey());
+            m.put("totalEntries", list.size());
+            m.put("filled", filled);
+            m.put("rejected", rejected);
+            m.put("fillRate", list.isEmpty() ? 0 : Math.round(filled * 100.0 / list.size()));
+            m.put("avgIvRank", Math.round(avgIvRank * 10.0) / 10.0);
+            m.put("avgSpread", Math.round(avgSpread * 100.0) / 100.0);
+            m.put("ivRankSource", ivSrc);
+            result.add(m);
+        }
+        result.sort(java.util.Comparator.<Map<String, Object>, Long>comparing(
+                m -> (long) ((Number) m.get("totalEntries")).longValue()).reversed());
+        return result;
+    }
+
+    private static boolean isFilledStage(String stage) {
+        return "ORDER_FILLED".equals(stage) || "PAPER_FILLED".equals(stage);
+    }
+
+    private static boolean isRejectedStage(String stage) {
+        return stage != null && (stage.contains("REJECTED") || "TRADING_STOPPED".equals(stage)
+                || "BROKER_ERROR".equals(stage));
     }
 
     @GetMapping(value = "/trades/journal.csv", produces = "text/csv")

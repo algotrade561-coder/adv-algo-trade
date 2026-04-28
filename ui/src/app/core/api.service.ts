@@ -170,6 +170,12 @@ export class ApiService {
   signalSummary(): Observable<Array<{ strategyType: string; count: number }>> {
     return this.http.get<Array<{ strategyType: string; count: number }>>(`${this.base}/signals/summary`);
   }
+  filterFunnel(period = 'TODAY'): Observable<Array<{ filter: string; count: number }>> {
+    return this.http.get<Array<{ filter: string; count: number }>>(`${this.base}/signals/filter-funnel?period=${period}`);
+  }
+  strategyScorecard(period = 'LAST30'): Observable<Array<{ strategyType: string; totalEntries: number; filled: number; rejected: number; fillRate: number; avgIvRank: number; avgSpread: number; ivRankSource: string }>> {
+    return this.http.get<Array<{ strategyType: string; totalEntries: number; filled: number; rejected: number; fillRate: number; avgIvRank: number; avgSpread: number; ivRankSource: string }>>(`${this.base}/signals/strategy-scorecard?period=${period}`);
+  }
 
   // ── Global config ─────────────────────────────────────────────────────
   getGlobalConfig(): Observable<GlobalConfigDto> { return this.http.get<GlobalConfigDto>(`${this.base}/global-config`); }

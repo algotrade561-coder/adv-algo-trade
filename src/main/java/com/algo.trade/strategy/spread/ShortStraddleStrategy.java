@@ -27,7 +27,7 @@ import java.util.Map;
 
 /**
  * Short Straddle — SELL ATM CE + SELL ATM PE at the same strike.
- * Entry: IV rank > 3 AND MarketGuard safe for short premium.
+ * Entry: IV rank >= 30 AND MarketGuard safe for short premium.
  * Exit: either leg doubles in price, target decay reached, or expiry danger zone.
  * Always paper-trades per StrategyConfig (paperTrading=true by default).
  */
@@ -51,10 +51,13 @@ public class ShortStraddleStrategy extends AbstractSpreadStrategy {
         this.marketGuard = marketGuard;
     }
 
+    private static final double MIN_IV_RANK_FOR_SHORT_STRADDLE = 30.0;
+
     @Override
     protected boolean shouldEnter(SpreadEvaluationContext ctx) {
-        if (ctx.ivRank() <= 3) {
-            log.debug("ShortStraddle: IV rank {} too low, skipping", ctx.ivRank());
+        if (ctx.ivRank() < MIN_IV_RANK_FOR_SHORT_STRADDLE) {
+            log.debug("ShortStraddle: IV rank {} < {}, skipping (need elevated IV to sell premium)",
+                    ctx.ivRank(), MIN_IV_RANK_FOR_SHORT_STRADDLE);
             return false;
         }
         if (!marketGuard.isSafeForShortPremium()) {

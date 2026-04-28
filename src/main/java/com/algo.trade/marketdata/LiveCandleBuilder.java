@@ -78,7 +78,8 @@ public class LiveCandleBuilder {
 
         BigDecimal p = BigDecimal.valueOf(price);
         if (open == null) {
-            openCandles.put(key, new OpenCandle(bucketStart, p, p, p, p, volume, oi));
+            // startVolume == latestCumVol at candle open; deltaVolume() will be 0 until next tick
+            openCandles.put(key, new OpenCandle(bucketStart, p, p, p, p, volume, volume, oi));
         } else {
             openCandles.put(key, open.update(p, volume, oi));
         }
@@ -88,6 +89,11 @@ public class LiveCandleBuilder {
 
     public List<Candle> getHistory(long instrumentToken, Timeframe tf) {
         return getHistory(instrumentToken + ":" + tf.name()).getAll();
+    }
+
+    /** Returns true if at least one tick has arrived for this token+timeframe (open candle exists). */
+    public boolean hasOpenCandle(long instrumentToken, Timeframe tf) {
+        return openCandles.containsKey(instrumentToken + ":" + tf.name());
     }
 
     /** Seed history from REST historical candles fetched on startup. */
@@ -175,16 +181,23 @@ public class LiveCandleBuilder {
     private record OpenCandle(
             Instant bucketStart,
             BigDecimal open, BigDecimal high, BigDecimal low, BigDecimal close,
-            long volume, long openInterest
+            long startVolume,   // cumulative daily vol at first tick of this period
+            long latestCumVol,  // most recent cumulative daily vol (Zerodha sends cumulative)
+            long openInterest
     ) {
         OpenCandle update(BigDecimal price, long vol, long oi) {
+            // Only advance latestCumVol when Zerodha sends a non-zero cumulative
+            long newLatest = vol > 0 ? vol : latestCumVol;
             return new OpenCandle(bucketStart, open,
                     high.max(price), low.min(price), price,
-                    volume + vol, oi > 0 ? oi : openInterest);
+                    startVolume, newLatest, oi > 0 ? oi : openInterest);
         }
 
+        // Volume traded during this candle period = delta between cumulative readings
+        long deltaVolume() { return Math.max(0, latestCumVol - startVolume); }
+
         Candle toCandle(String instrumentKey, Timeframe tf) {
-            return new Candle(instrumentKey, bucketStart, tf, open, high, low, close, volume, openInterest);
+            return new Candle(instrumentKey, bucketStart, tf, open, high, low, close, deltaVolume(), openInterest);
         }
     }
 }

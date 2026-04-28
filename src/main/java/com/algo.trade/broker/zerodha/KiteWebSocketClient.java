@@ -290,9 +290,10 @@ public class KiteWebSocketClient {
 
             Instant now = Instant.now();
 
-            // Route India VIX to MarketGuard
+            // Route India VIX to MarketGuard and candle builder (needed for detectVixTrend)
             if (token == INDIA_VIX_TOKEN) {
                 marketGuard.updateVix(ltp);
+                candleBuilder.onTick(token, ltp, 0, 0, now);
                 log.debug("[WS] VIX tick: {}", ltp);
                 return;
             }

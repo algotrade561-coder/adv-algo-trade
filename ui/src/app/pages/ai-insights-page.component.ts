@@ -9,7 +9,7 @@ import { ApiService } from '../core/api.service';
 
 interface MarketContext { vix: number; pcr: number; vixStatus: string; pcrBias: string; }
 interface TradeSummary { totalTrades: number; closedTrades: number; wins: number; losses: number; avgPnl: number; exitReasons: Record<string, number>; }
-interface SignalSummary { totalScans: number; entries: number; rejections: number; topBlocker: string; ceBuys: number; peBuys: number; }
+interface SignalSummary { totalScans: number; entries: number; rejections: number; topBlocker: string; ceBuys: number; peBuys: number; neutralIvEntries?: number; avgBidAskSpread?: number; }
 interface Finding { severity: 'INFO' | 'WARN' | 'ALERT'; text: string; }
 interface Suggestion { parameter: string; currentValue: string; suggestedValue: string; reason: string; }
 export interface AiRecommendationDto {
@@ -132,6 +132,16 @@ export interface AiRecommendationDto {
                 <span class="ctx-pill ctx-neutral">
                   {{ rec.signalSummary.entries }} entries · {{ rec.signalSummary.rejections }} rejected
                 </span>
+                @if ((rec.signalSummary.neutralIvEntries ?? 0) > 0 && rec.signalSummary.entries > 0) {
+                  <span class="ctx-pill ctx-warn" title="Entries with default IV rank 50.0 (no tracker history)">
+                    IV NEUTRAL: {{ rec.signalSummary.neutralIvEntries }}/{{ rec.signalSummary.entries }}
+                  </span>
+                }
+                @if ((rec.signalSummary.avgBidAskSpread ?? 0) > 0) {
+                  <span class="ctx-pill" [ngClass]="spreadClass(rec.signalSummary.avgBidAskSpread ?? 0)" title="Avg bid-ask spread at entry">
+                    Spread ₹{{ rec.signalSummary.avgBidAskSpread | number:'1.2-2' }}
+                  </span>
+                }
               }
             </div>
 
@@ -355,5 +365,11 @@ export class AiInsightsPageComponent implements OnInit {
     if (bias === 'BULLISH') return 'ctx-ok';
     if (bias === 'BEARISH') return 'ctx-alert';
     return 'ctx-neutral';
+  }
+
+  spreadClass(spread: number): string {
+    if (spread >= 5) return 'ctx-alert';
+    if (spread >= 2) return 'ctx-warn';
+    return 'ctx-ok';
   }
 }

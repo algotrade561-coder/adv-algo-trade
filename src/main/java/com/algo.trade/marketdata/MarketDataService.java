@@ -48,7 +48,9 @@ public class MarketDataService {
                                 instrumentKey, Instant.now(),
                                 java.math.BigDecimal.valueOf(o.getLastPrice()),
                                 o.getVolume(), o.getOpenInterest(),
-                                Optional.empty(), Optional.empty(), Optional.empty()));
+                                o.getImpliedVolatility() > 0 ? Optional.of(java.math.BigDecimal.valueOf(o.getImpliedVolatility())) : Optional.empty(),
+                                o.getBestBid() > 0 ? Optional.of(java.math.BigDecimal.valueOf(o.getBestBid())) : Optional.empty(),
+                                o.getBestAsk() > 0 ? Optional.of(java.math.BigDecimal.valueOf(o.getBestAsk())) : Optional.empty()));
                 if (live.isPresent()) {
                     log.debug("Quote from WebSocket cache: instrumentKey={} price={}", instrumentKey, live.get().lastPrice());
                     return live;
@@ -83,5 +85,14 @@ public class MarketDataService {
         List<Candle> candles = brokerClient.historicalCandles(request);
         log.info("Historical candles response: instrumentKey={}, count={}", request.instrumentKey(), candles.size());
         return candles;
+    }
+
+    /** Convenience overload — fetches today's candles from market open to now. Used by candle seeding on restart. */
+    public List<Candle> historicalCandles(String instrumentKey, com.algo.trade.domain.Timeframe timeframe) {
+        var ist = java.time.ZoneId.of("Asia/Kolkata");
+        var todayOpen = java.time.LocalDate.now(ist).atTime(9, 15).atZone(ist).toInstant();
+        var now = Instant.now();
+        if (!todayOpen.isBefore(now)) return List.of();
+        return historicalCandles(new HistoricalDataRequest(instrumentKey, todayOpen, now, timeframe, true));
     }
 }

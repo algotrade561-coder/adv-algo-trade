@@ -57,4 +57,17 @@ public interface StrategyDecisionRepository extends JpaRepository<StrategyDecisi
 
     /** All signals (entries + rejections) since a given instant, oldest first — for trade journal CSV. */
     List<StrategyDecisionEntity> findByTimestampGreaterThanEqualOrderByTimestampAsc(java.time.Instant since);
+
+    /** Count NO_TRADE signals grouped by firstFailedFilter — for the filter funnel UI panel. */
+    @Query("SELECT s.firstFailedFilter, COUNT(s) FROM StrategyDecisionEntity s " +
+           "WHERE s.signalType = 'NO_TRADE' AND s.timestamp >= :since " +
+           "AND s.firstFailedFilter IS NOT NULL " +
+           "GROUP BY s.firstFailedFilter ORDER BY COUNT(s) DESC")
+    List<Object[]> countByFirstFailedFilterSince(java.time.Instant since);
+
+    /** Entry signals since a given instant — for strategy scorecard computation. */
+    @Query("SELECT s FROM StrategyDecisionEntity s WHERE " +
+           "s.signalType IN ('BUY_CE','BUY_PE') AND s.timestamp >= :since " +
+           "ORDER BY s.timestamp DESC")
+    List<StrategyDecisionEntity> findEntrySignalsSince(java.time.Instant since);
 }

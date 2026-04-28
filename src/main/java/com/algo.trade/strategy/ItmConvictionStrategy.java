@@ -133,7 +133,11 @@ public class ItmConvictionStrategy {
                                                          StrategyConfig config) {
         QuotePair atm = findQuote(quotes, atmStrike, OptionType.PE);
         QuotePair itm = findQuote(quotes, itmStrike, OptionType.PE);
-        if (atm == null || itm == null) return Optional.empty();
+        if (atm == null || itm == null) {
+            log.warn("[ItmConviction PE] Missing quotes (ATP likely absent — token not in WebSocket cache): ATM{}={} ITM{}={}",
+                    atmStrike, atm != null, itmStrike, itm != null);
+            return Optional.empty();
+        }
 
         BigDecimal itmDiff = itm.atp.subtract(itm.ltp);
         BigDecimal atmDiff = atm.atp.subtract(atm.ltp);
@@ -169,7 +173,11 @@ public class ItmConvictionStrategy {
             if (entry.getKey().toUpperCase().contains(suffix)) {
                 Quote q = entry.getValue();
                 BigDecimal atp = q.averageTradedPrice().orElse(null);
-                if (atp == null || atp.signum() <= 0) continue;
+                if (atp == null || atp.signum() <= 0) {
+                    log.warn("[ItmConviction] ATP missing for {} — quote came from REST fallback, not WebSocket",
+                            entry.getKey());
+                    continue;
+                }
                 if (q.lastPrice().signum() <= 0) continue;
                 return new QuotePair(q.lastPrice(), atp, q.volume());
             }

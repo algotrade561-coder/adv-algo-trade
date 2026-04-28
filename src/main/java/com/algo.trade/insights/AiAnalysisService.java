@@ -105,6 +105,13 @@ public class AiAnalysisService {
                 .count();
         long ceBuys = entries.stream().filter(s -> "BUY_CE".equals(s.getSignalType())).count();
         long peBuys = entries.stream().filter(s -> "BUY_PE".equals(s.getSignalType())).count();
+        long neutralIvCount = entries.stream()
+                .filter(e -> "NEUTRAL".equals(e.getIvRankSource())).count();
+        double avgBidAskSpread = entries.stream()
+                .filter(e -> e.getOptionAsk() != null && e.getOptionBid() != null
+                          && e.getOptionAsk().compareTo(BigDecimal.ZERO) > 0)
+                .mapToDouble(e -> e.getOptionAsk().subtract(e.getOptionBid()).doubleValue())
+                .average().orElse(0);
 
         // ── Consecutive losses ────────────────────────────────────────────────
         int consecutiveLosses = calculateConsecutiveLosses(tomorrow);
@@ -226,6 +233,25 @@ public class AiAnalysisService {
                     "Consider paper trading mode while reviewing and tuning parameters"));
         }
 
+        // Rule 11: IV Rank Reliability — warns when IVRankTracker hasn't built up history yet
+        if (!entries.isEmpty() && neutralIvCount * 100 / entries.size() > 70) {
+            long pct = neutralIvCount * 100 / entries.size();
+            findingsList.add(finding("INFO",
+                    String.format("%d%% of entries used default IV rank 50.0 (no tracker history). " +
+                            "IV-based thresholds (spread min, event buy max) may not reflect real conditions.", pct)));
+            suggestionsList.add(suggestion("ivRankSource", "NEUTRAL", "wait for TRACKER",
+                    "Let IVRankTracker accumulate hourly samples — IV decisions become reliable once source shows TRACKER"));
+        }
+
+        // Rule 12: Wide Bid-Ask Spread — high slippage risk on entry
+        if (avgBidAskSpread > 5.0 && entries.size() > 2) {
+            findingsList.add(finding("WARN",
+                    String.format("Avg bid-ask spread ₹%.2f across entries today — wide spread means fill slippage.",
+                            avgBidAskSpread)));
+            suggestionsList.add(suggestion("minLiquidityVolume", "current", "increase",
+                    "Illiquid options — raise minLiquidityVolume or avoid strikes with spread > ₹5"));
+        }
+
         // ── Overall assessment ────────────────────────────────────────────────
         boolean hasAlert = findingsList.stream().anyMatch(f -> "ALERT".equals(f.get("severity")));
         boolean hasWarn = findingsList.stream().anyMatch(f -> "WARN".equals(f.get("severity")));
@@ -255,6 +281,8 @@ public class AiAnalysisService {
             signalSummaryMap.put("topBlocker", topBlocker != null ? topBlocker : "");
             signalSummaryMap.put("ceBuys", ceBuys);
             signalSummaryMap.put("peBuys", peBuys);
+            signalSummaryMap.put("neutralIvEntries", neutralIvCount);
+            signalSummaryMap.put("avgBidAskSpread", round(avgBidAskSpread));
 
             AiRecommendationEntity entity = new AiRecommendationEntity(
                     now, runType,

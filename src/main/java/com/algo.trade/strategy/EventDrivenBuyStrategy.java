@@ -30,16 +30,18 @@ public class EventDrivenBuyStrategy {
 
     private static final Logger log = LoggerFactory.getLogger(EventDrivenBuyStrategy.class);
 
-    // Known high-impact event dates — update as announced
+    // RBI MPC policy announcement dates — update when RBI publishes official calendar.
+    // Strategy triggers 1-2 days BEFORE each date. Verify Oct/Dec 2026 on rbi.org.in.
     private static final List<LocalDate> EVENT_DATES = List.of(
         LocalDate.of(2025, 6, 6),  LocalDate.of(2025, 8, 6),
         LocalDate.of(2025, 10, 8), LocalDate.of(2025, 12, 5),
         LocalDate.of(2026, 2, 1),  LocalDate.of(2026, 4, 9),
-        LocalDate.of(2026, 6, 5),  LocalDate.of(2026, 8, 5)
+        LocalDate.of(2026, 6, 5),  LocalDate.of(2026, 8, 5),
+        LocalDate.of(2026, 10, 7), LocalDate.of(2026, 12, 4)
     );
 
     public Optional<StrategyDecision> evaluate(double ivRank, StrategyConfig config,
-                                               UnderlyingSymbol underlying) {
+                                               UnderlyingSymbol underlying, BigDecimal spotPrice) {
         LocalDate today = LocalDate.now();
         Optional<LocalDate> upcomingEvent = EVENT_DATES.stream()
                 .filter(d -> d.equals(today.plusDays(1)) || d.equals(today.plusDays(2)))
@@ -53,12 +55,12 @@ public class EventDrivenBuyStrategy {
             return Optional.empty();
         }
 
-        log.info("[EventDriven] Pre-event signal: event={} ivRank={}", upcomingEvent.get(), ivRank);
+        log.info("[EventDriven] Pre-event signal: event={} ivRank={} spot={}", upcomingEvent.get(), ivRank, spotPrice);
 
         // Signal BUY_CE as proxy for straddle — both legs handled by execution
         return Optional.of(new StrategyDecision(
                 Instant.now(), underlying, SignalType.BUY_CE,
-                BigDecimal.ZERO,
+                spotPrice != null ? spotPrice : BigDecimal.ZERO,
                 Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
                 Optional.empty(), Optional.empty(), Optional.of(OptionType.CE),
                 true, Optional.empty(), true,
