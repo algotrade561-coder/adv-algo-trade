@@ -42,7 +42,7 @@ public class OptionChainCollector {
         this.properties = properties;
     }
 
-    @Scheduled(fixedDelay = 300_000) // every 5 minutes
+    //@Scheduled(fixedDelay = 300_000) // every 5 minutes
     public void collectSnapshot() {
         if (!isMarketHours()) return;
 
