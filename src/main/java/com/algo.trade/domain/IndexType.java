@@ -54,6 +54,8 @@ public enum IndexType {
             case NIFTY -> NIFTY;
             case BANKNIFTY -> BANKNIFTY;
             case SENSEX -> SENSEX;
+            case FINNIFTY -> FINNIFTY;
+            case MIDCPNIFTY -> MIDCPNIFTY;
         };
     }
 

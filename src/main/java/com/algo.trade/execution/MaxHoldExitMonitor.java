@@ -117,27 +117,27 @@ public class MaxHoldExitMonitor {
     }
 
     private int resolveMaxHoldMinutes(TradeEntity trade) {
+        String underlying = trade.getUnderlying() != null ? trade.getUnderlying() : "NIFTY";
         // Prefer the explicit strategyType field (set at entry time)
         if (trade.getStrategyType() != null && !trade.getStrategyType().isBlank()) {
             try {
                 StrategyType type = StrategyType.valueOf(trade.getStrategyType());
-                StrategyConfig config = strategyConfigService.getAll().stream()
-                        .filter(c -> c.getStrategyType() == type)
-                        .findFirst().orElse(null);
-                if (config != null && config.getMaxHoldMinutes() > 0) {
+                StrategyConfig config = strategyConfigService.getConfig(type, underlying);
+                if (config.getMaxHoldMinutes() > 0) {
                     return config.getMaxHoldMinutes();
                 }
             } catch (IllegalArgumentException ignored) { /* fall through */ }
         }
         // Fallback: parse from entryReason text
         String entryReason = trade.getEntryReason() != null ? trade.getEntryReason().toUpperCase() : "";
-        for (StrategyConfig config : strategyConfigService.getAll()) {
+        for (StrategyConfig config : strategyConfigService.getEnabledFor(
+                com.algo.trade.domain.UnderlyingSymbol.valueOf(underlying))) {
             if (entryReason.contains(config.getStrategyType().name()) && config.getMaxHoldMinutes() > 0) {
                 return config.getMaxHoldMinutes();
             }
         }
         // Final fallback
-        int fallback = strategyConfigService.getDirectionalBuyConfig().getMaxHoldMinutes();
+        int fallback = strategyConfigService.getDirectionalBuyConfig(underlying).getMaxHoldMinutes();
         return fallback > 0 ? fallback : globalConfigService.getMaxHoldMinutes();
     }
 }

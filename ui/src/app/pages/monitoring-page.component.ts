@@ -176,8 +176,8 @@ type ScorecardRow = { strategyType: string; totalEntries: number; filled: number
             @if (activeMode === 'live') { Showing real broker positions, orders and trades }
             @else { Showing simulated paper trades only }
           </span>
-          @if (activeMode === 'paper' && paperStrategyTypes.size === 0 && strategiesLoaded) {
-            <span class="no-paper-hint">No strategies set to paper trading — enable paper mode on a strategy first</span>
+          @if (activeMode === 'paper' && !hasPaperSignals && strategiesLoaded) {
+            <span class="no-paper-hint">No paper signals found — enable paper mode on a strategy first</span>
           }
         </div>
 
@@ -817,19 +817,19 @@ export class MonitoringPageComponent implements OnInit, OnDestroy {
     return new Set(this.strategies.filter(s => s.paperTrading).map(s => s.type));
   }
 
+  get hasPaperSignals(): boolean {
+    return this.signals.some(s => s['paperTrade'] === true);
+  }
+
   get modeStrategyTypeOptions(): string[] {
     // Derive available strategy types from the signals visible in the current mode
-    const paperTypes = this.paperStrategyTypes;
-    if (!this.strategiesLoaded || paperTypes.size === 0) return this.strategyTypeOptions;
+    if (!this.strategiesLoaded) return this.strategyTypeOptions;
     const visibleTypes = new Set<string>();
     for (const s of this.signals) {
       const stratType = String(s['strategyType'] ?? '');
-      const stage     = String(s['executionStage'] ?? '');
-      const isPaperByStage = stage === 'PAPER_FILLED' || stage === 'PAPER_SIZING_REJECTED';
-      const isLiveByStage  = stage === 'ORDER_FILLED' || stage === 'ORDER_OPEN' || stage === 'ORDER_NOT_FILLED' || stage === 'BROKER_ERROR';
-      const isPaper = isPaperByStage || (!isLiveByStage && paperTypes.has(stratType));
+      const isPaper   = s['paperTrade'] === true;
       if (this.activeMode === 'paper' && isPaper) visibleTypes.add(stratType);
-      if (this.activeMode === 'live' && !isPaperByStage) visibleTypes.add(stratType);
+      if (this.activeMode === 'live' && !isPaper) visibleTypes.add(stratType);
     }
     return Array.from(visibleTypes).sort();
   }
@@ -867,21 +867,14 @@ export class MonitoringPageComponent implements OnInit, OnDestroy {
   }
 
   get filteredSignals(): ApiRecord[] {
-    const paperTypes = this.paperStrategyTypes;
     return this.signals.filter(s => {
       const sigType   = String(s['signalType']  ?? '');
       const stratType = String(s['strategyType'] ?? '');
-      const stage     = String(s['executionStage'] ?? '');
+      const isPaper   = s['paperTrade'] === true;
 
-      // Mode filter — determine paper/live from execution stage first, then strategy config
-      if (this.strategiesLoaded && paperTypes.size > 0) {
-        const isPaperByStage = stage === 'PAPER_FILLED' || stage === 'PAPER_SIZING_REJECTED';
-        const isLiveByStage  = stage === 'ORDER_FILLED' || stage === 'ORDER_OPEN' || stage === 'ORDER_NOT_FILLED' || stage === 'BROKER_ERROR';
-        // For signals with a clear execution stage, use that; otherwise fall back to strategy config
-        const isPaper = isPaperByStage || (!isLiveByStage && paperTypes.has(stratType));
-        if (this.activeMode === 'paper' && !isPaper) return false;
-        if (this.activeMode === 'live'  &&  isPaperByStage) return false;
-      }
+      // Mode filter — use the signal's own paperTrade field
+      if (this.activeMode === 'paper' && !isPaper) return false;
+      if (this.activeMode === 'live'  &&  isPaper) return false;
 
       const sigMatch        = this.selectedSignalTypes.has(sigType);
       const stratMatch      = this.selectedStrategyTypes.size === 0 || this.selectedStrategyTypes.has(stratType);

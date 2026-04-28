@@ -170,9 +170,10 @@ export class ApiService {
 
   // ── Strategy management ───────────────────────────────────────────────────
   getStrategies(): Observable<StrategyDto[]> { return this.http.get<StrategyDto[]>(`${this.base}/strategies`); }
-  enableStrategy(type: string): Observable<any> { return this.http.post(`${this.base}/strategies/${type}/enable`, {}); }
-  disableStrategy(type: string): Observable<any> { return this.http.post(`${this.base}/strategies/${type}/disable`, {}); }
-  updateStrategy(type: string, patch: Partial<StrategyDto>): Observable<any> { return this.http.put(`${this.base}/strategies/${type}`, patch); }
+  getStrategiesByUnderlying(underlying: string): Observable<StrategyDto[]> { return this.http.get<StrategyDto[]>(`${this.base}/strategies/by-underlying/${underlying}`); }
+  enableStrategy(type: string, underlying: string): Observable<any> { return this.http.post(`${this.base}/strategies/${type}/enable?underlying=${underlying}`, {}); }
+  disableStrategy(type: string, underlying: string): Observable<any> { return this.http.post(`${this.base}/strategies/${type}/disable?underlying=${underlying}`, {}); }
+  updateStrategy(type: string, underlying: string, patch: Partial<StrategyDto>): Observable<any> { return this.http.put(`${this.base}/strategies/${type}?underlying=${underlying}`, patch); }
 
   // ── Signal endpoints ────────────────────────────────────────────────────
   signalsByStrategy(strategyType: string): Observable<StrategyDecision[]> {

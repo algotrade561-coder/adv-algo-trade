@@ -2,6 +2,7 @@ import { Component, OnInit, signal } from '@angular/core';
 import { DecimalPipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
+import { MatButtonToggleModule } from '@angular/material/button-toggle';
 import { MatIconModule } from '@angular/material/icon';
 import { MatSlideToggleModule } from '@angular/material/slide-toggle';
 import { MatFormFieldModule } from '@angular/material/form-field';
@@ -13,7 +14,7 @@ import { ApiService, StrategyDto } from '../core/api.service';
 @Component({
   selector: 'app-strategies-page',
   standalone: true,
-  imports: [DecimalPipe, FormsModule, MatButtonModule, MatIconModule, MatSlideToggleModule,
+  imports: [DecimalPipe, FormsModule, MatButtonModule, MatButtonToggleModule, MatIconModule, MatSlideToggleModule,
     MatFormFieldModule, MatInputModule, MatSelectModule, MatTooltipModule],
   template: `
     <section class="page">
@@ -25,6 +26,12 @@ import { ApiService, StrategyDto } from '../core/api.service';
         <span class="spacer"></span>
         <button mat-stroked-button (click)="load()"><mat-icon>refresh</mat-icon> Refresh</button>
       </div>
+
+      <mat-button-toggle-group [value]="selectedUnderlying()" (change)="selectUnderlying($event.value)" class="underlying-tabs">
+        @for (u of underlyings; track u) {
+          <mat-button-toggle [value]="u">{{ u }}</mat-button-toggle>
+        }
+      </mat-button-toggle-group>
 
       @if (msg()) { <div class="toast-ok">{{ msg() }}</div> }
       @if (error()) { <div class="toast-warn">{{ error() }}</div> }
@@ -52,7 +59,7 @@ import { ApiService, StrategyDto } from '../core/api.service';
       </div>
 
       <div class="strategy-grid">
-        @for (s of buyingStrategies(); track s.type) {
+        @for (s of buyingStrategies(); track s.id) {
           <div class="strategy-card" [class.card-on]="s.enabled">
             <div class="card-top">
               <div class="card-name-row">
@@ -72,37 +79,37 @@ import { ApiService, StrategyDto } from '../core/api.service';
                 }
               </div>
             </div>
-            @if (s.enabled) {
-              <div class="card-params">
-                <div class="param"><span>Stop Loss</span><strong class="c-bad">{{ s.stopLossPercent }}%</strong></div>
-                <div class="param"><span>Target</span><strong class="c-ok">{{ s.targetPercent }}%</strong></div>
-                <div class="param"><span>Max Hold</span><strong>{{ s.maxHoldMinutes === 0 ? 'No limit' : s.maxHoldMinutes + ' min' }}</strong></div>
-                <div class="param"><span>Scan Timeframe</span><strong class="c-tf">{{ formatTimeframe(s.scanTimeframe) }}</strong></div>
-                <div class="param"><span>Candle Timeframe</span><strong class="c-tf">{{ formatTimeframe(s.candleTimeframe) }}</strong></div>
-                <div class="param"><span>Trend Timeframe</span><strong class="c-tf">{{ formatTimeframe(s.trendTimeframe) }}</strong></div>
-                @if (!s.sellingStrategy) {
-                  <div class="param"><span>Min Premium (₹)</span><strong>{{ s.minCombinedPremium }}</strong></div>
-                  <div class="param"><span>Trailing Activation</span><strong>{{ s.trailingStopActivationPercent }}%</strong></div>
-                  <div class="param"><span>Trailing Gap</span><strong>{{ s.trailingGapPercent }}%</strong></div>
-                  <div class="param"><span>Squareoff</span><strong>{{ s.squareoffHour }}:{{ s.squareoffMinute | number:'2.0-0' }}</strong></div>
-                }
-                @if (s.type === 'LONG_STRADDLE' || s.type === 'LONG_STRANGLE' || s.type === 'EVENT_DRIVEN_BUY' || s.type === 'VOLATILITY_BREAKOUT') {
-                  <div class="param"><span>Max IV Rank</span><strong>{{ s.maxIvRankForBuying }}</strong></div>
-                }
-                @if (s.type === 'LONG_STRANGLE') {
-                  <div class="param"><span>OTM Strikes</span><strong>{{ s.otmStrikes }}</strong></div>
-                }
-                @if (s.type === 'ITM_CONVICTION') {
-                  <div class="param"><span>ITM Depth</span><strong>{{ s.itmDepth }} strike{{ s.itmDepth > 1 ? 's' : '' }}</strong></div>
-                  <div class="param"><span>Min Move</span><strong>₹{{ s.minimumMove }}</strong></div>
-                  <div class="param"><span>Min Strength Gap</span><strong>{{ s.minimumStrengthGap }}</strong></div>
-                  <div class="param"><span>Min Volume</span><strong>{{ s.minimumVolume }}</strong></div>
-                }
-                <button mat-stroked-button class="edit-btn" (click)="openEdit(s)">
-                  <mat-icon>tune</mat-icon> Edit Parameters
-                </button>
-              </div>
-            }
+            <div class="card-params">
+              <div class="param"><span>Stop Loss</span><strong class="c-bad">{{ s.stopLossPercent }}%</strong></div>
+              <div class="param"><span>Target</span><strong class="c-ok">{{ s.targetPercent }}%</strong></div>
+              <div class="param"><span>Max Hold</span><strong>{{ s.maxHoldMinutes === 0 ? 'No limit' : s.maxHoldMinutes + ' min' }}</strong></div>
+              <div class="param"><span>Scan Timeframe</span><strong class="c-tf">{{ formatTimeframe(s.scanTimeframe) }}</strong></div>
+              <div class="param"><span>Candle Timeframe</span><strong class="c-tf">{{ formatTimeframe(s.candleTimeframe) }}</strong></div>
+              <div class="param"><span>Trend Timeframe</span><strong class="c-tf">{{ formatTimeframe(s.trendTimeframe) }}</strong></div>
+              @if (!s.sellingStrategy) {
+                <div class="param"><span>Min Premium (₹)</span><strong>{{ s.minCombinedPremium }}</strong></div>
+                <div class="param"><span>Trailing Activation</span><strong>{{ s.trailingStopActivationPercent }}%</strong></div>
+                <div class="param"><span>Trailing Gap</span><strong>{{ s.trailingGapPercent }}%</strong></div>
+                <div class="param"><span>Squareoff</span><strong>{{ s.squareoffHour }}:{{ s.squareoffMinute | number:'2.0-0' }}</strong></div>
+              }
+              @if (s.type === 'LONG_STRADDLE' || s.type === 'LONG_STRANGLE' || s.type === 'EVENT_DRIVEN_BUY' || s.type === 'VOLATILITY_BREAKOUT' || s.type === 'GAP_AND_GO' || s.type === 'REVERSAL_BUY' || s.type === 'OI_SHIFT_TRAP') {
+                <div class="param"><span>Max IV Rank</span><strong>{{ s.maxIvRankForBuying }}</strong></div>
+              }
+              @if (s.type === 'LONG_STRANGLE') {
+                <div class="param"><span>OTM Strikes</span><strong>{{ s.otmStrikes }}</strong></div>
+              }
+              @if (s.type === 'ITM_CONVICTION') {
+                <div class="param"><span>ITM Depth</span><strong>{{ s.itmDepth }} strike{{ s.itmDepth > 1 ? 's' : '' }}</strong></div>
+                <div class="param"><span>Min Move</span><strong>₹{{ s.minimumMove }}</strong></div>
+                <div class="param"><span>Min Strength Gap</span><strong>{{ s.minimumStrengthGap }}</strong></div>
+                <div class="param"><span>Min Volume</span><strong>{{ s.minimumVolume }}</strong></div>
+              }
+            </div>
+            <div class="card-edit-row">
+              <button mat-stroked-button class="edit-btn" (click)="openEdit(s)">
+                <mat-icon>tune</mat-icon> Edit Parameters
+              </button>
+            </div>
           </div>
         }
       </div>
@@ -123,7 +130,7 @@ import { ApiService, StrategyDto } from '../core/api.service';
       </div>
 
       <div class="strategy-grid">
-        @for (s of sellingStrategies(); track s.type) {
+        @for (s of sellingStrategies(); track s.id) {
           <div class="strategy-card card-sell" [class.card-on-sell]="s.enabled">
             <div class="card-top">
               <div class="card-name-row">
@@ -140,24 +147,24 @@ import { ApiService, StrategyDto } from '../core/api.service';
                 }
               </div>
             </div>
-            @if (s.enabled) {
-              <div class="card-params">
-                <div class="param"><span>Stop Loss</span><strong class="c-bad">{{ s.stopLossPercent }}%</strong></div>
-                <div class="param"><span>Target</span><strong class="c-ok">{{ s.targetPercent }}%</strong></div>
-                @if (s.type !== 'BUTTERFLY' && s.type !== 'CALENDAR_SPREAD' && s.type !== 'BULL_CALL_SPREAD' && s.type !== 'BEAR_PUT_SPREAD') {
-                  <div class="param"><span>OTM Strikes</span><strong>{{ s.otmStrikes }}</strong></div>
-                }
-                @if (s.type === 'BULL_CALL_SPREAD' || s.type === 'BEAR_PUT_SPREAD') {
-                  <div class="param"><span>Spread Strikes</span><strong>{{ s.spreadStrikes }}</strong></div>
-                }
-                @if (s.type === 'SHORT_STRADDLE' || s.type === 'SHORT_STRANGLE') {
-                  <div class="param"><span>Min Premium</span><strong>₹{{ s.minCombinedPremium }}</strong></div>
-                }
-                <button mat-stroked-button class="edit-btn" (click)="openEdit(s)">
-                  <mat-icon>tune</mat-icon> Edit Parameters
-                </button>
-              </div>
-            }
+            <div class="card-params">
+              <div class="param"><span>Stop Loss</span><strong class="c-bad">{{ s.stopLossPercent }}%</strong></div>
+              <div class="param"><span>Target</span><strong class="c-ok">{{ s.targetPercent }}%</strong></div>
+              @if (s.type !== 'BUTTERFLY' && s.type !== 'CALENDAR_SPREAD' && s.type !== 'BULL_CALL_SPREAD' && s.type !== 'BEAR_PUT_SPREAD') {
+                <div class="param"><span>OTM Strikes</span><strong>{{ s.otmStrikes }}</strong></div>
+              }
+              @if (s.type === 'BULL_CALL_SPREAD' || s.type === 'BEAR_PUT_SPREAD') {
+                <div class="param"><span>Spread Strikes</span><strong>{{ s.spreadStrikes }}</strong></div>
+              }
+              @if (s.type === 'SHORT_STRADDLE' || s.type === 'SHORT_STRANGLE') {
+                <div class="param"><span>Min Premium</span><strong>₹{{ s.minCombinedPremium }}</strong></div>
+              }
+            </div>
+            <div class="card-edit-row">
+              <button mat-stroked-button class="edit-btn" (click)="openEdit(s)">
+                <mat-icon>tune</mat-icon> Edit Parameters
+              </button>
+            </div>
           </div>
         }
       </div>
@@ -174,13 +181,10 @@ import { ApiService, StrategyDto } from '../core/api.service';
             <button mat-icon-button (click)="closeEdit()"><mat-icon>close</mat-icon></button>
           </div>
           <div class="edit-body">
-            <mat-form-field appearance="outline">
-              <mat-label>Underlying</mat-label>
-              <mat-select [(ngModel)]="editForm.underlying">
-                <mat-option value="NIFTY">NIFTY</mat-option>
-                <mat-option value="BANKNIFTY">BANKNIFTY</mat-option>
-              </mat-select>
-            </mat-form-field>
+            <div class="underlying-display">
+              <span class="underlying-label">Underlying</span>
+              <span class="underlying-value">{{ editing()!.underlying }}</span>
+            </div>
             <mat-form-field appearance="outline">
               <mat-label>Lots</mat-label>
               <input matInput type="number" min="1" [(ngModel)]="editForm.lots">
@@ -379,7 +383,8 @@ import { ApiService, StrategyDto } from '../core/api.service';
     .c-ok { color: var(--ok) !important; }
     .c-bad { color: var(--bad) !important; }
     .c-tf { color: var(--accent) !important; }
-    .edit-btn { width: 100%; margin-top: 10px; font-size: 12px; }
+    .card-edit-row { padding: 8px 16px 12px; }
+    .edit-btn { width: 100%; font-size: 12px; }
 
     .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 100; }
     .edit-panel {
@@ -401,6 +406,10 @@ import { ApiService, StrategyDto } from '../core/api.service';
     .paper-hint { color: var(--muted); font-size: 11px; margin: 4px 0 0; line-height: 1.4; }
     .squareoff-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
     .squareoff-field { width: 100%; }
+    .underlying-tabs { margin-bottom: 20px; }
+    .underlying-display { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; border: 1px solid var(--line); border-radius: 4px; background: rgba(0,0,0,.15); }
+    .underlying-label { font-size: 12px; color: var(--muted); }
+    .underlying-value { font-size: 13px; font-weight: 700; color: var(--accent); }
   `]
 })
 export class StrategiesPageComponent implements OnInit {
@@ -410,14 +419,18 @@ export class StrategiesPageComponent implements OnInit {
   editForm: Partial<StrategyDto> = {};
   msg = signal('');
   error = signal('');
+  selectedUnderlying = signal<string>('NIFTY');
+  readonly underlyings = ['NIFTY', 'BANKNIFTY', 'SENSEX', 'FINNIFTY', 'MIDCPNIFTY'];
 
   constructor(private api: ApiService) {}
 
   ngOnInit() { this.load(); }
 
+  selectUnderlying(u: string) { this.selectedUnderlying.set(u); this.load(); }
+
   load() {
     this.msg.set(''); this.error.set('');
-    this.api.getStrategies().subscribe({
+    this.api.getStrategiesByUnderlying(this.selectedUnderlying()).subscribe({
       next: s => this.strategies.set(s),
       error: () => this.error.set('Failed to load strategies')
     });
@@ -452,7 +465,7 @@ export class StrategiesPageComponent implements OnInit {
 
   toggle(s: StrategyDto, enabled: boolean) {
     this.msg.set(''); this.error.set('');
-    const call = enabled ? this.api.enableStrategy(s.type) : this.api.disableStrategy(s.type);
+    const call = enabled ? this.api.enableStrategy(s.type, s.underlying) : this.api.disableStrategy(s.type, s.underlying);
     call.subscribe({
       next: (r: any) => { this.msg.set(r.message); this.load(); },
       error: (e: any) => this.error.set(e?.error?.error ?? 'Failed to update strategy')
@@ -465,7 +478,7 @@ export class StrategiesPageComponent implements OnInit {
   saveEdit() {
     const s = this.editing();
     if (!s) return;
-    this.api.updateStrategy(s.type, this.editForm).subscribe({
+    this.api.updateStrategy(s.type, s.underlying, this.editForm).subscribe({
       next: (r: any) => { this.msg.set(r.message); this.closeEdit(); this.load(); },
       error: (e: any) => this.error.set(e?.error?.error ?? 'Save failed')
     });

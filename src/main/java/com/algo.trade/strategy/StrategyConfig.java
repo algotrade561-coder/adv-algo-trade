@@ -11,8 +11,8 @@ import java.time.LocalTime;
  * Selling strategies are disabled by default and require explicit opt-in.
  */
 @Entity
-@Table(name = "strategy_configs", indexes = {
-    @Index(name = "idx_sc_type", columnList = "strategy_type", unique = true)
+@Table(name = "strategy_configs", uniqueConstraints = {
+    @UniqueConstraint(name = "uk_sc_type_underlying", columnNames = {"strategy_type", "underlying"})
 })
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class StrategyConfig {
@@ -22,7 +22,7 @@ public class StrategyConfig {
     private Long id;
 
     @Enumerated(EnumType.STRING)
-    @Column(nullable = false, unique = true, columnDefinition = "VARCHAR(50)")
+    @Column(nullable = false, columnDefinition = "VARCHAR(50)")
     private StrategyType strategyType;
 
     private boolean enabled = false;
@@ -89,6 +89,11 @@ public class StrategyConfig {
             case JADE_LIZARD -> { stopLossPercent = BigDecimal.valueOf(80); targetPercent = BigDecimal.valueOf(40); otmStrikes = 3; spreadStrikes = 5; paperTrading = true; scanTimeframe = "FIFTEEN_MINUTE"; candleTimeframe = "FIVE_MINUTE"; trendTimeframe = "FIFTEEN_MINUTE"; }
             case SYNTHETIC_FUTURES -> { stopLossPercent = BigDecimal.valueOf(20); targetPercent = BigDecimal.valueOf(30); maxHoldMinutes = 60; paperTrading = true; scanTimeframe = "FIFTEEN_MINUTE"; candleTimeframe = "FIVE_MINUTE"; trendTimeframe = "FIFTEEN_MINUTE"; }
             case ITM_CONVICTION -> { stopLossPercent = BigDecimal.valueOf(12); targetPercent = BigDecimal.valueOf(25); maxHoldMinutes = 30; scanTimeframe = "ONE_MINUTE"; candleTimeframe = "ONE_MINUTE"; trendTimeframe = "FIVE_MINUTE"; paperTrading = true; itmDepth = 1; minimumMove = BigDecimal.valueOf(5); minimumStrengthGap = BigDecimal.valueOf(2); minimumVolume = 5000; }
+            case GAP_AND_GO -> { stopLossPercent = BigDecimal.valueOf(25); targetPercent = BigDecimal.valueOf(50); maxHoldMinutes = 30; maxIvRankForBuying = BigDecimal.valueOf(50); trailingStopActivationPercent = BigDecimal.valueOf(15); trailingGapPercent = BigDecimal.valueOf(8); minCombinedPremium = BigDecimal.valueOf(30); squareoffHour = 10; squareoffMinute = 0; scanTimeframe = "ONE_MINUTE"; candleTimeframe = "FIVE_MINUTE"; trendTimeframe = "FIVE_MINUTE"; paperTrading = true; }
+            case REVERSAL_BUY -> { stopLossPercent = BigDecimal.valueOf(25); targetPercent = BigDecimal.valueOf(60); maxHoldMinutes = 45; maxIvRankForBuying = BigDecimal.valueOf(50); trailingStopActivationPercent = BigDecimal.valueOf(20); trailingGapPercent = BigDecimal.valueOf(10); minCombinedPremium = BigDecimal.valueOf(50); squareoffHour = 15; squareoffMinute = 0; scanTimeframe = "FIFTEEN_MINUTE"; candleTimeframe = "FIFTEEN_MINUTE"; trendTimeframe = "FIFTEEN_MINUTE"; paperTrading = true; }
+            case OI_SHIFT_TRAP -> { stopLossPercent = BigDecimal.valueOf(30); targetPercent = BigDecimal.valueOf(60); maxHoldMinutes = 30; trailingStopActivationPercent = BigDecimal.valueOf(15); trailingGapPercent = BigDecimal.valueOf(8); minCombinedPremium = BigDecimal.valueOf(40); squareoffHour = 15; squareoffMinute = 0; scanTimeframe = "FIVE_MINUTE"; candleTimeframe = "FIVE_MINUTE"; trendTimeframe = "FIFTEEN_MINUTE"; paperTrading = true; }
+            case EXPIRY_GAMMA -> { stopLossPercent = BigDecimal.valueOf(40); targetPercent = BigDecimal.valueOf(100); maxHoldMinutes = 90; trailingStopActivationPercent = BigDecimal.valueOf(40); trailingGapPercent = BigDecimal.valueOf(20); minCombinedPremium = BigDecimal.valueOf(20); squareoffHour = 15; squareoffMinute = 15; scanTimeframe = "ONE_MINUTE"; candleTimeframe = "ONE_MINUTE"; trendTimeframe = "FIVE_MINUTE"; paperTrading = true; }
+            case EXPIRY_REVERSAL -> { stopLossPercent = BigDecimal.valueOf(25); targetPercent = BigDecimal.valueOf(50); maxHoldMinutes = 30; trailingStopActivationPercent = BigDecimal.valueOf(15); trailingGapPercent = BigDecimal.valueOf(8); minCombinedPremium = BigDecimal.valueOf(20); squareoffHour = 15; squareoffMinute = 15; scanTimeframe = "ONE_MINUTE"; candleTimeframe = "ONE_MINUTE"; trendTimeframe = "FIVE_MINUTE"; paperTrading = true; }
         }
     }
 

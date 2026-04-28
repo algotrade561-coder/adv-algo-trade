@@ -10,7 +10,12 @@ import com.algo.trade.marketdata.MarketDataService;
 import com.algo.trade.persistence.StrategyDecisionEntity;
 import com.algo.trade.persistence.StrategyDecisionRepository;
 import com.algo.trade.strategy.EventDrivenBuyStrategy;
+import com.algo.trade.strategy.ExpiryGammaStrategy;
+import com.algo.trade.strategy.ExpiryReversalStrategy;
+import com.algo.trade.strategy.GapAndGoStrategy;
 import com.algo.trade.strategy.ItmConvictionStrategy;
+import com.algo.trade.strategy.OiShiftTrapStrategy;
+import com.algo.trade.strategy.ReversalBuyStrategy;
 import com.algo.trade.strategy.RuleBasedOptionsStrategy;
 import com.algo.trade.strategy.ScalpingStrategy;
 import com.algo.trade.strategy.SpreadStrategyEvaluator;
@@ -68,6 +73,11 @@ public class AlgoTradingScheduler {
     private final SpreadStrategyEvaluator spreadStrategyEvaluator;
     private final EventDrivenBuyStrategy eventDrivenBuyStrategy;
     private final ItmConvictionStrategy itmConvictionStrategy;
+    private final GapAndGoStrategy gapAndGoStrategy;
+    private final ReversalBuyStrategy reversalBuyStrategy;
+    private final OiShiftTrapStrategy oiShiftTrapStrategy;
+    private final ExpiryGammaStrategy expiryGammaStrategy;
+    private final ExpiryReversalStrategy expiryReversalStrategy;
     private final MarketGuard marketGuard;
     private final com.algo.trade.marketdata.LiveInstrumentCache liveInstrumentCache;
     private final com.algo.trade.marketdata.LiveCandleBuilder candleBuilder;
@@ -103,6 +113,11 @@ public class AlgoTradingScheduler {
             SpreadStrategyEvaluator spreadStrategyEvaluator,
             EventDrivenBuyStrategy eventDrivenBuyStrategy,
             ItmConvictionStrategy itmConvictionStrategy,
+            GapAndGoStrategy gapAndGoStrategy,
+            ReversalBuyStrategy reversalBuyStrategy,
+            OiShiftTrapStrategy oiShiftTrapStrategy,
+            ExpiryGammaStrategy expiryGammaStrategy,
+            ExpiryReversalStrategy expiryReversalStrategy,
             MarketGuard marketGuard,
             com.algo.trade.marketdata.LiveInstrumentCache liveInstrumentCache,
             com.algo.trade.marketdata.LiveCandleBuilder candleBuilder,
@@ -129,6 +144,11 @@ public class AlgoTradingScheduler {
         this.spreadStrategyEvaluator = spreadStrategyEvaluator;
         this.eventDrivenBuyStrategy = eventDrivenBuyStrategy;
         this.itmConvictionStrategy = itmConvictionStrategy;
+        this.gapAndGoStrategy = gapAndGoStrategy;
+        this.reversalBuyStrategy = reversalBuyStrategy;
+        this.oiShiftTrapStrategy = oiShiftTrapStrategy;
+        this.expiryGammaStrategy = expiryGammaStrategy;
+        this.expiryReversalStrategy = expiryReversalStrategy;
         this.marketGuard = marketGuard;
         this.liveInstrumentCache = liveInstrumentCache;
         this.candleBuilder = candleBuilder;
@@ -236,15 +256,6 @@ public class AlgoTradingScheduler {
             return;
         }
 
-        // Expiry-day safety: no new entries after 1 PM on expiry day (gamma risk)
-        for (UnderlyingSymbol u : tradingStateService.enabledUnderlyings()) {
-            IndexType idx = com.algo.trade.domain.IndexType.from(u);
-            if (expiryCalendar.isExpiryDay(idx) && marketTime.isAfter(LocalTime.of(13, 0))) {
-                log.info("Algo scan skipped: expiry day for {} — no new entries after 1 PM (gamma risk)", u);
-                return;
-            }
-        }
-
         // Market guard safety: circuit breaker, event day, VIX
         String blockReason = marketGuard.longPremiumBlockReason();
         if (blockReason != null) {
@@ -269,6 +280,11 @@ public class AlgoTradingScheduler {
         // Directional Buy only runs on 1-min candle trigger
         if (triggerTimeframe == Timeframe.ONE_MINUTE) {
             for (UnderlyingSymbol underlying : enabledUnderlyings) {
+                IndexType dbIdx = com.algo.trade.domain.IndexType.from(underlying);
+                if (expiryCalendar.isExpiryDay(dbIdx) && marketTime.isAfter(LocalTime.of(13, 0))) {
+                    log.info("Directional Buy skipped: expiry day for {} after 1 PM (gamma risk)", underlying);
+                    continue;
+                }
                 if (entriesSubmitted >= properties.algo().maxEntriesPerScan()) {
                     log.info("Algo scan entry limit reached for this cycle: entriesSubmitted={}", entriesSubmitted);
                     break;
@@ -311,15 +327,20 @@ public class AlgoTradingScheduler {
      */
     private void runAdditionalStrategies(LocalTime marketTime, List<UnderlyingSymbol> underlyings,
                                           Timeframe triggerTimeframe) {
-        List<StrategyConfig> enabledConfigs = strategyConfigService.getEnabled();
-        if (enabledConfigs.isEmpty()) return;
-
         for (UnderlyingSymbol underlying : underlyings) {
-            // Expiry-day theta guard: no new buying entries after 1 PM on expiry day
+            List<StrategyConfig> enabledConfigs = strategyConfigService.getEnabledFor(underlying);
+            if (enabledConfigs.isEmpty()) continue;
+            // Expiry-day theta guard: after 1 PM only allow expiry-specific strategies
             IndexType expiryIdx = com.algo.trade.domain.IndexType.from(underlying);
             if (expiryCalendar.isExpiryDay(expiryIdx) && marketTime.isAfter(LocalTime.of(13, 0))) {
-                log.info("Additional strategies skipped: expiry day for {} — no entries after 1 PM", underlying);
-                continue;
+                enabledConfigs = enabledConfigs.stream()
+                        .filter(c -> c.getStrategyType() == StrategyType.EXPIRY_GAMMA
+                                || c.getStrategyType() == StrategyType.EXPIRY_REVERSAL)
+                        .toList();
+                if (enabledConfigs.isEmpty()) {
+                    log.info("Additional strategies skipped: expiry day for {} after 1 PM — no expiry-specific strategies enabled", underlying);
+                    continue;
+                }
             }
 
             // Pre-fetch common candle resolutions (cached by MarketDataService)
@@ -333,7 +354,6 @@ public class AlgoTradingScheduler {
             String ivRankSource = ivRankResult.source();
 
             for (StrategyConfig config : enabledConfigs) {
-                if (!config.getUnderlying().equals(underlying.name())) continue;
                 StrategyType type = config.getStrategyType();
 
                 // Resolve candle timeframes from per-strategy config
@@ -430,11 +450,50 @@ public class AlgoTradingScheduler {
                             if (!matchesConfiguredTimeframe(config, triggerTimeframe)) { yield Optional.empty(); }
                             evaluated[0] = true;
                             BigDecimal spotPrice = strategyCandles.isEmpty() ? BigDecimal.ZERO : strategyCandles.getLast().close();
-                            // Fetch option chain quotes for ATM ± ITM depth strikes
                             String[] itmFailReason = {"buildScanContext:unknown"};
                             Optional<ScanContext> ctx = buildScanContext(underlying, marketTime, itmFailReason);
                             if (ctx.isEmpty()) { diagHolder[0] = new com.algo.trade.strategy.StrategyDiagnostics(itmFailReason[0], null, null, null, null, null, null, null, null); yield Optional.empty(); }
                             yield itmConvictionStrategy.evaluate(underlying, spotPrice, ctx.get().quotes(), config);
+                        }
+                        case GAP_AND_GO -> {
+                            if (!matchesConfiguredTimeframe(config, triggerTimeframe)) { yield Optional.empty(); }
+                            evaluated[0] = true;
+                            var ggResult = gapAndGoStrategy.evaluateWithDiagnostics(strategyCandles, marketTime, config, underlying);
+                            diagHolder[0] = ggResult.diagnostics();
+                            yield ggResult.signal();
+                        }
+                        case REVERSAL_BUY -> {
+                            if (!matchesConfiguredTimeframe(config, triggerTimeframe)) { yield Optional.empty(); }
+                            evaluated[0] = true;
+                            var rbResult = reversalBuyStrategy.evaluateWithDiagnostics(trendCandles, ivRank, config, underlying);
+                            diagHolder[0] = rbResult.diagnostics();
+                            yield rbResult.signal();
+                        }
+                        case OI_SHIFT_TRAP -> {
+                            if (!matchesConfiguredTimeframe(config, triggerTimeframe)) { yield Optional.empty(); }
+                            evaluated[0] = true;
+                            String[] oiFailReason = {"buildScanContext:unknown"};
+                            Optional<ScanContext> oiCtx = buildScanContext(underlying, marketTime, oiFailReason);
+                            if (oiCtx.isEmpty()) {
+                                diagHolder[0] = new com.algo.trade.strategy.StrategyDiagnostics(oiFailReason[0], null, null, null, null, null, null, null, null);
+                                yield Optional.empty();
+                            }
+                            BigDecimal oiSpot = trendCandles.isEmpty() ? BigDecimal.ZERO : trendCandles.getLast().close();
+                            yield oiShiftTrapStrategy.evaluate(oiCtx.get().optionChainSnapshot(), oiSpot, config, underlying);
+                        }
+                        case EXPIRY_GAMMA -> {
+                            if (!matchesConfiguredTimeframe(config, triggerTimeframe)) { yield Optional.empty(); }
+                            evaluated[0] = true;
+                            var egResult = expiryGammaStrategy.evaluateWithDiagnostics(strategyCandles, marketTime, config, underlying);
+                            diagHolder[0] = egResult.diagnostics();
+                            yield egResult.signal();
+                        }
+                        case EXPIRY_REVERSAL -> {
+                            if (!matchesConfiguredTimeframe(config, triggerTimeframe)) { yield Optional.empty(); }
+                            evaluated[0] = true;
+                            var erResult = expiryReversalStrategy.evaluateWithDiagnostics(strategyCandles, marketTime, config, underlying);
+                            diagHolder[0] = erResult.diagnostics();
+                            yield erResult.signal();
                         }
                         default -> Optional.empty();
                     };
@@ -759,9 +818,9 @@ public class AlgoTradingScheduler {
             return Optional.empty();
         }
 
-        Map<OptionType, Instrument> selectedOptions = selectedOptions(options, underlyingPrice, optionQuotes);
+        Map<OptionType, Instrument> selectedOptions = selectedOptions(underlying, options, underlyingPrice, optionQuotes);
         if (selectedOptions.isEmpty()) {
-            BigDecimal maxPrem = maxTradablePremium(options.stream().findFirst()
+            BigDecimal maxPrem = maxTradablePremium(underlying, options.stream().findFirst()
                     .map(Instrument::lotSize).orElse(0));
             failReason[0] = "noAffordableOption(maxPremium=" + maxPrem.setScale(0, java.math.RoundingMode.HALF_UP) + ")";
             log.warn("Algo scan skipped underlying: no selected option instruments, underlying={}, expiry={}",
@@ -827,8 +886,8 @@ public class AlgoTradingScheduler {
         return strikes.subList(start, end);
     }
 
-    private Map<OptionType, Instrument> selectedOptions(List<Instrument> options, BigDecimal underlyingPrice,
-                                                        Map<String, Quote> quotes) {
+    private Map<OptionType, Instrument> selectedOptions(UnderlyingSymbol underlying, List<Instrument> options,
+                                                        BigDecimal underlyingPrice, Map<String, Quote> quotes) {
         List<BigDecimal> strikes = options.stream()
                 .flatMap(instrument -> instrument.strike().stream())
                 .distinct()
@@ -839,9 +898,9 @@ public class AlgoTradingScheduler {
         }
 
         Map<OptionType, Instrument> selected = new EnumMap<>(OptionType.class);
-        selected.put(OptionType.CE, selectedAffordableOption(options, strikes, underlyingPrice, OptionType.CE,
+        selected.put(OptionType.CE, selectedAffordableOption(underlying, options, strikes, underlyingPrice, OptionType.CE,
                 quotes).orElse(null));
-        selected.put(OptionType.PE, selectedAffordableOption(options, strikes, underlyingPrice, OptionType.PE,
+        selected.put(OptionType.PE, selectedAffordableOption(underlying, options, strikes, underlyingPrice, OptionType.PE,
                 quotes).orElse(null));
         selected.values().removeIf(java.util.Objects::isNull);
         selected.forEach((optionType, instrument) -> log.info(
@@ -851,16 +910,16 @@ public class AlgoTradingScheduler {
         return Map.copyOf(selected);
     }
 
-    private Optional<Instrument> selectedAffordableOption(List<Instrument> options, List<BigDecimal> strikes,
-                                                          BigDecimal underlyingPrice, OptionType optionType,
-                                                          Map<String, Quote> quotes) {
+    private Optional<Instrument> selectedAffordableOption(UnderlyingSymbol underlying, List<Instrument> options,
+                                                          List<BigDecimal> strikes, BigDecimal underlyingPrice,
+                                                          OptionType optionType, Map<String, Quote> quotes) {
         List<BigDecimal> candidateStrikes = candidateStrikes(optionType, strikes, underlyingPrice);
         for (BigDecimal strike : candidateStrikes) {
             Optional<Instrument> instrument = findOption(options, strike, optionType);
             if (instrument.isEmpty()) {
                 continue;
             }
-            BigDecimal maxPremium = maxTradablePremium(instrument.get().lotSize());
+            BigDecimal maxPremium = maxTradablePremium(underlying, instrument.get().lotSize());
             Quote quote = quotes.get(instrument.get().instrumentKey());
             if (quote == null || quote.lastPrice() == null || quote.lastPrice().signum() <= 0) {
                 log.info("Option selection skipped: missing/invalid quote, optionType={}, instrument={}, strike={}",
@@ -915,8 +974,8 @@ public class AlgoTradingScheduler {
         return riskAmount.divide(riskPerLotPercent, MATH_CONTEXT);
     }
 
-    private BigDecimal maxTradablePremium(int lotSize) {
-        return maxTradablePremium(globalConfigService, strategyConfigService.getDirectionalBuyConfig().getStopLossPercent(), lotSize);
+    private BigDecimal maxTradablePremium(UnderlyingSymbol underlying, int lotSize) {
+        return maxTradablePremium(globalConfigService, strategyConfigService.getDirectionalBuyConfig(underlying.name()).getStopLossPercent(), lotSize);
     }
 
     private BigDecimal selectedStrikeFor(OptionType optionType, List<BigDecimal> strikes, BigDecimal underlyingPrice) {
@@ -992,7 +1051,7 @@ public class AlgoTradingScheduler {
         int entriesSubmitted = 0;
         List<EntryCandidate> candidates = new ArrayList<>();
         BigDecimal dbSpotPrice = context.spotQuote().lastPrice();
-        StrategyConfig dbConfig = strategyConfigService.getDirectionalBuyConfig();
+        StrategyConfig dbConfig = strategyConfigService.getDirectionalBuyConfig(underlying.name());
         for (Map.Entry<OptionType, Instrument> entry : context.selectedOptions().entrySet()) {
             if (!optionTypeEnabled(entry.getKey())) {
                 log.info("Strategy evaluation skipped: option type disabled for live execution, underlying={}, optionType={}, enabledOptionTypes={}",
@@ -1020,7 +1079,7 @@ public class AlgoTradingScheduler {
             List<Candle> underlyingCandles = candles(underlyingHistoricalKey(underlying), dbCandleTf);
             List<Candle> trendUnderlyingCandles = candles(underlyingHistoricalKey(underlying), dbTrendTf);
             // Option candles from REST are often empty/stale — build a synthetic candle from live WebSocket data
-            List<Candle> optionCandles = buildOptionCandles(selectedInstrument, selectedQuote);
+            List<Candle> optionCandles = buildOptionCandles(selectedInstrument, selectedQuote, dbCandleTf);
             if (underlyingCandles.isEmpty() || trendUnderlyingCandles.isEmpty() || optionCandles.isEmpty()) {
                 log.warn("Strategy evaluation skipped: missing candles, underlying={}, instrument={}, underlyingCandles={}, trendUnderlyingCandles={}, optionCandles={}",
                         underlying, selectedInstrument.instrumentKey(), underlyingCandles.size(),
@@ -1191,10 +1250,7 @@ public class AlgoTradingScheduler {
      * Falls back to a single synthetic candle from the live quote if no history yet.
      * This avoids the REST historical candle API for options which is often empty/delayed.
      */
-    private List<Candle> buildOptionCandles(Instrument instrument, Quote liveQuote) {
-        // Use Directional Buy's candle timeframe from DB config
-        StrategyConfig dbConfig = strategyConfigService.getDirectionalBuyConfig();
-        Timeframe optionTf = resolveTimeframe(dbConfig.getCandleTimeframe(), Timeframe.ONE_MINUTE);
+    private List<Candle> buildOptionCandles(Instrument instrument, Quote liveQuote, Timeframe optionTf) {
 
         // Try LiveCandleBuilder history first
         List<Candle> history = candleBuilder.getHistory(

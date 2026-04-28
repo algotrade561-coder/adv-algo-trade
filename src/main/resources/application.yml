@@ -36,15 +36,21 @@ trading:
       - NIFTY
       - BANKNIFTY
       - SENSEX
+      - FINNIFTY
+      - MIDCPNIFTY
     default-expiry: NEAREST
     spot-quote-keys:
       NIFTY: "NSE:NIFTY 50"
       BANKNIFTY: "NSE:NIFTY BANK"
       SENSEX: "BSE:SENSEX"
+      FINNIFTY: "NSE:NIFTY FIN SERVICE"
+      MIDCPNIFTY: "NSE:NIFTY MID SELECT"
     spot-historical-keys:
       NIFTY: "NSE:NIFTY 50"
       BANKNIFTY: "NSE:NIFTY BANK"
       SENSEX: "BSE:SENSEX"
+      FINNIFTY: "NSE:NIFTY FIN SERVICE"
+      MIDCPNIFTY: "NSE:NIFTY MID SELECT"
 
   # ── Strike Selection ────────────────────────────────────────────────────
   strike:

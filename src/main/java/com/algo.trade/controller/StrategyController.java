@@ -14,7 +14,7 @@ import java.util.Map;
 
 /**
  * REST API for strategy configuration management.
- * Uses the existing Kite auth flow — no separate auth needed.
+ * All mutating endpoints accept an optional ?underlying=NIFTY param (defaults to NIFTY).
  */
 @RestController
 @RequestMapping("/strategies")
@@ -27,10 +27,17 @@ public class StrategyController {
         this.strategyConfigService = strategyConfigService;
     }
 
-    /** Get all strategy configs with current state. */
+    /** Get all strategy configs with current state (all underlyings). */
     @GetMapping
     public List<Map<String, Object>> getAll() {
         return strategyConfigService.getAll().stream().map(this::toDto).toList();
+    }
+
+    /** Get all strategy configs (enabled + disabled) for a specific underlying. Auto-seeds from NIFTY if new. */
+    @GetMapping("/by-underlying/{underlying}")
+    public List<Map<String, Object>> getByUnderlying(@PathVariable String underlying) {
+        return strategyConfigService.getAllFor(underlying.toUpperCase())
+                .stream().map(this::toDto).toList();
     }
 
     /** Get all strategy type metadata (for UI rendering). */
@@ -47,47 +54,77 @@ public class StrategyController {
         }).toList();
     }
 
-    /** Enable a strategy. */
+    /** Enable a strategy for the given underlying (default: NIFTY). */
     @PostMapping("/{type}/enable")
-    public ResponseEntity<Map<String, Object>> enable(@PathVariable String type) {
+    public ResponseEntity<Map<String, Object>> enable(
+            @PathVariable String type,
+            @RequestParam(defaultValue = "NIFTY") String underlying) {
         try {
-            StrategyType strategyType = StrategyType.valueOf(type);
-            StrategyConfig config = strategyConfigService.enable(strategyType);
-            log.info("Strategy enabled: {}", strategyType);
+            StrategyType strategyType = StrategyType.valueOf(type.toUpperCase());
+            StrategyConfig config = strategyConfigService.enable(strategyType, underlying.toUpperCase());
+            log.info("Strategy enabled: type={} underlying={}", strategyType, underlying);
             return ResponseEntity.ok(Map.of(
-                    "message", config.getStrategyType().displayName() + " enabled",
+                    "message", config.getStrategyType().displayName() + " enabled for " + underlying,
                     "config", toDto(config)));
         } catch (IllegalArgumentException e) {
-            return ResponseEntity.badRequest().body(Map.of("error", "Unknown strategy type: " + type));
+            return ResponseEntity.badRequest().body(Map.of("error", "Unknown strategy type or underlying: " + type));
         }
     }
 
-    /** Disable a strategy. */
+    /** Disable a strategy for the given underlying (default: NIFTY). */
     @PostMapping("/{type}/disable")
-    public ResponseEntity<Map<String, Object>> disable(@PathVariable String type) {
+    public ResponseEntity<Map<String, Object>> disable(
+            @PathVariable String type,
+            @RequestParam(defaultValue = "NIFTY") String underlying) {
         try {
-            StrategyType strategyType = StrategyType.valueOf(type);
-            StrategyConfig config = strategyConfigService.disable(strategyType);
-            log.info("Strategy disabled: {}", strategyType);
+            StrategyType strategyType = StrategyType.valueOf(type.toUpperCase());
+            StrategyConfig config = strategyConfigService.disable(strategyType, underlying.toUpperCase());
+            log.info("Strategy disabled: type={} underlying={}", strategyType, underlying);
             return ResponseEntity.ok(Map.of(
-                    "message", config.getStrategyType().displayName() + " disabled",
+                    "message", config.getStrategyType().displayName() + " disabled for " + underlying,
                     "config", toDto(config)));
         } catch (IllegalArgumentException e) {
-            return ResponseEntity.badRequest().body(Map.of("error", "Unknown strategy type: " + type));
+            return ResponseEntity.badRequest().body(Map.of("error", "Unknown strategy type or underlying: " + type));
         }
     }
 
-    /** Update strategy parameters. */
+    /** Update strategy parameters for the given underlying (default: NIFTY). */
     @PutMapping("/{type}")
-    public ResponseEntity<Map<String, Object>> update(@PathVariable String type,
-                                                       @RequestBody StrategyConfig patch) {
+    public ResponseEntity<Map<String, Object>> update(
+            @PathVariable String type,
+            @RequestParam(defaultValue = "NIFTY") String underlying,
+            @RequestBody StrategyConfig patch) {
         try {
-            StrategyType strategyType = StrategyType.valueOf(type);
-            StrategyConfig config = strategyConfigService.update(strategyType, patch);
-            log.info("Strategy updated: {}", strategyType);
+            StrategyType strategyType = StrategyType.valueOf(type.toUpperCase());
+            log.info("Strategy update request: type={} underlying={}", type, underlying);
+            StrategyConfig config = strategyConfigService.update(strategyType, underlying.toUpperCase(), patch);
+            log.info("Strategy updated: type={} underlying={} id={}", strategyType, config.getUnderlying(), config.getId());
             return ResponseEntity.ok(Map.of("message", "Updated", "config", toDto(config)));
         } catch (IllegalArgumentException e) {
-            return ResponseEntity.badRequest().body(Map.of("error", "Unknown strategy type: " + type));
+            return ResponseEntity.badRequest().body(Map.of("error", "Unknown strategy type or underlying: " + type));
+        }
+    }
+
+    /**
+     * Copy a strategy config from one underlying to another.
+     * The copied config is created disabled — enable explicitly after reviewing params.
+     * Example: POST /strategies/DIRECTIONAL_BUY/copy?from=NIFTY&to=BANKNIFTY
+     */
+    @PostMapping("/{type}/copy")
+    public ResponseEntity<Map<String, Object>> copy(
+            @PathVariable String type,
+            @RequestParam(defaultValue = "NIFTY") String from,
+            @RequestParam String to) {
+        try {
+            StrategyType strategyType = StrategyType.valueOf(type.toUpperCase());
+            StrategyConfig config = strategyConfigService.copyTo(
+                    strategyType, from.toUpperCase(), to.toUpperCase());
+            log.info("Strategy config copied: type={} from={} to={}", strategyType, from, to);
+            return ResponseEntity.ok(Map.of(
+                    "message", "Copied " + strategyType.displayName() + " from " + from + " to " + to + " (disabled — enable explicitly)",
+                    "config", toDto(config)));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Unknown strategy type or underlying: " + type));
         }
     }
 

@@ -44,7 +44,7 @@ public class SafeWeekPredictor {
         else if (vix >= 10 && vix <= 22) score += 10;
         else score -= 15;
 
-        double ivRank = ivRankTracker.getIVRank(IndexType.NIFTY);
+        double ivRank = averageIvRank();
         if (ivRank > 0 && ivRank < 30) score += 15;
         else if (ivRank > 70) score -= 10;
 
@@ -71,6 +71,16 @@ public class SafeWeekPredictor {
         if (currentScore >= 60) return 1.0;
         if (currentScore >= 40) return 0.5;
         return 0.25;
+    }
+
+    private double averageIvRank() {
+        double sum = 0;
+        int count = 0;
+        for (IndexType idx : IndexType.values()) {
+            double rank = ivRankTracker.getIVRank(idx);
+            if (rank > 0) { sum += rank; count++; }
+        }
+        return count > 0 ? sum / count : ivRankTracker.getIVRank(IndexType.NIFTY);
     }
 
     private boolean isMarketHours() {

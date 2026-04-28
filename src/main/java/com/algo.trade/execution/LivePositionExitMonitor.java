@@ -423,23 +423,21 @@ public class LivePositionExitMonitor {
      * Uses the persisted strategyType field first, falls back to entryReason text parsing.
      */
     private StrategyConfig resolveConfig(TradeEntity trade) {
+        String underlying = trade.getUnderlying() != null ? trade.getUnderlying() : "NIFTY";
         // Prefer the explicit strategyType field (set at entry time)
         if (trade.getStrategyType() != null && !trade.getStrategyType().isBlank()) {
             try {
                 com.algo.trade.strategy.StrategyType type =
                         com.algo.trade.strategy.StrategyType.valueOf(trade.getStrategyType());
-                return strategyConfigService.getAll().stream()
-                        .filter(c -> c.getStrategyType() == type)
-                        .findFirst()
-                        .orElseGet(() -> strategyConfigService.getDirectionalBuyConfig());
+                return strategyConfigService.getConfig(type, underlying);
             } catch (IllegalArgumentException ignored) { /* fall through to text parsing */ }
         }
         // Fallback: parse from entryReason text
         String entryReason = trade.getEntryReason() != null ? trade.getEntryReason().toUpperCase() : "";
         return strategyConfigService.getAll().stream()
-                .filter(c -> entryReason.contains(c.getStrategyType().name()))
+                .filter(c -> c.getUnderlying().equals(underlying) && entryReason.contains(c.getStrategyType().name()))
                 .findFirst()
-                .orElseGet(() -> strategyConfigService.getDirectionalBuyConfig());
+                .orElseGet(() -> strategyConfigService.getDirectionalBuyConfig(underlying));
     }
 
     private double profitPercent(BigDecimal entry, BigDecimal current) {

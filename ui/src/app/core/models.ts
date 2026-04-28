@@ -1,7 +1,7 @@
 export type TradingMode = 'PAPER' | 'BACKTEST' | 'LIVE';
 export type MarketDataMode = 'MOCK' | 'ZERODHA';
 export type ExecutionMode = 'PAPER' | 'ZERODHA';
-export type UnderlyingSymbol = 'NIFTY' | 'BANKNIFTY' | 'SENSEX';
+export type UnderlyingSymbol = 'NIFTY' | 'BANKNIFTY' | 'SENSEX' | 'FINNIFTY' | 'MIDCPNIFTY';
 export type OptionType = 'CE' | 'PE';
 export type Timeframe = 'ONE_MINUTE' | 'THREE_MINUTE' | 'FIVE_MINUTE' | 'FIFTEEN_MINUTE' | 'DAY';
 

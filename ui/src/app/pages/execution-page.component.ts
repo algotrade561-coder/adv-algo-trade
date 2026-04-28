@@ -446,7 +446,7 @@ export class ExecutionPageComponent implements OnInit {
   readonly tradingModes: TradingMode[] = ['PAPER', 'BACKTEST', 'LIVE'];
   readonly marketDataModes: MarketDataMode[] = ['MOCK', 'ZERODHA'];
   readonly executionModes: ExecutionMode[] = ['PAPER', 'ZERODHA'];
-  readonly underlyings: UnderlyingSymbol[] = ['NIFTY', 'BANKNIFTY', 'SENSEX'];
+  readonly underlyings: UnderlyingSymbol[] = ['NIFTY', 'BANKNIFTY', 'SENSEX', 'FINNIFTY', 'MIDCPNIFTY'];
 
   runtime?: RuntimeStatus;
   strategies = signal<StrategyDto[]>([]);
@@ -498,7 +498,7 @@ export class ExecutionPageComponent implements OnInit {
 
   toggleStrategy(s: StrategyDto, v: boolean): void {
     this.toast.set(''); this.toastErr.set('');
-    (v ? this.api.enableStrategy(s.type) : this.api.disableStrategy(s.type)).subscribe({
+    (v ? this.api.enableStrategy(s.type, s.underlying) : this.api.disableStrategy(s.type, s.underlying)).subscribe({
       next: () => { this.toast.set(s.displayName + (v ? ' enabled' : ' disabled')); this.api.getStrategies().subscribe({ next: s => this.strategies.set(s) }); },
       error: (e: any) => this.toastErr.set(e?.error?.error ?? 'Failed')
     });

@@ -173,7 +173,7 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
                         Thread.sleep(2000);
                         attemptMs += 2000;
                         optionTokens.clear();
-                        for (var underlying : properties.symbols().underlyings()) {
+                        for (var underlying : tradingStateService.enabledUnderlyings()) {
                             var indexType = com.algo.trade.domain.IndexType.from(underlying);
                             var expiryCal = new com.algo.trade.marketdata.ExpiryCalendar();
                             var expiry = expiryCal.getCurrentWeeklyExpiry(indexType);
@@ -290,7 +290,7 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
         // anyMoved=true also when lastSubscribedAtm is empty (startup subscription failed — recover now)
         boolean anyMoved = lastSubscribedAtm.isEmpty();
 
-        for (var underlying : properties.symbols().underlyings()) {
+        for (var underlying : tradingStateService.enabledUnderlyings()) {
             var indexType = com.algo.trade.domain.IndexType.from(underlying);
             double currentSpot = liveInstrumentCache.getFuturesPrice(indexType);
             if (currentSpot <= 0) continue;

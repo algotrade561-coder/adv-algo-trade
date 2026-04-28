@@ -16,6 +16,16 @@ public enum StrategyType {
             "Buy straddle 1-2 days before RBI/budget/earnings when IV is low", false),
     SCALPING("Scalping",
             "EMA 9/21 crossover with 2-candle confirmation, 30-min max hold", false),
+    GAP_AND_GO("Gap & Go",
+            "Buys CE/PE in the first 30 min when the first session candle shows a strong directional gap — momentum continuation", false),
+    REVERSAL_BUY("Reversal Buy",
+            "RSI(14) mean reversion: buys CE when oversold (<30), PE when overbought (>70) — fades extreme intraday moves", false),
+    OI_SHIFT_TRAP("OI Shift Trap",
+            "Detects call/put writer exposure near the current price — approaching a heavy-OI strike triggers a short-cover squeeze", false),
+    EXPIRY_GAMMA("Expiry Gamma",
+            "Exploits ATM gamma on expiry day — buys in the direction of momentum between 13:00 and 14:30 for explosive premium moves", false),
+    EXPIRY_REVERSAL("Expiry Reversal",
+            "Near expiry (0-1 days), fades a sharp intraday spike — buys against the move expecting pin or reversal to key strike", false),
 
     // ── Spread Strategies (involve selling legs — DISABLED by default) ─────────
     BULL_CALL_SPREAD("Bull Call Spread",
@@ -43,7 +53,7 @@ public enum StrategyType {
     JADE_LIZARD("Jade Lizard",
             "Sell OTM CE + PE, buy far OTM PE hedge — premium collection with downside protection", true),
     SYNTHETIC_FUTURES("Synthetic Futures",
-            "Buy ATM CE + Sell ATM PE (or inverse) — replicate futures with options", false),
+            "Buy ATM CE + Sell ATM PE (or inverse) — replicate futures with options", true),
     ITM_CONVICTION("ITM Conviction",
             "Compares ITM vs ATM option strength via ATP-LTP differential — order flow signal", false);
 

@@ -117,7 +117,7 @@ public class ExecutionEngine {
      */
     @Transactional
     public ExecutionResult executeEntry(StrategyDecision decision, BigDecimal optionPremium, int lotSize, StrategyConfig strategyConfig) {
-        StrategyConfig effectiveConfig = strategyConfig != null ? strategyConfig : strategyConfigService.getDirectionalBuyConfig();
+        StrategyConfig effectiveConfig = strategyConfig != null ? strategyConfig : strategyConfigService.getDirectionalBuyConfig(decision.underlying().name());
         BigDecimal stopLossPercent = effectiveConfig.getStopLossPercent();
         log.info("Entry execution requested: signalType={}, underlying={}, instrument={}, optionType={}, premium={}, lotSize={}, running={}, killSwitch={}",
                 decision.signalType(),
@@ -259,7 +259,7 @@ public class ExecutionEngine {
      */
     @Transactional
     public ExecutionResult executePaperEntry(StrategyDecision decision, BigDecimal optionPremium, int lotSize, StrategyConfig strategyConfig) {
-        StrategyConfig effectiveConfig = strategyConfig != null ? strategyConfig : strategyConfigService.getDirectionalBuyConfig();
+        StrategyConfig effectiveConfig = strategyConfig != null ? strategyConfig : strategyConfigService.getDirectionalBuyConfig(decision.underlying().name());
         BigDecimal stopLossPercent = effectiveConfig.getStopLossPercent();
         log.info("PAPER entry requested: signalType={}, underlying={}, instrument={}, premium={}",
                 decision.signalType(), decision.underlying(),

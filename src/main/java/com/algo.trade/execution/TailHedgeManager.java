@@ -37,8 +37,13 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * Monitors open BUY positions and automatically places cheap far-OTM hedge orders
  * on the opposite side to cap catastrophic losses.
+ *
+ * DISABLED: Not useful for option buying strategies where max loss is already capped
+ * at premium paid. Re-enable via application.yml: trading.tail-hedge.enabled=true
  */
 @Component
+@org.springframework.boot.autoconfigure.condition.ConditionalOnProperty(
+        name = "trading.tail-hedge.enabled", havingValue = "true", matchIfMissing = false)
 public class TailHedgeManager {
 
     private static final Logger log = LoggerFactory.getLogger(TailHedgeManager.class);

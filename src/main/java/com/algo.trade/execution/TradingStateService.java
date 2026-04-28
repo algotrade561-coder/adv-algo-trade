@@ -7,6 +7,7 @@ import com.algo.trade.domain.MarketDataMode;
 import com.algo.trade.domain.TradingMode;
 import com.algo.trade.domain.UnderlyingSymbol;
 import com.algo.trade.risk.HaltMode;
+import com.algo.trade.underlying.UnderlyingConfigService;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -29,6 +30,7 @@ public class TradingStateService {
 
     private final TradingProperties properties;
     private final GlobalConfigService globalConfigService;
+    private final UnderlyingConfigService underlyingConfigService;
     private final AtomicReference<TradingMode> requestedMode;
     private final AtomicReference<MarketDataMode> marketDataMode;
     private final AtomicReference<ExecutionMode> executionMode;
@@ -45,9 +47,11 @@ public class TradingStateService {
     private volatile int extensionsUsedToday = 0;
     private static final int MAX_EXTENSIONS = 2;
 
-    public TradingStateService(TradingProperties properties, GlobalConfigService globalConfigService) {
+    public TradingStateService(TradingProperties properties, GlobalConfigService globalConfigService,
+                               UnderlyingConfigService underlyingConfigService) {
         this.properties = properties;
         this.globalConfigService = globalConfigService;
+        this.underlyingConfigService = underlyingConfigService;
         // Read persisted underlyings from DB; fall back to YAML if DB has none
         java.util.List<UnderlyingSymbol> persisted = globalConfigService.getEnabledUnderlyings();
         EnumSet<UnderlyingSymbol> configuredUnderlyings = persisted.isEmpty()
@@ -242,6 +246,8 @@ public class TradingStateService {
             return next;
         });
         globalConfigService.persistEnabledUnderlyings(java.util.List.copyOf(updatedUnderlyings));
+        if (enabled) underlyingConfigService.enable(underlying);
+        else underlyingConfigService.disable(underlying);
         Instant timestamp = Instant.now();
         updatedAt.set(timestamp);
         log.info("Underlying scan state changed: underlying={}, enabled={}, enabledUnderlyings={}, updatedAt={}",

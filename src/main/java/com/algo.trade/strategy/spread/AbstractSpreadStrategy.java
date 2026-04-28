@@ -238,7 +238,7 @@ public abstract class AbstractSpreadStrategy {
      * @return true if the position was exited
      */
     public final boolean checkAndExit(PositionGroup group, Map<String, BigDecimal> currentPrices) {
-        StrategyConfig config = strategyConfigService.getConfig(strategyType());
+        StrategyConfig config = strategyConfigService.getConfig(strategyType(), group.underlying().name());
         if (shouldExit(group, currentPrices, config)) {
             exitAllLegs(group, currentPrices);
             return true;
@@ -273,7 +273,7 @@ public abstract class AbstractSpreadStrategy {
                     continue;
                 }
 
-                StrategyConfig config = strategyConfigService.getConfig(strategyType());
+                StrategyConfig config = strategyConfigService.getConfig(strategyType(), group.underlying().name());
                 if (shouldExit(group, currentPrices, config)) {
                     exitAllLegs(group, currentPrices);
                 }
