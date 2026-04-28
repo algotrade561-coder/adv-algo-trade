@@ -76,7 +76,10 @@ public class ReportingService {
 
     public PnlSnapshot pnl() {
         log.debug("Reporting PnL calculation started");
-        BigDecimal realized = tradeRepository.findAll().stream()
+        java.time.LocalDate today = java.time.LocalDate.now(ZoneId.of("Asia/Kolkata"));
+        Instant dayStart = today.atStartOfDay(ZoneId.of("Asia/Kolkata")).toInstant();
+        Instant dayEnd = today.plusDays(1).atStartOfDay(ZoneId.of("Asia/Kolkata")).toInstant();
+        BigDecimal realized = tradeRepository.findByEntryTimeBetween(dayStart, dayEnd).stream()
                 .filter(t -> !t.isPaperTrade())
                 .map(TradeEntity::getRealizedPnl)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
@@ -146,6 +149,15 @@ public class ReportingService {
 
     public long countEntrySignalsSince(java.time.Instant since) {
         return decisionRepository.countEntrySignalsSince(since);
+    }
+
+    public org.springframework.data.domain.Page<StrategyDecisionEntity> filteredSignalsPaged(
+            List<String> signalTypes, int page, int size,
+            java.time.Instant from, java.time.Instant to,
+            String strategyType, String underlying, String optionType, String mode) {
+        return decisionRepository.findFilteredSignals(
+                signalTypes, from, to, strategyType, underlying, optionType, mode,
+                org.springframework.data.domain.PageRequest.of(page, size));
     }
 
     public long countRejectedSignalsSince(java.time.Instant since) {

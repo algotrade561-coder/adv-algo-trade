@@ -3,6 +3,8 @@ package com.algo.trade.execution;
 import com.algo.trade.broker.BrokerClient;
 import com.algo.trade.config.GlobalConfigService;
 import com.algo.trade.config.TradingProperties;
+import com.algo.trade.strategy.StrategyConfig;
+import com.algo.trade.strategy.StrategyConfigService;
 import com.algo.trade.domain.OrderRequest;
 import com.algo.trade.domain.OrderResponse;
 import com.algo.trade.domain.OrderSide;
@@ -51,6 +53,8 @@ public class ExecutionEngine {
 
     /** Prevents two monitors from placing duplicate broker SELL orders for the same trade. */
     private final Set<String> closingInProgress = ConcurrentHashMap.newKeySet();
+    /** Prevents concurrent entry executions racing past the DB open-trade check. */
+    private final java.util.concurrent.atomic.AtomicBoolean entryInFlight = new java.util.concurrent.atomic.AtomicBoolean(false);
 
     private final TradingProperties properties;
     private final GlobalConfigService globalConfigService;
@@ -64,6 +68,7 @@ public class ExecutionEngine {
     private final ExecutionOutcomeCsvRecorder executionOutcomeCsvRecorder;
     private final TelegramAlertService telegramAlertService;
     private final com.algo.trade.config.PositionSyncProperties positionSyncProperties;
+    private final StrategyConfigService strategyConfigService;
     private final Clock clock;
 
     @Autowired
@@ -73,9 +78,10 @@ public class ExecutionEngine {
                            StrategyDecisionRepository decisionRepository,
                            ExecutionOutcomeCsvRecorder executionOutcomeCsvRecorder,
                            TelegramAlertService telegramAlertService,
-                           com.algo.trade.config.PositionSyncProperties positionSyncProperties) {
+                           com.algo.trade.config.PositionSyncProperties positionSyncProperties,
+                           StrategyConfigService strategyConfigService) {
         this(properties, globalConfigService, brokerClient, riskEngine, tradingStateService, tradeRepository, orderRepository, errorEventRepository, decisionRepository,
-                executionOutcomeCsvRecorder, telegramAlertService, positionSyncProperties, Clock.systemUTC());
+                executionOutcomeCsvRecorder, telegramAlertService, positionSyncProperties, strategyConfigService, Clock.systemUTC());
     }
 
     ExecutionEngine(TradingProperties properties, GlobalConfigService globalConfigService, BrokerClient brokerClient, RiskEngine riskEngine, TradingStateService tradingStateService,
@@ -83,7 +89,7 @@ public class ExecutionEngine {
                     ErrorEventRepository errorEventRepository,
                     StrategyDecisionRepository decisionRepository, ExecutionOutcomeCsvRecorder executionOutcomeCsvRecorder,
                     TelegramAlertService telegramAlertService,
-                    com.algo.trade.config.PositionSyncProperties positionSyncProperties, Clock clock) {
+                    com.algo.trade.config.PositionSyncProperties positionSyncProperties, StrategyConfigService strategyConfigService, Clock clock) {
         this.properties = properties;
         this.globalConfigService = globalConfigService;
         this.brokerClient = brokerClient;
@@ -96,20 +102,23 @@ public class ExecutionEngine {
         this.executionOutcomeCsvRecorder = executionOutcomeCsvRecorder;
         this.telegramAlertService = telegramAlertService;
         this.positionSyncProperties = positionSyncProperties;
+        this.strategyConfigService = strategyConfigService;
         this.clock = clock;
     }
 
     @Transactional
     public ExecutionResult executeEntry(StrategyDecision decision, BigDecimal optionPremium, int lotSize) {
-        return executeEntry(decision, optionPremium, lotSize, null);
+        return executeEntry(decision, optionPremium, lotSize, (StrategyConfig) null);
     }
 
     /**
-     * Execute entry with optional per-strategy stop-loss percent for position sizing.
-     * If stopLossPercent is null, falls back to directional buy config SL.
+     * Execute entry with optional per-strategy config for position sizing and CSV recording.
+     * If strategyConfig is null, falls back to directional buy config.
      */
     @Transactional
-    public ExecutionResult executeEntry(StrategyDecision decision, BigDecimal optionPremium, int lotSize, BigDecimal stopLossPercent) {
+    public ExecutionResult executeEntry(StrategyDecision decision, BigDecimal optionPremium, int lotSize, StrategyConfig strategyConfig) {
+        StrategyConfig effectiveConfig = strategyConfig != null ? strategyConfig : strategyConfigService.getDirectionalBuyConfig();
+        BigDecimal stopLossPercent = effectiveConfig.getStopLossPercent();
         log.info("Entry execution requested: signalType={}, underlying={}, instrument={}, optionType={}, premium={}, lotSize={}, running={}, killSwitch={}",
                 decision.signalType(),
                 decision.underlying(),
@@ -130,7 +139,7 @@ public class ExecutionEngine {
             List<String> reasons = List.of("Trading engine is stopped");
             updateExecutionStage(savedDecision, "TRADING_STOPPED", reasons.getFirst());
             executionOutcomeCsvRecorder.recordEntry(decision, optionPremium, lotSize, "TRADING_STOPPED", false,
-                    null, null, null, null, reasons);
+                    null, null, null, null, reasons, effectiveConfig);
             telegramAlertService.entryRejected(decision, optionPremium, "TRADING_STOPPED", reasons);
             return ExecutionResult.rejected(reasons);
         }
@@ -139,7 +148,7 @@ public class ExecutionEngine {
             log.warn("Entry execution rejected by order guard: reasons={}", orderGuardRejections);
             updateExecutionStage(savedDecision, "ORDER_GUARD_REJECTED", String.join("; ", orderGuardRejections));
             executionOutcomeCsvRecorder.recordEntry(decision, optionPremium, lotSize, "ORDER_GUARD_REJECTED", false,
-                    null, null, null, null, orderGuardRejections);
+                    null, null, null, null, orderGuardRejections, effectiveConfig);
             telegramAlertService.entryRejected(decision, optionPremium, "ORDER_GUARD_REJECTED", orderGuardRejections);
             return ExecutionResult.rejected(orderGuardRejections);
         }
@@ -156,81 +165,91 @@ public class ExecutionEngine {
             log.warn("Entry execution rejected by risk engine: reasons={}", risk.reasons());
             updateExecutionStage(savedDecision, "RISK_REJECTED", String.join("; ", risk.reasons()));
             executionOutcomeCsvRecorder.recordEntry(decision, optionPremium, lotSize, "RISK_REJECTED", false,
-                    null, null, null, null, risk.reasons());
+                    null, null, null, null, risk.reasons(), effectiveConfig);
             telegramAlertService.entryRejected(decision, optionPremium, "RISK_REJECTED", risk.reasons());
             return ExecutionResult.rejected(risk.reasons());
         }
 
-        var sizing = stopLossPercent != null
-                ? riskEngine.calculateQuantity(optionPremium, lotSize, stopLossPercent)
-                : riskEngine.calculateQuantity(optionPremium, lotSize);
+        var sizing = riskEngine.calculateQuantity(optionPremium, lotSize, stopLossPercent);
         if (!sizing.allowed()) {
             log.warn("Entry execution rejected by position sizing: reason={}, riskAmount={}, estimatedCost={}",
                     sizing.reason(), sizing.riskAmount(), sizing.estimatedCost());
             List<String> reasons = List.of(sizing.reason());
             updateExecutionStage(savedDecision, "SIZING_REJECTED", sizing.reason());
             executionOutcomeCsvRecorder.recordEntry(decision, optionPremium, lotSize, "SIZING_REJECTED", false,
-                    sizing.quantity(), sizing.riskAmount(), sizing.estimatedCost(), null, reasons);
+                    sizing.quantity(), sizing.riskAmount(), sizing.estimatedCost(), null, reasons, effectiveConfig);
             telegramAlertService.entryRejected(decision, optionPremium, "SIZING_REJECTED", reasons);
             return ExecutionResult.rejected(reasons);
         }
         log.info("Entry sizing accepted: quantity={}, riskAmount={}, estimatedCost={}, reason={}",
                 sizing.quantity(), sizing.riskAmount(), sizing.estimatedCost(), sizing.reason());
 
-        String clientOrderId = "ENTRY-" + UUID.randomUUID();
-        OrderRequest orderRequest = new OrderRequest(clientOrderId, decision.selectedInstrumentKey().orElseThrow(),
-                OrderSide.BUY, OrderType.LIMIT, ProductType.MIS, sizing.quantity(), Optional.of(optionPremium), "strategy-entry");
-        log.info("Placing entry order: clientOrderId={}, instrument={}, side={}, orderType={}, product={}, quantity={}",
-                orderRequest.clientOrderId(), orderRequest.instrumentKey(), orderRequest.side(),
-                orderRequest.orderType(), orderRequest.productType(), orderRequest.quantity());
-        OrderResponse order;
+        if (!entryInFlight.compareAndSet(false, true)) {
+            log.warn("Entry execution rejected: another entry is already in progress (concurrent scan)");
+            List<String> reasons = List.of("Concurrent entry blocked — another entry is in progress");
+            updateExecutionStage(savedDecision, "CONCURRENT_ENTRY_BLOCKED", reasons.getFirst());
+            return ExecutionResult.rejected(reasons);
+        }
         try {
-            order = brokerClient.placeOrder(orderRequest);
-            persistOrderWithSignalTime(order, decision.timestamp(), optionPremium, extractStrategyType(decision));
-            log.info("Entry order response: clientOrderId={}, brokerOrderId={}, status={}, requestedQuantity={}, filledQuantity={}, averageFillPrice={}, rejectionReason={}",
-                    order.clientOrderId(), order.brokerOrderId().orElse(""), order.status(), order.requestedQuantity(),
-                    order.filledQuantity(), order.averageFillPrice().orElse(null), order.rejectionReason().orElse(""));
-        } catch (RuntimeException ex) {
-            return rejectBrokerFailure(savedDecision, decision, optionPremium, lotSize, sizing.quantity(), sizing.riskAmount(),
-                    sizing.estimatedCost(), orderRequest.clientOrderId(), ex);
-        }
+            String clientOrderId = "ENTRY-" + UUID.randomUUID();
+            OrderRequest orderRequest = new OrderRequest(clientOrderId, decision.selectedInstrumentKey().orElseThrow(),
+                    OrderSide.BUY, OrderType.LIMIT, ProductType.MIS, sizing.quantity(), Optional.of(optionPremium), "strategy-entry");
+            log.info("Placing entry order: clientOrderId={}, instrument={}, side={}, orderType={}, product={}, quantity={}",
+                    orderRequest.clientOrderId(), orderRequest.instrumentKey(), orderRequest.side(),
+                    orderRequest.orderType(), orderRequest.productType(), orderRequest.quantity());
+            OrderResponse order;
+            try {
+                order = brokerClient.placeOrder(orderRequest);
+                persistOrderWithSignalTime(order, decision.timestamp(), optionPremium, extractStrategyType(decision));
+                log.info("Entry order response: clientOrderId={}, brokerOrderId={}, status={}, requestedQuantity={}, filledQuantity={}, averageFillPrice={}, rejectionReason={}",
+                        order.clientOrderId(), order.brokerOrderId().orElse(""), order.status(), order.requestedQuantity(),
+                        order.filledQuantity(), order.averageFillPrice().orElse(null), order.rejectionReason().orElse(""));
+            } catch (RuntimeException ex) {
+                return rejectBrokerFailure(savedDecision, decision, optionPremium, lotSize, sizing.quantity(), sizing.riskAmount(),
+                        sizing.estimatedCost(), orderRequest.clientOrderId(), ex, effectiveConfig);
+            }
 
-        // Limit order in book — watchdog will poll for fill and create TradeEntity
-        if (order.status() == OrderStatus.OPEN || order.status() == OrderStatus.NEW) {
-            log.info("Entry limit order placed — OrderFillWatchdog will track: clientOrderId={}, brokerOrderId={}",
-                    order.clientOrderId(), order.brokerOrderId().orElse(""));
-            List<String> reasons = List.of("Limit order placed — awaiting fill");
-            updateExecutionStage(savedDecision, "ORDER_OPEN", "brokerOrderId=" + order.brokerOrderId().orElse(""));
-            executionOutcomeCsvRecorder.recordEntry(decision, optionPremium, lotSize, "ORDER_OPEN", false,
-                    sizing.quantity(), sizing.riskAmount(), sizing.estimatedCost(), order, reasons);
-            return ExecutionResult.accepted(order, reasons);
-        }
+            // Limit order in book — watchdog will poll for fill and create TradeEntity
+            if (order.status() == OrderStatus.OPEN || order.status() == OrderStatus.NEW) {
+                log.info("Entry limit order placed — OrderFillWatchdog will track: clientOrderId={}, brokerOrderId={}",
+                        order.clientOrderId(), order.brokerOrderId().orElse(""));
+                List<String> reasons = List.of("Limit order placed — awaiting fill");
+                updateExecutionStage(savedDecision, "ORDER_OPEN", "brokerOrderId=" + order.brokerOrderId().orElse(""));
+                executionOutcomeCsvRecorder.recordEntry(decision, optionPremium, lotSize, "ORDER_OPEN", false,
+                        sizing.quantity(), sizing.riskAmount(), sizing.estimatedCost(), order, reasons, effectiveConfig);
+                return ExecutionResult.accepted(order, reasons);
+            }
 
-        if (order.status() == OrderStatus.COMPLETE) {
-            BigDecimal fillPrice = order.averageFillPrice().orElse(optionPremium);
-            String tradeId = "TRD-" + UUID.randomUUID();
-            TradeEntity tradeEntity = new TradeEntity(tradeId, order.instrumentKey(),
-                    decision.underlying().name(), decision.optionType().orElseThrow().name(), TradeStatus.OPEN,
-                    order.filledQuantity(), fillPrice, Instant.now(clock), String.join("; ", decision.reasons()));
-            tradeEntity.setStrategyType(extractStrategyType(decision));
-            tradeRepository.save(tradeEntity);
-            log.info("Entry trade opened: tradeId={}, instrument={}, quantity={}, entryPrice={}",
-                    tradeId, order.instrumentKey(), order.filledQuantity(), fillPrice);
-            List<String> reasons = List.of("Entry order filled and trade journal updated");
-            updateExecutionStage(savedDecision, "ORDER_FILLED", "tradeId=" + tradeId);
-            executionOutcomeCsvRecorder.recordEntry(decision, optionPremium, lotSize, "ORDER_FILLED", true,
-                    sizing.quantity(), sizing.riskAmount(), sizing.estimatedCost(), order, reasons);
-            telegramAlertService.entryOrderFilled(decision, optionPremium, sizing.quantity(), sizing.estimatedCost(), order);
-            return ExecutionResult.accepted(order, reasons);
+            if (order.status() == OrderStatus.COMPLETE) {
+                BigDecimal fillPrice = order.averageFillPrice().orElse(optionPremium);
+                String tradeId = "TRD-" + UUID.randomUUID();
+                TradeEntity tradeEntity = new TradeEntity(tradeId, order.instrumentKey(),
+                        decision.underlying().name(), decision.optionType().orElseThrow().name(), TradeStatus.OPEN,
+                        order.filledQuantity(), fillPrice, Instant.now(clock), String.join("; ", decision.reasons()));
+                tradeEntity.setStrategyType(extractStrategyType(decision));
+                tradeEntity.setAppliedTrailingStopActivationPercent(effectiveConfig.getTrailingStopActivationPercent());
+                tradeEntity.setAppliedTrailingGapPercent(effectiveConfig.getTrailingGapPercent());
+                tradeRepository.save(tradeEntity);
+                log.info("Entry trade opened: tradeId={}, instrument={}, quantity={}, entryPrice={}",
+                        tradeId, order.instrumentKey(), order.filledQuantity(), fillPrice);
+                List<String> reasons = List.of("Entry order filled and trade journal updated");
+                updateExecutionStage(savedDecision, "ORDER_FILLED", "tradeId=" + tradeId);
+                executionOutcomeCsvRecorder.recordEntry(decision, optionPremium, lotSize, "ORDER_FILLED", true,
+                        sizing.quantity(), sizing.riskAmount(), sizing.estimatedCost(), order, reasons, effectiveConfig);
+                telegramAlertService.entryOrderFilled(decision, optionPremium, sizing.quantity(), sizing.estimatedCost(), order);
+                return ExecutionResult.accepted(order, reasons);
+            }
+            log.warn("Entry order not filled: clientOrderId={}, status={}, reason={}",
+                    order.clientOrderId(), order.status(), order.rejectionReason().orElse("Entry order was not filled"));
+            List<String> reasons = List.of(order.rejectionReason().orElse("Entry order was not filled"));
+            updateExecutionStage(savedDecision, "ORDER_NOT_FILLED", reasons.getFirst());
+            executionOutcomeCsvRecorder.recordEntry(decision, optionPremium, lotSize, "ORDER_NOT_FILLED", false,
+                    sizing.quantity(), sizing.riskAmount(), sizing.estimatedCost(), order, reasons, effectiveConfig);
+            telegramAlertService.orderNotFilled(decision, optionPremium, sizing.quantity(), order, reasons);
+            return ExecutionResult.rejected(reasons);
+        } finally {
+            entryInFlight.set(false);
         }
-        log.warn("Entry order not filled: clientOrderId={}, status={}, reason={}",
-                order.clientOrderId(), order.status(), order.rejectionReason().orElse("Entry order was not filled"));
-        List<String> reasons = List.of(order.rejectionReason().orElse("Entry order was not filled"));
-        updateExecutionStage(savedDecision, "ORDER_NOT_FILLED", reasons.getFirst());
-        executionOutcomeCsvRecorder.recordEntry(decision, optionPremium, lotSize, "ORDER_NOT_FILLED", false,
-                sizing.quantity(), sizing.riskAmount(), sizing.estimatedCost(), order, reasons);
-        telegramAlertService.orderNotFilled(decision, optionPremium, sizing.quantity(), order, reasons);
-        return ExecutionResult.rejected(reasons);
     }
 
     /**
@@ -239,27 +258,32 @@ public class ExecutionEngine {
      * and closed via closeTrade which detects the "PAPER-" prefix and skips the broker exit order.
      */
     @Transactional
-    public ExecutionResult executePaperEntry(StrategyDecision decision, BigDecimal optionPremium, int lotSize, BigDecimal stopLossPercent) {
+    public ExecutionResult executePaperEntry(StrategyDecision decision, BigDecimal optionPremium, int lotSize, StrategyConfig strategyConfig) {
+        StrategyConfig effectiveConfig = strategyConfig != null ? strategyConfig : strategyConfigService.getDirectionalBuyConfig();
+        BigDecimal stopLossPercent = effectiveConfig.getStopLossPercent();
         log.info("PAPER entry requested: signalType={}, underlying={}, instrument={}, premium={}",
                 decision.signalType(), decision.underlying(),
                 decision.selectedInstrumentKey().orElse(""), optionPremium);
 
-        StrategyDecisionEntity savedDecision = persistDecision(decision);
-
+        StrategyDecisionEntity savedDecision = persistDecision(decision, true);
         if (!tradingStateService.running()) {
             log.warn("PAPER entry rejected: trading engine is stopped");
             updateExecutionStage(savedDecision, "TRADING_STOPPED", "Trading engine is stopped");
             return ExecutionResult.rejected(List.of("Trading engine is stopped"));
         }
 
-        var sizing = stopLossPercent != null
-                ? riskEngine.calculateQuantity(optionPremium, lotSize, stopLossPercent)
-                : riskEngine.calculateQuantity(optionPremium, lotSize);
+        var sizing = riskEngine.calculateQuantity(optionPremium, lotSize, stopLossPercent);
         if (!sizing.allowed()) {
             updateExecutionStage(savedDecision, "PAPER_SIZING_REJECTED", sizing.reason());
             return ExecutionResult.rejected(List.of(sizing.reason()));
         }
 
+        if (!entryInFlight.compareAndSet(false, true)) {
+            log.warn("PAPER entry rejected: another entry is already in progress (concurrent scan)");
+            updateExecutionStage(savedDecision, "CONCURRENT_ENTRY_BLOCKED", "Concurrent entry blocked");
+            return ExecutionResult.rejected(List.of("Concurrent entry blocked — another entry is in progress"));
+        }
+        try {
         String tradeId = "PAPER-TRD-" + UUID.randomUUID();
         String instrumentKey = decision.selectedInstrumentKey().orElse("UNKNOWN");
         TradeEntity trade = new TradeEntity(tradeId, instrumentKey,
@@ -268,6 +292,8 @@ public class ExecutionEngine {
                 "PAPER_TRADE [" + decision.signalType().name() + "]: " + String.join("; ", decision.reasons()));
         // Extract strategy type from decision reasons
         trade.setStrategyType(extractStrategyType(decision));
+        trade.setAppliedTrailingStopActivationPercent(effectiveConfig.getTrailingStopActivationPercent());
+        trade.setAppliedTrailingGapPercent(effectiveConfig.getTrailingGapPercent());
         tradeRepository.save(trade);
 
         updateExecutionStage(savedDecision, "PAPER_FILLED", "tradeId=" + tradeId);
@@ -280,9 +306,12 @@ public class ExecutionEngine {
                 Optional.of(optionPremium), Optional.empty(), Instant.now(clock));
         executionOutcomeCsvRecorder.recordEntry(decision, optionPremium, lotSize, "PAPER_FILLED", true,
                 sizing.quantity(), sizing.riskAmount(), sizing.estimatedCost(), syntheticOrder,
-                List.of("Paper trade opened — exit managed by live monitors"));
+                List.of("Paper trade opened — exit managed by live monitors"), effectiveConfig);
 
         return ExecutionResult.accepted(syntheticOrder, List.of("Paper trade opened"));
+        } finally {
+            entryInFlight.set(false);
+        }
     }
 
     @Transactional
@@ -318,6 +347,7 @@ public class ExecutionEngine {
                     : lastPrice.subtract(trade.getEntryPrice()).multiply(BigDecimal.valueOf(trade.getQuantity()));
             trade.close(lastPrice, Instant.now(clock), realizedPnl, "PAPER_EXIT: " + reason);
             tradeRepository.save(trade);
+            executionOutcomeCsvRecorder.recordExit(trade, lastPrice, realizedPnl, reason, null);
             log.info("PAPER trade closed: tradeId={}, exitPrice={}, realizedPnl={}, reason={}",
                     tradeId, lastPrice, realizedPnl, reason);
             telegramAlertService.systemAlert(String.format(
@@ -381,6 +411,7 @@ public class ExecutionEngine {
         BigDecimal realizedPnl = exitPrice.subtract(trade.getEntryPrice()).multiply(BigDecimal.valueOf(trade.getQuantity()));
         trade.close(exitPrice, Instant.now(clock), realizedPnl, reason);
         tradeRepository.save(trade);
+        executionOutcomeCsvRecorder.recordExit(trade, exitPrice, realizedPnl, reason, order);
         log.info("Trade closed: tradeId={}, exitPrice={}, realizedPnl={}, reason={}", tradeId, exitPrice, realizedPnl, reason);
         telegramAlertService.tradeClosed(tradeId, trade.getInstrumentKey(), trade.getQuantity(),
                 trade.getEntryPrice(), exitPrice, realizedPnl, reason, order);
@@ -451,6 +482,10 @@ public class ExecutionEngine {
     }
 
     private StrategyDecisionEntity persistDecision(StrategyDecision decision) {
+        return persistDecision(decision, false);
+    }
+
+    private StrategyDecisionEntity persistDecision(StrategyDecision decision, boolean paperTrade) {
         log.info("Persisting strategy decision: timestamp={}, underlying={}, signalType={}, instrument={}, reasons={}",
                 decision.timestamp(), decision.underlying(), decision.signalType(),
                 decision.selectedInstrumentKey().orElse(""), decision.reasons());
@@ -463,6 +498,7 @@ public class ExecutionEngine {
                 decision.imbalance().orElse(null), decision.volumeSpike(), decision.confidenceScore(),
                 String.join("; ", decision.reasons()));
         entity.setStrategyType(extractStrategyType(decision));
+        entity.setPaperTrade(paperTrade);
         return decisionRepository.save(entity);
     }
 
@@ -552,7 +588,8 @@ public class ExecutionEngine {
             BigDecimal riskAmount,
             BigDecimal estimatedCost,
             String clientOrderId,
-            RuntimeException ex
+            RuntimeException ex,
+            StrategyConfig strategyConfig
     ) {
         String message = exceptionMessage(ex);
         log.warn("Entry order placement failed: clientOrderId={}, instrument={}, message={}",
@@ -565,7 +602,7 @@ public class ExecutionEngine {
                 new OrderResponse(clientOrderId, Optional.empty(), decision.selectedInstrumentKey().orElse(""),
                         OrderSide.BUY, OrderStatus.REJECTED, quantity == null ? 0 : quantity, 0,
                         Optional.empty(), Optional.of(message), Instant.now(clock)),
-                reasons);
+                reasons, strategyConfig);
         telegramAlertService.entryRejected(decision, optionPremium, "BROKER_ERROR", reasons);
         return ExecutionResult.rejected(reasons);
     }

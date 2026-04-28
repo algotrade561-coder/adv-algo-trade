@@ -89,9 +89,6 @@ import { ApiService, StrategyDto } from '../core/api.service';
                 @if (s.type === 'LONG_STRADDLE' || s.type === 'LONG_STRANGLE' || s.type === 'EVENT_DRIVEN_BUY' || s.type === 'VOLATILITY_BREAKOUT') {
                   <div class="param"><span>Max IV Rank</span><strong>{{ s.maxIvRankForBuying }}</strong></div>
                 }
-                @if (s.type === 'BULL_CALL_SPREAD' || s.type === 'BEAR_PUT_SPREAD') {
-                  <div class="param"><span>Spread Strikes</span><strong>{{ s.spreadStrikes }}</strong></div>
-                }
                 @if (s.type === 'LONG_STRANGLE') {
                   <div class="param"><span>OTM Strikes</span><strong>{{ s.otmStrikes }}</strong></div>
                 }
@@ -147,8 +144,11 @@ import { ApiService, StrategyDto } from '../core/api.service';
               <div class="card-params">
                 <div class="param"><span>Stop Loss</span><strong class="c-bad">{{ s.stopLossPercent }}%</strong></div>
                 <div class="param"><span>Target</span><strong class="c-ok">{{ s.targetPercent }}%</strong></div>
-                @if (s.type !== 'BUTTERFLY' && s.type !== 'CALENDAR_SPREAD') {
+                @if (s.type !== 'BUTTERFLY' && s.type !== 'CALENDAR_SPREAD' && s.type !== 'BULL_CALL_SPREAD' && s.type !== 'BEAR_PUT_SPREAD') {
                   <div class="param"><span>OTM Strikes</span><strong>{{ s.otmStrikes }}</strong></div>
+                }
+                @if (s.type === 'BULL_CALL_SPREAD' || s.type === 'BEAR_PUT_SPREAD') {
+                  <div class="param"><span>Spread Strikes</span><strong>{{ s.spreadStrikes }}</strong></div>
                 }
                 @if (s.type === 'SHORT_STRADDLE' || s.type === 'SHORT_STRANGLE') {
                   <div class="param"><span>Min Premium</span><strong>₹{{ s.minCombinedPremium }}</strong></div>

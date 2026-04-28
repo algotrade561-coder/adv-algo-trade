@@ -170,11 +170,17 @@ public class MonitoringController {
     public org.springframework.data.domain.Page<StrategyDecisionEntity> entrySignalsPaged(
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "50") int size,
-            @RequestParam(required = false) String period) {
+            @RequestParam(required = false) String period,
+            @RequestParam(required = false) String strategyType,
+            @RequestParam(required = false) String underlying,
+            @RequestParam(required = false) String optionType,
+            @RequestParam(required = false) String mode) {
         Instant[] range = periodToRange(period);
-        return range == null
-                ? reportingService.entrySignalsPaged(page, Math.min(size, 200))
-                : reportingService.entrySignalsPaged(page, Math.min(size, 200), range[0], range[1]);
+        return reportingService.filteredSignalsPaged(
+                List.of("BUY_CE", "BUY_PE"), page, Math.min(size, 200),
+                range != null ? range[0] : null, range != null ? range[1] : null,
+                normalizeFilter(strategyType), normalizeFilter(underlying), normalizeFilter(optionType),
+                normalizeFilter(mode));
     }
 
     @GetMapping("/signals/rejected")
@@ -189,11 +195,17 @@ public class MonitoringController {
     public org.springframework.data.domain.Page<StrategyDecisionEntity> rejectedSignalsPaged(
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "50") int size,
-            @RequestParam(required = false) String period) {
+            @RequestParam(required = false) String period,
+            @RequestParam(required = false) String strategyType,
+            @RequestParam(required = false) String underlying,
+            @RequestParam(required = false) String optionType,
+            @RequestParam(required = false) String mode) {
         Instant[] range = periodToRange(period);
-        return range == null
-                ? reportingService.rejectedSignalsPaged(page, Math.min(size, 200))
-                : reportingService.rejectedSignalsPaged(page, Math.min(size, 200), range[0], range[1]);
+        return reportingService.filteredSignalsPaged(
+                List.of("NO_TRADE"), page, Math.min(size, 200),
+                range != null ? range[0] : null, range != null ? range[1] : null,
+                normalizeFilter(strategyType), normalizeFilter(underlying), normalizeFilter(optionType),
+                normalizeFilter(mode));
     }
 
     private static final ZoneId IST = ZoneId.of("Asia/Kolkata");
@@ -212,6 +224,11 @@ public class MonitoringController {
 
     private static Instant[] dayRange(LocalDate date) {
         return new Instant[]{ date.atStartOfDay(IST).toInstant(), date.plusDays(1).atStartOfDay(IST).toInstant() };
+    }
+
+    /** Normalize filter param: treat blank/ALL as empty so JPQL COALESCE skips the condition. */
+    private static String normalizeFilter(String value) {
+        return (value == null || value.isBlank() || "ALL".equalsIgnoreCase(value)) ? "" : value;
     }
 
     /** Signals filtered by strategy type — new endpoint for strategy-aware UI. */

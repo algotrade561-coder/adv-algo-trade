@@ -173,9 +173,10 @@ public class RiskManager {
             Instant dayEnd = today.plusDays(1).atStartOfDay(IST).toInstant();
 
             var trades = tradeRepository.findByEntryTimeBetween(dayStart, dayEnd);
-            int tradeCount = trades.size();
-            int wins = (int) trades.stream().filter(t -> t.getRealizedPnl() != null && t.getRealizedPnl().signum() > 0).count();
-            int losses = (int) trades.stream().filter(t -> t.getRealizedPnl() != null && t.getRealizedPnl().signum() < 0).count();
+            var liveTrades = trades.stream().filter(t -> !t.isPaperTrade()).toList();
+            int tradeCount = liveTrades.size();
+            int wins = (int) liveTrades.stream().filter(t -> t.getRealizedPnl() != null && t.getRealizedPnl().signum() > 0).count();
+            int losses = (int) liveTrades.stream().filter(t -> t.getRealizedPnl() != null && t.getRealizedPnl().signum() < 0).count();
             BigDecimal pnl = getDailyPnl();
 
             long signals = decisionRepository.findTop200BySignalTypeInOrderByTimestampDesc(

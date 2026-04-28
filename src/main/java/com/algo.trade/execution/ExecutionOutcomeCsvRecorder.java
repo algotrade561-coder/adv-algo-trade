@@ -3,8 +3,8 @@ package com.algo.trade.execution;
 import com.algo.trade.config.TradingProperties;
 import com.algo.trade.domain.OrderResponse;
 import com.algo.trade.domain.StrategyDecision;
+import com.algo.trade.persistence.TradeEntity;
 import com.algo.trade.strategy.StrategyConfig;
-import com.algo.trade.strategy.StrategyConfigService;
 import com.algo.trade.util.IstDateTimes;
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -22,6 +22,26 @@ public class ExecutionOutcomeCsvRecorder {
 
     private static final Logger log = LoggerFactory.getLogger(ExecutionOutcomeCsvRecorder.class);
     private static final Path OUTPUT = Path.of("reports", "entry-signals", "entry-execution-outcomes.csv");
+    private static final Path EXIT_OUTPUT = Path.of("reports", "entry-signals", "exit-execution-outcomes.csv");
+    private static final String EXIT_HEADER = String.join(",",
+            "tradeId",
+            "timestamp",
+            "strategyType",
+            "instrumentKey",
+            "underlying",
+            "optionType",
+            "entryPrice",
+            "exitPrice",
+            "quantity",
+            "realizedPnl",
+            "exitReason",
+            "appliedTrailingStopActivationPercent",
+            "appliedTrailingGapPercent",
+            "clientOrderId",
+            "brokerOrderId",
+            "orderStatus",
+            "averageFillPrice"
+    ) + System.lineSeparator();
     private static final String HEADER = String.join(",",
             "decisionKey",
             "timestamp",
@@ -56,11 +76,9 @@ public class ExecutionOutcomeCsvRecorder {
             "reasons"
     ) + System.lineSeparator();
     private final TradingProperties properties;
-    private final StrategyConfigService strategyConfigService;
 
-    public ExecutionOutcomeCsvRecorder(TradingProperties properties, StrategyConfigService strategyConfigService) {
+    public ExecutionOutcomeCsvRecorder(TradingProperties properties) {
         this.properties = properties;
-        this.strategyConfigService = strategyConfigService;
     }
 
     public synchronized void recordEntry(
@@ -73,7 +91,8 @@ public class ExecutionOutcomeCsvRecorder {
             BigDecimal riskAmount,
             BigDecimal estimatedCost,
             OrderResponse order,
-            List<String> reasons
+            List<String> reasons,
+            StrategyConfig strategyConfig
     ) {
         try {
             Files.createDirectories(OUTPUT.getParent());
@@ -81,7 +100,7 @@ public class ExecutionOutcomeCsvRecorder {
                 Files.writeString(OUTPUT, HEADER, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
             }
             Files.writeString(OUTPUT, row(decision, optionPremium, lotSize, stage, accepted, quantity, riskAmount,
-                    estimatedCost, order, reasons), StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+                    estimatedCost, order, reasons, strategyConfig), StandardOpenOption.CREATE, StandardOpenOption.APPEND);
         } catch (IOException ex) {
             log.warn("Execution outcome CSV write failed: directory={}, message={}", OUTPUT.getParent(), ex.getMessage());
         }
@@ -97,7 +116,8 @@ public class ExecutionOutcomeCsvRecorder {
             BigDecimal riskAmount,
             BigDecimal estimatedCost,
             OrderResponse order,
-            List<String> reasons
+            List<String> reasons,
+            StrategyConfig strategyConfig
     ) {
         return String.join(",",
                 csv(decisionKey(decision)),
@@ -109,10 +129,10 @@ public class ExecutionOutcomeCsvRecorder {
                 csv(decision.optionType().map(Enum::name).orElse(null)),
                 csv(properties.marketDataMode()),
                 csv(properties.executionMode()),
-                csv(strategyConfigService.getDirectionalBuyConfig().getStopLossPercent()),
-                csv(strategyConfigService.getDirectionalBuyConfig().getTargetPercent()),
-                csv(strategyConfigService.getDirectionalBuyConfig().getTrailingStopActivationPercent()),
-                csv(strategyConfigService.getDirectionalBuyConfig().getTrailingGapPercent()),
+                csv(strategyConfig != null ? strategyConfig.getStopLossPercent() : null),
+                csv(strategyConfig != null ? strategyConfig.getTargetPercent() : null),
+                csv(strategyConfig != null ? strategyConfig.getTrailingStopActivationPercent() : null),
+                csv(strategyConfig != null ? strategyConfig.getTrailingGapPercent() : null),
                 csv(properties.risk().maxRiskPerTradePercent()),
                 csv(properties.entry().minSignalScorePercent()),
                 csv(decision.selectedInstrumentKey().orElse(null)),
@@ -139,6 +159,38 @@ public class ExecutionOutcomeCsvRecorder {
                 + decision.optionType().map(Enum::name).orElse("") + "|"
                 + decision.selectedInstrumentKey().orElse("");
         return Integer.toUnsignedString(raw.hashCode(), 16);
+    }
+
+    public synchronized void recordExit(TradeEntity trade, BigDecimal exitPrice, BigDecimal realizedPnl,
+                                        String exitReason, OrderResponse order) {
+        try {
+            Files.createDirectories(EXIT_OUTPUT.getParent());
+            if (Files.notExists(EXIT_OUTPUT) || Files.size(EXIT_OUTPUT) == 0) {
+                Files.writeString(EXIT_OUTPUT, EXIT_HEADER, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+            }
+            String row = String.join(",",
+                    csv(trade.getTradeId()),
+                    csv(IstDateTimes.formatInstant(Instant.now())),
+                    csv(trade.getStrategyType()),
+                    csv(trade.getInstrumentKey()),
+                    csv(trade.getUnderlying()),
+                    csv(trade.getOptionType()),
+                    csv(trade.getEntryPrice()),
+                    csv(exitPrice),
+                    csv(trade.getQuantity()),
+                    csv(realizedPnl),
+                    csv(exitReason),
+                    csv(trade.getAppliedTrailingStopActivationPercent()),
+                    csv(trade.getAppliedTrailingGapPercent()),
+                    csv(order == null ? null : order.clientOrderId()),
+                    csv(order == null ? null : order.brokerOrderId().orElse(null)),
+                    csv(order == null ? null : order.status()),
+                    csv(order == null ? null : order.averageFillPrice().orElse(null))
+            ) + System.lineSeparator();
+            Files.writeString(EXIT_OUTPUT, row, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+        } catch (IOException ex) {
+            log.warn("Exit outcome CSV write failed: directory={}, message={}", EXIT_OUTPUT.getParent(), ex.getMessage());
+        }
     }
 
     private String csv(Object value) {

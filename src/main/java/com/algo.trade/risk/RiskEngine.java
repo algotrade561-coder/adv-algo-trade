@@ -129,7 +129,8 @@ public class RiskEngine {
 
         int rawQuantity = riskAmount.divide(lossPerUnit, MATH_CONTEXT).intValue();
         int lots = rawQuantity / lotSize;
-        // Cap lots at maxLotsPerTrade to prevent runaway sizing from stale quotes
+        // Cap at maxLotsPerTrade from global config (configurable from UI).
+        // lotSize = config.getLots() × indexLotSize, so maxLotsPerTrade=1 means exactly config.getLots() lots.
         int maxLots = globalConfigService.getMaxLotsPerTrade();
         if (maxLots > 0 && lots > maxLots) {
             log.info("Position sizing capped by maxLotsPerTrade: lots={} → {}", lots, maxLots);

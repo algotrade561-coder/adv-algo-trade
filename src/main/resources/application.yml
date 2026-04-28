@@ -72,7 +72,7 @@ trading:
   # ── Safety ──────────────────────────────────────────────────────────────
   safety:
     kill-switch-enabled: false
-    stale-market-data-threshold: 10s
+    stale-market-data-threshold: 30s
     broker-retry-count: 2
     broker-retry-backoff: 500ms
 

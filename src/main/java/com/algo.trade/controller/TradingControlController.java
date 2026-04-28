@@ -91,21 +91,25 @@ public class TradingControlController {
         var allOpenTrades = tradeRepository.findByStatus(TradeStatus.OPEN);
         int openTrades = (int) allOpenTrades.stream().filter(t -> !t.isPaperTrade()).count();
         int openPaperTrades = (int) allOpenTrades.stream().filter(t -> t.isPaperTrade()).count();
-        int tradesToday = (int) reportingService.trades().stream()
+
+        java.time.Instant todayStart = java.time.LocalDate.now(tradingProperties.timezone())
+                .atStartOfDay(tradingProperties.timezone()).toInstant();
+        java.time.Instant todayEnd = java.time.LocalDate.now(tradingProperties.timezone())
+                .plusDays(1).atStartOfDay(tradingProperties.timezone()).toInstant();
+        var todayTrades = tradeRepository.findByEntryTimeBetween(todayStart, todayEnd);
+
+        int tradesToday = (int) todayTrades.stream()
                 .filter(t -> !t.isPaperTrade())
-                .filter(t -> t.getEntryTime() != null &&
-                        t.getEntryTime().isAfter(java.time.LocalDate.now(
-                                tradingProperties.timezone()).atStartOfDay(
-                                tradingProperties.timezone()).toInstant()))
                 .count();
-        // Consecutive losses (exclude paper trades)
-        var allTrades = reportingService.trades().stream()
+
+        // Consecutive losses (exclude paper trades) — use today's trades only
+        var closedTodayLive = todayTrades.stream()
                 .filter(t -> !t.isPaperTrade())
                 .filter(t -> t.getStatus() == com.algo.trade.domain.TradeStatus.CLOSED)
                 .sorted((a, b) -> b.getEntryTime().compareTo(a.getEntryTime()))
                 .toList();
         int consecutiveLosses = 0;
-        for (var t : allTrades) {
+        for (var t : closedTodayLive) {
             if (t.getRealizedPnl().signum() < 0) consecutiveLosses++;
             else break;
         }
@@ -131,16 +135,14 @@ public class TradingControlController {
         result.put("tradesToday", tradesToday);
         result.put("consecutiveLosses", consecutiveLosses);
         result.put("dailyPnl", pnl.realizedPnl());
-        // Paper P&L — separate from real P&L
-        BigDecimal paperPnl = reportingService.trades().stream()
+        // Paper P&L — today only
+        BigDecimal paperPnl = todayTrades.stream()
                 .filter(t -> t.isPaperTrade())
                 .map(t -> t.getRealizedPnl())
                 .filter(p -> p != null)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
         result.put("paperPnl", paperPnl);
         // Signal counts today — query DB directly to avoid the recentDecisions() cap of 20
-        java.time.Instant todayStart = java.time.LocalDate.now(tradingProperties.timezone())
-                .atStartOfDay(tradingProperties.timezone()).toInstant();
         long entrySignals = reportingService.countEntrySignalsSince(todayStart);
         long rejectedSignals = reportingService.countRejectedSignalsSince(todayStart);
         result.put("entrySignals", entrySignals);

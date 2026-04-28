@@ -43,7 +43,10 @@ public class TrailingStopService {
 
     /**
      * Convenience overload that reads trailing params from globalConfigService (backward compatible).
+     * @deprecated Use {@link #nextStop(BigDecimal, BigDecimal, Optional, BigDecimal, BigDecimal)} with explicit
+     * per-strategy params to avoid silently falling back to GlobalConfig values.
      */
+    @Deprecated
     public Optional<BigDecimal> nextStop(BigDecimal entryPrice, BigDecimal highestPrice, Optional<BigDecimal> currentStop) {
         BigDecimal activation = fixedActivationPercent != null
                 ? fixedActivationPercent

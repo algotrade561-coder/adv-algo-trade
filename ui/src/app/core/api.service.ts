@@ -16,6 +16,7 @@ import {
   PnlSnapshot,
   ReportArchiveResult,
   RuntimeStatus,
+  SignalFilters,
   StrategyDecision,
   TradingMode,
   TradingStatus,
@@ -146,14 +147,24 @@ export class ApiService {
 
   // ── Signal endpoints ────────────────────────────────────────────────────
   entrySignals(): Observable<StrategyDecision[]> { return this.http.get<StrategyDecision[]>(`${this.base}/signals/entries`); }
-  entrySignalsPaged(page: number, size: number, period?: string): Observable<PagedResponse<StrategyDecision>> {
-    const p = period && period !== 'ALL' ? `&period=${period}` : '';
-    return this.http.get<PagedResponse<StrategyDecision>>(`${this.base}/signals/entries/paged?page=${page}&size=${size}${p}`);
+  entrySignalsPaged(page: number, size: number, period?: string, filters?: SignalFilters): Observable<PagedResponse<StrategyDecision>> {
+    let q = `page=${page}&size=${size}`;
+    if (period && period !== 'ALL') q += `&period=${period}`;
+    if (filters?.strategyType && filters.strategyType !== 'ALL') q += `&strategyType=${filters.strategyType}`;
+    if (filters?.underlying && filters.underlying !== 'ALL') q += `&underlying=${filters.underlying}`;
+    if (filters?.optionType && filters.optionType !== 'ALL') q += `&optionType=${filters.optionType}`;
+    if (filters?.mode && filters.mode !== 'ALL') q += `&mode=${filters.mode}`;
+    return this.http.get<PagedResponse<StrategyDecision>>(`${this.base}/signals/entries/paged?${q}`);
   }
   rejectedSignals(): Observable<StrategyDecision[]> { return this.http.get<StrategyDecision[]>(`${this.base}/signals/rejected`); }
-  rejectedSignalsPaged(page: number, size: number, period?: string): Observable<PagedResponse<StrategyDecision>> {
-    const p = period && period !== 'ALL' ? `&period=${period}` : '';
-    return this.http.get<PagedResponse<StrategyDecision>>(`${this.base}/signals/rejected/paged?page=${page}&size=${size}${p}`);
+  rejectedSignalsPaged(page: number, size: number, period?: string, filters?: SignalFilters): Observable<PagedResponse<StrategyDecision>> {
+    let q = `page=${page}&size=${size}`;
+    if (period && period !== 'ALL') q += `&period=${period}`;
+    if (filters?.strategyType && filters.strategyType !== 'ALL') q += `&strategyType=${filters.strategyType}`;
+    if (filters?.underlying && filters.underlying !== 'ALL') q += `&underlying=${filters.underlying}`;
+    if (filters?.optionType && filters.optionType !== 'ALL') q += `&optionType=${filters.optionType}`;
+    if (filters?.mode && filters.mode !== 'ALL') q += `&mode=${filters.mode}`;
+    return this.http.get<PagedResponse<StrategyDecision>>(`${this.base}/signals/rejected/paged?${q}`);
   }
   replayEntrySignals(): Observable<EntrySignalReplayResult> { return this.http.post<EntrySignalReplayResult>(`${this.base}/reports/entry-signals/replay`, {}); }
 

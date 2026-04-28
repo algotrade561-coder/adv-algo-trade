@@ -20,7 +20,7 @@ import org.springframework.stereotype.Component;
 public class KiteStartupLogin implements ApplicationRunner, Ordered {
 
     private static final Logger log = LoggerFactory.getLogger(KiteStartupLogin.class);
-    private static final int RESUBSCRIBE_STRIKE_THRESHOLD = 5; // re-subscribe when ATM drifts > 5 strikes
+    private static final int RESUBSCRIBE_STRIKE_THRESHOLD = 2; // re-subscribe when ATM drifts > 2 strikes
 
     private final java.util.Map<com.algo.trade.domain.IndexType, Integer> lastSubscribedAtm =
             new java.util.concurrent.ConcurrentHashMap<>();
@@ -153,46 +153,59 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
             // then subscribe option tokens after a short delay to allow spot price to arrive
             new Thread(() -> {
                 try {
-                    Thread.sleep(3000); // wait 3s for spot price ticks to arrive
+                    // Populate instrument cache — refresh from Kite API if not yet loaded
                     var instruments = instrumentCache.all();
+                    if (instruments.isEmpty()) {
+                        log.info("Instrument cache empty on startup — refreshing from Kite API");
+                        instruments = instrumentCache.refresh();
+                    }
                     if (!instruments.isEmpty()) {
                         liveInstrumentCache.populate(instruments);
                         log.info("LiveInstrumentCache populated: {} instruments", instruments.size());
+                    } else {
+                        log.warn("Instrument cache still empty after refresh — option subscriptions will be skipped");
                     }
+
+                    // Wait up to 15s for spot ticks to arrive via WebSocket; retry REST fallback each attempt
                     var optionTokens = new java.util.ArrayList<Long>();
-                    for (var underlying : properties.symbols().underlyings()) {
-                        var indexType = com.algo.trade.domain.IndexType.from(underlying);
-                        var expiryCal = new com.algo.trade.marketdata.ExpiryCalendar();
-                        var expiry = expiryCal.getCurrentWeeklyExpiry(indexType);
-                        var subscriptionTokens = liveInstrumentCache.getSubscriptionTokens(indexType, expiry, 10);
-                        if (subscriptionTokens.isEmpty()) {
-                            // Fallback: subscribe ATM ± 10 strikes using spot price from REST
-                            double spot = liveInstrumentCache.getFuturesPrice(indexType);
-                            if (spot <= 0) {
-                                // Try REST quote
+                    int attemptMs = 0;
+                    while (optionTokens.isEmpty() && attemptMs <= 15000) {
+                        Thread.sleep(2000);
+                        attemptMs += 2000;
+                        optionTokens.clear();
+                        for (var underlying : properties.symbols().underlyings()) {
+                            var indexType = com.algo.trade.domain.IndexType.from(underlying);
+                            var expiryCal = new com.algo.trade.marketdata.ExpiryCalendar();
+                            var expiry = expiryCal.getCurrentWeeklyExpiry(indexType);
+                            var subscriptionTokens = liveInstrumentCache.getSubscriptionTokens(indexType, expiry, 10);
+                            if (subscriptionTokens.isEmpty()) {
+                                // Spot not arrived via WS yet — try REST quote
                                 try {
                                     String spotKey = properties.symbols().spotQuoteKeys().get(underlying);
                                     var quote = marketDataService.quote(spotKey);
                                     quote.ifPresent(q -> liveInstrumentCache.updateFuturesPrice(indexType, q.lastPrice().doubleValue()));
                                 } catch (Exception ignored) {}
+                                subscriptionTokens = liveInstrumentCache.getSubscriptionTokens(indexType, expiry, 10);
                             }
-                            subscriptionTokens = liveInstrumentCache.getSubscriptionTokens(indexType, expiry, 10);
+                            optionTokens.addAll(subscriptionTokens);
+                            double subSpot = liveInstrumentCache.getFuturesPrice(indexType);
+                            int subAtm = subSpot > 0 ? indexType.roundToATM(subSpot) : 0;
+                            int interval = indexType.strikeInterval();
+                            log.info("Option subscription attempt {}ms for {}: spot={} atm={} range=[{},{}] tokens={}",
+                                    attemptMs, underlying, subSpot, subAtm,
+                                    subAtm - 10 * interval, subAtm + 10 * interval,
+                                    subscriptionTokens.size());
+                            if (subAtm > 0) lastSubscribedAtm.put(indexType, subAtm);
                         }
-                        optionTokens.addAll(subscriptionTokens);
-                        double subSpot = liveInstrumentCache.getFuturesPrice(indexType);
-                        int subAtm = subSpot > 0 ? indexType.roundToATM(subSpot) : 0;
-                        int interval = indexType.strikeInterval();
-                        log.info("Option subscription for {}: spot={} atm={} range=[{},{}] tokens={}",
-                                underlying, subSpot, subAtm,
-                                subAtm - 10 * interval, subAtm + 10 * interval,
-                                subscriptionTokens.size());
-                        if (subAtm > 0) lastSubscribedAtm.put(indexType, subAtm);
                     }
+
                     if (!optionTokens.isEmpty()) {
                         var allTokens = new java.util.ArrayList<>(tokens);
                         allTokens.addAll(optionTokens);
                         webSocketClient.subscribe(allTokens);
-                        log.info("WebSocket re-subscribed with {} option tokens", optionTokens.size());
+                        log.info("WebSocket subscribed with {} option tokens after {}ms", optionTokens.size(), attemptMs);
+                    } else {
+                        log.warn("Option token subscription failed after {}ms — resubscribeIfAtmMoved() will retry", attemptMs);
                     }
                     webSocketConnected = true;
                     // Seed candle history from REST if app was restarted during market hours
@@ -201,6 +214,7 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
                     }
                 } catch (Exception e) {
                     log.warn("Option token subscription failed: {}", e.getMessage());
+                    webSocketConnected = true; // allow scheduler to recover
                 }
             }, "ws-option-subscribe").start();
 
@@ -264,7 +278,7 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
      */
     @org.springframework.scheduling.annotation.Scheduled(fixedDelay = 5 * 60 * 1000)
     public void resubscribeIfAtmMoved() {
-        if (!webSocketConnected || lastSubscribedAtm.isEmpty()) return;
+        if (!webSocketConnected) return;
 
         var baseTokens = new java.util.ArrayList<Long>();
         baseTokens.add(264969L); // India VIX
@@ -273,7 +287,8 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
         }
 
         var newOptionTokens = new java.util.ArrayList<Long>();
-        boolean anyMoved = false;
+        // anyMoved=true also when lastSubscribedAtm is empty (startup subscription failed — recover now)
+        boolean anyMoved = lastSubscribedAtm.isEmpty();
 
         for (var underlying : properties.symbols().underlyings()) {
             var indexType = com.algo.trade.domain.IndexType.from(underlying);
@@ -282,14 +297,20 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
 
             int currentAtm = indexType.roundToATM(currentSpot);
             Integer prevAtm = lastSubscribedAtm.get(indexType);
-            if (prevAtm == null) continue;
 
-            int strikeDrift = Math.abs(currentAtm - prevAtm) / indexType.strikeInterval();
-            if (strikeDrift >= RESUBSCRIBE_STRIKE_THRESHOLD) {
+            if (prevAtm == null) {
+                // No previous subscription recorded — subscribe fresh
                 anyMoved = true;
-                log.info("ATM moved {} strikes for {} (prev={} curr={}) — re-subscribing options",
-                        strikeDrift, underlying, prevAtm, currentAtm);
                 lastSubscribedAtm.put(indexType, currentAtm);
+                log.info("ATM first subscription for {} atm={} — subscribing options", underlying, currentAtm);
+            } else {
+                int strikeDrift = Math.abs(currentAtm - prevAtm) / indexType.strikeInterval();
+                if (strikeDrift >= RESUBSCRIBE_STRIKE_THRESHOLD) {
+                    anyMoved = true;
+                    log.info("ATM moved {} strikes for {} (prev={} curr={}) — re-subscribing options",
+                            strikeDrift, underlying, prevAtm, currentAtm);
+                    lastSubscribedAtm.put(indexType, currentAtm);
+                }
             }
 
             try {
@@ -307,7 +328,7 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
             allTokens.addAll(newOptionTokens);
             try {
                 webSocketClient.subscribe(allTokens);
-                log.info("WebSocket re-subscribed: {} option tokens after ATM drift", newOptionTokens.size());
+                log.info("WebSocket re-subscribed: {} option tokens", newOptionTokens.size());
             } catch (Exception e) {
                 log.warn("WebSocket re-subscription failed: {}", e.getMessage());
             }

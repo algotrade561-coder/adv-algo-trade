@@ -4,6 +4,8 @@ import com.algo.trade.domain.OptionInstrument;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
 
 /**
@@ -89,19 +91,43 @@ public class GreeksCalculator {
     }
 
     public double timeToExpiry(LocalDate expiry) {
-        LocalDate today = LocalDate.now();
-        if (!expiry.isAfter(today)) return 1.0 / 365.0; // minimum: 1 calendar day equivalent
-        // Count trading days (exclude weekends) for more accurate theta
+        return timeToExpiry(expiry, LocalDateTime.now(ZoneId.of("Asia/Kolkata")));
+    }
+
+    // Package-private for testing
+    double timeToExpiry(LocalDate expiry, LocalDateTime now) {
+        LocalDate today = now.toLocalDate();
+        java.time.LocalTime nowTime = now.toLocalTime();
+        java.time.LocalTime marketOpen = java.time.LocalTime.of(9, 15);
+        java.time.LocalTime marketClose = java.time.LocalTime.of(15, 30);
+
+        // Remaining fraction of today's trading session (0 on weekends or after close)
+        double todayFraction = 0.0;
+        java.time.DayOfWeek todayDow = today.getDayOfWeek();
+        if (todayDow != java.time.DayOfWeek.SATURDAY && todayDow != java.time.DayOfWeek.SUNDAY) {
+            if (nowTime.isBefore(marketOpen)) {
+                todayFraction = 1.0;
+            } else if (nowTime.isBefore(marketClose)) {
+                todayFraction = ChronoUnit.MINUTES.between(nowTime, marketClose) / 375.0;
+            }
+        }
+
+        if (!expiry.isAfter(today)) {
+            // Expired or expires today — only today's remaining session counts
+            return Math.max(1.0 / (252.0 * 375.0), todayFraction / 252.0);
+        }
+
+        // Count whole trading days from tomorrow through expiry (inclusive)
         long tradingDays = 0;
-        LocalDate d = today;
-        while (d.isBefore(expiry)) {
-            d = d.plusDays(1);
+        LocalDate d = today.plusDays(1);
+        while (!d.isAfter(expiry)) {
             java.time.DayOfWeek dow = d.getDayOfWeek();
             if (dow != java.time.DayOfWeek.SATURDAY && dow != java.time.DayOfWeek.SUNDAY) {
                 tradingDays++;
             }
+            d = d.plusDays(1);
         }
-        return Math.max(1.0 / 365.0, tradingDays / 252.0); // 252 trading days per year
+        return Math.max(1.0 / (252.0 * 375.0), (tradingDays + todayFraction) / 252.0);
     }
 
     private double bsPrice(double S, double K, double T, double r, double q, double sigma, boolean isCall) {

@@ -90,7 +90,12 @@ public class StrategyDecisionEntity {
     /** RISK_REJECTED, SIZING_REJECTED, ORDER_FILLED, ORDER_NOT_FILLED, BROKER_ERROR, NOT_EXECUTED */
     private String executionStage;
     /** Rejection reason from execution engine (risk, sizing, broker) */
+    @Column(length = 1000)
     private String executionReason;
+
+    // ── Trading mode at decision time ─────────────────────────────────────────
+    /** True if the strategy was in paper-trading mode when this signal was generated. Defaults to false for historical records. */
+    private boolean paperTrade;
 
     protected StrategyDecisionEntity() {}
 
@@ -223,4 +228,6 @@ public class StrategyDecisionEntity {
     public void setImbalance(BigDecimal v) { this.imbalance = v; }
     public void setExecutionStage(String v) { this.executionStage = v; }
     public void setExecutionReason(String v) { this.executionReason = v; }
+    public boolean isPaperTrade() { return paperTrade; }
+    public void setPaperTrade(boolean v) { this.paperTrade = v; }
 }

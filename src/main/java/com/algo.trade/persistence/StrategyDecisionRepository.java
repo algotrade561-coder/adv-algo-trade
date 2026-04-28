@@ -70,4 +70,25 @@ public interface StrategyDecisionRepository extends JpaRepository<StrategyDecisi
            "s.signalType IN ('BUY_CE','BUY_PE') AND s.timestamp >= :since " +
            "ORDER BY s.timestamp DESC")
     List<StrategyDecisionEntity> findEntrySignalsSince(java.time.Instant since);
+
+    /** Filtered paginated signals with optional criteria. */
+    @Query("SELECT s FROM StrategyDecisionEntity s WHERE s.signalType IN :signalTypes " +
+           "AND (:from IS NULL OR s.timestamp >= :from) " +
+           "AND (:to IS NULL OR s.timestamp <= :to) " +
+           "AND (COALESCE(:strategyType, '') = '' OR s.strategyType = :strategyType) " +
+           "AND (COALESCE(:underlying, '') = '' OR s.underlying = :underlying) " +
+           "AND (COALESCE(:optionType, '') = '' OR s.optionType = :optionType) " +
+           "AND (COALESCE(:mode, '') = '' OR " +
+           "     (:mode = 'PAPER' AND s.paperTrade = true) OR " +
+           "     (:mode = 'LIVE' AND s.paperTrade = false)) " +
+           "ORDER BY s.timestamp DESC")
+    Page<StrategyDecisionEntity> findFilteredSignals(
+            @org.springframework.data.repository.query.Param("signalTypes") List<String> signalTypes,
+            @org.springframework.data.repository.query.Param("from") java.time.Instant from,
+            @org.springframework.data.repository.query.Param("to") java.time.Instant to,
+            @org.springframework.data.repository.query.Param("strategyType") String strategyType,
+            @org.springframework.data.repository.query.Param("underlying") String underlying,
+            @org.springframework.data.repository.query.Param("optionType") String optionType,
+            @org.springframework.data.repository.query.Param("mode") String mode,
+            Pageable pageable);
 }

@@ -3,53 +3,57 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { DecimalPipe } from '@angular/common';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
-import { ApiService, StrategyDto } from '../core/api.service';
-import { ApiRecord } from '../core/models';
+import { FormsModule } from '@angular/forms';
+import { ApiService } from '../core/api.service';
+import { ApiRecord, SignalFilters } from '../core/models';
 
 @Component({
   selector: 'app-rejected-signals-page',
   standalone: true,
-  imports: [DecimalPipe, MatButtonModule, MatIconModule],
+  imports: [DecimalPipe, FormsModule, MatButtonModule, MatIconModule],
   template: `
     <section class="page">
       <div class="top-row">
         <div><h1 class="title">Rejected Signals</h1><p class="sub">NO_TRADE decisions with rejection reasons.</p></div>
         <span class="spacer"></span>
-        <span class="count">{{ totalElements }} total · Page {{ currentPage + 1 }}/{{ totalPages || 1 }}</span>
+        <span class="count">{{ filteredTotalElements }} total · Page {{ currentPage + 1 }}/{{ filteredTotalPages || 1 }}</span>
       </div>
 
       <div class="filter-bar">
         <label class="fi"><span class="fl">Date</span>
-          <select [value]="selectedPeriod" (change)="onPeriodChange($any($event.target).value)">
+          <select [(ngModel)]="selectedPeriod">
             @for (p of periodOpts; track p.value) { <option [value]="p.value">{{ p.label }}</option> }
           </select>
         </label>
         <label class="fi"><span class="fl">Index</span>
-          <select [value]="selectedUnderlying" (change)="selectedUnderlying = $any($event.target).value">
+          <select [(ngModel)]="selectedUnderlying">
             <option value="ALL">All</option>
             @for (u of underlyingOpts; track u) { <option [value]="u">{{ u }}</option> }
           </select>
         </label>
         <label class="fi"><span class="fl">Strategy</span>
-          <select [value]="selectedStrategy" (change)="selectedStrategy = $any($event.target).value">
+          <select [(ngModel)]="selectedStrategy">
             <option value="ALL">All</option>
             @for (s of strategyOpts; track s) { <option [value]="s">{{ s }}</option> }
           </select>
         </label>
         <label class="fi"><span class="fl">Symbol</span>
-          <select [value]="selectedOptionType" (change)="selectedOptionType = $any($event.target).value">
+          <select [(ngModel)]="selectedOptionType">
             <option value="ALL">All</option>
             <option value="CE">CE</option>
             <option value="PE">PE</option>
           </select>
         </label>
         <label class="fi"><span class="fl">Mode</span>
-          <select [value]="selectedMode" (change)="selectedMode = $any($event.target).value">
+          <select [(ngModel)]="selectedMode">
             <option value="ALL">All</option>
             <option value="LIVE">Live</option>
             <option value="PAPER">Paper</option>
           </select>
         </label>
+        <button mat-flat-button color="primary" class="apply-btn" (click)="applyFilters()">
+          <mat-icon>search</mat-icon> Apply Filters
+        </button>
       </div>
 
       @if (filtered.length === 0) {
@@ -63,9 +67,9 @@ import { ApiRecord } from '../core/models';
             <span class="badge badge-strat">{{ s['strategyType'] }}</span>
             <span class="badge">{{ s['underlying'] }}</span>
             @if (s['optionType']) { <span class="badge">{{ s['optionType'] }}</span> }
-            @if (paperStrategyTypes.size > 0) {
-              <span [class]="paperStrategyTypes.has(str(s['strategyType'])) ? 'badge badge-paper' : 'badge badge-live'">
-                {{ paperStrategyTypes.has(str(s['strategyType'])) ? 'PAPER' : 'LIVE' }}
+            @if (s['paperTrade'] != null) {
+              <span [class]="s['paperTrade'] ? 'badge badge-paper' : 'badge badge-live'">
+                {{ s['paperTrade'] ? 'PAPER' : 'LIVE' }}
               </span>
             }
             <span class="spacer"></span>
@@ -106,11 +110,11 @@ import { ApiRecord } from '../core/models';
         </div>
       }
 
-      @if (totalPages > 1) {
+      @if (filteredTotalPages > 1) {
         <div class="pager">
           <button mat-stroked-button [disabled]="currentPage === 0" (click)="loadPage(currentPage - 1)"><mat-icon>chevron_left</mat-icon> Prev</button>
-          <span class="pager-info">Page {{ currentPage + 1 }} of {{ totalPages }}</span>
-          <button mat-stroked-button [disabled]="currentPage >= totalPages - 1" (click)="loadPage(currentPage + 1)">Next <mat-icon>chevron_right</mat-icon></button>
+          <span class="pager-info">Page {{ currentPage + 1 }} of {{ filteredTotalPages }}</span>
+          <button mat-stroked-button [disabled]="currentPage >= filteredTotalPages - 1" (click)="loadPage(currentPage + 1)">Next <mat-icon>chevron_right</mat-icon></button>
         </div>
       }
     </section>
@@ -126,6 +130,7 @@ import { ApiRecord } from '../core/models';
     .fi { display: flex; flex-direction: column; gap: 4px; }
     .fl { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
     .fi select { min-height: 36px; min-width: 150px; border: 1px solid var(--line); border-radius: 8px; background: rgba(14,20,28,.88); color: var(--text); padding: 0 10px; font-size: 13px; }
+    .apply-btn { min-height: 36px; align-self: flex-end; }
     .empty-panel { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 48px 0; color: var(--muted); font-size: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
     .empty-panel mat-icon { font-size: 36px; width: 36px; height: 36px; opacity: .35; }
     .card { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid rgba(255,113,106,.5); border-radius: 12px; margin-bottom: 10px; overflow: hidden; }
@@ -169,35 +174,31 @@ export class RejectedSignalsPageComponent implements OnInit {
   selectedOptionType = 'ALL';
   selectedMode = 'ALL';
   selectedPeriod = 'TODAY';
-  paperStrategyTypes = new Set<string>();
-  signals: ApiRecord[] = [];
+  filtered: ApiRecord[] = [];
+  filteredTotalElements = 0;
+  filteredTotalPages = 1;
   currentPage = 0;
-  totalPages = 0;
-  totalElements = 0;
   private readonly pageSize = 50;
   private readonly dr = inject(DestroyRef);
   constructor(private api: ApiService, private cd: ChangeDetectorRef) {}
 
-  get filtered(): ApiRecord[] {
-    return this.signals
-      .filter(s => this.selectedStrategy === 'ALL' || String(s['strategyType'] ?? '') === this.selectedStrategy)
-      .filter(s => this.selectedUnderlying === 'ALL' || String(s['underlying'] ?? '') === this.selectedUnderlying)
-      .filter(s => this.selectedOptionType === 'ALL' || String(s['optionType'] ?? '') === this.selectedOptionType)
-      .filter(s => {
-        if (this.selectedMode === 'ALL' || this.paperStrategyTypes.size === 0) return true;
-        const isPaper = this.paperStrategyTypes.has(String(s['strategyType'] ?? ''));
-        return this.selectedMode === 'PAPER' ? isPaper : !isPaper;
-      });
-  }
-
   ngOnInit(): void {
-    this.api.getStrategies().subscribe(strategies => {
-      this.paperStrategyTypes = new Set(strategies.filter((s: StrategyDto) => s.paperTrading).map((s: StrategyDto) => s.type));
-    });
-    setTimeout(() => this.loadPage(0), 0);
+    setTimeout(() => this.applyFilters(), 0);
   }
 
-  onPeriodChange(val: string): void { this.selectedPeriod = val; this.loadPage(0); }
+  applyFilters(): void {
+    this.currentPage = 0;
+    this.loadPage(0);
+  }
+
+  private buildFilters(): SignalFilters {
+    return {
+      strategyType: this.selectedStrategy !== 'ALL' ? this.selectedStrategy : undefined,
+      underlying: this.selectedUnderlying !== 'ALL' ? this.selectedUnderlying : undefined,
+      optionType: this.selectedOptionType !== 'ALL' ? this.selectedOptionType : undefined,
+      mode: this.selectedMode !== 'ALL' ? this.selectedMode : undefined
+    };
+  }
 
   str(v: unknown): string { return String(v ?? ''); }
 
@@ -209,15 +210,18 @@ export class RejectedSignalsPageComponent implements OnInit {
   }
 
   loadPage(page: number): void {
-    this.api.rejectedSignalsPaged(page, this.pageSize, this.selectedPeriod).pipe(takeUntilDestroyed(this.dr)).subscribe({
-      next: r => {
-        this.signals = (r.content as ApiRecord[]).map((s, i) => norm(s, page * this.pageSize + i));
-        this.currentPage = r.number;
-        this.totalPages = r.totalPages;
-        this.totalElements = r.totalElements;
-        this.cd.detectChanges();
-      }
-    });
+    const filters = this.buildFilters();
+    this.api.rejectedSignalsPaged(page, this.pageSize, this.selectedPeriod, filters)
+      .pipe(takeUntilDestroyed(this.dr))
+      .subscribe({
+        next: r => {
+          this.filtered = (r.content as ApiRecord[]).map((s, i) => norm(s, page * this.pageSize + i));
+          this.currentPage = r.number;
+          this.filteredTotalPages = r.totalPages;
+          this.filteredTotalElements = r.totalElements;
+          this.cd.detectChanges();
+        }
+      });
   }
 
   fmt(v: unknown): string { return v != null && v !== '' && v !== 0 ? '₹' + v : '-'; }

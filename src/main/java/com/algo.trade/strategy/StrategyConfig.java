@@ -1,5 +1,6 @@
 package com.algo.trade.strategy;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import jakarta.persistence.*;
 import java.math.BigDecimal;
 import java.time.LocalTime;
@@ -13,6 +14,7 @@ import java.time.LocalTime;
 @Table(name = "strategy_configs", indexes = {
     @Index(name = "idx_sc_type", columnList = "strategy_type", unique = true)
 })
+@JsonIgnoreProperties(ignoreUnknown = true)
 public class StrategyConfig {
 
     @Id

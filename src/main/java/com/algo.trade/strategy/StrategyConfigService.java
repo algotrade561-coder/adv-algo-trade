@@ -3,6 +3,7 @@ package com.algo.trade.strategy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Arrays;
 import java.util.List;
@@ -70,6 +71,7 @@ public class StrategyConfigService {
         return repository.save(config);
     }
 
+    @Transactional
     public StrategyConfig update(StrategyType type, StrategyConfig patch) {
         StrategyConfig config = getOrCreate(type);
         if (patch.getLots() > 0) config.setLots(patch.getLots());
@@ -119,14 +121,6 @@ public class StrategyConfigService {
         }
         if (config.getTrendTimeframe() == null) {
             config.setTrendTimeframe(defaults.getTrendTimeframe());
-            dirty = true;
-        }
-        // Migrate SCALPING trailing stop activation from old default 20% → 10%
-        if (config.getStrategyType() == com.algo.trade.strategy.StrategyType.SCALPING
-                && config.getTrailingStopActivationPercent() != null
-                && config.getTrailingStopActivationPercent().compareTo(java.math.BigDecimal.valueOf(20)) == 0) {
-            config.setTrailingStopActivationPercent(java.math.BigDecimal.valueOf(10));
-            log.info("Migrated SCALPING trailingStopActivationPercent: 20% → 10%");
             dirty = true;
         }
         if (dirty) {

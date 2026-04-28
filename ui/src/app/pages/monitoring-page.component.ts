@@ -776,6 +776,7 @@ export class MonitoringPageComponent implements OnInit, OnDestroy {
     this._activeMode = m;
     this.selectedStrategyTypes.clear();
     this.selectedUnderlyings.clear();
+    this.cd.detectChanges();
   }
 
   signalTypeOptions: string[] = ['BUY_CE', 'BUY_PE', 'NO_TRADE'];
@@ -817,11 +818,20 @@ export class MonitoringPageComponent implements OnInit, OnDestroy {
   }
 
   get modeStrategyTypeOptions(): string[] {
-    if (!this.strategiesLoaded || this.paperStrategyTypes.size === 0) return this.strategyTypeOptions;
+    // Derive available strategy types from the signals visible in the current mode
     const paperTypes = this.paperStrategyTypes;
-    return this.strategyTypeOptions.filter(t =>
-      this.activeMode === 'paper' ? paperTypes.has(t) : !paperTypes.has(t)
-    );
+    if (!this.strategiesLoaded || paperTypes.size === 0) return this.strategyTypeOptions;
+    const visibleTypes = new Set<string>();
+    for (const s of this.signals) {
+      const stratType = String(s['strategyType'] ?? '');
+      const stage     = String(s['executionStage'] ?? '');
+      const isPaperByStage = stage === 'PAPER_FILLED' || stage === 'PAPER_SIZING_REJECTED';
+      const isLiveByStage  = stage === 'ORDER_FILLED' || stage === 'ORDER_OPEN' || stage === 'ORDER_NOT_FILLED' || stage === 'BROKER_ERROR';
+      const isPaper = isPaperByStage || (!isLiveByStage && paperTypes.has(stratType));
+      if (this.activeMode === 'paper' && isPaper) visibleTypes.add(stratType);
+      if (this.activeMode === 'live' && !isPaperByStage) visibleTypes.add(stratType);
+    }
+    return Array.from(visibleTypes).sort();
   }
 
   get uptimeLabel(): string {
@@ -859,14 +869,18 @@ export class MonitoringPageComponent implements OnInit, OnDestroy {
   get filteredSignals(): ApiRecord[] {
     const paperTypes = this.paperStrategyTypes;
     return this.signals.filter(s => {
-      const sigType  = String(s['signalType']  ?? '');
+      const sigType   = String(s['signalType']  ?? '');
       const stratType = String(s['strategyType'] ?? '');
+      const stage     = String(s['executionStage'] ?? '');
 
-      // Mode filter — only when strategies have loaded and some are paper
+      // Mode filter — determine paper/live from execution stage first, then strategy config
       if (this.strategiesLoaded && paperTypes.size > 0) {
-        const isPaper = paperTypes.has(stratType);
+        const isPaperByStage = stage === 'PAPER_FILLED' || stage === 'PAPER_SIZING_REJECTED';
+        const isLiveByStage  = stage === 'ORDER_FILLED' || stage === 'ORDER_OPEN' || stage === 'ORDER_NOT_FILLED' || stage === 'BROKER_ERROR';
+        // For signals with a clear execution stage, use that; otherwise fall back to strategy config
+        const isPaper = isPaperByStage || (!isLiveByStage && paperTypes.has(stratType));
         if (this.activeMode === 'paper' && !isPaper) return false;
-        if (this.activeMode === 'live'  &&  isPaper) return false;
+        if (this.activeMode === 'live'  &&  isPaperByStage) return false;
       }
 
       const sigMatch        = this.selectedSignalTypes.has(sigType);
@@ -903,7 +917,7 @@ export class MonitoringPageComponent implements OnInit, OnDestroy {
   private loadPositions(): void {
     this.api.positions()
       .pipe(catchError(() => of([] as ApiRecord[])))
-      .subscribe(p => { this.positions = p; });
+      .subscribe(p => { this.positions = p; this.cd.detectChanges(); });
   }
 
   load(): void {
@@ -949,6 +963,7 @@ export class MonitoringPageComponent implements OnInit, OnDestroy {
       this.strategyTypeOptions = Array.from(stratTypes).sort();
 
       this.lastRefreshed = new Date();
+      this.cd.detectChanges();
     });
   }
 
@@ -961,19 +976,22 @@ export class MonitoringPageComponent implements OnInit, OnDestroy {
 
   toggleSignalType(st: string): void {
     this.selectedSignalTypes.has(st) ? this.selectedSignalTypes.delete(st) : this.selectedSignalTypes.add(st);
+    this.cd.detectChanges();
   }
 
   toggleStrategyType(st: string): void {
     this.selectedStrategyTypes.has(st) ? this.selectedStrategyTypes.delete(st) : this.selectedStrategyTypes.add(st);
+    this.cd.detectChanges();
   }
 
-  clearStrategyFilter(): void { this.selectedStrategyTypes.clear(); }
+  clearStrategyFilter(): void { this.selectedStrategyTypes.clear(); this.cd.detectChanges(); }
 
   toggleUnderlying(u: string): void {
     this.selectedUnderlyings.has(u) ? this.selectedUnderlyings.delete(u) : this.selectedUnderlyings.add(u);
+    this.cd.detectChanges();
   }
 
-  clearUnderlyingFilter(): void { this.selectedUnderlyings.clear(); }
+  clearUnderlyingFilter(): void { this.selectedUnderlyings.clear(); this.cd.detectChanges(); }
 
   fmtStrategy(s: unknown): string {
     if (!s) return '-';

@@ -49,6 +49,10 @@ public class TradeEntity {
     private BigDecimal bookedPnl;
     /** Comma-separated progressive exit layer names that have already fired (e.g. "PARTIAL_1,PARTIAL_2"). */
     private String partialExitLayers;
+    /** Trailing stop activation % applied at entry time — stored so exit monitors use consistent params after config changes. */
+    private BigDecimal appliedTrailingStopActivationPercent;
+    /** Trailing gap % applied at entry time — stored so exit monitors use consistent params after config changes. */
+    private BigDecimal appliedTrailingGapPercent;
 
     protected TradeEntity() {
     }
@@ -71,7 +75,9 @@ public class TradeEntity {
         this.status = TradeStatus.CLOSED;
         this.exitPrice = exitPrice;
         this.exitTime = exitTime;
-        this.realizedPnl = realizedPnl;
+        // Add any previously booked partial exit P&L to the final realized P&L
+        BigDecimal partialPnl = this.bookedPnl != null ? this.bookedPnl : BigDecimal.ZERO;
+        this.realizedPnl = realizedPnl.add(partialPnl);
         this.exitReason = exitReason;
     }
 
@@ -114,4 +120,8 @@ public class TradeEntity {
     public boolean isPaperTrade() { return tradeId != null && tradeId.startsWith("PAPER-"); }
     public BigDecimal getBookedPnl() { return bookedPnl == null ? BigDecimal.ZERO : bookedPnl; }
     public String getPartialExitLayers() { return partialExitLayers; }
+    public BigDecimal getAppliedTrailingStopActivationPercent() { return appliedTrailingStopActivationPercent; }
+    public void setAppliedTrailingStopActivationPercent(BigDecimal v) { this.appliedTrailingStopActivationPercent = v; }
+    public BigDecimal getAppliedTrailingGapPercent() { return appliedTrailingGapPercent; }
+    public void setAppliedTrailingGapPercent(BigDecimal v) { this.appliedTrailingGapPercent = v; }
 }

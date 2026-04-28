@@ -262,3 +262,10 @@ export interface PagedResponse<T> {
   first: boolean;
   last: boolean;
 }
+
+export interface SignalFilters {
+  strategyType?: string;
+  underlying?: string;
+  optionType?: string;
+  mode?: string;
+}

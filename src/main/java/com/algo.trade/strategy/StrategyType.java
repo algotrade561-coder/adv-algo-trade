@@ -17,11 +17,11 @@ public enum StrategyType {
     SCALPING("Scalping",
             "EMA 9/21 crossover with 2-candle confirmation, 30-min max hold", false),
 
-    // ── Spread Strategies (buying, defined risk) ──────────────────────────────
+    // ── Spread Strategies (involve selling legs — DISABLED by default) ─────────
     BULL_CALL_SPREAD("Bull Call Spread",
-            "Buy ATM CE + Sell OTM CE — net debit, capped risk and reward", false),
+            "Buy ATM CE + Sell OTM CE — net debit, capped risk and reward", true),
     BEAR_PUT_SPREAD("Bear Put Spread",
-            "Buy ATM PE + Sell OTM PE — net debit, capped risk and reward", false),
+            "Buy ATM PE + Sell OTM PE — net debit, capped risk and reward", true),
     LONG_STRADDLE("Long Straddle",
             "Buy ATM CE + PE — profits from big moves in either direction", false),
     LONG_STRANGLE("Long Strangle",

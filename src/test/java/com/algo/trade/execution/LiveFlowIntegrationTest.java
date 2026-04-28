@@ -98,7 +98,8 @@ class LiveFlowIntegrationTest {
 
         executionEngine = new ExecutionEngine(properties, globalConfigService, brokerClient, riskEngine,
                 tradingStateService, tradeRepository, orderRepository, errorEventRepository,
-                decisionRepository, outcomeCsvRecorder, telegramAlertService, new PositionSyncProperties(true), clock);
+                decisionRepository, outcomeCsvRecorder, telegramAlertService, new PositionSyncProperties(true),
+                strategyConfigService, clock);
     }
 
     private StrategyDecision testDecision(String reason) {
@@ -124,8 +125,9 @@ class LiveFlowIntegrationTest {
                 OrderSide.BUY, OrderStatus.COMPLETE, 65, 65,
                 Optional.of(BigDecimal.valueOf(30)), Optional.empty(), Instant.now(clock)));
 
-        ExecutionResult result = executionEngine.executeEntry(decision, BigDecimal.valueOf(30), 65,
-                BigDecimal.valueOf(35)); // VB SL = 35%
+        StrategyConfig vbConfig = new StrategyConfig(StrategyType.VOLATILITY_BREAKOUT);
+        vbConfig.setStopLossPercent(BigDecimal.valueOf(35));
+        ExecutionResult result = executionEngine.executeEntry(decision, BigDecimal.valueOf(30), 65, vbConfig);
 
         assertThat(result.accepted()).isTrue();
         verify(tradeRepository).save(argThat(trade -> {
@@ -168,8 +170,9 @@ class LiveFlowIntegrationTest {
     void paperEntry_createsTradeWithoutBrokerOrder() {
         StrategyDecision decision = testDecision("ITM_CONVICTION signal");
 
-        ExecutionResult result = executionEngine.executePaperEntry(decision, BigDecimal.valueOf(30), 65,
-                BigDecimal.valueOf(12));
+        StrategyConfig directionalConfig = new StrategyConfig(StrategyType.DIRECTIONAL_BUY);
+        directionalConfig.setStopLossPercent(BigDecimal.valueOf(12));
+        ExecutionResult result = executionEngine.executePaperEntry(decision, BigDecimal.valueOf(30), 65, directionalConfig);
 
         assertThat(result.accepted()).isTrue();
         verify(tradeRepository).save(argThat(trade -> {
@@ -264,8 +267,9 @@ class LiveFlowIntegrationTest {
         when(tradingStateService.running()).thenReturn(false);
         StrategyDecision decision = testDecision("ITM_CONVICTION test");
 
-        ExecutionResult result = executionEngine.executePaperEntry(decision, BigDecimal.valueOf(30), 65,
-                BigDecimal.valueOf(12));
+        StrategyConfig directionalConfig = new StrategyConfig(StrategyType.DIRECTIONAL_BUY);
+        directionalConfig.setStopLossPercent(BigDecimal.valueOf(12));
+        ExecutionResult result = executionEngine.executePaperEntry(decision, BigDecimal.valueOf(30), 65, directionalConfig);
 
         assertThat(result.accepted()).isFalse();
         verify(tradeRepository, never()).save(any());
@@ -323,7 +327,9 @@ class LiveFlowIntegrationTest {
                 OrderSide.BUY, OrderStatus.COMPLETE, 65, 65,
                 Optional.of(BigDecimal.valueOf(30)), Optional.empty(), Instant.now(clock)));
 
-        executionEngine.executeEntry(vbDecision, BigDecimal.valueOf(30), 65, BigDecimal.valueOf(35));
+        StrategyConfig vbConfig = new StrategyConfig(StrategyType.VOLATILITY_BREAKOUT);
+        vbConfig.setStopLossPercent(BigDecimal.valueOf(35));
+        executionEngine.executeEntry(vbDecision, BigDecimal.valueOf(30), 65, vbConfig);
 
         verify(tradeRepository).save(argThat(trade -> {
             assertThat(trade.getStrategyType()).isEqualTo("VOLATILITY_BREAKOUT");

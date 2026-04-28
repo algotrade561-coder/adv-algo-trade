@@ -74,7 +74,7 @@ class ExecutionEngineTest {
         when(mockConfigService.getDirectionalBuyConfig()).thenReturn(directionalBuyConfig);
         executionEngine = new ExecutionEngine(properties, globalConfigService, brokerClient, new RiskEngine(globalConfigService, properties, mockConfigService, tradingStateService, null), tradingStateService,
                 tradeRepository, orderRepository, errorEventRepository, decisionRepository, outcomeCsvRecorder,
-                telegramAlertService, new PositionSyncProperties(true), clock);
+                telegramAlertService, new PositionSyncProperties(true), mockConfigService, clock);
         when(tradeRepository.findByStatus(TradeStatus.OPEN)).thenReturn(List.of());
         when(tradeRepository.findByEntryTimeBetween(any(), any())).thenReturn(List.of());
         when(tradeRepository.findAll()).thenReturn(List.of());
@@ -139,7 +139,7 @@ class ExecutionEngineTest {
         assertThat(result.reasons()).contains("Broker timeout");
         verify(errorEventRepository).save(any());
         verify(outcomeCsvRecorder).recordEntry(eq(buyDecision()), eq(BigDecimal.valueOf(100)), eq(75),
-                eq("BROKER_ERROR"), eq(false), eq(300), any(), any(), any(), eq(List.of("Broker timeout")));
+                eq("BROKER_ERROR"), eq(false), eq(300), any(), any(), any(), eq(List.of("Broker timeout")), any());
     }
 
     @Test

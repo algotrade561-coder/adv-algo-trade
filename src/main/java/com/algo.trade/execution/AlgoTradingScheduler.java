@@ -362,8 +362,11 @@ public class AlgoTradingScheduler {
                             StrategyDecisionEntity thetaNoTrade = StrategyDecisionEntity.forStrategy(
                                     type.name(), Instant.now(), underlying.name(), "NO_TRADE",
                                     ot.name(), vbSpotPrice, BigDecimal.ZERO, vbReason);
+                            thetaNoTrade.setPaperTrade(config.isPaperTrading());
                             thetaNoTrade.setIvRank(ivRank);
                             thetaNoTrade.setFirstFailedFilter("thetaGuard");
+                            thetaNoTrade.setExecutionStage("NO_TRADE");
+                            thetaNoTrade.setExecutionReason(vbReason);
                             if (vbAtm != null) {
                                 thetaNoTrade.setSelectedInstrumentKey(vbAtm.instrumentKey());
                                 thetaNoTrade.setSelectedStrike(vbAtm.strike().orElse(null));
@@ -477,7 +480,7 @@ public class AlgoTradingScheduler {
                                 BigDecimal premium = enriched.optionPrice().orElse(enriched.underlyingPrice());
                                 executionEngine.executePaperEntry(enriched, premium,
                                         config.getLots() * com.algo.trade.domain.IndexType.from(underlying).lotSize(),
-                                        config.getStopLossPercent());
+                                        config);
                                 executed = true; // paper trade counts as executed for CSV recording
                             } else {
                                 log.info("Additional strategy signal: type={} underlying={} signal={} instrument={}",
@@ -485,7 +488,7 @@ public class AlgoTradingScheduler {
                                 BigDecimal premium = enriched.optionPrice().orElse(enriched.underlyingPrice());
                                 executionEngine.executeEntry(enriched, premium,
                                         config.getLots() * com.algo.trade.domain.IndexType.from(underlying).lotSize(),
-                                        config.getStopLossPercent());
+                                        config);
                                 executed = true;
                                 // Record real trade cost for weekly exposure tracking
                                 weeklyExposureTracker.recordTrade(estimatedCost);
@@ -499,7 +502,7 @@ public class AlgoTradingScheduler {
                                 BigDecimal premium = enriched.optionPrice().orElse(enriched.underlyingPrice());
                                 executionEngine.executePaperEntry(enriched, premium,
                                         config.getLots() * com.algo.trade.domain.IndexType.from(underlying).lotSize(),
-                                        config.getStopLossPercent());
+                                        config);
                                 executed = true;
                             } else {
                                 log.warn("SELL signal from {} but paperTrading=false — blocking real SELL execution until multi-leg engine is built",
@@ -527,6 +530,7 @@ public class AlgoTradingScheduler {
                             StrategyDecisionEntity noTrade = StrategyDecisionEntity.forStrategy(
                                     type.name(), Instant.now(), underlying.name(), "NO_TRADE",
                                     ot.name(), spotPrice, BigDecimal.ZERO, noTradeReason);
+                            noTrade.setPaperTrade(config.isPaperTrading());
                             noTrade.setIvRank(ivRank);
                             noTrade.setIvRankSource(ivRankSource);
                             noTrade.setFirstFailedFilter(diag.firstFailedFilter());
@@ -539,6 +543,8 @@ public class AlgoTradingScheduler {
                             if (diag.bbLower() != null) noTrade.setBbLower(diag.bbLower());
                             if (diag.bbSqueeze() != null) noTrade.setBbSqueeze(diag.bbSqueeze());
                             noTrade.setConfigSnapshot(configToSnapshot(config));
+                            noTrade.setExecutionStage("NO_TRADE");
+                            noTrade.setExecutionReason(noTradeReason);
                             if (atmInst != null) {
                                 noTrade.setSelectedInstrumentKey(atmInst.instrumentKey());
                                 noTrade.setSelectedStrike(atmInst.strike().orElse(null));
@@ -575,6 +581,7 @@ public class AlgoTradingScheduler {
                 decision.confidenceScore(),
                 String.join("; ", decision.reasons())
         );
+        entity.setPaperTrade(config.isPaperTrading());
         entity.setSelectedInstrumentKey(decision.selectedInstrumentKey().orElse(null));
         entity.setSelectedStrike(decision.selectedStrike().orElse(null));
         entity.setOptionPrice(decision.optionPrice().orElse(null));
@@ -781,6 +788,13 @@ public class AlgoTradingScheduler {
         if (spotQuoteKey == null || spotQuoteKey.isBlank()) {
             log.warn("Spot quote key missing for underlying={}", underlying);
             return Optional.empty();
+        }
+        // Use WebSocket live price to avoid REST rate limits — spot tokens are always subscribed
+        double livePrice = liveInstrumentCache.getFuturesPrice(com.algo.trade.domain.IndexType.from(underlying));
+        if (livePrice > 0) {
+            return Optional.of(new Quote(spotQuoteKey, Instant.now(),
+                    java.math.BigDecimal.valueOf(livePrice), 0, 0,
+                    Optional.empty(), Optional.empty(), Optional.empty()));
         }
         return marketDataService.quote(spotQuoteKey);
     }
@@ -1067,9 +1081,10 @@ public class AlgoTradingScheduler {
         for (EntryCandidate candidate : selectedCandidates) {
             if (dbConfig.isPaperTrading()) {
                 executionEngine.executePaperEntry(candidate.decision(), candidate.quote().lastPrice(),
-                        candidate.instrument().lotSize(), dbConfig.getStopLossPercent());
+                        candidate.instrument().lotSize(), dbConfig);
             } else {
-                executionEngine.executeEntry(candidate.decision(), candidate.quote().lastPrice(), candidate.instrument().lotSize());
+                executionEngine.executeEntry(candidate.decision(), candidate.quote().lastPrice(),
+                        candidate.instrument().lotSize(), dbConfig);
             }
             entriesSubmitted++;
         }
@@ -1166,6 +1181,8 @@ public class AlgoTradingScheduler {
                 decision.confidenceScore(),
                 String.join("; ", decision.reasons()));
         entity.setStrategyType("DIRECTIONAL_BUY");
+        entity.setExecutionStage("NO_TRADE");
+        entity.setExecutionReason(String.join("; ", decision.reasons()));
         decisionRepository.save(entity);
     }
 
