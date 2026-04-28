@@ -4,12 +4,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.algo.trade.broker.BrokerException;
 import com.algo.trade.config.TradingProperties;
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpServer;
 import java.awt.Desktop;
 import java.io.IOException;
-import java.io.OutputStream;
-import java.net.InetSocketAddress;
 import java.net.URI;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
@@ -51,7 +47,6 @@ public class KiteAuthService {
     private final KiteAccessTokenStore tokenStore;
     private final KiteCredentialResolver credentialResolver;
     private final ArrayBlockingQueue<KiteLoginResult> loginResultQueue = new ArrayBlockingQueue<>(1);
-    private HttpServer callbackServer;
 
     public KiteAuthService(TradingProperties properties, RestClient zerodhaRestClient,
                            ObjectMapper objectMapper, KiteAccessTokenStore tokenStore,
@@ -79,36 +74,12 @@ public class KiteAuthService {
         log.info("Open this Kite login URL if the browser does not launch: {}", loginUrl);
         loginResultQueue.clear();
         try {
-            startCallbackListener();
             openBrowser(loginUrl);
             return awaitLoginResult(loginUrl);
         } catch (Exception e) {
             log.warn("Kite login failed: {}", e.getMessage(), e);
             throw new BrokerException("Kite login failed", e);
-        } finally {
-            stopCallbackListener();
         }
-    }
-
-    public synchronized void startCallbackListener() throws IOException {
-        if (callbackServer != null) {
-            return;
-        }
-
-        callbackServer = HttpServer.create(new InetSocketAddress("localhost", 8081), 0);
-        callbackServer.createContext("/", this::handleCallback);
-        callbackServer.start();
-        System.out.println("Kite callback listener started on http://localhost:8089/");
-    }
-
-    public synchronized void stopCallbackListener() {
-        if (callbackServer == null) {
-            return;
-        }
-
-        callbackServer.stop(0);
-        callbackServer = null;
-        log.info("Kite callback listener stopped");
     }
 
     public URI loginUrl() {
@@ -281,44 +252,6 @@ public class KiteAuthService {
         }
     }
 
-    private void handleCallback(HttpExchange exchange) throws IOException {
-        Map<String, String> params = parseQueryParams(exchange.getRequestURI().getRawQuery());
-        String status = params.get("status");
-        String requestToken = params.get("request_token");
-
-        String body;
-        int statusCode;
-        if (!"success".equalsIgnoreCase(status) || isBlank(requestToken)) {
-            statusCode = 400;
-            body = "Kite callback listener is running, but no successful request_token was received. "
-                    + "Complete Kite login and let Zerodha redirect back to this URL.";
-            log.warn("Kite raw callback rejected: status={}, requestTokenPresent={}",
-                    status, !isBlank(requestToken));
-        } else {
-            try {
-                KiteLoginResult result = exchangeRequestToken(requestToken);
-                statusCode = 200;
-                body = "Kite login completed for user " + result.userId()
-                        + ". You can close this window and return to the application.";
-                log.info("Kite raw callback completed: userId={}", result.userId());
-            } catch (Exception ex) {
-                statusCode = 500;
-                body = "Kite login token exchange failed. You can close this window and check the application logs.";
-                log.warn("Kite raw callback token exchange failed: {}", ex.getMessage(), ex);
-            }
-        }
-
-        byte[] responseBytes = body.getBytes(StandardCharsets.UTF_8);
-        exchange.getResponseHeaders().set("Content-Type", "text/plain; charset=UTF-8");
-        exchange.sendResponseHeaders(statusCode, responseBytes.length);
-        try (OutputStream outputStream = exchange.getResponseBody()) {
-            outputStream.write(responseBytes);
-        }
-        if (statusCode == 200) {
-            stopCallbackListener();
-        }
-    }
-
     public Map<String, Object> diagnostics() {
         log.info("Kite auth diagnostics requested: apiKeyConfigured={}, apiSecretConfigured={}, configuredAccessTokenPresent={}, runtimeAccessTokenPresent={}",
                 !isBlank(credentialResolver.apiKey()), !isBlank(credentialResolver.apiSecret()),
@@ -368,16 +301,6 @@ public class KiteAuthService {
 
     private String decode(String value) {
         return URLDecoder.decode(value, StandardCharsets.UTF_8);
-    }
-
-    private int callbackPort(URI redirectUri) {
-        if (redirectUri.getPort() > 0) {
-            return redirectUri.getPort();
-        }
-        if ("https".equalsIgnoreCase(redirectUri.getScheme())) {
-            return 443;
-        }
-        return 80;
     }
 
     private void openBrowser(URI loginUrl) {

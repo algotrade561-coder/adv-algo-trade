@@ -3,6 +3,7 @@ package com.algo.trade.execution;
 import com.algo.trade.broker.BrokerClient;
 import com.algo.trade.config.GlobalConfig;
 import com.algo.trade.config.GlobalConfigService;
+import com.algo.trade.config.PositionSyncProperties;
 import com.algo.trade.config.TradingProperties;
 import com.algo.trade.domain.*;
 import com.algo.trade.notification.TelegramAlertService;
@@ -97,7 +98,7 @@ class LiveFlowIntegrationTest {
 
         executionEngine = new ExecutionEngine(properties, globalConfigService, brokerClient, riskEngine,
                 tradingStateService, tradeRepository, orderRepository, errorEventRepository,
-                decisionRepository, outcomeCsvRecorder, telegramAlertService, clock);
+                decisionRepository, outcomeCsvRecorder, telegramAlertService, new PositionSyncProperties(true), clock);
     }
 
     private StrategyDecision testDecision(String reason) {

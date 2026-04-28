@@ -246,6 +246,12 @@ public class ExecutionEngine {
 
         StrategyDecisionEntity savedDecision = persistDecision(decision);
 
+        if (!tradingStateService.running()) {
+            log.warn("PAPER entry rejected: trading engine is stopped");
+            updateExecutionStage(savedDecision, "TRADING_STOPPED", "Trading engine is stopped");
+            return ExecutionResult.rejected(List.of("Trading engine is stopped"));
+        }
+
         var sizing = stopLossPercent != null
                 ? riskEngine.calculateQuantity(optionPremium, lotSize, stopLossPercent)
                 : riskEngine.calculateQuantity(optionPremium, lotSize);

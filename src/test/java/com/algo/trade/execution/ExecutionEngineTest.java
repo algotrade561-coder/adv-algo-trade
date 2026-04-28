@@ -11,6 +11,7 @@ import static org.mockito.Mockito.when;
 
 import com.algo.trade.broker.BrokerClient;
 import com.algo.trade.config.GlobalConfigService;
+import com.algo.trade.config.PositionSyncProperties;
 import com.algo.trade.config.TradingProperties;
 import com.algo.trade.domain.OptionType;
 import com.algo.trade.domain.OrderRequest;
@@ -42,7 +43,7 @@ class ExecutionEngineTest {
             null, null, null, null, null, null, null, null, null);
     private final GlobalConfigService globalConfigService = mock(GlobalConfigService.class);
     private final BrokerClient brokerClient = mock(BrokerClient.class);
-    private final TradingStateService tradingStateService = new TradingStateService(properties);
+    private final TradingStateService tradingStateService = new TradingStateService(properties, globalConfigService);
     private final TradeRepository tradeRepository = mock(TradeRepository.class);
     private final OrderRepository orderRepository = mock(OrderRepository.class);
     private final ErrorEventRepository errorEventRepository = mock(ErrorEventRepository.class);
@@ -73,7 +74,7 @@ class ExecutionEngineTest {
         when(mockConfigService.getDirectionalBuyConfig()).thenReturn(directionalBuyConfig);
         executionEngine = new ExecutionEngine(properties, globalConfigService, brokerClient, new RiskEngine(globalConfigService, properties, mockConfigService, tradingStateService, null), tradingStateService,
                 tradeRepository, orderRepository, errorEventRepository, decisionRepository, outcomeCsvRecorder,
-                telegramAlertService, clock);
+                telegramAlertService, new PositionSyncProperties(true), clock);
         when(tradeRepository.findByStatus(TradeStatus.OPEN)).thenReturn(List.of());
         when(tradeRepository.findByEntryTimeBetween(any(), any())).thenReturn(List.of());
         when(tradeRepository.findAll()).thenReturn(List.of());

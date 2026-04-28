@@ -67,7 +67,7 @@ class RuleBasedOptionsStrategyTest {
         var request = new StrategyEvaluationRequest(Instant.parse("2026-04-12T10:00:00Z"), LocalTime.of(10, 0),
                 UnderlyingSymbol.NIFTY, bullishUnderlyingCandles(), bullishUnderlyingCandles(), optionCandles(), optionChain(),
                 "NFO:NIFTY24APR24000PE", BigDecimal.valueOf(24_000), 75, OptionType.PE,
-                selectedQuote(140, 20_000, 130_000, 20), Optional.of(selectedQuote(120, 10_000, 100_000, 20)));
+                selectedQuote(140, 20_000, 130_000, 20), Optional.of(selectedQuote(120, 10_000, 100_000, 20)), 0.0);
 
         var decision = strategy.evaluateEntry(request);
 
@@ -81,7 +81,7 @@ class RuleBasedOptionsStrategyTest {
         var request = new StrategyEvaluationRequest(Instant.parse("2026-04-12T10:00:00Z"), LocalTime.of(10, 0),
                 UnderlyingSymbol.NIFTY, bullishUnderlyingCandles(), bullishUnderlyingCandles(), optionCandles(),
                 weakPeOiChain(), "NFO:NIFTY24APR24000PE", BigDecimal.valueOf(24_000), 75, OptionType.PE,
-                selectedQuote(140, 20_000, 90_000, 20), Optional.of(selectedQuote(145, 10_000, 100_000, 20)));
+                selectedQuote(140, 20_000, 90_000, 20), Optional.of(selectedQuote(145, 10_000, 100_000, 20)), 0.0);
 
         var decision = strategy.evaluateEntry(request);
 
@@ -125,7 +125,7 @@ class RuleBasedOptionsStrategyTest {
         var request = new StrategyEvaluationRequest(Instant.parse("2026-04-12T10:00:00Z"), LocalTime.of(10, 0),
                 UnderlyingSymbol.NIFTY, weakBreakoutUnderlyingCandles(), weakBreakoutUnderlyingCandles(), optionCandles(),
                 supportiveBreakoutChain(), "NFO:NIFTY24APR24000CE", BigDecimal.valueOf(24_000), 75, OptionType.CE,
-                selectedQuote(140, 20_000, 130_000, 20), Optional.of(selectedQuote(120, 10_000, 100_000, 20)));
+                selectedQuote(140, 20_000, 130_000, 20), Optional.of(selectedQuote(120, 10_000, 100_000, 20)), 0.0);
 
         var decision = strategy.evaluateEntry(request);
 
@@ -229,7 +229,7 @@ class RuleBasedOptionsStrategyTest {
         return new StrategyEvaluationRequest(Instant.parse("2026-04-12T10:00:00Z"), marketTime,
                 UnderlyingSymbol.NIFTY, bullishUnderlyingCandles(), bullishUnderlyingCandles(), optionCandles(), optionChain,
                 "NFO:NIFTY24APR24000CE", BigDecimal.valueOf(24_000), 75, OptionType.CE, selectedQuote,
-                previousSelectedQuote);
+                previousSelectedQuote, 0.0);
     }
 
     private List<Candle> bullishUnderlyingCandles() {
