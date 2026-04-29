@@ -3,10 +3,12 @@ package com.algo.trade.indicator;
 import java.math.BigDecimal;
 import java.math.MathContext;
 import java.util.List;
+import org.springframework.stereotype.Component;
 
 /**
  * Exponential moving average calculator.
  */
+@Component
 public class EmaIndicator {
 
     private static final MathContext MATH_CONTEXT = MathContext.DECIMAL64;

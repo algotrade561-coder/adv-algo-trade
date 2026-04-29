@@ -69,7 +69,7 @@ public class MlFeatureExtractor {
                 optTypeVal, minSinceOpen, ulVal,
                 premiumRatio, imbalanceAbs,
                 ruleBasedScore.doubleValue(),
-                0, 0, 0, 0, 0, 0 // rsi, atr, emaGap, spread, vix, dte — not available in live extract
+                0, 0, 0, 0, 0, 0 // rsi, atr, emaGap, spread, vix, dte — filled by caller via csvRowData
         );
     }
 

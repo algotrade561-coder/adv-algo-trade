@@ -3,12 +3,14 @@ package com.algo.trade.indicator;
 import java.math.BigDecimal;
 import java.math.MathContext;
 import java.util.List;
+import org.springframework.stereotype.Component;
 
 /**
  * Relative Strength Index using Wilder smoothing.
  * In this project the strategy applies RSI to underlying-market closes for directional momentum,
  * not to option-premium closes.
  */
+@Component
 public class RsiIndicator {
 
     private static final MathContext MATH_CONTEXT = MathContext.DECIMAL64;

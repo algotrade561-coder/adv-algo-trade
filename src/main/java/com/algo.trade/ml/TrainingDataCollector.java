@@ -16,6 +16,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -26,13 +28,14 @@ import java.util.stream.Collectors;
  * <ul>
  *   <li>Signals that led to profitable trades → label = 1</li>
  *   <li>Signals that led to losing trades → label = 0</li>
- *   <li>NO_TRADE signals → labeled via backtest replay (would it have been profitable?)</li>
+ *   <li>NO_TRADE signals → skipped (outcome unknown; no counterfactual)</li>
  * </ul>
  */
 @Component
 public class TrainingDataCollector {
 
     private static final Logger log = LoggerFactory.getLogger(TrainingDataCollector.class);
+    private static final ZoneId IST = ZoneId.of("Asia/Kolkata");
 
     private static final Path SIGNALS_CSV = Path.of("reports/entry-signals/entry-signals.csv");
     private static final Path OUTCOMES_CSV = Path.of("reports/entry-signals/entry-execution-outcomes.csv");
@@ -105,7 +108,7 @@ public class TrainingDataCollector {
                 // Determine label
                 String decisionKey = row.getOrDefault("decisionKey", "");
                 String signalType = row.getOrDefault("signalType", "NO_TRADE");
-                Integer label = determineLabel(decisionKey, signalType, outcomes, dbTradeOutcomes);
+                Integer label = determineLabel(decisionKey, signalType, row, outcomes, dbTradeOutcomes);
 
                 if (label == null) {
                     unlabeled++;
@@ -140,6 +143,7 @@ public class TrainingDataCollector {
     }
 
     private Integer determineLabel(String decisionKey, String signalType,
+                                    Map<String, String> row,
                                     Map<String, TradeOutcome> outcomes,
                                     Map<String, Boolean> dbOutcomes) {
         // If we have a direct trade outcome for this signal
@@ -152,16 +156,25 @@ public class TrainingDataCollector {
             return null;
         }
 
-        // For BUY signals that made it to execution, check DB trades
+        // For BUY signals that made it to execution, look up by instrumentKey + date
+        // (DB trades are keyed by tradeId, not decisionKey — join on instrument + date instead)
         if (signalType.startsWith("BUY_")) {
-            Boolean profitable = dbOutcomes.get(decisionKey);
-            if (profitable != null) return profitable ? 1 : 0;
+            String instrumentKey = row.getOrDefault("selectedInstrumentKey", "");
+            String timestampStr = row.getOrDefault("timestamp", "");
+            if (!instrumentKey.isEmpty() && !timestampStr.isEmpty()) {
+                try {
+                    LocalDate date = Instant.parse(timestampStr).atZone(IST).toLocalDate();
+                    Boolean profitable = dbOutcomes.get(instrumentKey + "|" + date);
+                    if (profitable != null) return profitable ? 1 : 0;
+                } catch (Exception ignored) {}
+            }
         }
 
-        // NO_TRADE signals — label as negative (the system correctly rejected them)
-        // This is a simplification; ideally we'd backtest the counterfactual
+        // NO_TRADE signals — outcome is unknown (we didn't enter, so we don't know if it would have profited).
+        // Labeling them as 0 would teach the model that every skip was a mistake, which is wrong.
+        // Drop them; only train on signals where we have a real trade outcome.
         if ("NO_TRADE".equals(signalType)) {
-            return 0;
+            return null;
         }
 
         return null;
@@ -205,9 +218,11 @@ public class TrainingDataCollector {
                     com.algo.trade.domain.TradeStatus.CLOSED);
             for (TradeEntity trade : closedTrades) {
                 BigDecimal pnl = trade.getRealizedPnl();
-                if (pnl != null) {
-                    // Map trade back to decision via reasons or tradeId
-                    outcomes.put(trade.getTradeId(), pnl.signum() > 0);
+                String instrumentKey = trade.getInstrumentKey();
+                Instant entryTime = trade.getEntryTime();
+                if (pnl != null && instrumentKey != null && entryTime != null) {
+                    LocalDate date = entryTime.atZone(IST).toLocalDate();
+                    outcomes.put(instrumentKey + "|" + date, pnl.signum() > 0);
                 }
             }
         } catch (Exception e) {

@@ -27,6 +27,9 @@ import com.algo.trade.strategy.StrategyType;
 import com.algo.trade.strategy.VolatilityBreakoutStrategy;
 import com.algo.trade.strategy.spread.AbstractSpreadStrategy;
 import com.algo.trade.risk.MarketGuard;
+import com.algo.trade.indicator.RsiIndicator;
+import com.algo.trade.indicator.AtrIndicator;
+import com.algo.trade.indicator.EmaIndicator;
 import com.algo.trade.util.IstDateTimes;
 import java.math.BigDecimal;
 import java.math.MathContext;
@@ -91,6 +94,9 @@ public class AlgoTradingScheduler {
     private final AtomicBoolean scanInProgress = new AtomicBoolean(false);
     private final Map<StrategyType, AbstractSpreadStrategy> spreadStrategyMap;
     private final com.algo.trade.ml.MlShadowRecorder mlShadowRecorder;
+    private final RsiIndicator rsiIndicator;
+    private final AtrIndicator atrIndicator;
+    private final EmaIndicator emaIndicator;
 
     // Short-lived cache for underlying REST candles — avoids repeated REST calls within the same candle period.
     // Keyed by "instrumentKey:TIMEFRAME", expires after 60 seconds.
@@ -129,7 +135,10 @@ public class AlgoTradingScheduler {
             com.algo.trade.risk.SafeWeekPredictor safeWeekPredictor,
             com.algo.trade.indicator.IVRankTracker ivRankTracker,
             java.util.List<AbstractSpreadStrategy> spreadStrategies,
-            com.algo.trade.ml.MlShadowRecorder mlShadowRecorder
+            com.algo.trade.ml.MlShadowRecorder mlShadowRecorder,
+            RsiIndicator rsiIndicator,
+            AtrIndicator atrIndicator,
+            EmaIndicator emaIndicator
     ) {
         this.properties = properties;
         this.globalConfigService = globalConfigService;
@@ -166,6 +175,9 @@ public class AlgoTradingScheduler {
         }
         this.spreadStrategyMap = java.util.Collections.unmodifiableMap(map);
         this.mlShadowRecorder = mlShadowRecorder;
+        this.rsiIndicator = rsiIndicator;
+        this.atrIndicator = atrIndicator;
+        this.emaIndicator = emaIndicator;
     }
 
     /**
@@ -550,9 +562,17 @@ public class AlgoTradingScheduler {
                         boolean executed = false;
                         // ML shadow recording for additional strategies
                         try {
+                            // Key must match StrategySignalCsvRecorder.additionalDecisionKey():
+                            // strategyType|timestamp|underlying|optionType
                             String decisionKey = Integer.toUnsignedString(
-                                    (enriched.timestamp() + "|" + underlying + "|" + enriched.optionType().map(Enum::name).orElse("") + "|" + enriched.selectedInstrumentKey().orElse("")).hashCode(), 16);
+                                    (type.name() + "|" + enriched.timestamp() + "|" + underlying + "|" + enriched.optionType().map(Enum::name).orElse("")).hashCode(), 16);
                             List<String> reasons = enriched.reasons();
+                            List<BigDecimal> mlCloses1 = trendCandles.stream().map(Candle::close).toList();
+                            double mlRsi1 = rsiIndicator.calculate(mlCloses1, 14).doubleValue();
+                            double mlAtr1 = atrIndicator.calculateATR(trendCandles, 14);
+                            double mlEmaGap1 = mlCloses1.size() >= 21
+                                    ? emaIndicator.calculate(mlCloses1, 9).subtract(emaIndicator.calculate(mlCloses1, 21)).doubleValue()
+                                    : 0.0;
                             Map<String, String> csvData = Map.ofEntries(
                                     Map.entry("underlyingPrice", String.valueOf(enriched.underlyingPrice())),
                                     Map.entry("optionLastPrice", enriched.optionPrice().map(String::valueOf).orElse("0")),
@@ -575,7 +595,13 @@ public class AlgoTradingScheduler {
                                     Map.entry("optionType", enriched.optionType().map(Enum::name).orElse("CE")),
                                     Map.entry("marketTime", marketTime.toString()),
                                     Map.entry("underlying", underlying.name()),
-                                    Map.entry("confidenceScore", String.valueOf(enriched.confidenceScore()))
+                                    Map.entry("confidenceScore", String.valueOf(enriched.confidenceScore())),
+                                    Map.entry("rsiValue", String.valueOf(mlRsi1)),
+                                    Map.entry("atrValue", String.valueOf(mlAtr1)),
+                                    Map.entry("ema9Ema21Gap", String.valueOf(mlEmaGap1)),
+                                    Map.entry("bidAskSpread", "0"),
+                                    Map.entry("vixLevel", String.valueOf(marketGuard.getCurrentVix())),
+                                    Map.entry("daysToExpiry", String.valueOf(expiryCalendar.daysToExpiry(com.algo.trade.domain.IndexType.from(underlying))))
                             );
                             mlShadowRecorder.recordShadowScore(enriched, csvData, decisionKey,
                                     globalConfigService.getMinSignalScorePercent());
@@ -1181,6 +1207,14 @@ public class AlgoTradingScheduler {
                         (request.timestamp() + "|" + request.underlying() + "|" + entry.getKey() + "|" + request.selectedInstrumentKey()).hashCode(), 16);
                 // Extract filter pass/fail from decision reasons for accurate ML features
                 List<String> reasons = decision.reasons();
+                List<BigDecimal> mlCloses = underlyingCandles.stream().map(Candle::close).toList();
+                double mlRsi = rsiIndicator.calculate(mlCloses, 14).doubleValue();
+                double mlAtr = atrIndicator.calculateATR(underlyingCandles, 14);
+                double mlEmaGap = mlCloses.size() >= 21
+                        ? emaIndicator.calculate(mlCloses, 9).subtract(emaIndicator.calculate(mlCloses, 21)).doubleValue()
+                        : 0.0;
+                double mlSpread = selectedQuote.ask().orElse(BigDecimal.ZERO)
+                        .subtract(selectedQuote.bid().orElse(BigDecimal.ZERO)).doubleValue();
                 Map<String, String> csvData = Map.ofEntries(
                         Map.entry("underlyingPrice", String.valueOf(decision.underlyingPrice())),
                         Map.entry("optionLastPrice", String.valueOf(selectedQuote.lastPrice())),
@@ -1203,7 +1237,13 @@ public class AlgoTradingScheduler {
                         Map.entry("optionType", entry.getKey().name()),
                         Map.entry("marketTime", request.marketTime().toString()),
                         Map.entry("underlying", request.underlying().name()),
-                        Map.entry("confidenceScore", String.valueOf(decision.confidenceScore()))
+                        Map.entry("confidenceScore", String.valueOf(decision.confidenceScore())),
+                        Map.entry("rsiValue", String.valueOf(mlRsi)),
+                        Map.entry("atrValue", String.valueOf(mlAtr)),
+                        Map.entry("ema9Ema21Gap", String.valueOf(mlEmaGap)),
+                        Map.entry("bidAskSpread", String.valueOf(mlSpread)),
+                        Map.entry("vixLevel", String.valueOf(marketGuard.getCurrentVix())),
+                        Map.entry("daysToExpiry", String.valueOf(expiryCalendar.daysToExpiry(com.algo.trade.domain.IndexType.from(underlying))))
                 );
                 mlShadowRecorder.recordShadowScore(decision, csvData, decisionKey,
                         globalConfigService.getMinSignalScorePercent());
