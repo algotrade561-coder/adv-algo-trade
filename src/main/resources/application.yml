@@ -36,8 +36,6 @@ trading:
       - NIFTY
       - BANKNIFTY
       - SENSEX
-      - FINNIFTY
-      - MIDCPNIFTY
     default-expiry: NEAREST
     spot-quote-keys:
       NIFTY: "NSE:NIFTY 50"

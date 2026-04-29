@@ -171,6 +171,22 @@ public class LivePositionExitMonitor {
             return;
         }
 
+        // Max hold time: close if trade has been open longer than configured maxHoldMinutes
+        if (config.getMaxHoldMinutes() > 0 && trade.getEntryTime() != null) {
+            long holdMinutes = java.time.Duration.between(trade.getEntryTime(), java.time.Instant.now()).toMinutes();
+            if (holdMinutes >= config.getMaxHoldMinutes()) {
+                double holdProfitPct = profitPercent(entryPrice, currentPrice);
+                log.info("[ExitMonitor] MAX HOLD TIME reached: tradeId={} instrument={} hold={}min max={}min profit={}%",
+                        trade.getTradeId(), trade.getInstrumentKey(), holdMinutes, config.getMaxHoldMinutes(),
+                        String.format("%.1f", holdProfitPct));
+                telegramAlertService.systemAlert(String.format(
+                        "⏱️ Max Hold Time: %s | Hold %dmin (max %d) | P&L %.1f%%",
+                        trade.getInstrumentKey(), holdMinutes, config.getMaxHoldMinutes(), holdProfitPct));
+                close(trade, currentPrice, "MAX_HOLD_TIME");
+                return;
+            }
+        }
+
         // Days-to-expiry SL scaling: tighter SL as expiry approaches
         long daysToExpiry = expiryCalendar.daysToExpiry(indexType);
         double slMultiplier = switch ((int) Math.min(daysToExpiry, 3)) {
@@ -208,7 +224,7 @@ public class LivePositionExitMonitor {
         double slPct;
         if (useAtrExits) {
             slPct = dynamicExitManager.calculateDynamicSL(entryPrice.doubleValue(), atr, (int) daysToExpiry);
-            log.debug("[ExitMonitor] ATR-based SL: {}% (ATR={}, entry={})", String.format("%.1f", slPct), String.format("%.1f", atr), entryPrice);
+                log.debug("[ExitMonitor] ATR-based SL: {}% (ATR={}, entry={})", String.format("%.1f", slPct), String.format("%.1f", atr), entryPrice);
         } else {
             slPct = config.getStopLossPercent().doubleValue() * slMultiplier;
         }

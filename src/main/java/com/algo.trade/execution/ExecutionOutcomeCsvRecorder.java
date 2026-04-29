@@ -155,9 +155,12 @@ public class ExecutionOutcomeCsvRecorder {
     }
 
     private String decisionKey(StrategyDecision decision) {
-        String raw = decision.timestamp() + "|" + decision.underlying() + "|"
-                + decision.optionType().map(Enum::name).orElse("") + "|"
-                + decision.selectedInstrumentKey().orElse("");
+        // Must match StrategySignalCsvRecorder.decisionKey() for correlation
+        // Signal recorder uses: request.timestamp() + "|" + request.underlying() + "|" + request.optionType() + "|" + request.selectedInstrumentKey()
+        // OptionType enum toString = "CE"/"PE", Optional.orElse(null) toString = "CE"/"PE" or "null"
+        String optType = decision.optionType().map(Enum::name).orElse(null);
+        String instKey = decision.selectedInstrumentKey().orElse(null);
+        String raw = decision.timestamp() + "|" + decision.underlying() + "|" + optType + "|" + instKey;
         return Integer.toUnsignedString(raw.hashCode(), 16);
     }
 

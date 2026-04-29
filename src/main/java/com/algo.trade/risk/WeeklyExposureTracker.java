@@ -1,7 +1,5 @@
 package com.algo.trade.risk;
 
-import com.algo.trade.domain.TradeStatus;
-import com.algo.trade.persistence.TradeEntity;
 import com.algo.trade.persistence.TradeRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -36,15 +34,15 @@ public class WeeklyExposureTracker {
     }
 
     public boolean canTrade(BigDecimal premiumCost) {
+        recalculate();
         return weeklyExposure.get().add(premiumCost).compareTo(weeklyExposureCap) <= 0;
     }
 
     public void recordTrade(BigDecimal premiumCost) {
-        weeklyExposure.updateAndGet(v -> v.add(premiumCost));
-        log.info("[WeeklyExposure] Recorded ₹{} | Total: ₹{} / ₹{}",
-                premiumCost.setScale(0, java.math.RoundingMode.HALF_UP),
-                weeklyExposure.get().setScale(0, java.math.RoundingMode.HALF_UP),
-                weeklyExposureCap.setScale(0, java.math.RoundingMode.HALF_UP));
+        // Don't manually add — let recalculate() be the source of truth.
+        // This avoids double-counting when recalculate runs after recordTrade.
+        log.info("[WeeklyExposure] Trade recorded (₹{}) — next recalculate will update total",
+                premiumCost.setScale(0, java.math.RoundingMode.HALF_UP));
     }
 
     public BigDecimal getWeeklyExposure() { return weeklyExposure.get(); }
@@ -57,18 +55,27 @@ public class WeeklyExposureTracker {
         log.info("[WeeklyExposure] Reset for new week. Last week: ₹{}", prev.setScale(0, java.math.RoundingMode.HALF_UP));
     }
 
-    @Scheduled(fixedDelay = 300_000, initialDelay = 5_000)
+    @Scheduled(fixedDelay = 300_000, initialDelay = 1_000)
     public void recalculate() {
         try {
             LocalDate monday = LocalDate.now(IST).with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY));
             Instant weekStart = monday.atStartOfDay(IST).toInstant();
             BigDecimal total = tradeRepository.findByEntryTimeBetween(weekStart, Instant.now()).stream()
                     .filter(t -> !t.isPaperTrade())
+                    .filter(t -> !t.getTradeId().startsWith("SYNC-"))
+                    .filter(t -> t.getStatus() == com.algo.trade.domain.TradeStatus.OPEN)
+                    .filter(t -> t.getEntryPrice() != null && t.getEntryPrice().signum() > 0)
+                    .filter(t -> t.getQuantity() > 0)
                     .map(t -> t.getEntryPrice().multiply(BigDecimal.valueOf(t.getQuantity())))
                     .reduce(BigDecimal.ZERO, BigDecimal::add);
-            weeklyExposure.set(total);
+            BigDecimal prev = weeklyExposure.getAndSet(total);
+            if (prev.compareTo(total) != 0) {
+                log.info("[WeeklyExposure] Recalculated: ₹{} (was ₹{})", 
+                        total.setScale(0, java.math.RoundingMode.HALF_UP),
+                        prev.setScale(0, java.math.RoundingMode.HALF_UP));
+            }
         } catch (Exception e) {
-            log.debug("[WeeklyExposure] Recalculate failed: {}", e.getMessage());
+            log.warn("[WeeklyExposure] Recalculate failed: {}", e.getMessage());
         }
     }
 }

@@ -46,6 +46,8 @@ public class TradingControlController {
     private final MarketGuard marketGuard;
     private final com.algo.trade.config.GlobalConfigService globalConfigService;
     private final com.algo.trade.risk.RiskEngine riskEngine;
+    private final com.algo.trade.persistence.OrderRepository orderRepository;
+    private final com.algo.trade.marketdata.MarketDataService marketDataService;
 
     public TradingControlController(
             TradingProperties tradingProperties,
@@ -59,7 +61,9 @@ public class TradingControlController {
             ReportingService reportingService,
             MarketGuard marketGuard,
             com.algo.trade.config.GlobalConfigService globalConfigService,
-            com.algo.trade.risk.RiskEngine riskEngine
+            com.algo.trade.risk.RiskEngine riskEngine,
+            com.algo.trade.persistence.OrderRepository orderRepository,
+            com.algo.trade.marketdata.MarketDataService marketDataService
     ) {
         this.tradingProperties = tradingProperties;
         this.tradingStateService = tradingStateService;
@@ -73,6 +77,8 @@ public class TradingControlController {
         this.marketGuard = marketGuard;
         this.globalConfigService = globalConfigService;
         this.riskEngine = riskEngine;
+        this.orderRepository = orderRepository;
+        this.marketDataService = marketDataService;
     }
 
     @GetMapping("/config")
@@ -89,8 +95,11 @@ public class TradingControlController {
     public Map<String, Object> tradingStatus() {
         var pnl = reportingService.pnl();
         var allOpenTrades = tradeRepository.findByStatus(TradeStatus.OPEN);
-        int openTrades = (int) allOpenTrades.stream().filter(t -> !t.isPaperTrade()).count();
+        int openLiveTrades = (int) allOpenTrades.stream().filter(t -> !t.isPaperTrade()).count();
         int openPaperTrades = (int) allOpenTrades.stream().filter(t -> t.isPaperTrade()).count();
+        // Include pending orders in the open count
+        int pendingOrders = orderRepository.findByStatusIn(
+                java.util.List.of(com.algo.trade.domain.OrderStatus.OPEN, com.algo.trade.domain.OrderStatus.NEW)).size();
 
         java.time.Instant todayStart = java.time.LocalDate.now(tradingProperties.timezone())
                 .atStartOfDay(tradingProperties.timezone()).toInstant();
@@ -98,8 +107,11 @@ public class TradingControlController {
                 .plusDays(1).atStartOfDay(tradingProperties.timezone()).toInstant();
         var todayTrades = tradeRepository.findByEntryTimeBetween(todayStart, todayEnd);
 
-        int tradesToday = (int) todayTrades.stream()
+        int liveTradesToday = (int) todayTrades.stream()
                 .filter(t -> !t.isPaperTrade())
+                .count();
+        int paperTradesToday = (int) todayTrades.stream()
+                .filter(t -> t.isPaperTrade())
                 .count();
 
         // Consecutive losses (exclude paper trades) — use today's trades only
@@ -110,13 +122,13 @@ public class TradingControlController {
                 .toList();
         int consecutiveLosses = 0;
         for (var t : closedTodayLive) {
-            if (t.getRealizedPnl().signum() < 0) consecutiveLosses++;
+            if (t.getRealizedPnl() != null && t.getRealizedPnl().signum() < 0) consecutiveLosses++;
             else break;
         }
 
         java.util.List<String> blockingReasons = new java.util.ArrayList<>(
                 tradingStateService.entryBlockReasons(
-                        pnl.realizedPnl(), openTrades, tradesToday, consecutiveLosses,
+                        pnl.realizedPnl(), openLiveTrades + pendingOrders, liveTradesToday, consecutiveLosses,
                         webSocketClient.isConnected(),
                         globalConfigService.getMaxOpenTrades(),
                         globalConfigService.getMaxTradesPerDay(),
@@ -130,30 +142,43 @@ public class TradingControlController {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("entryAllowed", blockingReasons.isEmpty());
         result.put("blockingReasons", blockingReasons);
-        result.put("openTrades", openTrades);
+        result.put("openTrades", openLiveTrades + pendingOrders);
         result.put("openPaperTrades", openPaperTrades);
-        result.put("tradesToday", tradesToday);
+        result.put("pendingOrders", pendingOrders);
+        result.put("tradesToday", liveTradesToday);
+        result.put("paperTradesToday", paperTradesToday);
         result.put("consecutiveLosses", consecutiveLosses);
         result.put("dailyPnl", pnl.realizedPnl());
-        // Paper P&L — today only
-        BigDecimal paperPnl = todayTrades.stream()
-                .filter(t -> t.isPaperTrade())
+        // Paper P&L — today's closed + unrealized from open
+        BigDecimal paperClosedPnl = todayTrades.stream()
+                .filter(t -> t.isPaperTrade() && t.getStatus() == com.algo.trade.domain.TradeStatus.CLOSED)
                 .map(t -> t.getRealizedPnl())
                 .filter(p -> p != null)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
-        result.put("paperPnl", paperPnl);
-        // Signal counts today — query DB directly to avoid the recentDecisions() cap of 20
+        BigDecimal paperUnrealizedPnl = allOpenTrades.stream()
+                .filter(t -> t.isPaperTrade())
+                .map(t -> {
+                    var quote = marketDataService.quote(t.getInstrumentKey());
+                    if (quote.isEmpty() || quote.get().lastPrice().signum() <= 0) return BigDecimal.ZERO;
+                    return quote.get().lastPrice().subtract(t.getEntryPrice())
+                            .multiply(BigDecimal.valueOf(t.getQuantity()));
+                })
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        result.put("paperPnl", paperClosedPnl.add(paperUnrealizedPnl));
+        result.put("paperClosedPnl", paperClosedPnl);
+        result.put("paperUnrealizedPnl", paperUnrealizedPnl);
+        // Signal counts today
         long entrySignals = reportingService.countEntrySignalsSince(todayStart);
         long rejectedSignals = reportingService.countRejectedSignalsSince(todayStart);
         result.put("entrySignals", entrySignals);
         result.put("rejectedSignals", rejectedSignals);
         result.put("lastScanAt", tradingStateService.lastScanAt());
         result.put("effectiveDailyLossLimit", tradingStateService.dailyLossExtension() > 0
-                ? tradingProperties.risk().totalCapital().doubleValue()
-                    * tradingProperties.risk().maxDailyLossPercent().doubleValue() / 100.0
+                ? globalConfigService.getTotalCapital().doubleValue()
+                    * globalConfigService.getMaxDailyLossPercent().doubleValue() / 100.0
                     + tradingStateService.dailyLossExtension()
-                : tradingProperties.risk().totalCapital().doubleValue()
-                    * tradingProperties.risk().maxDailyLossPercent().doubleValue() / 100.0);
+                : globalConfigService.getTotalCapital().doubleValue()
+                    * globalConfigService.getMaxDailyLossPercent().doubleValue() / 100.0);
         return result;
     }
 

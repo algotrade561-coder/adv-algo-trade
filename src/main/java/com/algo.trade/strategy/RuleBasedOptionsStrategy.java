@@ -223,6 +223,13 @@ public class RuleBasedOptionsStrategy {
         boolean liquidityPassed = request.selectedOptionQuote().volume() >= cfgMinLiquidityVolume();
         boolean timePassed = withinEntryWindow(request.marketTime());
         boolean rsiPassed = rsiConditionPassed(request);
+
+        // Compute ML-enrichment values for signal CSV
+        Double rsiValue = computeRsiValue(request);
+        Double bidAskSpread = computeBidAskSpread(request.selectedOptionQuote());
+        Double ema9Ema21Gap = computeEmaGap(request.underlyingCandles());
+        Double atrValue = computeAtr(request.underlyingCandles());
+
         BigDecimal confidenceScore = confidenceScore(vwapPassed, breakoutPassed, volumeSpike, oiPassed,
                 ivPassed, liquidityPassed, rsiPassed);
 
@@ -271,7 +278,7 @@ public class RuleBasedOptionsStrategy {
                 volumeSpike, confidenceScore, reasons);
         if (recordSignal) {
             recordSignal(request, decision, chain, trendReference, breakoutPassed, oiPassed, ivPassed, liquidityPassed,
-                    timePassed);
+                    timePassed, rsiValue, atrValue, ema9Ema21Gap, bidAskSpread);
         }
         return decision;
     }
@@ -471,7 +478,8 @@ public class RuleBasedOptionsStrategy {
                 Optional.ofNullable(request.selectedInstrumentKey()), Optional.ofNullable(request.selectedStrike()),
                 Optional.ofNullable(request.optionType()), false, imbalance, volumeSpike, BigDecimal.ZERO, List.of(reason));
         if (recordSignal) {
-            recordSignal(request, decision, null, BigDecimal.ZERO, false, false, false, false, false);
+            recordSignal(request, decision, null, BigDecimal.ZERO, false, false, false, false, false,
+                    null, null, null, null);
         }
         return decision;
     }
@@ -539,13 +547,76 @@ public class RuleBasedOptionsStrategy {
             boolean oiPassed,
             boolean ivPassed,
             boolean liquidityPassed,
-            boolean timePassed
+            boolean timePassed,
+            Double rsiValue,
+            Double atrValue,
+            Double ema9Ema21Gap,
+            Double bidAskSpread
     ) {
         if (signalCsvRecorder == null) {
             return;
         }
         signalCsvRecorder.record(request, decision, chain, vwap, breakoutPassed, oiPassed, ivPassed, liquidityPassed,
-                timePassed);
+                timePassed, rsiValue, atrValue, ema9Ema21Gap, bidAskSpread,
+                request.vixLevel() > 0 ? request.vixLevel() : null,
+                request.daysToExpiry() > 0 ? request.daysToExpiry() : null);
+    }
+
+    private Double computeRsiValue(StrategyEvaluationRequest request) {
+        try {
+            List<BigDecimal> closes = request.underlyingCandles().stream().map(Candle::close).toList();
+            if (closes.size() < cfgRsiPeriod() + 1) return null;
+            return rsiIndicator.calculate(closes, cfgRsiPeriod()).doubleValue();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private Double computeBidAskSpread(com.algo.trade.domain.Quote quote) {
+        try {
+            if (quote.bid().isEmpty() || quote.ask().isEmpty()) return null;
+            BigDecimal bid = quote.bid().get();
+            BigDecimal ask = quote.ask().get();
+            if (bid.signum() <= 0 || ask.signum() <= 0) return null;
+            return ask.subtract(bid).doubleValue();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private Double computeEmaGap(List<Candle> candles) {
+        try {
+            List<BigDecimal> closes = candles.stream().map(Candle::close).toList();
+            if (closes.size() < 21) return null;
+            double ema9 = emaIndicator.calculate(closes, 9).doubleValue();
+            double ema21 = emaIndicator.calculate(closes, 21).doubleValue();
+            return ema9 - ema21;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private Double computeAtr(List<Candle> candles) {
+        try {
+            if (candles.size() < 15) return null;
+            double atrSum = 0;
+            int periods = 14;
+            for (int i = candles.size() - periods; i < candles.size(); i++) {
+                Candle c = candles.get(i);
+                Candle prev = candles.get(i - 1);
+                double tr = Math.max(
+                        c.high().subtract(c.low()).doubleValue(),
+                        Math.max(
+                                Math.abs(c.high().subtract(prev.close()).doubleValue()),
+                                Math.abs(c.low().subtract(prev.close()).doubleValue())
+                        )
+                );
+                atrSum += tr;
+            }
+            return atrSum / periods;
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private record OiEvaluation(

@@ -54,7 +54,8 @@ public class StrategySignalCsvRecorder {
             "ivPassed", "liquidityPassed", "timePassed",
             "scalpEma9", "scalpEma21", "scalpCrossType", "scalpConfirmCount",
             "bbUpperBand", "bbLowerBand", "bbBandwidth", "bbSqueeze", "ivRank",
-            "confidenceScore", "firstFailedFilter", "reasons"
+            "confidenceScore", "firstFailedFilter", "reasons",
+            "rsiValue", "atrValue", "ema9Ema21Gap", "bidAskSpread", "vixLevel", "daysToExpiry"
     ) + System.lineSeparator();
 
     private static final String CANDLES_HEADER = String.join(",",
@@ -91,14 +92,21 @@ public class StrategySignalCsvRecorder {
             boolean oiPassed,
             boolean ivPassed,
             boolean liquidityPassed,
-            boolean timePassed
+            boolean timePassed,
+            Double rsiValue,
+            Double atrValue,
+            Double ema9Ema21Gap,
+            Double bidAskSpread,
+            Double vixLevel,
+            Long daysToExpiry
     ) {
         try {
             Files.createDirectories(OUTPUT.getParent());
             String decisionKey = decisionKey(request);
             String signalId = java.util.UUID.randomUUID().toString().substring(0, 12);
             append(OUTPUT, HEADER, fullRow("DIRECTIONAL_BUY", decisionKey, signalId, request, decision, chain, vwap,
-                    breakoutPassed, oiPassed, ivPassed, liquidityPassed, timePassed));
+                    breakoutPassed, oiPassed, ivPassed, liquidityPassed, timePassed,
+                    rsiValue, atrValue, ema9Ema21Gap, bidAskSpread, vixLevel, daysToExpiry));
             append(CANDLES, CANDLES_HEADER, candleRows(decisionKey, request));
             append(OPTION_CHAIN_LEVELS, OPTION_CHAIN_LEVELS_HEADER, optionChainRows(decisionKey, request));
         } catch (IOException ex) {
@@ -174,7 +182,8 @@ public class StrategySignalCsvRecorder {
                     csv(bbUpperBand), csv(bbLowerBand), csv(bbBandwidth), csv(bbSqueeze), csv(ivRank),
                     csv(decision.confidenceScore()),
                     csv(null),
-                    csv(String.join("; ", decision.reasons()))
+                    csv(String.join("; ", decision.reasons())),
+                    csv(null), csv(null), csv(null), csv(null), csv(null), csv(null) // ML columns
             ) + System.lineSeparator();
             append(OUTPUT, HEADER, row);
         } catch (IOException ex) {
@@ -264,7 +273,8 @@ public class StrategySignalCsvRecorder {
                     csv(ivRank > 0 ? ivRank : null),
                     csv(null),
                     csv(diagnostics.firstFailedFilter()),
-                    csv(reason)
+                    csv(reason),
+                    csv(null), csv(null), csv(null), csv(null), csv(null), csv(null) // ML columns
             ) + System.lineSeparator();
             append(OUTPUT, HEADER, row);
         } catch (IOException ex) {
@@ -286,7 +296,13 @@ public class StrategySignalCsvRecorder {
             boolean oiPassed,
             boolean ivPassed,
             boolean liquidityPassed,
-            boolean timePassed
+            boolean timePassed,
+            Double rsiValue,
+            Double atrValue,
+            Double ema9Ema21Gap,
+            Double bidAskSpread,
+            Double vixLevel,
+            Long daysToExpiry
     ) {
         Candle underlying = last(request.underlyingCandles());
         Candle option = last(request.selectedOptionCandles());
@@ -363,7 +379,9 @@ public class StrategySignalCsvRecorder {
                 csv(request.ivRank() > 0 ? request.ivRank() : null),
                 csv(decision.confidenceScore()),
                 csv(null), // firstFailedFilter — N/A for DIRECTIONAL_BUY
-                csv(String.join("; ", decision.reasons()))
+                csv(String.join("; ", decision.reasons())),
+                csv(rsiValue), csv(atrValue), csv(ema9Ema21Gap),
+                csv(bidAskSpread), csv(vixLevel), csv(daysToExpiry)
         ) + System.lineSeparator();
     }
 

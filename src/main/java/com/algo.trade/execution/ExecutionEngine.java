@@ -22,6 +22,7 @@ import com.algo.trade.persistence.StrategyDecisionRepository;
 import com.algo.trade.persistence.TradeEntity;
 import com.algo.trade.persistence.TradeRepository;
 import com.algo.trade.notification.TelegramAlertService;
+import com.algo.trade.marketdata.MarketDataService;
 import com.algo.trade.risk.RiskEngine;
 import java.math.BigDecimal;
 import java.math.MathContext;
@@ -69,6 +70,7 @@ public class ExecutionEngine {
     private final TelegramAlertService telegramAlertService;
     private final com.algo.trade.config.PositionSyncProperties positionSyncProperties;
     private final StrategyConfigService strategyConfigService;
+    private final MarketDataService marketDataService;
     private final Clock clock;
 
     @Autowired
@@ -79,9 +81,10 @@ public class ExecutionEngine {
                            ExecutionOutcomeCsvRecorder executionOutcomeCsvRecorder,
                            TelegramAlertService telegramAlertService,
                            com.algo.trade.config.PositionSyncProperties positionSyncProperties,
-                           StrategyConfigService strategyConfigService) {
+                           StrategyConfigService strategyConfigService,
+                           MarketDataService marketDataService) {
         this(properties, globalConfigService, brokerClient, riskEngine, tradingStateService, tradeRepository, orderRepository, errorEventRepository, decisionRepository,
-                executionOutcomeCsvRecorder, telegramAlertService, positionSyncProperties, strategyConfigService, Clock.systemUTC());
+                executionOutcomeCsvRecorder, telegramAlertService, positionSyncProperties, strategyConfigService, marketDataService, Clock.systemUTC());
     }
 
     ExecutionEngine(TradingProperties properties, GlobalConfigService globalConfigService, BrokerClient brokerClient, RiskEngine riskEngine, TradingStateService tradingStateService,
@@ -89,7 +92,8 @@ public class ExecutionEngine {
                     ErrorEventRepository errorEventRepository,
                     StrategyDecisionRepository decisionRepository, ExecutionOutcomeCsvRecorder executionOutcomeCsvRecorder,
                     TelegramAlertService telegramAlertService,
-                    com.algo.trade.config.PositionSyncProperties positionSyncProperties, StrategyConfigService strategyConfigService, Clock clock) {
+                    com.algo.trade.config.PositionSyncProperties positionSyncProperties, StrategyConfigService strategyConfigService,
+                    MarketDataService marketDataService, Clock clock) {
         this.properties = properties;
         this.globalConfigService = globalConfigService;
         this.brokerClient = brokerClient;
@@ -103,6 +107,7 @@ public class ExecutionEngine {
         this.telegramAlertService = telegramAlertService;
         this.positionSyncProperties = positionSyncProperties;
         this.strategyConfigService = strategyConfigService;
+        this.marketDataService = marketDataService;
         this.clock = clock;
     }
 
@@ -217,6 +222,12 @@ public class ExecutionEngine {
                 updateExecutionStage(savedDecision, "ORDER_OPEN", "brokerOrderId=" + order.brokerOrderId().orElse(""));
                 executionOutcomeCsvRecorder.recordEntry(decision, optionPremium, lotSize, "ORDER_OPEN", false,
                         sizing.quantity(), sizing.riskAmount(), sizing.estimatedCost(), order, reasons, effectiveConfig);
+                telegramAlertService.systemAlert("📋 Limit order placed — awaiting fill"
+                        + System.lineSeparator() + "Signal: " + decision.signalType()
+                        + System.lineSeparator() + "Instrument: " + order.instrumentKey()
+                        + System.lineSeparator() + "Quantity: " + sizing.quantity()
+                        + System.lineSeparator() + "Limit price: ₹" + optionPremium
+                        + System.lineSeparator() + "Broker order: " + order.brokerOrderId().orElse(""));
                 return ExecutionResult.accepted(order, reasons);
             }
 
@@ -365,10 +376,10 @@ public class ExecutionEngine {
         OrderRequest orderRequest = validLastPrice
                 ? new OrderRequest("EXIT-" + UUID.randomUUID(), trade.getInstrumentKey(),
                         OrderSide.SELL, OrderType.LIMIT, ProductType.MIS, trade.getQuantity(), Optional.of(lastPrice),
-                        "strategy-exit")
+                        "exit")
                 : new OrderRequest("EXIT-MKT-" + UUID.randomUUID(), trade.getInstrumentKey(),
                         OrderSide.SELL, OrderType.MARKET, ProductType.MIS, trade.getQuantity(), Optional.empty(),
-                        "strategy-exit-market");
+                        "exit-mkt");
         log.info("Placing exit order: tradeId={}, clientOrderId={}, instrument={}, quantity={}",
                 tradeId, orderRequest.clientOrderId(), orderRequest.instrumentKey(), orderRequest.quantity());
         OrderResponse order;
@@ -381,7 +392,7 @@ public class ExecutionEngine {
             try {
                 OrderRequest marketRequest = new OrderRequest("EXIT-MKT-" + UUID.randomUUID(), trade.getInstrumentKey(),
                         OrderSide.SELL, OrderType.MARKET, ProductType.MIS, trade.getQuantity(), Optional.empty(),
-                        "strategy-exit-market-retry");
+                        "exit-mkt-retry");
                 order = brokerClient.placeOrder(marketRequest);
             } catch (RuntimeException retryEx) {
                 log.error("Exit MARKET retry also failed for tradeId={}: {}", tradeId, retryEx.getMessage());
@@ -433,7 +444,12 @@ public class ExecutionEngine {
         }
 
         if (trade.isPaperTrade()) {
-            BigDecimal partialPnl = lastPrice.subtract(trade.getEntryPrice()).multiply(BigDecimal.valueOf(partialQuantity));
+            boolean isShortEntry = trade.getEntryReason() != null
+                    && (trade.getEntryReason().contains("[SELL_CE]")
+                        || trade.getEntryReason().contains("[SELL_PE]"));
+            BigDecimal partialPnl = isShortEntry
+                    ? trade.getEntryPrice().subtract(lastPrice).multiply(BigDecimal.valueOf(partialQuantity))
+                    : lastPrice.subtract(trade.getEntryPrice()).multiply(BigDecimal.valueOf(partialQuantity));
             trade.partialClose(partialQuantity, partialPnl, layerReason);
             tradeRepository.save(trade);
             log.info("PAPER partial close: tradeId={}, layer={}, qty={}, price={}, partialPnl={}, remainingQty={}",
@@ -447,7 +463,7 @@ public class ExecutionEngine {
 
         OrderRequest orderRequest = new OrderRequest("PARTIAL-" + UUID.randomUUID(), trade.getInstrumentKey(),
                 OrderSide.SELL, OrderType.LIMIT, ProductType.MIS, partialQuantity, Optional.of(lastPrice),
-                "partial-exit-" + layerReason.toLowerCase());
+                "partial-exit");
         OrderResponse order;
         try {
             order = brokerClient.placeOrder(orderRequest);
@@ -456,7 +472,7 @@ public class ExecutionEngine {
             try {
                 OrderRequest marketReq = new OrderRequest("PARTIAL-MKT-" + UUID.randomUUID(), trade.getInstrumentKey(),
                         OrderSide.SELL, OrderType.MARKET, ProductType.MIS, partialQuantity, Optional.empty(),
-                        "partial-exit-market-" + layerReason.toLowerCase());
+                        "partial-exit-mkt");
                 order = brokerClient.placeOrder(marketReq);
             } catch (RuntimeException retryEx) {
                 log.error("Partial exit MARKET retry failed for tradeId={}: {}", tradeId, retryEx.getMessage());
@@ -623,10 +639,19 @@ public class ExecutionEngine {
     }
 
     private int openTradeCount() {
-        return (int) tradeRepository.findByStatus(TradeStatus.OPEN).stream()
+        int openTrades = (int) tradeRepository.findByStatus(TradeStatus.OPEN).stream()
                 .filter(t -> !t.isPaperTrade())
                 .filter(t -> positionSyncProperties.manageSyncedTrades() || !t.getTradeId().startsWith("SYNC-"))
                 .count();
+        // Also count pending limit orders as "open" — they'll become trades when filled
+        int pendingOrders = orderRepository.findByStatusIn(
+                List.of(com.algo.trade.domain.OrderStatus.OPEN, com.algo.trade.domain.OrderStatus.NEW)).size();
+        return openTrades + pendingOrders;
+    }
+
+    /** Effective open position count including pending orders — for external callers. */
+    public int effectiveOpenTradeCount() {
+        return openTradeCount();
     }
 
     /** Find open trades by instrument key — used by OrderFillWatchdog for exit order fills. */
@@ -657,10 +682,14 @@ public class ExecutionEngine {
     /** Extract strategy type name from a StrategyDecision's reasons list. */
     private String extractStrategyType(StrategyDecision decision) {
         for (String reason : decision.reasons()) {
-            String upper = reason.toUpperCase();
+            String upper = reason.toUpperCase().replace(" ", "_").replace("-", "_").replace("&", "AND");
+            // Check longest names first to avoid partial matches (e.g., "ITM" matching before "ITM_CONVICTION")
             for (com.algo.trade.strategy.StrategyType type : com.algo.trade.strategy.StrategyType.values()) {
                 if (upper.contains(type.name())) return type.name();
             }
+            // Special cases where reason text doesn't match enum name exactly
+            if (upper.contains("ITM") && upper.contains("CONVICTION")) return "ITM_CONVICTION";
+            if (upper.contains("GAP") && upper.contains("GO")) return "GAP_AND_GO";
         }
         // Fallback: derive from signal type
         return decision.signalType().name().startsWith("BUY_") ? "DIRECTIONAL_BUY" : "UNKNOWN";
@@ -690,8 +719,21 @@ public class ExecutionEngine {
         return tradeRepository.findByEntryTimeBetween(todayStart(), tomorrowStart()).stream()
                 .filter(t -> !t.isPaperTrade())
                 .filter(t -> positionSyncProperties.manageSyncedTrades() || !t.getTradeId().startsWith("SYNC-"))
-                .map(TradeEntity::getRealizedPnl)
-                .filter(p -> p != null)
+                .map(t -> {
+                    BigDecimal booked = t.getRealizedPnl() != null ? t.getRealizedPnl() : BigDecimal.ZERO;
+                    if (t.getStatus() == TradeStatus.OPEN) {
+                        BigDecimal currentPrice = marketDataService.quote(t.getInstrumentKey())
+                                .map(com.algo.trade.domain.Quote::lastPrice)
+                                .filter(p -> p != null && p.signum() > 0)
+                                .orElse(null);
+                        if (currentPrice != null) {
+                            BigDecimal unrealized = currentPrice.subtract(t.getEntryPrice())
+                                    .multiply(BigDecimal.valueOf(t.getQuantity()));
+                            return booked.add(unrealized);
+                        }
+                    }
+                    return booked;
+                })
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
     }
 
@@ -723,11 +765,13 @@ public class ExecutionEngine {
             return rejections;
         }
 
+        // 1. Max buy orders per day (only count active/filled, not cancelled/rejected)
         int buyOrdersToday = buyOrdersToday();
         if (buyOrdersToday >= globalConfigService.getMaxOrdersPerDay()) {
-            rejections.add("Max buy orders per day reached");
+            rejections.add("Max buy orders per day reached (" + buyOrdersToday + "/" + globalConfigService.getMaxOrdersPerDay() + ")");
         }
 
+        // 2. Duplicate open order check — prevent placing another order for the same instrument
         boolean existingOpenBuyOrder = !orderRepository.findByInstrumentKeyAndSideAndStatusIn(
                 instrumentKey,
                 OrderSide.BUY.name(),
@@ -737,12 +781,15 @@ public class ExecutionEngine {
             rejections.add("Open buy order already exists for instrument: " + instrumentKey);
         }
 
+        // 3. Existing open trade check — prevent doubling up on the same instrument
         boolean existingOpenTrade = tradeRepository.findByInstrumentKeyAndStatus(instrumentKey, TradeStatus.OPEN).stream()
                 .anyMatch(t -> !t.isPaperTrade());
         if (existingOpenTrade) {
             rejections.add("Open trade already exists for instrument: " + instrumentKey);
         }
 
+        // 4. Same instrument re-entry price move check (includes orders placed today, not just trades)
+        // Check trades
         tradeRepository.findByInstrumentKeyAndEntryTimeBetween(instrumentKey, todayStart(), tomorrowStart()).stream()
                 .map(TradeEntity::getEntryPrice)
                 .filter(previousPrice -> previousPrice != null && previousPrice.signum() > 0 && optionPremium != null)
@@ -751,11 +798,30 @@ public class ExecutionEngine {
                 .findFirst()
                 .ifPresent(previousPrice -> rejections.add("Same instrument already traded today without required price move: "
                         + instrumentKey));
+        // Also check recent orders (filled or pending) for the same instrument today
+        orderRepository.findByInstrumentKeyAndSideAndStatusIn(instrumentKey, OrderSide.BUY.name(),
+                        List.of(OrderStatus.COMPLETE, OrderStatus.OPEN, OrderStatus.NEW)).stream()
+                .filter(o -> o.getOrderPlacedAt() != null && o.getOrderPlacedAt().isAfter(todayStart()))
+                .filter(o -> o.getAverageFillPrice() != null && o.getAverageFillPrice().signum() > 0 && optionPremium != null)
+                .filter(o -> priceMovePercent(o.getAverageFillPrice(), optionPremium)
+                        .compareTo(globalConfigService.getSameInstrumentReentryMinPriceMovePercent()) < 0)
+                .findFirst()
+                .ifPresent(o -> rejections.add("Same instrument order placed today without required price move: " + instrumentKey));
 
+        // 5. Cooldown check — include both trades AND orders placed within cooldown window
         if (globalConfigService.getCooldownMinutes() > 0) {
             Instant cooldownStart = clock.instant().minus(Duration.ofMinutes(globalConfigService.getCooldownMinutes()));
-            if (!tradeRepository.findByInstrumentKeyAndEntryTimeBetween(instrumentKey, cooldownStart, clock.instant()).isEmpty()) {
-                rejections.add("Cooldown period not elapsed for instrument: " + instrumentKey);
+            // Check trades
+            boolean tradeCooldown = !tradeRepository.findByInstrumentKeyAndEntryTimeBetween(
+                    instrumentKey, cooldownStart, clock.instant()).isEmpty();
+            // Check orders (any BUY order placed within cooldown, regardless of status)
+            boolean orderCooldown = orderRepository.findByInstrumentKeyAndSideAndStatusIn(
+                    instrumentKey, OrderSide.BUY.name(),
+                    List.of(OrderStatus.COMPLETE, OrderStatus.OPEN, OrderStatus.NEW, OrderStatus.CANCELLED)).stream()
+                    .anyMatch(o -> o.getOrderPlacedAt() != null && o.getOrderPlacedAt().isAfter(cooldownStart));
+            if (tradeCooldown || orderCooldown) {
+                rejections.add("Cooldown period not elapsed for instrument: " + instrumentKey
+                        + " (cooldown=" + globalConfigService.getCooldownMinutes() + "min)");
             }
         }
 
@@ -763,7 +829,12 @@ public class ExecutionEngine {
     }
 
     private int buyOrdersToday() {
-        return orderRepository.findBySideAndUpdatedAtBetween(OrderSide.BUY.name(), todayStart(), tomorrowStart()).size();
+        return (int) orderRepository.findBySideAndUpdatedAtBetween(OrderSide.BUY.name(), todayStart(), tomorrowStart())
+                .stream()
+                .filter(o -> o.getStatus() == OrderStatus.COMPLETE
+                        || o.getStatus() == OrderStatus.OPEN
+                        || o.getStatus() == OrderStatus.NEW)
+                .count();
     }
 
     private BigDecimal priceMovePercent(BigDecimal previousPrice, BigDecimal currentPrice) {

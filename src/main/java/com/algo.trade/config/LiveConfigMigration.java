@@ -34,18 +34,10 @@ public class LiveConfigMigration {
 
     @PostConstruct
     void apply() {
+        // Migration disabled — config values are managed via the Settings UI.
+        // The initial seed was applied on first deployment; re-running would overwrite user edits.
         GlobalConfig cfg = globalConfigService.getCached();
-        if (cfg.getConfigVersion() >= TARGET_VERSION) {
-            log.debug("LiveConfigMigration already at version {} — skipping", cfg.getConfigVersion());
-            return;
-        }
-
-        log.info("Applying live trading recommendations (v{} → v{})", cfg.getConfigVersion(), TARGET_VERSION);
-        applyGlobalConfig(cfg);
-        applyDirectionalBuy();
-        applyVolatilityBreakout();
-        applyScalping();
-        log.info("LiveConfigMigration v{} complete — values are now editable via the UI", TARGET_VERSION);
+        log.info("LiveConfigMigration: configVersion={} — migration disabled (values managed via UI)", cfg.getConfigVersion());
     }
 
     // ── Global config ─────────────────────────────────────────────────────────
@@ -72,7 +64,7 @@ public class LiveConfigMigration {
     // ── DIRECTIONAL_BUY ───────────────────────────────────────────────────────
 
     private void applyDirectionalBuy() {
-        StrategyConfig cfg = strategyRepo.findByStrategyType(StrategyType.DIRECTIONAL_BUY)
+        StrategyConfig cfg = strategyRepo.findByStrategyTypeAndUnderlying(StrategyType.DIRECTIONAL_BUY, "NIFTY")
                 .orElse(new StrategyConfig(StrategyType.DIRECTIONAL_BUY));
 
         cfg.setStopLossPercent(BigDecimal.valueOf(30));
@@ -92,7 +84,7 @@ public class LiveConfigMigration {
     // ── VOLATILITY_BREAKOUT ───────────────────────────────────────────────────
 
     private void applyVolatilityBreakout() {
-        StrategyConfig cfg = strategyRepo.findByStrategyType(StrategyType.VOLATILITY_BREAKOUT)
+        StrategyConfig cfg = strategyRepo.findByStrategyTypeAndUnderlying(StrategyType.VOLATILITY_BREAKOUT, "NIFTY")
                 .orElse(new StrategyConfig(StrategyType.VOLATILITY_BREAKOUT));
 
         cfg.setStopLossPercent(BigDecimal.valueOf(30));
@@ -111,7 +103,7 @@ public class LiveConfigMigration {
     // ── SCALPING ──────────────────────────────────────────────────────────────
 
     private void applyScalping() {
-        StrategyConfig cfg = strategyRepo.findByStrategyType(StrategyType.SCALPING)
+        StrategyConfig cfg = strategyRepo.findByStrategyTypeAndUnderlying(StrategyType.SCALPING, "NIFTY")
                 .orElse(new StrategyConfig(StrategyType.SCALPING));
 
         cfg.setStopLossPercent(BigDecimal.valueOf(20));

@@ -22,6 +22,7 @@ import com.algo.trade.domain.SignalType;
 import com.algo.trade.domain.StrategyDecision;
 import com.algo.trade.domain.TradeStatus;
 import com.algo.trade.domain.UnderlyingSymbol;
+import com.algo.trade.marketdata.MarketDataService;
 import com.algo.trade.notification.TelegramAlertService;
 import com.algo.trade.persistence.*;
 import com.algo.trade.risk.RiskEngine;
@@ -43,13 +44,14 @@ class ExecutionEngineTest {
             null, null, null, null, null, null, null, null, null);
     private final GlobalConfigService globalConfigService = mock(GlobalConfigService.class);
     private final BrokerClient brokerClient = mock(BrokerClient.class);
-    private final TradingStateService tradingStateService = new TradingStateService(properties, globalConfigService);
+    private final TradingStateService tradingStateService = new TradingStateService(properties, globalConfigService, mock(com.algo.trade.underlying.UnderlyingConfigService.class));
     private final TradeRepository tradeRepository = mock(TradeRepository.class);
     private final OrderRepository orderRepository = mock(OrderRepository.class);
     private final ErrorEventRepository errorEventRepository = mock(ErrorEventRepository.class);
     private final StrategyDecisionRepository decisionRepository = mock(StrategyDecisionRepository.class);
     private final ExecutionOutcomeCsvRecorder outcomeCsvRecorder = mock(ExecutionOutcomeCsvRecorder.class);
     private final TelegramAlertService telegramAlertService = mock(TelegramAlertService.class);
+    private final MarketDataService marketDataService = mock(MarketDataService.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-04-13T05:00:00Z"), ZoneOffset.UTC);
 
     private ExecutionEngine executionEngine;
@@ -72,9 +74,10 @@ class ExecutionEngineTest {
         StrategyConfig directionalBuyConfig = new StrategyConfig(StrategyType.DIRECTIONAL_BUY);
         directionalBuyConfig.setStopLossPercent(BigDecimal.valueOf(12));
         when(mockConfigService.getDirectionalBuyConfig()).thenReturn(directionalBuyConfig);
+        when(marketDataService.quote(any())).thenReturn(Optional.empty());
         executionEngine = new ExecutionEngine(properties, globalConfigService, brokerClient, new RiskEngine(globalConfigService, properties, mockConfigService, tradingStateService, null), tradingStateService,
                 tradeRepository, orderRepository, errorEventRepository, decisionRepository, outcomeCsvRecorder,
-                telegramAlertService, new PositionSyncProperties(true), mockConfigService, clock);
+                telegramAlertService, new PositionSyncProperties(true), mockConfigService, marketDataService, clock);
         when(tradeRepository.findByStatus(TradeStatus.OPEN)).thenReturn(List.of());
         when(tradeRepository.findByEntryTimeBetween(any(), any())).thenReturn(List.of());
         when(tradeRepository.findAll()).thenReturn(List.of());

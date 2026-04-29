@@ -188,7 +188,9 @@ public class ZerodhaBrokerClient implements BrokerClient {
         body.add("order_type", request.orderType().name());
         request.limitPrice().ifPresent(price -> body.add("price", price.toPlainString()));
         body.add("validity", "DAY");
-        body.add("tag", request.tag());
+        String tag = request.tag();
+        if (tag != null && tag.length() > 20) tag = tag.substring(0, 20);
+        body.add("tag", tag != null ? tag : "");
 
         try {
             String responseBody = retryWithBackoff("placeOrder", () -> restClient.post()

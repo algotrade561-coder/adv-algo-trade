@@ -1,6 +1,6 @@
 version: "3"
 agent:
-  authtoken: 3CZw8TBOqAL1XgYiwGarfxIzgY5_6uAaNr9FUNoYMUA21GQVy
+  authtoken: ${NGROK_AUTHTOKEN}
   update_channel: stable
 
 tunnels:

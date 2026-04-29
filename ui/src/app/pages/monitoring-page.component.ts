@@ -308,7 +308,7 @@ type ScorecardRow = { strategyType: string; totalEntries: number; filled: number
                 <div class="table-wrap">
                   <table class="mon-table">
                     <thead><tr>
-                      <th>Entry</th><th>Exit</th><th>Underlying</th><th>Type</th>
+                      <th>Entry</th><th>Exit</th><th>Strategy</th><th>Underlying</th><th>Type</th>
                       <th>Instrument</th><th>Entry ₹</th><th>Exit ₹</th><th>Qty</th><th>P&L</th><th>Status</th>
                     </tr></thead>
                     <tbody>
@@ -316,6 +316,7 @@ type ScorecardRow = { strategyType: string; totalEntries: number; filled: number
                         <tr>
                           <td class="mono time-cell">{{ fmtTime(r['entryTime']) }}</td>
                           <td class="mono time-cell">{{ r['exitTime'] ? fmtTime(r['exitTime']) : '-' }}</td>
+                          <td>{{ fmtStrategy(r['strategyType']) }}</td>
                           <td>{{ r['underlying'] }}</td>
                           <td><span [class]="'type-badge ' + typeCls(r['optionType'])">{{ r['optionType'] }}</span></td>
                           <td class="inst-cell">{{ r['instrumentKey'] }}</td>
@@ -343,7 +344,7 @@ type ScorecardRow = { strategyType: string; totalEntries: number; filled: number
                 <div class="table-wrap">
                   <table class="mon-table">
                     <thead><tr>
-                      <th>Entry</th><th>Exit</th><th>Underlying</th><th>Type</th>
+                      <th>Entry</th><th>Exit</th><th>Strategy</th><th>Underlying</th><th>Type</th>
                       <th>Instrument</th><th>Entry ₹</th><th>Exit ₹</th><th>Qty</th><th>P&L</th><th>Status</th>
                     </tr></thead>
                     <tbody>
@@ -351,6 +352,7 @@ type ScorecardRow = { strategyType: string; totalEntries: number; filled: number
                         <tr>
                           <td class="mono time-cell">{{ fmtTime(r['entryTime']) }}</td>
                           <td class="mono time-cell">{{ r['exitTime'] ? fmtTime(r['exitTime']) : '-' }}</td>
+                          <td>{{ fmtStrategy(r['strategyType']) }}</td>
                           <td>{{ r['underlying'] }}</td>
                           <td><span [class]="'type-badge ' + typeCls(r['optionType'])">{{ r['optionType'] }}</span></td>
                           <td class="inst-cell">{{ r['instrumentKey'] }}</td>

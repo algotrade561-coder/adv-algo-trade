@@ -6,6 +6,7 @@ import com.algo.trade.config.GlobalConfigService;
 import com.algo.trade.config.PositionSyncProperties;
 import com.algo.trade.config.TradingProperties;
 import com.algo.trade.domain.*;
+import com.algo.trade.marketdata.MarketDataService;
 import com.algo.trade.notification.TelegramAlertService;
 import com.algo.trade.persistence.*;
 import com.algo.trade.risk.RiskEngine;
@@ -45,6 +46,7 @@ class LiveFlowIntegrationTest {
     private ExecutionOutcomeCsvRecorder outcomeCsvRecorder;
     private TelegramAlertService telegramAlertService;
     private StrategyConfigService strategyConfigService;
+    private MarketDataService marketDataService;
     private ExecutionEngine executionEngine;
     private Clock clock;
 
@@ -96,10 +98,13 @@ class LiveFlowIntegrationTest {
         when(decisionRepository.save(any())).thenAnswer(i -> i.getArgument(0));
         when(tradeRepository.save(any())).thenAnswer(i -> i.getArgument(0));
 
+        marketDataService = mock(MarketDataService.class);
+        when(marketDataService.quote(any())).thenReturn(Optional.empty());
+
         executionEngine = new ExecutionEngine(properties, globalConfigService, brokerClient, riskEngine,
                 tradingStateService, tradeRepository, orderRepository, errorEventRepository,
                 decisionRepository, outcomeCsvRecorder, telegramAlertService, new PositionSyncProperties(true),
-                strategyConfigService, clock);
+                strategyConfigService, marketDataService, clock);
     }
 
     private StrategyDecision testDecision(String reason) {

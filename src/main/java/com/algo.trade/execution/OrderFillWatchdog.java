@@ -39,7 +39,11 @@ public class OrderFillWatchdog {
     public void checkPendingOrders() {
         List<OrderEntity> pending = orderRepository.findByStatusIn(
                 List.of(OrderStatus.OPEN, OrderStatus.NEW));
-        if (pending.isEmpty()) return;
+        if (pending.isEmpty()) {
+            // Safety net: check for COMPLETE BUY orders that have no matching trade
+            reconcileOrphanedFilledOrders();
+            return;
+        }
 
         log.debug("OrderFillWatchdog checking {} pending orders", pending.size());
 
@@ -49,6 +53,58 @@ public class OrderFillWatchdog {
             } catch (Exception ex) {
                 log.warn("OrderFillWatchdog failed for order {}: {}", order.getClientOrderId(), ex.getMessage());
             }
+        }
+    }
+
+    /**
+     * Safety net: find COMPLETE BUY orders from today that have no matching TradeEntity.
+     * Only creates a trade if the broker still has an open position for that instrument.
+     */
+    private void reconcileOrphanedFilledOrders() {
+        try {
+            java.time.Instant todayStart = java.time.LocalDate.now(java.time.ZoneId.of("Asia/Kolkata"))
+                    .atStartOfDay(java.time.ZoneId.of("Asia/Kolkata")).toInstant();
+            List<OrderEntity> filledToday = orderRepository.findBySideAndUpdatedAtBetween(
+                    com.algo.trade.domain.OrderSide.BUY.name(), todayStart, java.time.Instant.now());
+
+            if (filledToday.stream().noneMatch(o -> o.getStatus() == OrderStatus.COMPLETE && o.getFilledQuantity() > 0)) {
+                return; // nothing to reconcile
+            }
+
+            // Fetch current broker positions to verify the position still exists
+            List<com.algo.trade.domain.Position> brokerPositions;
+            try {
+                brokerPositions = brokerClient.positions();
+            } catch (Exception ex) {
+                return; // can't verify — skip reconciliation
+            }
+            java.util.Set<String> activeInstruments = brokerPositions.stream()
+                    .filter(p -> p.quantity() > 0)
+                    .map(com.algo.trade.domain.Position::instrumentKey)
+                    .collect(java.util.stream.Collectors.toSet());
+
+            for (OrderEntity order : filledToday) {
+                if (order.getStatus() != OrderStatus.COMPLETE) continue;
+                if (order.getClientOrderId().startsWith("EXIT-")) continue;
+                if (order.getFilledQuantity() <= 0) continue;
+                if (order.getAverageFillPrice() == null || order.getAverageFillPrice().signum() <= 0) continue;
+
+                String instrumentKey = order.getInstrumentKey();
+
+                // Only create trade if broker still has an open position for this instrument
+                if (!activeInstruments.contains(instrumentKey)) continue;
+
+                // Check if a trade already exists for this instrument
+                boolean tradeExists = !executionEngine.findOpenTradesByInstrument(instrumentKey).isEmpty();
+
+                if (!tradeExists) {
+                    log.warn("OrderFillWatchdog: orphaned filled order — creating trade: clientOrderId={}, instrument={}, price={}",
+                            order.getClientOrderId(), instrumentKey, order.getAverageFillPrice());
+                    executionEngine.openTradeFromFilledOrder(order);
+                }
+            }
+        } catch (Exception ex) {
+            log.debug("OrderFillWatchdog reconciliation failed: {}", ex.getMessage());
         }
     }
 

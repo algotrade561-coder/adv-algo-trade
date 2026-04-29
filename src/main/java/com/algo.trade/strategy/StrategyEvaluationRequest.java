@@ -28,7 +28,9 @@ public record StrategyEvaluationRequest(
         OptionType optionType,
         Quote selectedOptionQuote,
         Optional<Quote> previousSelectedOptionQuote,
-        double ivRank
+        double ivRank,
+        double vixLevel,
+        long daysToExpiry
 ) {
     public StrategyEvaluationRequest {
         underlyingCandles = List.copyOf(underlyingCandles == null ? List.of() : underlyingCandles);
@@ -38,5 +40,20 @@ public record StrategyEvaluationRequest(
             throw new IllegalArgumentException("selectedLotSize must be non-negative");
         }
         previousSelectedOptionQuote = previousSelectedOptionQuote == null ? Optional.empty() : previousSelectedOptionQuote;
+    }
+
+    /** Backward-compatible constructor without vixLevel and daysToExpiry. */
+    public StrategyEvaluationRequest(
+            Instant timestamp, LocalTime marketTime, UnderlyingSymbol underlying,
+            List<Candle> underlyingCandles, List<Candle> trendUnderlyingCandles,
+            List<Candle> selectedOptionCandles, OptionChainSnapshot optionChainSnapshot,
+            String selectedInstrumentKey, BigDecimal selectedStrike, int selectedLotSize,
+            OptionType optionType, Quote selectedOptionQuote,
+            Optional<Quote> previousSelectedOptionQuote, double ivRank
+    ) {
+        this(timestamp, marketTime, underlying, underlyingCandles, trendUnderlyingCandles,
+                selectedOptionCandles, optionChainSnapshot, selectedInstrumentKey, selectedStrike,
+                selectedLotSize, optionType, selectedOptionQuote, previousSelectedOptionQuote,
+                ivRank, 0, 0);
     }
 }

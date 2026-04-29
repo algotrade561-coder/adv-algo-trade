@@ -223,24 +223,12 @@ import { ApiRecord, ExecutionMode, MarketDataMode, RuntimeStatus, TradingMode, U
         </div>
       </div>
 
-      <!-- ── Strategy Quick Toggles ────────────────────────────────── -->
+      <!-- ── Strategies ────────────────────────────────────────── -->
       <div class="panel" style="margin-top:16px">
-        <div class="top-row" style="margin-bottom:12px">
+        <div class="top-row" style="margin-bottom:0">
           <h2 style="margin:0"><mat-icon class="hi">psychology</mat-icon> Strategies</h2>
           <span class="spacer"></span>
-          <a class="link" routerLink="/strategies">Full Config →</a>
-        </div>
-        <div class="strat-grid">
-          @for (s of strategies(); track s.type) {
-            <div class="sc" [class.sc-on]="s.enabled" [class.sc-sell]="s.sellingStrategy">
-              <mat-slide-toggle [checked]="s.enabled" (change)="toggleStrategy(s, $event.checked)"
-                [color]="s.sellingStrategy ? 'warn' : 'primary'" class="sc-toggle"></mat-slide-toggle>
-              <div class="sc-info">
-                <span class="sc-name">{{ s.displayName }}</span>
-                <span class="sc-tag" [class.t-buy]="!s.sellingStrategy" [class.t-sell]="s.sellingStrategy">{{ s.sellingStrategy ? 'SELL' : 'BUY' }}</span>
-              </div>
-            </div>
-          }
+          <a class="link" routerLink="/strategies">Manage Strategies →</a>
         </div>
       </div>
 

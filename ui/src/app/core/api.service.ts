@@ -204,6 +204,13 @@ export class ApiService {
   runBacktestTune(underlying = 'NIFTY'): Observable<import('../pages/ai-insights-page.component').AiRecommendationDto> {
     return this.http.post<import('../pages/ai-insights-page.component').AiRecommendationDto>(`${this.base}/ai/backtest/sync-and-tune?underlying=${underlying}`, {});
   }
+
+  // ── ML Scorecard ──────────────────────────────────────────────────────
+  mlStatus(): Observable<any> { return this.http.get<any>(`${this.base}/ml/status`); }
+  mlShadow(period = 'TODAY'): Observable<any> { return this.http.get<any>(`${this.base}/ml/shadow?period=${period}`); }
+  mlReload(): Observable<any> { return this.http.post<any>(`${this.base}/ml/reload`, {}); }
+  mlGenerateTrainingData(): Observable<any> { return this.http.post<any>(`${this.base}/ml/training-data`, {}); }
+  mlVirtualTrades(): Observable<any> { return this.http.get<any>(`${this.base}/ml/virtual-trades`); }
 }
 
 function clean<T extends Record<string, unknown>>(value: T): Partial<T> {

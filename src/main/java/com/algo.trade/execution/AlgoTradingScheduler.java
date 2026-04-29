@@ -90,6 +90,7 @@ public class AlgoTradingScheduler {
     private final Map<String, Quote> previousQuotes = new ConcurrentHashMap<>();
     private final AtomicBoolean scanInProgress = new AtomicBoolean(false);
     private final Map<StrategyType, AbstractSpreadStrategy> spreadStrategyMap;
+    private final com.algo.trade.ml.MlShadowRecorder mlShadowRecorder;
 
     // Short-lived cache for underlying REST candles — avoids repeated REST calls within the same candle period.
     // Keyed by "instrumentKey:TIMEFRAME", expires after 60 seconds.
@@ -127,7 +128,8 @@ public class AlgoTradingScheduler {
             com.algo.trade.risk.WeeklyExposureTracker weeklyExposureTracker,
             com.algo.trade.risk.SafeWeekPredictor safeWeekPredictor,
             com.algo.trade.indicator.IVRankTracker ivRankTracker,
-            java.util.List<AbstractSpreadStrategy> spreadStrategies
+            java.util.List<AbstractSpreadStrategy> spreadStrategies,
+            com.algo.trade.ml.MlShadowRecorder mlShadowRecorder
     ) {
         this.properties = properties;
         this.globalConfigService = globalConfigService;
@@ -163,6 +165,7 @@ public class AlgoTradingScheduler {
             map.put(s.strategyType(), s);
         }
         this.spreadStrategyMap = java.util.Collections.unmodifiableMap(map);
+        this.mlShadowRecorder = mlShadowRecorder;
     }
 
     /**
@@ -195,7 +198,7 @@ public class AlgoTradingScheduler {
      */
     @Scheduled(
             initialDelayString = "${trading.algo.initial-delay-ms:5}",
-            fixedDelayString = "${trading.algo.scan-interval-ms:6}"
+            fixedDelayString = "${trading.algo.scan-interval-ms:60000}"
     )
     public void scan() {
         if (!tradingStateService.schedulerEnabled()) {
@@ -518,6 +521,21 @@ public class AlgoTradingScheduler {
                         BigDecimal estimatedPremium = enriched.optionPrice().orElse(enriched.underlyingPrice());
                         BigDecimal estimatedCost = estimatedPremium.multiply(
                                 BigDecimal.valueOf(config.getLots() * com.algo.trade.domain.IndexType.from(underlying).lotSize()));
+
+                        // Max open trades check for additional strategies (skip for paper trades)
+                        if (!config.isPaperTrading()) {
+                            int effectiveOpen = executionEngine.effectiveOpenTradeCount();
+                            if (effectiveOpen >= globalConfigService.getMaxOpenTrades()) {
+                                log.info("Entry blocked: max open trades reached ({} >= {})",
+                                        effectiveOpen, globalConfigService.getMaxOpenTrades());
+                                StrategyDecisionEntity blockedEntity = persistStrategyDecision(enriched, type.name(), config, ivRankSource);
+                                blockedEntity.setExecutionStage("NOT_EXECUTED");
+                                blockedEntity.setExecutionReason("Max open trades reached (" + effectiveOpen + "/" + globalConfigService.getMaxOpenTrades() + ")");
+                                decisionRepository.save(blockedEntity);
+                                continue;
+                            }
+                        }
+
                         if (!config.isPaperTrading() && !weeklyExposureTracker.canTrade(estimatedCost)) {
                             log.info("Entry blocked: weekly exposure cap reached (₹{}/₹{})",
                                     weeklyExposureTracker.getWeeklyExposure().setScale(0, java.math.RoundingMode.HALF_UP),
@@ -530,6 +548,41 @@ public class AlgoTradingScheduler {
                         }
 
                         boolean executed = false;
+                        // ML shadow recording for additional strategies
+                        try {
+                            String decisionKey = Integer.toUnsignedString(
+                                    (enriched.timestamp() + "|" + underlying + "|" + enriched.optionType().map(Enum::name).orElse("") + "|" + enriched.selectedInstrumentKey().orElse("")).hashCode(), 16);
+                            List<String> reasons = enriched.reasons();
+                            Map<String, String> csvData = Map.ofEntries(
+                                    Map.entry("underlyingPrice", String.valueOf(enriched.underlyingPrice())),
+                                    Map.entry("optionLastPrice", enriched.optionPrice().map(String::valueOf).orElse("0")),
+                                    Map.entry("optionVolume", "0"),
+                                    Map.entry("optionOpenInterest", enriched.optionOpenInterest().map(String::valueOf).orElse("0")),
+                                    Map.entry("optionImpliedVolatility", ""),
+                                    Map.entry("nearbyPutCallOiImbalance", enriched.imbalance().map(String::valueOf).orElse("0")),
+                                    Map.entry("nearbyCallOpenInterest", "0"),
+                                    Map.entry("nearbyPutOpenInterest", "0"),
+                                    Map.entry("resistanceCallOiChange", "0"),
+                                    Map.entry("supportPutOiChange", "0"),
+                                    Map.entry("ivRank", String.valueOf(ivRank)),
+                                    Map.entry("vwapPassed", String.valueOf(enriched.vwapConditionPassed())),
+                                    Map.entry("breakoutPassed", "false"),
+                                    Map.entry("volumeSpike", String.valueOf(enriched.volumeSpike())),
+                                    Map.entry("oiPassed", "false"),
+                                    Map.entry("ivPassed", "true"),
+                                    Map.entry("liquidityPassed", "true"),
+                                    Map.entry("rsiPassed", "true"),
+                                    Map.entry("optionType", enriched.optionType().map(Enum::name).orElse("CE")),
+                                    Map.entry("marketTime", marketTime.toString()),
+                                    Map.entry("underlying", underlying.name()),
+                                    Map.entry("confidenceScore", String.valueOf(enriched.confidenceScore()))
+                            );
+                            mlShadowRecorder.recordShadowScore(enriched, csvData, decisionKey,
+                                    globalConfigService.getMinSignalScorePercent());
+                        } catch (Exception e) {
+                            log.debug("ML shadow recording failed for {}: {}", type, e.getMessage());
+                        }
+
                         if (enriched.signalType().name().startsWith("BUY_")
                                 && enriched.selectedInstrumentKey().isPresent()) {
                             // Paper trading check: create simulated trade for full P&L tracking
@@ -880,7 +933,7 @@ public class AlgoTradingScheduler {
         }
 
         BigDecimal atm = nearestStrike(strikes, underlyingPrice);
-        int atmIndex = strikes.indexOf(atm);
+        int atmIndex = indexOfStrike(strikes, atm);
         int start = Math.max(0, atmIndex - properties.strike().nearbyStrikes());
         int end = Math.min(strikes.size(), atmIndex + properties.strike().nearbyStrikes() + 1);
         return strikes.subList(start, end);
@@ -942,7 +995,7 @@ public class AlgoTradingScheduler {
     private List<BigDecimal> candidateStrikes(OptionType optionType, List<BigDecimal> strikes,
                                               BigDecimal underlyingPrice) {
         BigDecimal atm = nearestStrike(strikes, underlyingPrice);
-        int atmIndex = strikes.indexOf(atm);
+        int atmIndex = indexOfStrike(strikes, atm);
         int start = Math.max(0, atmIndex - properties.strike().nearbyStrikes());
         int end = Math.min(strikes.size(), atmIndex + properties.strike().nearbyStrikes() + 1);
         List<BigDecimal> nearby = strikes.subList(start, end);
@@ -980,7 +1033,7 @@ public class AlgoTradingScheduler {
 
     private BigDecimal selectedStrikeFor(OptionType optionType, List<BigDecimal> strikes, BigDecimal underlyingPrice) {
         BigDecimal atm = nearestStrike(strikes, underlyingPrice);
-        int atmIndex = strikes.indexOf(atm);
+        int atmIndex = indexOfStrike(strikes, atm);
         return switch (properties.strike().selectionMode()) {
             case ATM -> atm;
             case ONE_STRIKE_ITM -> optionType == OptionType.CE
@@ -1115,10 +1168,49 @@ public class AlgoTradingScheduler {
                     entry.getKey(),
                     selectedQuote,
                     Optional.ofNullable(previousQuotes.get(selectedInstrument.instrumentKey())),
-                    ivRank
+                    ivRank,
+                    marketGuard.getCurrentVix(),
+                    expiryCalendar.daysToExpiry(com.algo.trade.domain.IndexType.fromName(underlying.name()))
             );
 
             StrategyDecision decision = strategy.evaluateEntry(request);
+
+            // ML shadow recording — observe ML score without affecting the decision
+            try {
+                String decisionKey = Integer.toUnsignedString(
+                        (request.timestamp() + "|" + request.underlying() + "|" + entry.getKey() + "|" + request.selectedInstrumentKey()).hashCode(), 16);
+                // Extract filter pass/fail from decision reasons for accurate ML features
+                List<String> reasons = decision.reasons();
+                Map<String, String> csvData = Map.ofEntries(
+                        Map.entry("underlyingPrice", String.valueOf(decision.underlyingPrice())),
+                        Map.entry("optionLastPrice", String.valueOf(selectedQuote.lastPrice())),
+                        Map.entry("optionVolume", String.valueOf(selectedQuote.volume())),
+                        Map.entry("optionOpenInterest", String.valueOf(selectedQuote.openInterest())),
+                        Map.entry("optionImpliedVolatility", selectedQuote.impliedVolatility().map(String::valueOf).orElse("")),
+                        Map.entry("nearbyPutCallOiImbalance", decision.imbalance().map(String::valueOf).orElse("0")),
+                        Map.entry("nearbyCallOpenInterest", "0"),
+                        Map.entry("nearbyPutOpenInterest", "0"),
+                        Map.entry("resistanceCallOiChange", "0"),
+                        Map.entry("supportPutOiChange", "0"),
+                        Map.entry("ivRank", String.valueOf(ivRank)),
+                        Map.entry("vwapPassed", String.valueOf(decision.vwapConditionPassed())),
+                        Map.entry("breakoutPassed", String.valueOf(reasonContains(reasons, "Breakout condition passed"))),
+                        Map.entry("volumeSpike", String.valueOf(decision.volumeSpike())),
+                        Map.entry("oiPassed", String.valueOf(reasonContains(reasons, "OI behavior supports"))),
+                        Map.entry("ivPassed", String.valueOf(reasonContains(reasons, "IV filter passed"))),
+                        Map.entry("liquidityPassed", String.valueOf(reasonContains(reasons, "Liquidity filter passed"))),
+                        Map.entry("rsiPassed", String.valueOf(reasonContains(reasons, "RSI momentum gate passed"))),
+                        Map.entry("optionType", entry.getKey().name()),
+                        Map.entry("marketTime", request.marketTime().toString()),
+                        Map.entry("underlying", request.underlying().name()),
+                        Map.entry("confidenceScore", String.valueOf(decision.confidenceScore()))
+                );
+                mlShadowRecorder.recordShadowScore(decision, csvData, decisionKey,
+                        globalConfigService.getMinSignalScorePercent());
+            } catch (Exception e) {
+                log.debug("ML shadow recording failed: {}", e.getMessage());
+            }
+
             if (decision.signalType().name().startsWith("BUY_")) {
                 log.info("Algo scan generated entry signal: underlying={}, instrument={}, signalType={}, premium={}",
                         underlying, selectedInstrument.instrumentKey(), decision.signalType(), selectedQuote.lastPrice());
@@ -1184,6 +1276,11 @@ public class AlgoTradingScheduler {
 
     private boolean freshQuote(Quote quote) {
         return quote.timestamp().plus(properties.safety().staleMarketDataThreshold()).isAfter(Instant.now());
+    }
+
+    /** Check if any reason string contains the given prefix (for ML shadow feature extraction). */
+    private static boolean reasonContains(List<String> reasons, String prefix) {
+        return reasons.stream().anyMatch(r -> r.contains(prefix));
     }
 
     private boolean freshCandles(List<Candle> candles) {
@@ -1281,6 +1378,13 @@ public class AlgoTradingScheduler {
         return strikes.stream()
                 .min(Comparator.comparing(strike -> strike.subtract(price).abs()))
                 .orElse(price);
+    }
+
+    private int indexOfStrike(List<BigDecimal> strikes, BigDecimal target) {
+        for (int i = 0; i < strikes.size(); i++) {
+            if (strikes.get(i).compareTo(target) == 0) return i;
+        }
+        return -1;
     }
 
     /**
