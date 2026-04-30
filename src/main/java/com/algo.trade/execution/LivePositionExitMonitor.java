@@ -68,6 +68,8 @@ public class LivePositionExitMonitor {
     private final Map<String, BigDecimal> trailingStops = new ConcurrentHashMap<>();
     // tradeId → set of progressive exit layer names that have already fired
     private final Map<String, Set<String>> firedLayers = new ConcurrentHashMap<>();
+    // per-trade mutex — serializes concurrent evaluations when multiple CandleClosedEvents fire simultaneously
+    private final Map<String, Object> evaluationLocks = new ConcurrentHashMap<>();
 
     public LivePositionExitMonitor(TradeRepository tradeRepository,
                                     ExecutionEngine executionEngine,
@@ -113,6 +115,21 @@ public class LivePositionExitMonitor {
     }
 
     private void evaluate(TradeEntity trade) {
+        Object lock = evaluationLocks.computeIfAbsent(trade.getTradeId(), id -> new Object());
+        synchronized (lock) {
+            // Re-fetch to get the latest @Version and status — the batch-loaded entity can be stale
+            // when multiple CandleClosedEvent threads evaluate the same trade concurrently,
+            // causing OptimisticLockException on subsequent saves.
+            TradeEntity t = tradeRepository.findById(trade.getTradeId()).orElse(null);
+            if (t == null || t.getStatus() != TradeStatus.OPEN) return;
+            evaluateInternal(t);
+        }
+    }
+
+    private void evaluateInternal(TradeEntity trade) {
+        // Re-check status — trade may have been closed by another monitor since the batch query
+        if (trade.getStatus() != TradeStatus.OPEN) return;
+
         // Spread positions are managed exclusively by SpreadPositionExitMonitor
         StrategyConfig cfg = resolveConfig(trade);
         if (cfg.getStrategyType().isSpreadStrategy()) {
@@ -120,6 +137,46 @@ public class LivePositionExitMonitor {
                     trade.getTradeId(), cfg.getStrategyType());
             return;
         }
+
+        BigDecimal entryPrice = trade.getEntryPrice();
+        StrategyConfig config = cfg;
+
+        // ── Time-based exits run FIRST — they don't need a live quote ─────────
+
+        // Per-strategy squareoff time check (non-expiry days)
+        LocalTime now = LocalTime.now(java.time.ZoneId.of("Asia/Kolkata"));
+        LocalTime squareoffTime = LocalTime.of(config.getSquareoffHour(), config.getSquareoffMinute());
+
+        // Max hold time: close if trade has been open longer than configured maxHoldMinutes
+        // Checked BEFORE quote lookup — time-based exits must not be blocked by missing quotes
+        if (config.getMaxHoldMinutes() > 0 && trade.getEntryTime() != null) {
+            long holdMinutes = java.time.Duration.between(trade.getEntryTime(), java.time.Instant.now()).toMinutes();
+            if (holdMinutes >= config.getMaxHoldMinutes()) {
+                BigDecimal exitPrice = resolveExitPrice(trade);
+                double holdProfitPct = profitPercent(entryPrice, exitPrice);
+                log.info("[ExitMonitor] MAX HOLD TIME reached: tradeId={} instrument={} hold={}min max={}min profit={}%",
+                        trade.getTradeId(), trade.getInstrumentKey(), holdMinutes, config.getMaxHoldMinutes(),
+                        String.format("%.1f", holdProfitPct));
+                telegramAlertService.systemAlert(String.format(
+                        "⏱️ Max Hold Time: %s | Hold %dmin (max %d) | P&L %.1f%%",
+                        trade.getInstrumentKey(), holdMinutes, config.getMaxHoldMinutes(), holdProfitPct));
+                close(trade, exitPrice, "MAX_HOLD_TIME");
+                return;
+            }
+        }
+
+        if (now.isAfter(squareoffTime) || now.equals(squareoffTime)) {
+            BigDecimal exitPrice = resolveExitPrice(trade);
+            log.info("[ExitMonitor] SQUAREOFF TIME reached: tradeId={} instrument={} squareoff={}",
+                    trade.getTradeId(), trade.getInstrumentKey(), squareoffTime);
+            telegramAlertService.systemAlert(String.format(
+                    "⏰ Squareoff Time: %s | Current ₹%.2f | Time %s",
+                    trade.getInstrumentKey(), exitPrice.doubleValue(), squareoffTime));
+            close(trade, exitPrice, "SQUAREOFF_TIME");
+            return;
+        }
+
+        // ── Price-based exits require a live quote ────────────────────────────
 
         Optional<Quote> quoteOpt = marketDataService.quote(trade.getInstrumentKey());
         if (quoteOpt.isEmpty()) {
@@ -152,40 +209,8 @@ public class LivePositionExitMonitor {
             return;
         }
 
-        BigDecimal entryPrice = trade.getEntryPrice();
-        StrategyConfig config = cfg;
-
         // Populate entry Greeks if not yet set (first evaluation after entry)
         populateEntryGreeksIfMissing(trade);
-
-        // Per-strategy squareoff time check (non-expiry days)
-        LocalTime now = LocalTime.now(java.time.ZoneId.of("Asia/Kolkata"));
-        LocalTime squareoffTime = LocalTime.of(config.getSquareoffHour(), config.getSquareoffMinute());
-        if (now.isAfter(squareoffTime) || now.equals(squareoffTime)) {
-            log.info("[ExitMonitor] SQUAREOFF TIME reached: tradeId={} instrument={} squareoff={}",
-                    trade.getTradeId(), trade.getInstrumentKey(), squareoffTime);
-            telegramAlertService.systemAlert(String.format(
-                    "⏰ Squareoff Time: %s | Current ₹%.2f | Time %s",
-                    trade.getInstrumentKey(), currentPrice.doubleValue(), squareoffTime));
-            close(trade, currentPrice, "SQUAREOFF_TIME");
-            return;
-        }
-
-        // Max hold time: close if trade has been open longer than configured maxHoldMinutes
-        if (config.getMaxHoldMinutes() > 0 && trade.getEntryTime() != null) {
-            long holdMinutes = java.time.Duration.between(trade.getEntryTime(), java.time.Instant.now()).toMinutes();
-            if (holdMinutes >= config.getMaxHoldMinutes()) {
-                double holdProfitPct = profitPercent(entryPrice, currentPrice);
-                log.info("[ExitMonitor] MAX HOLD TIME reached: tradeId={} instrument={} hold={}min max={}min profit={}%",
-                        trade.getTradeId(), trade.getInstrumentKey(), holdMinutes, config.getMaxHoldMinutes(),
-                        String.format("%.1f", holdProfitPct));
-                telegramAlertService.systemAlert(String.format(
-                        "⏱️ Max Hold Time: %s | Hold %dmin (max %d) | P&L %.1f%%",
-                        trade.getInstrumentKey(), holdMinutes, config.getMaxHoldMinutes(), holdProfitPct));
-                close(trade, currentPrice, "MAX_HOLD_TIME");
-                return;
-            }
-        }
 
         // Days-to-expiry SL scaling: tighter SL as expiry approaches
         long daysToExpiry = expiryCalendar.daysToExpiry(indexType);
@@ -220,13 +245,15 @@ public class LivePositionExitMonitor {
         boolean useAtrExits = atr > 0 && entryPrice.doubleValue() > 0;
         List<com.algo.trade.domain.Candle> candles1m = liveCandleBuilder.getHistory(instrumentToken, com.algo.trade.domain.Timeframe.ONE_MINUTE);
 
-        // Dynamic SL: ATR-based when available, fixed % as fallback
+        // Dynamic SL: ATR-based when available, capped by config SL (never wider than configured)
+        double configSlPct = config.getStopLossPercent().doubleValue() * slMultiplier;
         double slPct;
         if (useAtrExits) {
-            slPct = dynamicExitManager.calculateDynamicSL(entryPrice.doubleValue(), atr, (int) daysToExpiry);
-                log.debug("[ExitMonitor] ATR-based SL: {}% (ATR={}, entry={})", String.format("%.1f", slPct), String.format("%.1f", atr), entryPrice);
+            double atrSl = dynamicExitManager.calculateDynamicSL(entryPrice.doubleValue(), atr, (int) daysToExpiry);
+            slPct = Math.min(atrSl, configSlPct);
+            log.debug("[ExitMonitor] ATR-based SL: {}% (ATR={}, entry={}, configCap={}%)", String.format("%.1f", slPct), String.format("%.1f", atr), entryPrice, String.format("%.1f", configSlPct));
         } else {
-            slPct = config.getStopLossPercent().doubleValue() * slMultiplier;
+            slPct = configSlPct;
         }
 
         // Dynamic target: ATR-based when available
@@ -269,12 +296,31 @@ public class LivePositionExitMonitor {
         }
 
         // ── 3. Trailing Stop ──────────────────────────────────────────────────
+        // Use trailing params locked at entry time (appliedTrailing*) so mid-trade config changes
+        // don't alter the trailing behavior. Fall back to current config if not set (legacy trades).
+        BigDecimal trailActivation = trade.getAppliedTrailingStopActivationPercent() != null
+                ? trade.getAppliedTrailingStopActivationPercent()
+                : config.getTrailingStopActivationPercent();
+        BigDecimal trailGap = trade.getAppliedTrailingGapPercent() != null
+                ? trade.getAppliedTrailingGapPercent()
+                : config.getTrailingGapPercent();
+
+        // Recover trailing stop from DB if not in memory (restart recovery)
+        if (!trailingStops.containsKey(trade.getTradeId()) && trade.getTrailingStopPrice() != null) {
+            trailingStops.put(trade.getTradeId(), trade.getTrailingStopPrice());
+        }
+
         Optional<BigDecimal> currentStop = Optional.ofNullable(trailingStops.get(trade.getTradeId()));
         Optional<BigDecimal> updatedStop = trailingStopService.nextStop(entryPrice, peak, currentStop,
-                config.getTrailingStopActivationPercent(), config.getTrailingGapPercent());
+                trailActivation, trailGap);
 
         if (updatedStop.isPresent()) {
             trailingStops.put(trade.getTradeId(), updatedStop.get());
+            // Persist trailing stop price to DB for restart recovery
+            if (!updatedStop.get().equals(trade.getTrailingStopPrice())) {
+                trade.setTrailingStopPrice(updatedStop.get());
+                tradeRepository.save(trade);
+            }
             if (trailingStopService.isStopHit(currentPrice, updatedStop.get())) {
                 log.info("[ExitMonitor] TRAILING STOP hit: tradeId={} instrument={} current={} stop={} profit={}%",
                         trade.getTradeId(), trade.getInstrumentKey(), currentPrice,
@@ -432,6 +478,17 @@ public class LivePositionExitMonitor {
             log.warn("[ExitMonitor] Failed to close trade {} — retaining trailing stop state for next evaluation: {}",
                     trade.getTradeId(), e.getMessage());
         }
+    }
+
+    /**
+     * Resolve exit price: live quote if available, fallback to entry price.
+     * Used by time-based exits (max hold, squareoff) that must not be blocked by missing quotes.
+     */
+    private BigDecimal resolveExitPrice(TradeEntity trade) {
+        return marketDataService.quote(trade.getInstrumentKey())
+                .map(q -> q.lastPrice())
+                .filter(p -> p != null && p.signum() > 0)
+                .orElse(trade.getEntryPrice());
     }
 
     /**

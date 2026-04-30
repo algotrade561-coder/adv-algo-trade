@@ -33,16 +33,19 @@ public class MonitoringController {
     private final LiveInstrumentCache liveInstrumentCache;
     private final com.algo.trade.marketdata.ExpiryCalendar expiryCalendar;
     private final com.algo.trade.persistence.StrategyDecisionRepository decisionRepository;
+    private final com.algo.trade.marketdata.PcrCalculator pcrCalculator;
 
     public MonitoringController(ReportingService reportingService, MarketGuard marketGuard,
                                  LiveInstrumentCache liveInstrumentCache,
                                  com.algo.trade.marketdata.ExpiryCalendar expiryCalendar,
-                                 com.algo.trade.persistence.StrategyDecisionRepository decisionRepository) {
+                                 com.algo.trade.persistence.StrategyDecisionRepository decisionRepository,
+                                 com.algo.trade.marketdata.PcrCalculator pcrCalculator) {
         this.reportingService = reportingService;
         this.marketGuard = marketGuard;
         this.liveInstrumentCache = liveInstrumentCache;
         this.expiryCalendar = expiryCalendar;
         this.decisionRepository = decisionRepository;
+        this.pcrCalculator = pcrCalculator;
     }
 
     @GetMapping("/market")
@@ -51,11 +54,9 @@ public class MonitoringController {
         double nifty    = liveInstrumentCache.getFuturesPrice(IndexType.NIFTY);
         double banknifty = liveInstrumentCache.getFuturesPrice(IndexType.BANKNIFTY);
 
-        // Compute PCR live from option OI in LiveInstrumentCache
-        // This updates on every tick, not just every candle close
-        double pcr = computeLivePcr(IndexType.NIFTY);
-        if (pcr > 0) marketGuard.updatePcr(pcr); // keep MarketGuard in sync
-        else pcr = marketGuard.getCurrentPcr();   // fall back to last known value
+        // Use full-chain PCR from PcrCalculator (all strikes, not just subscribed)
+        double pcr = pcrCalculator.getPcr();
+        if (pcr <= 0) pcr = marketGuard.getCurrentPcr(); // fall back to last known value
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("vix", vix);
@@ -70,28 +71,6 @@ public class MonitoringController {
         result.put("safeForLongPremium", marketGuard.isSafeForLongPremium());
         result.put("longPremiumBlockReason", marketGuard.longPremiumBlockReason());
         return result;
-    }
-
-    /** Compute PCR from live OI in LiveInstrumentCache — updates on every tick. */
-    private double computeLivePcr(IndexType indexType) {
-        try {
-            double spot = liveInstrumentCache.getFuturesPrice(indexType);
-            if (spot <= 0) return 0;
-            java.time.LocalDate expiry = expiryCalendar.getCurrentWeeklyExpiry(indexType);
-            var chain = liveInstrumentCache.getStrikeChain(indexType, expiry);
-            if (chain.isEmpty()) return 0;
-            long totalCallOi = chain.stream()
-                    .filter(o -> "CE".equals(o.getOptionType()))
-                    .mapToLong(com.algo.trade.domain.OptionInstrument::getOpenInterest)
-                    .sum();
-            long totalPutOi = chain.stream()
-                    .filter(o -> "PE".equals(o.getOptionType()))
-                    .mapToLong(com.algo.trade.domain.OptionInstrument::getOpenInterest)
-                    .sum();
-            return totalCallOi > 0 ? (double) totalPutOi / totalCallOi : 0;
-        } catch (Exception e) {
-            return 0;
-        }
     }
 
     private String vixStatus(double vix) {

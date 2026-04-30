@@ -105,6 +105,7 @@ public class GlobalConfigController {
         m.put("cooldownMinutes", c.getCooldownMinutes());
         m.put("dailyProfitTarget", c.getDailyProfitTarget());
         m.put("maxLotsPerTrade", c.getMaxLotsPerTrade());
+        m.put("mlVirtualTradeThreshold", c.getMlVirtualTradeThreshold());
         return m;
     }
 }

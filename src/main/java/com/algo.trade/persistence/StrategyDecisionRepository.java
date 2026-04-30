@@ -71,6 +71,9 @@ public interface StrategyDecisionRepository extends JpaRepository<StrategyDecisi
            "ORDER BY s.timestamp DESC")
     List<StrategyDecisionEntity> findEntrySignalsSince(java.time.Instant since);
 
+    /** Bulk delete decisions older than a given instant — used by EOD cleanup job. */
+    void deleteByTimestampBefore(java.time.Instant before);
+
     /** Filtered paginated signals with optional criteria. */
     @Query("SELECT s FROM StrategyDecisionEntity s WHERE s.signalType IN :signalTypes " +
            "AND (:from IS NULL OR s.timestamp >= :from) " +

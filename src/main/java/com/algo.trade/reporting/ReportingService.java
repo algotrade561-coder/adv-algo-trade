@@ -44,22 +44,45 @@ public class ReportingService {
     private final OrderRepository orderRepository;
     private final StrategyDecisionRepository decisionRepository;
     private final EntrySignalReplayReportService replayReportService;
+    private final com.algo.trade.marketdata.MarketDataService marketDataService;
 
     public ReportingService(BrokerClient brokerClient, TradeRepository tradeRepository, OrderRepository orderRepository,
                             StrategyDecisionRepository decisionRepository,
-                            EntrySignalReplayReportService replayReportService) {
+                            EntrySignalReplayReportService replayReportService,
+                            com.algo.trade.marketdata.MarketDataService marketDataService) {
         this.brokerClient = brokerClient;
         this.tradeRepository = tradeRepository;
         this.orderRepository = orderRepository;
         this.decisionRepository = decisionRepository;
         this.replayReportService = replayReportService;
+        this.marketDataService = marketDataService;
     }
 
     public List<Position> positions() {
         log.debug("Reporting positions requested");
-        List<Position> positions = brokerClient.positions();
-        log.debug("Reporting positions completed: count={}", positions.size());
-        return positions;
+        List<Position> livePositions = brokerClient.positions();
+        // Merge open paper trades as positions — Zerodha has no record of them
+        List<Position> paperPositions = tradeRepository
+                .findByStatus(com.algo.trade.domain.TradeStatus.OPEN).stream()
+                .filter(TradeEntity::isPaperTrade)
+                .map(t -> {
+                    BigDecimal entry = t.getEntryPrice() != null ? t.getEntryPrice() : BigDecimal.ZERO;
+                    BigDecimal last = marketDataService.quote(t.getInstrumentKey())
+                            .map(q -> q.lastPrice())
+                            .filter(p -> p != null && p.signum() > 0)
+                            .orElse(entry);
+                    boolean isShort = t.getEntryReason() != null
+                            && (t.getEntryReason().contains("[SELL_CE]") || t.getEntryReason().contains("[SELL_PE]"));
+                    BigDecimal unrealized = isShort
+                            ? entry.subtract(last).multiply(BigDecimal.valueOf(t.getQuantity()))
+                            : last.subtract(entry).multiply(BigDecimal.valueOf(t.getQuantity()));
+                    return new Position(t.getInstrumentKey(), t.getQuantity(), entry, last, unrealized);
+                })
+                .toList();
+        List<Position> combined = new java.util.ArrayList<>(livePositions);
+        combined.addAll(paperPositions);
+        log.debug("Reporting positions completed: live={} paper={}", livePositions.size(), paperPositions.size());
+        return combined;
     }
 
     public List<OrderEntity> orders() {

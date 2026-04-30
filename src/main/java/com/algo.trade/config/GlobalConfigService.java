@@ -18,7 +18,7 @@ import java.util.List;
  * Seeds from {@link TradingProperties} on first startup; caches in memory for hot-path reads.
  */
 @Service
-@DependsOn("databaseSchemaMigration")
+@DependsOn({"databaseSchemaMigration", "configSeedLoader"})
 public class GlobalConfigService {
 
     private static final Logger log = LoggerFactory.getLogger(GlobalConfigService.class);
@@ -162,6 +162,8 @@ public class GlobalConfigService {
     public BigDecimal getDailyProfitTarget() { return cached.getDailyProfitTarget(); }
 
     public int getMaxLotsPerTrade() { return cached.getMaxLotsPerTrade(); }
+
+    public BigDecimal getMlVirtualTradeThreshold() { return cached.getMlVirtualTradeThreshold(); }
 
     // ── Write operations ──────────────────────────────────────
 

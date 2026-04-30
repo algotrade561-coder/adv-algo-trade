@@ -29,10 +29,19 @@ public class IVRankTracker {
     private static final int MAX_SAMPLES = 252; // ~1 trading year
 
     private final Map<IndexType, Deque<IVSample>> history = new ConcurrentHashMap<>();
-    private final com.algo.trade.persistence.IVSampleRepository ivSampleRepository;
+    private static final int GREEKS_RETENTION_DAYS = 30;
+    private static final int DECISIONS_RETENTION_DAYS = 90;
 
-    public IVRankTracker(com.algo.trade.persistence.IVSampleRepository ivSampleRepository) {
+    private final com.algo.trade.persistence.IVSampleRepository ivSampleRepository;
+    private final com.algo.trade.persistence.GreeksSampleRepository greeksSampleRepository;
+    private final com.algo.trade.persistence.StrategyDecisionRepository strategyDecisionRepository;
+
+    public IVRankTracker(com.algo.trade.persistence.IVSampleRepository ivSampleRepository,
+                         com.algo.trade.persistence.GreeksSampleRepository greeksSampleRepository,
+                         com.algo.trade.persistence.StrategyDecisionRepository strategyDecisionRepository) {
         this.ivSampleRepository = ivSampleRepository;
+        this.greeksSampleRepository = greeksSampleRepository;
+        this.strategyDecisionRepository = strategyDecisionRepository;
     }
 
     /** Load persisted IV history from DB on startup. */
@@ -130,11 +139,26 @@ public class IVRankTracker {
                 if (cleanup) {
                     ivSampleRepository.deleteByIndexTypeAndSampleDateBefore(
                             index.name(), LocalDate.now().minusDays(365));
+                    greeksSampleRepository.deleteByIndexTypeAndCapturedAtBefore(
+                            index.name(), java.time.Instant.now().minus(
+                                    java.time.Duration.ofDays(GREEKS_RETENTION_DAYS)));
                 }
+
             } catch (Exception e) {
                 log.debug("[IVRank] Failed to persist IV sample for {}: {}", index, e.getMessage());
             }
         });
+
+        if (cleanup) {
+            try {
+                java.time.Instant decisionCutoff = java.time.Instant.now()
+                        .minus(java.time.Duration.ofDays(DECISIONS_RETENTION_DAYS));
+                strategyDecisionRepository.deleteByTimestampBefore(decisionCutoff);
+                log.info("[EOD cleanup] Deleted strategy decisions older than {} days", DECISIONS_RETENTION_DAYS);
+            } catch (Exception e) {
+                log.warn("[EOD cleanup] Strategy decision purge failed: {}", e.getMessage());
+            }
+        }
     }
 
     private List<IVSample> getSamples(IndexType indexType) {

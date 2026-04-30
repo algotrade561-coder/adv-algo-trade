@@ -332,9 +332,19 @@ public class ExecutionEngine {
             return ExecutionResult.rejected(List.of("Close already in progress"));
         }
         try {
-            return doCloseTrade(tradeId, lastPrice, reason);
-        } finally {
+            ExecutionResult result = doCloseTrade(tradeId, lastPrice, reason);
+            if (result.accepted()) {
+                // Keep tradeId in closingInProgress permanently — prevents any subsequent
+                // close attempts from other monitors (MaxHoldExitMonitor, FailSafe, etc.)
+                // that may fire before they re-read the CLOSED status from DB.
+                log.debug("Trade {} closed successfully — retaining close guard", tradeId);
+            } else {
+                closingInProgress.remove(tradeId);
+            }
+            return result;
+        } catch (Exception e) {
             closingInProgress.remove(tradeId);
+            throw e;
         }
     }
 
@@ -419,7 +429,11 @@ public class ExecutionEngine {
         }
 
         BigDecimal exitPrice = order.averageFillPrice().orElse(lastPrice);
-        BigDecimal realizedPnl = exitPrice.subtract(trade.getEntryPrice()).multiply(BigDecimal.valueOf(trade.getQuantity()));
+        boolean isShortEntry = trade.getEntryReason() != null
+                && (trade.getEntryReason().contains("[SELL_CE]") || trade.getEntryReason().contains("[SELL_PE]"));
+        BigDecimal realizedPnl = isShortEntry
+                ? trade.getEntryPrice().subtract(exitPrice).multiply(BigDecimal.valueOf(trade.getQuantity()))
+                : exitPrice.subtract(trade.getEntryPrice()).multiply(BigDecimal.valueOf(trade.getQuantity()));
         trade.close(exitPrice, Instant.now(clock), realizedPnl, reason);
         tradeRepository.save(trade);
         executionOutcomeCsvRecorder.recordExit(trade, exitPrice, realizedPnl, reason, order);
@@ -485,7 +499,11 @@ public class ExecutionEngine {
             return ExecutionResult.rejected(List.of("Partial exit order not filled: " + order.status()));
         }
         BigDecimal exitPrice = order.averageFillPrice().orElse(lastPrice);
-        BigDecimal partialPnl = exitPrice.subtract(trade.getEntryPrice()).multiply(BigDecimal.valueOf(partialQuantity));
+        boolean isShortPartial = trade.getEntryReason() != null
+                && (trade.getEntryReason().contains("[SELL_CE]") || trade.getEntryReason().contains("[SELL_PE]"));
+        BigDecimal partialPnl = isShortPartial
+                ? trade.getEntryPrice().subtract(exitPrice).multiply(BigDecimal.valueOf(partialQuantity))
+                : exitPrice.subtract(trade.getEntryPrice()).multiply(BigDecimal.valueOf(partialQuantity));
         trade.partialClose(partialQuantity, partialPnl, layerReason);
         tradeRepository.save(trade);
         log.info("Partial close filled: tradeId={}, layer={}, qty={}, exitPrice={}, partialPnl={}, remainingQty={}",
@@ -577,6 +595,16 @@ public class ExecutionEngine {
         // Use strategy type stored on the order entity at placement time
         if (orderEntity.getStrategyType() != null && !orderEntity.getStrategyType().isBlank()) {
             trade.setStrategyType(orderEntity.getStrategyType());
+            // Set trailing stop params from the strategy config so exit monitors use consistent values
+            try {
+                StrategyConfig entryConfig = strategyConfigService.getConfig(
+                        com.algo.trade.strategy.StrategyType.valueOf(orderEntity.getStrategyType()), underlying);
+                trade.setAppliedTrailingStopActivationPercent(entryConfig.getTrailingStopActivationPercent());
+                trade.setAppliedTrailingGapPercent(entryConfig.getTrailingGapPercent());
+            } catch (IllegalArgumentException ignored) {
+                log.debug("Unknown strategy type on order {}: {} — trailing params not set",
+                        orderEntity.getClientOrderId(), orderEntity.getStrategyType());
+            }
         }
         tradeRepository.save(trade);
 

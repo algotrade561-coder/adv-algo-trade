@@ -273,6 +273,11 @@ import { ApiService, GlobalConfigDto } from '../core/api.service';
               <input matInput type="number" min="1" [(ngModel)]="config.maxLotsPerTrade">
               <mat-hint>Hard cap on lots per single order — safety limit</mat-hint>
             </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>ML Virtual Trade Threshold</mat-label>
+              <input matInput type="number" step="1" min="0" max="100" [(ngModel)]="config.mlVirtualTradeThreshold">
+              <mat-hint>ML score threshold for virtual trades (independent of signal score). Lower = more virtual trades.</mat-hint>
+            </mat-form-field>
           </div>
         }
 

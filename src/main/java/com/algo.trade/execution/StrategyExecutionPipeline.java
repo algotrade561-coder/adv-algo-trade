@@ -152,7 +152,8 @@ public class StrategyExecutionPipeline {
                     Map.entry("ivSkew", String.valueOf(ivSkew))
             );
             mlShadowRecorder.recordShadowScore(decision, csvData, decisionKey,
-                    globalConfigService.getMinSignalScorePercent());
+                    globalConfigService.getMinSignalScorePercent(),
+                    globalConfigService.getMlVirtualTradeThreshold());
         } catch (Exception e) {
             log.debug("ML shadow recording failed: {}", e.getMessage());
         }

@@ -85,7 +85,8 @@ public class MlShadowRecorder {
             StrategyDecision decision,
             Map<String, String> csvRowData,
             String decisionKey,
-            BigDecimal minScoreThreshold
+            BigDecimal minScoreThreshold,
+            BigDecimal mlVirtualTradeThreshold
     ) {
         if (!scorer.isModelLoaded()) return;
 
@@ -103,6 +104,11 @@ public class MlShadowRecorder {
             boolean systemDecision = decision.signalType().name().startsWith("BUY_");
             boolean mlWouldDecide = mlScore >= minScoreThreshold.intValue();
             boolean agree = systemDecision == mlWouldDecide;
+
+            // For virtual trades, use the separate (lower) ML threshold
+            // Fall back to minScoreThreshold if mlVirtualTradeThreshold is not yet set (pre-migration DB rows)
+            BigDecimal effectiveMlThreshold = mlVirtualTradeThreshold != null ? mlVirtualTradeThreshold : minScoreThreshold;
+            boolean mlWouldEnterVirtual = mlScore >= effectiveMlThreshold.intValue();
 
             String row = String.join(",",
                     csv(decision.timestamp().toString()),
@@ -133,13 +139,14 @@ public class MlShadowRecorder {
                         systemDecision, mlWouldDecide));
             }
 
-            // ML says ENTER but system says SKIP → open a virtual trade to track what would happen
-            if (mlWouldDecide && !systemDecision) {
+            // ML says ENTER (at virtual trade threshold) but system says SKIP → open a virtual trade
+            if (mlWouldEnterVirtual && !systemDecision) {
                 String instrumentKey = decision.selectedInstrumentKey().orElse(null);
                 BigDecimal premium = decision.optionPrice().orElse(null);
                 if (instrumentKey != null && premium != null && premium.signum() > 0) {
+                    String strategyType = csvRowData.getOrDefault("strategyType", "DIRECTIONAL_BUY");
                     virtualTradeTracker.openVirtualTrade(decision, instrumentKey, premium,
-                            systemScore, mlScore, mlProbability);
+                            systemScore, mlScore, mlProbability, strategyType);
                 }
             }
 

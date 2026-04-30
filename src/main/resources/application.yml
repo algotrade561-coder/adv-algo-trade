@@ -130,7 +130,7 @@ spring:
 
 logging:
   level:
-    com.algo.trade: INFO
+    com.algo.trade: DEBUG
 
 # ── Position Sync ─────────────────────────────────────────────────────────
 # manage-synced-trades: true  → SYNC'd positions are managed by SL/target/maxHold/squareoff (crash recovery)

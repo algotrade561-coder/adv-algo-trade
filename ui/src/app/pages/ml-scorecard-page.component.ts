@@ -268,6 +268,7 @@ import { ApiService } from '../core/api.service';
               <thead>
                 <tr>
                   <th>Entry Time</th>
+                  <th>Strategy</th>
                   <th>Instrument</th>
                   <th>Entry ₹</th>
                   <th>Current ₹</th>
@@ -282,6 +283,7 @@ import { ApiService } from '../core/api.service';
                 @for (t of vtData()!.openTradesList; track t['virtualTradeId']) {
                   <tr>
                     <td class="mono">{{ formatTime(t['entryTime']) }}</td>
+                    <td><span class="badge badge-strat">{{ t['strategyType'] }}</span></td>
                     <td>{{ t['instrumentKey'] }}</td>
                     <td class="mono">{{ t['entryPrice'] }}</td>
                     <td class="mono">{{ t['currentPrice'] }}</td>
@@ -305,6 +307,7 @@ import { ApiService } from '../core/api.service';
               <thead>
                 <tr>
                   <th>Entry Time</th>
+                  <th>Strategy</th>
                   <th>Instrument</th>
                   <th>Entry ₹</th>
                   <th>Exit ₹</th>
@@ -320,6 +323,7 @@ import { ApiService } from '../core/api.service';
                 @for (t of vtData()!.completedTradesList; track t['virtualTradeId']) {
                   <tr [ngClass]="t['status'] === 'PROFIT' ? 'row-profit' : 'row-loss'">
                     <td class="mono">{{ formatTime(t['entryTime']) }}</td>
+                    <td><span class="badge badge-strat">{{ t['strategyType'] }}</span></td>
                     <td>{{ t['instrumentKey'] }}</td>
                     <td class="mono">{{ t['entryPrice'] }}</td>
                     <td class="mono">{{ t['exitPrice'] }}</td>

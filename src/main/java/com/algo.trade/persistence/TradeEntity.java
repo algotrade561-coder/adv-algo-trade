@@ -53,6 +53,8 @@ public class TradeEntity {
     private BigDecimal appliedTrailingStopActivationPercent;
     /** Trailing gap % applied at entry time — stored so exit monitors use consistent params after config changes. */
     private BigDecimal appliedTrailingGapPercent;
+    /** Current trailing stop price — persisted so it survives restarts. Null until trailing stop activates. */
+    private BigDecimal trailingStopPrice;
 
     protected TradeEntity() {
     }
@@ -124,4 +126,6 @@ public class TradeEntity {
     public void setAppliedTrailingStopActivationPercent(BigDecimal v) { this.appliedTrailingStopActivationPercent = v; }
     public BigDecimal getAppliedTrailingGapPercent() { return appliedTrailingGapPercent; }
     public void setAppliedTrailingGapPercent(BigDecimal v) { this.appliedTrailingGapPercent = v; }
+    public BigDecimal getTrailingStopPrice() { return trailingStopPrice; }
+    public void setTrailingStopPrice(BigDecimal v) { this.trailingStopPrice = v; }
 }

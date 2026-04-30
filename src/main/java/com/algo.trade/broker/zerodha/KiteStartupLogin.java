@@ -35,6 +35,7 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
     private final com.algo.trade.marketdata.InstrumentCache instrumentCache;
     private final com.algo.trade.marketdata.MarketDataService marketDataService;
     private final com.algo.trade.marketdata.LiveCandleBuilder candleBuilder;
+    private final com.algo.trade.persistence.TradeRepository tradeRepository;
 
     public KiteStartupLogin(
             TradingProperties properties,
@@ -45,7 +46,8 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
             com.algo.trade.marketdata.LiveInstrumentCache liveInstrumentCache,
             com.algo.trade.marketdata.InstrumentCache instrumentCache,
             com.algo.trade.marketdata.MarketDataService marketDataService,
-            com.algo.trade.marketdata.LiveCandleBuilder candleBuilder
+            com.algo.trade.marketdata.LiveCandleBuilder candleBuilder,
+            com.algo.trade.persistence.TradeRepository tradeRepository
     ) {
         this.properties = properties;
         this.tokenStore = tokenStore;
@@ -56,6 +58,7 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
         this.instrumentCache = instrumentCache;
         this.marketDataService = marketDataService;
         this.candleBuilder = candleBuilder;
+        this.tradeRepository = tradeRepository;
     }
 
     @Override
@@ -175,8 +178,8 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
                         optionTokens.clear();
                         for (var underlying : tradingStateService.enabledUnderlyings()) {
                             var indexType = com.algo.trade.domain.IndexType.from(underlying);
-                            var expiryCal = new com.algo.trade.marketdata.ExpiryCalendar();
-                            var expiry = expiryCal.getCurrentWeeklyExpiry(indexType);
+                            var expiry = instrumentCache.nearestExpiry(underlying, java.time.LocalDate.now(properties.timezone()))
+                                    .orElseGet(() -> new com.algo.trade.marketdata.ExpiryCalendar().getCurrentWeeklyExpiry(indexType));
                             var subscriptionTokens = liveInstrumentCache.getSubscriptionTokens(indexType, expiry, 10);
                             if (subscriptionTokens.isEmpty()) {
                                 // Spot not arrived via WS yet — try REST quote
@@ -202,6 +205,8 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
                     if (!optionTokens.isEmpty()) {
                         var allTokens = new java.util.ArrayList<>(tokens);
                         allTokens.addAll(optionTokens);
+                        // Include tokens for open trades so exit monitors get live quotes from startup
+                        allTokens.addAll(openTradeTokens());
                         webSocketClient.subscribe(allTokens);
                         log.info("WebSocket subscribed with {} option tokens after {}ms", optionTokens.size(), attemptMs);
                     } else {
@@ -235,7 +240,8 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
                 Math.min(optionTokens.size(), 40));
 
         // Seed VIX 15-minute candles for detectVixTrend()
-        seedTokenCandles(264969L, "NSE:INDIA VIX", com.algo.trade.domain.Timeframe.FIFTEEN_MINUTE);
+        long vixToken = 264969L;
+        seedTokenCandles(vixToken, "NSE:" + vixToken, com.algo.trade.domain.Timeframe.FIFTEEN_MINUTE);
 
         // Seed 1-minute candles for up to 40 option tokens (ATM-nearest first)
         int seeded = 0;
@@ -243,7 +249,7 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
             if (seeded >= 40) break;
             var opt = liveInstrumentCache.getByToken(token);
             if (opt.isEmpty()) continue;
-            String instrumentKey = opt.get().getExchange() + ":" + opt.get().getTradingSymbol();
+            String instrumentKey = opt.get().getExchange() + ":" + token;
             seedTokenCandles(token, instrumentKey, com.algo.trade.domain.Timeframe.ONE_MINUTE);
             seeded++;
             try { Thread.sleep(500); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
@@ -314,8 +320,8 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
             }
 
             try {
-                var expiryCal = new com.algo.trade.marketdata.ExpiryCalendar();
-                var expiry = expiryCal.getCurrentWeeklyExpiry(indexType);
+                var expiry = instrumentCache.nearestExpiry(underlying, java.time.LocalDate.now(properties.timezone()))
+                        .orElseGet(() -> new com.algo.trade.marketdata.ExpiryCalendar().getCurrentWeeklyExpiry(indexType));
                 var tokens = liveInstrumentCache.getSubscriptionTokens(indexType, expiry, 10);
                 newOptionTokens.addAll(tokens);
             } catch (Exception e) {
@@ -326,12 +332,38 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
         if (anyMoved && !newOptionTokens.isEmpty()) {
             var allTokens = new java.util.ArrayList<>(baseTokens);
             allTokens.addAll(newOptionTokens);
+            // Always include tokens for open trade instruments so exit monitors get live quotes
+            allTokens.addAll(openTradeTokens());
             try {
                 webSocketClient.subscribe(allTokens);
                 log.info("WebSocket re-subscribed: {} option tokens", newOptionTokens.size());
             } catch (Exception e) {
                 log.warn("WebSocket re-subscription failed: {}", e.getMessage());
             }
+        }
+    }
+
+    /**
+     * Returns instrument tokens for all open trades so their quotes stay live
+     * even if the strike drifts outside the ATM ± N subscription window.
+     */
+    private java.util.List<Long> openTradeTokens() {
+        try {
+            return tradeRepository.findByStatus(com.algo.trade.domain.TradeStatus.OPEN).stream()
+                    .map(trade -> {
+                        String key = trade.getInstrumentKey();
+                        if (key == null || !key.contains(":")) return null;
+                        String symbol = key.split(":", 2)[1];
+                        return liveInstrumentCache.getBySymbol(symbol)
+                                .map(o -> o.getInstrumentToken())
+                                .orElse(null);
+                    })
+                    .filter(java.util.Objects::nonNull)
+                    .distinct()
+                    .toList();
+        } catch (Exception e) {
+            log.debug("Failed to resolve open trade tokens: {}", e.getMessage());
+            return java.util.List.of();
         }
     }
 }

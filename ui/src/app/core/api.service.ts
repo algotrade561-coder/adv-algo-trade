@@ -89,6 +89,7 @@ export interface GlobalConfigDto {
   cooldownMinutes: number;
   dailyProfitTarget: number;
   maxLotsPerTrade: number;
+  mlVirtualTradeThreshold: number;
 }
 
 @Injectable({ providedIn: 'root' })

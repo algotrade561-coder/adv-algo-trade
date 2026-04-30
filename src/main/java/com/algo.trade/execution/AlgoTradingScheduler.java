@@ -101,6 +101,10 @@ public class AlgoTradingScheduler {
     private final Map<String, CachedCandles> candleRestCache = new ConcurrentHashMap<>();
     private static final Duration CANDLE_CACHE_TTL = Duration.ofSeconds(60);
 
+    // Debounce map for stale market data warnings — log at most once per 60s per underlying.
+    private final Map<String, Instant> lastStaleWarnTime = new ConcurrentHashMap<>();
+    private static final Duration STALE_WARN_DEBOUNCE = Duration.ofSeconds(60);
+
     public AlgoTradingScheduler(
             TradingProperties properties,
             GlobalConfigService globalConfigService,
@@ -301,7 +305,7 @@ public class AlgoTradingScheduler {
                 String[] dbScanFailReason = {"buildScanContext:unknown"};
                 Optional<ScanContext> context = buildScanContext(underlying, marketTime, dbScanFailReason);
                 if (context.isEmpty()) {
-                    List<Candle> spotCandles = candles(underlyingHistoricalKey(underlying), Timeframe.ONE_MINUTE);
+                    List<Candle> spotCandles = underlyingLiveCandles(underlying, Timeframe.ONE_MINUTE);
                     BigDecimal spotPrice = spotCandles.isEmpty() ? BigDecimal.ZERO : spotCandles.getLast().close();
                     signalCsvRecorder.recordAdditionalNoTrade(
                             "DIRECTIONAL_BUY", underlying.name(), spotPrice,
@@ -310,7 +314,7 @@ public class AlgoTradingScheduler {
                     continue;
                 }
 
-                List<Candle> dbDefaultCandles = candles(underlyingHistoricalKey(underlying), Timeframe.FIVE_MINUTE);
+                List<Candle> dbDefaultCandles = underlyingLiveCandles(underlying, Timeframe.FIVE_MINUTE);
                 double dbIvRank = computeLiveIvRank(underlying, dbDefaultCandles).rank();
                 entriesSubmitted += evaluateAndExecute(underlying, context.get(), marketTime,
                         properties.algo().maxEntriesPerScan() - entriesSubmitted, dbIvRank);
@@ -355,7 +359,7 @@ public class AlgoTradingScheduler {
             Map<Timeframe, List<Candle>> candleCache = new java.util.EnumMap<>(Timeframe.class);
 
             // Compute IV rank from live option chain
-            List<Candle> defaultCandles = candles(underlyingHistoricalKey(underlying),
+            List<Candle> defaultCandles = underlyingLiveCandles(underlying,
                     com.algo.trade.domain.Timeframe.FIVE_MINUTE);
             IvRankResult ivRankResult = computeLiveIvRank(underlying, defaultCandles);
             double ivRank = ivRankResult.rank();
@@ -370,9 +374,9 @@ public class AlgoTradingScheduler {
 
                 // Fetch candles at the strategy's configured resolution (cached)
                 List<Candle> strategyCandles = candleCache.computeIfAbsent(candleTf,
-                        tf -> candles(underlyingHistoricalKey(underlying), tf));
+                        tf -> underlyingLiveCandles(underlying, tf));
                 List<Candle> trendCandles = candleCache.computeIfAbsent(trendTf,
-                        tf -> candles(underlyingHistoricalKey(underlying), tf));
+                        tf -> underlyingLiveCandles(underlying, tf));
 
                 try {
                     // VB theta guard: don't buy options within 3 days of expiry (theta decay)
@@ -487,7 +491,7 @@ public class AlgoTradingScheduler {
                                 yield Optional.empty();
                             }
                             BigDecimal oiSpot = trendCandles.isEmpty() ? BigDecimal.ZERO : trendCandles.getLast().close();
-                            yield oiShiftTrapStrategy.evaluate(oiCtx.get().optionChainSnapshot(), oiSpot, config, underlying);
+                            yield oiShiftTrapStrategy.evaluate(oiCtx.get().optionChainSnapshot(), oiSpot, config, underlying, trendCandles);
                         }
                         case EXPIRY_GAMMA -> {
                             if (!matchesConfiguredTimeframe(config, triggerTimeframe)) { yield Optional.empty(); }
@@ -692,13 +696,13 @@ public class AlgoTradingScheduler {
         Map<String, Quote> allQuotes = new LinkedHashMap<>(optionQuotes);
         allQuotes.put(spotQuote.get().instrumentKey(), spotQuote.get());
 
-        // Update PCR in MarketGuard from the live option chain
+        // PCR is computed by PcrCalculator from the full option chain — no partial update here
         long totalCallOi = levels.stream().mapToLong(OptionChainLevel::callOpenInterest).sum();
         long totalPutOi  = levels.stream().mapToLong(OptionChainLevel::putOpenInterest).sum();
-        if (totalCallOi > 0) marketGuard.updatePcr((double) totalPutOi / totalCallOi);
 
-        log.info("Algo scan context built: underlying={}, spotPrice={}, expiry={}, selectedStrikes={}, chainLevels={}, selectedOptions={}",
-                underlying, underlyingPrice, expiry.get(), selectedStrikes, levels.size(), selectedOptions);
+        log.info("Algo scan context built: underlying={}, spotPrice={}, expiry={}, selectedStrikes={}, chainLevels={}, selectedOptions={}, nearbyPcr={}",
+                underlying, underlyingPrice, expiry.get(), selectedStrikes, levels.size(), selectedOptions,
+                totalCallOi > 0 ? String.format("%.3f", (double) totalPutOi / totalCallOi) : "N/A");
         return Optional.of(new ScanContext(spotQuote.get(), snapshot, selectedOptions, allQuotes));
     }
 
@@ -942,8 +946,8 @@ public class AlgoTradingScheduler {
             Timeframe dbCandleTf = resolveTimeframe(dbConfig.getCandleTimeframe(), Timeframe.ONE_MINUTE);
             Timeframe dbTrendTf = resolveTimeframe(dbConfig.getTrendTimeframe(), Timeframe.FIVE_MINUTE);
 
-            List<Candle> underlyingCandles = candles(underlyingHistoricalKey(underlying), dbCandleTf);
-            List<Candle> trendUnderlyingCandles = candles(underlyingHistoricalKey(underlying), dbTrendTf);
+            List<Candle> underlyingCandles = underlyingLiveCandles(underlying, dbCandleTf);
+            List<Candle> trendUnderlyingCandles = underlyingLiveCandles(underlying, dbTrendTf);
             // Option candles from REST are often empty/stale — build a synthetic candle from live WebSocket data
             List<Candle> optionCandles = buildOptionCandles(selectedInstrument, selectedQuote, dbCandleTf);
             if (underlyingCandles.isEmpty() || trendUnderlyingCandles.isEmpty() || optionCandles.isEmpty()) {
@@ -956,10 +960,15 @@ public class AlgoTradingScheduler {
                 continue;
             }
             if (!freshQuote(context.spotQuote()) || !freshQuote(selectedQuote) || !freshCandles(underlyingCandles) || !freshCandles(trendUnderlyingCandles)) {
-                log.warn("Strategy evaluation skipped: stale market data, underlying={}, instrument={}, spotQuoteTime={}, optionQuoteTime={}, latestUnderlyingCandleTime={}, latestTrendCandleTime={}, threshold={}",
-                        underlying, selectedInstrument.instrumentKey(), context.spotQuote().timestamp(),
-                        selectedQuote.timestamp(), latestCandleTimestamp(underlyingCandles).orElse(null),
-                        latestCandleTimestamp(trendUnderlyingCandles).orElse(null), properties.safety().staleMarketDataThreshold());
+                String staleKey = underlying.name();
+                Instant lastWarn = lastStaleWarnTime.get(staleKey);
+                if (lastWarn == null || lastWarn.plus(STALE_WARN_DEBOUNCE).isBefore(Instant.now())) {
+                    log.warn("Strategy evaluation skipped: stale market data, underlying={}, instrument={}, spotQuoteTime={}, optionQuoteTime={}, latestUnderlyingCandleTime={}, latestTrendCandleTime={}, threshold={}",
+                            underlying, selectedInstrument.instrumentKey(), context.spotQuote().timestamp(),
+                            selectedQuote.timestamp(), latestCandleTimestamp(underlyingCandles).orElse(null),
+                            latestCandleTimestamp(trendUnderlyingCandles).orElse(null), properties.safety().staleMarketDataThreshold());
+                    lastStaleWarnTime.put(staleKey, Instant.now());
+                }
                 signalCsvRecorder.recordAdditionalNoTrade("DIRECTIONAL_BUY", underlying.name(), dbSpotPrice,
                         "staleMarketData", underlyingCandles,
                         com.algo.trade.strategy.StrategyDiagnostics.NONE, 0.0);
@@ -1109,6 +1118,19 @@ public class AlgoTradingScheduler {
             return String.valueOf(instrument.instrumentToken());
         }
         return instrument.instrumentKey();
+    }
+
+    /**
+     * Returns underlying index candles from WebSocket live feed (always fresh).
+     * Falls back to REST only when WebSocket history is empty (e.g., first minute after startup).
+     */
+    private List<Candle> underlyingLiveCandles(UnderlyingSymbol underlying, Timeframe timeframe) {
+        long spotToken = com.algo.trade.domain.IndexType.from(underlying).spotToken();
+        List<Candle> live = candleBuilder.getHistory(spotToken, timeframe);
+        if (!live.isEmpty()) {
+            return live;
+        }
+        return candles(underlyingHistoricalKey(underlying), timeframe);
     }
 
     private String underlyingHistoricalKey(UnderlyingSymbol underlying) {

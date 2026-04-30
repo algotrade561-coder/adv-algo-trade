@@ -20,7 +20,7 @@ import java.util.stream.Collectors;
  * On startup, syncs enabled state from GlobalConfig so UI toggles survive restarts.
  */
 @Service
-@DependsOn({"databaseSchemaMigration", "globalConfigService"})
+@DependsOn({"databaseSchemaMigration", "configSeedLoader", "globalConfigService"})
 public class UnderlyingConfigService {
 
     private static final Logger log = LoggerFactory.getLogger(UnderlyingConfigService.class);

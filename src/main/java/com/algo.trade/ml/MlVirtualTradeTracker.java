@@ -44,7 +44,7 @@ public class MlVirtualTradeTracker {
     static final Path VIRTUAL_TRADES_CSV = OUTPUT_DIR.resolve("ml-virtual-trades.csv");
 
     static final String HEADER = String.join(",",
-            "virtualTradeId", "entryTime", "underlying", "optionType", "instrumentKey",
+            "virtualTradeId", "entryTime", "underlying", "optionType", "strategyType", "instrumentKey",
             "entryPrice", "currentPrice", "peakPrice",
             "stopLossPercent", "targetPercent", "trailingActivationPercent", "trailingGapPercent",
             "maxHoldMinutes", "squareoffTime",
@@ -77,9 +77,15 @@ public class MlVirtualTradeTracker {
      */
     public void openVirtualTrade(StrategyDecision decision, String instrumentKey,
                                   BigDecimal entryPrice, int systemScore, int mlScore,
-                                  double mlProbability) {
+                                  double mlProbability, String strategyType) {
         if (openTrades.size() >= MAX_OPEN_VIRTUAL_TRADES) {
             log.debug("ML virtual trade skipped — already tracking {} trades", openTrades.size());
+            return;
+        }
+        boolean alreadyOpen = openTrades.values().stream()
+                .anyMatch(t -> t.instrumentKey().equals(instrumentKey));
+        if (alreadyOpen) {
+            log.debug("ML virtual trade skipped — already tracking instrument {}", instrumentKey);
             return;
         }
         if (entryPrice == null || entryPrice.signum() <= 0) return;
@@ -93,6 +99,7 @@ public class MlVirtualTradeTracker {
                 Instant.now(),
                 decision.underlying().name(),
                 decision.optionType().map(Enum::name).orElse("CE"),
+                strategyType != null ? strategyType : "DIRECTIONAL_BUY",
                 instrumentKey,
                 entryPrice,
                 entryPrice, // currentPrice = entryPrice initially
@@ -194,7 +201,7 @@ public class MlVirtualTradeTracker {
     private void closeTrade(VirtualTrade vt, BigDecimal exitPrice, String reason,
                              double profitPct, long holdMinutes) {
         VirtualTrade closed = new VirtualTrade(
-                vt.virtualTradeId, vt.entryTime, vt.underlying, vt.optionType, vt.instrumentKey,
+                vt.virtualTradeId, vt.entryTime, vt.underlying, vt.optionType, vt.strategyType, vt.instrumentKey,
                 vt.entryPrice, exitPrice, vt.peakPrice,
                 vt.stopLossPercent, vt.targetPercent, vt.trailingActivationPercent, vt.trailingGapPercent,
                 vt.maxHoldMinutes, vt.squareoffTime,
@@ -271,6 +278,7 @@ public class MlVirtualTradeTracker {
         m.put("entryTime", vt.entryTime != null ? vt.entryTime.toString() : "");
         m.put("underlying", vt.underlying);
         m.put("optionType", vt.optionType);
+        m.put("strategyType", vt.strategyType);
         m.put("instrumentKey", vt.instrumentKey);
         m.put("entryPrice", vt.entryPrice);
         m.put("currentPrice", vt.currentPrice);
@@ -300,7 +308,7 @@ public class MlVirtualTradeTracker {
             }
             String row = String.join(",",
                     csv(vt.virtualTradeId), csv(vt.entryTime), csv(vt.underlying), csv(vt.optionType),
-                    csv(vt.instrumentKey), csv(vt.entryPrice), csv(vt.currentPrice), csv(vt.peakPrice),
+                    csv(vt.strategyType), csv(vt.instrumentKey), csv(vt.entryPrice), csv(vt.currentPrice), csv(vt.peakPrice),
                     csv(vt.stopLossPercent), csv(vt.targetPercent),
                     csv(vt.trailingActivationPercent), csv(vt.trailingGapPercent),
                     csv(vt.maxHoldMinutes), csv(vt.squareoffTime),
@@ -326,14 +334,18 @@ public class MlVirtualTradeTracker {
                 String[] v = line.split(",", -1);
                 if (v.length < 23) continue;
                 try {
+                    // Support both old format (23 cols, no strategyType) and new format (24 cols)
+                    boolean hasStrategyType = v.length >= 24;
+                    int offset = hasStrategyType ? 1 : 0;
+                    String strategyType = hasStrategyType ? v[4] : "DIRECTIONAL_BUY";
                     result.add(new VirtualTrade(
-                            v[0], parseInstant(v[1]), v[2], v[3], v[4],
-                            parseBd(v[5]), parseBd(v[6]), parseBd(v[7]),
-                            parseBd(v[8]), parseBd(v[9]), parseBd(v[10]), parseBd(v[11]),
-                            parseInt(v[12]), parseTime(v[13]),
-                            parseInt(v[14]), parseInt(v[15]), parseDouble(v[16]),
-                            v[17], parseInstant(v[18]), parseBd(v[19]), v[20],
-                            parseDouble(v[21]), parseInt(v[22])
+                            v[0], parseInstant(v[1]), v[2], v[3], strategyType, v[4 + offset],
+                            parseBd(v[5 + offset]), parseBd(v[6 + offset]), parseBd(v[7 + offset]),
+                            parseBd(v[8 + offset]), parseBd(v[9 + offset]), parseBd(v[10 + offset]), parseBd(v[11 + offset]),
+                            parseInt(v[12 + offset]), parseTime(v[13 + offset]),
+                            parseInt(v[14 + offset]), parseInt(v[15 + offset]), parseDouble(v[16 + offset]),
+                            v[17 + offset], parseInstant(v[18 + offset]), parseBd(v[19 + offset]), v[20 + offset],
+                            parseDouble(v[21 + offset]), parseInt(v[22 + offset])
                     ));
                 } catch (Exception ignored) {}
             }
@@ -387,6 +399,7 @@ public class MlVirtualTradeTracker {
             Instant entryTime,
             String underlying,
             String optionType,
+            String strategyType,
             String instrumentKey,
             BigDecimal entryPrice,
             BigDecimal currentPrice,
@@ -408,14 +421,14 @@ public class MlVirtualTradeTracker {
             int holdMinutes
     ) {
         VirtualTrade withCurrentPrice(BigDecimal price) {
-            return new VirtualTrade(virtualTradeId, entryTime, underlying, optionType, instrumentKey,
+            return new VirtualTrade(virtualTradeId, entryTime, underlying, optionType, strategyType, instrumentKey,
                     entryPrice, price, peakPrice, stopLossPercent, targetPercent,
                     trailingActivationPercent, trailingGapPercent, maxHoldMinutes, squareoffTime,
                     systemScore, mlScore, mlProbability, status, exitTime, exitPrice, exitReason,
                     profitPercent, holdMinutes);
         }
         VirtualTrade withPeakPrice(BigDecimal price) {
-            return new VirtualTrade(virtualTradeId, entryTime, underlying, optionType, instrumentKey,
+            return new VirtualTrade(virtualTradeId, entryTime, underlying, optionType, strategyType, instrumentKey,
                     entryPrice, currentPrice, price, stopLossPercent, targetPercent,
                     trailingActivationPercent, trailingGapPercent, maxHoldMinutes, squareoffTime,
                     systemScore, mlScore, mlProbability, status, exitTime, exitPrice, exitReason,

@@ -30,6 +30,7 @@ import java.math.MathContext;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -128,6 +129,28 @@ public abstract class AbstractSpreadStrategy {
             log.info("{} recovered {} open group(s) from DB on startup",
                     strategyType().displayName(), open.size());
         }
+
+        // Zombie cleanup: if more than 1 open position per underlying was restored,
+        // keep only the most recent and mark the rest closed/abandoned to fix DB accumulation.
+        Map<com.algo.trade.domain.UnderlyingSymbol, List<PositionGroup>> byUnderlying = new HashMap<>();
+        for (PositionGroup g : activePositions.values()) {
+            byUnderlying.computeIfAbsent(g.underlying(), k -> new ArrayList<>()).add(g);
+        }
+        for (Map.Entry<com.algo.trade.domain.UnderlyingSymbol, List<PositionGroup>> e : byUnderlying.entrySet()) {
+            List<PositionGroup> groups = e.getValue();
+            if (groups.size() <= 1) continue;
+            groups.sort(Comparator.comparing(PositionGroup::entryTime).reversed());
+            log.warn("{} abandoning {} zombie position(s) for {} on startup (keeping newest: {})",
+                    strategyType().displayName(), groups.size() - 1, e.getKey(), groups.get(0).groupId());
+            for (int i = 1; i < groups.size(); i++) {
+                String zombieId = groups.get(i).groupId();
+                positionGroupRepository.findByGroupId(zombieId).ifPresent(entity -> {
+                    entity.close(BigDecimal.ZERO);
+                    positionGroupRepository.save(entity);
+                });
+                activePositions.remove(zombieId);
+            }
+        }
     }
 
     // ── Template method ───────────────────────────────────────────────────
@@ -143,6 +166,15 @@ public abstract class AbstractSpreadStrategy {
         // 1. Disabled guard
         if (isDisabled(config)) {
             log.debug("{} is disabled — skipping evaluation", strategyType().displayName());
+            return Optional.empty();
+        }
+
+        // 1b. Open-position guard: only one position per underlying at a time
+        boolean hasOpenForUnderlying = activePositions.values().stream()
+                .anyMatch(g -> g.underlying() == ctx.underlying());
+        if (hasOpenForUnderlying) {
+            log.debug("{} already has an open position for {} — skipping entry",
+                    strategyType().displayName(), ctx.underlying());
             return Optional.empty();
         }
 

@@ -34,10 +34,15 @@ public class LiveConfigMigration {
 
     @PostConstruct
     void apply() {
-        // Migration disabled — config values are managed via the Settings UI.
-        // The initial seed was applied on first deployment; re-running would overwrite user edits.
         GlobalConfig cfg = globalConfigService.getCached();
-        log.info("LiveConfigMigration: configVersion={} — migration disabled (values managed via UI)", cfg.getConfigVersion());
+        log.info("LiveConfigMigration: configVersion={}", cfg.getConfigVersion());
+
+        // Patch: seed mlVirtualTradeThreshold if null (added after initial DB creation)
+        if (cfg.getMlVirtualTradeThreshold() == null) {
+            cfg.setMlVirtualTradeThreshold(BigDecimal.valueOf(45));
+            globalConfigService.update(cfg);
+            log.info("LiveConfigMigration: seeded mlVirtualTradeThreshold=45 (new field)");
+        }
     }
 
     // ── Global config ─────────────────────────────────────────────────────────

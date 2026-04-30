@@ -160,8 +160,12 @@ public class TradingControlController {
                 .map(t -> {
                     var quote = marketDataService.quote(t.getInstrumentKey());
                     if (quote.isEmpty() || quote.get().lastPrice().signum() <= 0) return BigDecimal.ZERO;
-                    return quote.get().lastPrice().subtract(t.getEntryPrice())
-                            .multiply(BigDecimal.valueOf(t.getQuantity()));
+                    boolean isShort = t.getEntryReason() != null
+                            && (t.getEntryReason().contains("[SELL_CE]") || t.getEntryReason().contains("[SELL_PE]"));
+                    BigDecimal unrealizedPerUnit = isShort
+                            ? t.getEntryPrice().subtract(quote.get().lastPrice())
+                            : quote.get().lastPrice().subtract(t.getEntryPrice());
+                    return unrealizedPerUnit.multiply(BigDecimal.valueOf(t.getQuantity()));
                 })
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
         result.put("paperPnl", paperClosedPnl.add(paperUnrealizedPnl));
