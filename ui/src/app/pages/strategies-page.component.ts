@@ -451,8 +451,8 @@ export class StrategiesPageComponent implements OnInit {
 
   signalCount(type: string): number { return this.signalCounts()[type] ?? 0; }
 
-  buyingStrategies() { return this.strategies().filter(s => !s.sellingStrategy); }
-  sellingStrategies() { return this.strategies().filter(s => s.sellingStrategy); }
+  buyingStrategies() { return this.strategies().filter(s => !s.sellingStrategy && s.type !== 'ITM_CONVICTION'); }
+  sellingStrategies() { return this.strategies().filter(s => s.sellingStrategy && s.type !== 'ITM_CONVICTION'); }
 
   formatTimeframe(tf: string): string {
     switch (tf) {

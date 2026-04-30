@@ -96,6 +96,7 @@ public class LiveInstrumentCache {
         if (inst == null) return;
 
         inst.setLastPrice(price);
+        inst.setLastTickTimeMs(System.currentTimeMillis());
         if (volume > 0) inst.setVolume(volume);
         if (oi > 0) {
             if (inst.getOpenInterest() > 0) inst.setPrevOpenInterest(inst.getOpenInterest());

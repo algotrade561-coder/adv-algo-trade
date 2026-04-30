@@ -14,7 +14,7 @@ class GradientBoostedTreeModelTest {
     void loadAndPredictBootstrapModel() throws IOException {
         GradientBoostedTreeModel model = GradientBoostedTreeModel.loadFromClasspath("ml/signal-model.json");
         assertNotNull(model);
-        assertEquals(3, model.treeCount());
+        assertEquals(5, model.treeCount());
         assertEquals(30, model.featureNames().length);
     }
 

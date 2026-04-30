@@ -89,6 +89,7 @@ export interface GlobalConfigDto {
   cooldownMinutes: number;
   dailyProfitTarget: number;
   maxLotsPerTrade: number;
+  maxTradesPerHour: number;
   mlVirtualTradeThreshold: number;
 }
 
@@ -133,6 +134,18 @@ export class ApiService {
   trades(): Observable<ApiRecord[]> { return this.http.get<ApiRecord[]>(`${this.base}/trades`); }
   pnl(): Observable<PnlSnapshot> { return this.http.get<PnlSnapshot>(`${this.base}/pnl`); }
   market(): Observable<MarketSnapshot> { return this.http.get<MarketSnapshot>(`${this.base}/market`); }
+  performance(): Observable<any> { return this.http.get<any>(`${this.base}/performance`); }
+  oiHeatmap(index: string, strikes = 15): Observable<any> { return this.http.get<any>(`${this.base}/analytics/heatmap/oi/${index}?strikes=${strikes}`); }
+  greeksDashboard(): Observable<any> { return this.http.get<any>(`${this.base}/analytics/greeks`); }
+  executionTimeline(period = 'TODAY'): Observable<any> { return this.http.get<any>(`${this.base}/analytics/timeline?period=${period}`); }
+  auditExport(period = 'TODAY'): Observable<any> { return this.http.get<any>(`${this.base}/analytics/audit?period=${period}`); }
+  botActivity(): Observable<any> { return this.http.get<any>(`${this.base}/analytics/bot-activity`); }
+  diagnosticsHealth(): Observable<any> { return this.http.get<any>(`${this.base}/diagnostics/health`); }
+  diagnosticsAudit(tradeId: string): Observable<any> { return this.http.get<any>(`${this.base}/diagnostics/audit/${tradeId}`); }
+  diagnosticsSearchInstrument(key: string, period = 'TODAY'): Observable<any> { return this.http.get<any>(`${this.base}/diagnostics/search/instrument?key=${key}&period=${period}`); }
+  diagnosticsSearchStrategy(type: string, period = 'TODAY'): Observable<any> { return this.http.get<any>(`${this.base}/diagnostics/search/strategy?type=${type}&period=${period}`); }
+  diagnosticsFailures(period = 'TODAY'): Observable<any> { return this.http.get<any>(`${this.base}/diagnostics/failures?period=${period}`); }
+  diagnosticsLookup(period = 'TODAY'): Observable<any> { return this.http.get<any>(`${this.base}/diagnostics/lookup?period=${period}`); }
   latestSignal(): Observable<StrategyDecision | null> { return this.http.get<StrategyDecision | null>(`${this.base}/signals/latest`); }
   recentSignals(): Observable<StrategyDecision[]> { return this.http.get<StrategyDecision[]>(`${this.base}/signals/recent`); }
   tradeJournalCsv(): Observable<string> {

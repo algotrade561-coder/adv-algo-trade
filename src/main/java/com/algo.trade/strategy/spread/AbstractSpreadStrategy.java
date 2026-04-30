@@ -133,7 +133,7 @@ public abstract class AbstractSpreadStrategy {
         // Zombie cleanup: if more than 1 open position per underlying was restored,
         // keep only the most recent and mark the rest closed/abandoned to fix DB accumulation.
         Map<com.algo.trade.domain.UnderlyingSymbol, List<PositionGroup>> byUnderlying = new HashMap<>();
-        for (PositionGroup g : activePositions.values()) {
+        for (PositionGroup g : new ArrayList<>(activePositions.values())) {
             byUnderlying.computeIfAbsent(g.underlying(), k -> new ArrayList<>()).add(g);
         }
         for (Map.Entry<com.algo.trade.domain.UnderlyingSymbol, List<PositionGroup>> e : byUnderlying.entrySet()) {
@@ -170,7 +170,7 @@ public abstract class AbstractSpreadStrategy {
         }
 
         // 1b. Open-position guard: only one position per underlying at a time
-        boolean hasOpenForUnderlying = activePositions.values().stream()
+        boolean hasOpenForUnderlying = new ArrayList<>(activePositions.values()).stream()
                 .anyMatch(g -> g.underlying() == ctx.underlying());
         if (hasOpenForUnderlying) {
             log.debug("{} already has an open position for {} — skipping entry",

@@ -81,6 +81,25 @@ public class RiskEngine {
         if (consecutiveLosses >= globalConfigService.getMaxConsecutiveLosses()) {
             rejections.add("Max consecutive losses reached");
         }
+
+        // Hourly trade cap — prevent overtrading in volatile sessions
+        int maxTradesPerHour = globalConfigService.getMaxTradesPerHour();
+        if (maxTradesPerHour > 0) {
+            int tradesThisHour = tradingStateService.tradesInLastHour();
+            if (tradesThisHour >= maxTradesPerHour) {
+                rejections.add("Max trades per hour reached (" + tradesThisHour + "/" + maxTradesPerHour + ")");
+            }
+        }
+
+        // Rolling win-rate auto-pause — pause if recent win rate drops too low
+        double rollingWinRate = tradingStateService.rollingWinRate();
+        if (tradesToday >= 5 && rollingWinRate < 25.0) {
+            rejections.add(String.format("Rolling win rate too low (%.0f%% on %d trades) — auto-paused", rollingWinRate, tradesToday));
+        }
+
+        // Correlation note: NIFTY/BANKNIFTY/FINNIFTY/MIDCPNIFTY are highly correlated.
+        // The maxOpenTrades config above already limits concurrent positions.
+
         if (!decision.selectedInstrumentKey().isPresent() || !decision.optionType().isPresent()) {
             rejections.add("Decision does not contain selected option instrument details");
         }

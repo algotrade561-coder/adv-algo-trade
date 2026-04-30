@@ -74,6 +74,10 @@ public interface StrategyDecisionRepository extends JpaRepository<StrategyDecisi
     /** Bulk delete decisions older than a given instant — used by EOD cleanup job. */
     void deleteByTimestampBefore(java.time.Instant before);
 
+    /** Find decisions by instrument key and time range — used by order audit trail. */
+    List<StrategyDecisionEntity> findBySelectedInstrumentKeyAndTimestampBetween(
+            String selectedInstrumentKey, java.time.Instant from, java.time.Instant to);
+
     /** Filtered paginated signals with optional criteria. */
     @Query("SELECT s FROM StrategyDecisionEntity s WHERE s.signalType IN :signalTypes " +
            "AND (:from IS NULL OR s.timestamp >= :from) " +

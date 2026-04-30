@@ -150,6 +150,33 @@ logging:
   level:
     com.algo.trade: INFO
 
+# ── Algo Flow Orchestrator — pre-trade filter pipeline ─────────
+algo-flow:
+  vix-filter-enabled: true
+  session-filter-enabled: true
+  event-filter-enabled: true
+  volume-activity-enabled: true
+  pcr-filter-enabled: true
+
+# VIX Regime thresholds
+vix-regime:
+  dead-threshold: 12.0
+  extreme-threshold: 25.0
+  direction-lookback-minutes: 15
+
+# Session windows (IST)
+session:
+  morning-momentum-start: "09:16"
+  morning-momentum-end: "09:45"
+  midday-chop-start: "11:30"
+  midday-chop-end: "13:00"
+  pre-close-cutoff: "14:45"
+
+# PCR sentiment thresholds
+pcr-tracker:
+  extreme-bullish: 0.5
+  extreme-bearish: 1.5
+
 server:
   port: 8089
   servlet:

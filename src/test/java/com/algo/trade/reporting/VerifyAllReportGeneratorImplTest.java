@@ -164,7 +164,8 @@ class VerifyAllReportGeneratorImplTest {
         String html = Files.readString(htmlPath);
 
         for (StrategyType type : StrategyType.values()) {
-            assertThat(html).contains(type.displayName());
+            String escaped = type.displayName().replace("&", "&amp;");
+            assertThat(html).contains(escaped);
             assertThat(html).contains(type.name());
         }
     }
@@ -358,9 +359,10 @@ class VerifyAllReportGeneratorImplTest {
         assertThat(html).contains("No data available for Directional Buy");
         // Summary shows 0 trades
         assertThat(html).contains("0");
-        // All strategy types still listed
+        // All strategy types still listed (HTML-escape & for display names containing it)
         for (StrategyType type : StrategyType.values()) {
-            assertThat(html).contains(type.displayName());
+            String escaped = type.displayName().replace("&", "&amp;");
+            assertThat(html).contains(escaped);
         }
     }
 

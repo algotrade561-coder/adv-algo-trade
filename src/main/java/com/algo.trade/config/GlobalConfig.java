@@ -145,6 +145,9 @@ public class GlobalConfig {
     /** Maximum lots per single trade — safety cap against stale premium quotes. Default 10. */
     private int maxLotsPerTrade = 10;
 
+    /** Maximum trades per hour — prevents overtrading in volatile sessions. 0 = disabled. */
+    private int maxTradesPerHour = 0;
+
     /** ML virtual trade threshold — independent of minSignalScorePercent.
      *  When ML scores above this and the system says SKIP, a virtual trade is opened. Default 45. */
     @Column(precision = 19, scale = 4)
@@ -421,6 +424,9 @@ public class GlobalConfig {
 
     public int getMaxLotsPerTrade() { return maxLotsPerTrade; }
     public void setMaxLotsPerTrade(int maxLotsPerTrade) { this.maxLotsPerTrade = maxLotsPerTrade; }
+
+    public int getMaxTradesPerHour() { return maxTradesPerHour; }
+    public void setMaxTradesPerHour(int maxTradesPerHour) { this.maxTradesPerHour = maxTradesPerHour; }
 
     public BigDecimal getMlVirtualTradeThreshold() { return mlVirtualTradeThreshold; }
     public void setMlVirtualTradeThreshold(BigDecimal mlVirtualTradeThreshold) { this.mlVirtualTradeThreshold = mlVirtualTradeThreshold; }

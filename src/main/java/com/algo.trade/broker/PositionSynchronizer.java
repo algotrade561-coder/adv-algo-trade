@@ -38,15 +38,21 @@ public class PositionSynchronizer {
     private final TradeRepository tradeRepository;
     private final KiteAccessTokenStore tokenStore;
     private final com.algo.trade.marketdata.MarketDataService marketDataService;
+    private final com.algo.trade.notification.TelegramAlertService telegramAlertService;
+
+    /** Prevents concurrent sync runs from the event listener and the scheduled timer. */
+    private final java.util.concurrent.atomic.AtomicBoolean syncInProgress = new java.util.concurrent.atomic.AtomicBoolean(false);
 
     public PositionSynchronizer(BrokerClient brokerClient,
                                 TradeRepository tradeRepository,
                                 KiteAccessTokenStore tokenStore,
-                                com.algo.trade.marketdata.MarketDataService marketDataService) {
+                                com.algo.trade.marketdata.MarketDataService marketDataService,
+                                com.algo.trade.notification.TelegramAlertService telegramAlertService) {
         this.brokerClient = brokerClient;
         this.tradeRepository = tradeRepository;
         this.tokenStore = tokenStore;
         this.marketDataService = marketDataService;
+        this.telegramAlertService = telegramAlertService;
     }
 
     /**
@@ -58,22 +64,43 @@ public class PositionSynchronizer {
     }
 
     /**
-     * Periodic sync every 5 minutes.
+     * Immediate sync when any order completes — catches manual broker closes in real-time.
      */
-    @Scheduled(fixedDelay = 300_000)
+    @EventListener
+    public void onOrderCompleted(com.algo.trade.domain.OrderCompletedEvent event) {
+        log.info("Order completed event received: orderId={} symbol={} — triggering immediate position sync",
+                event.orderId(), event.tradingSymbol());
+        syncPositions();
+    }
+
+    /**
+     * Periodic sync every 60 seconds — backup for when WebSocket events are missed.
+     */
+    @Scheduled(fixedDelay = 60_000, initialDelay = 10_000)
     public void onSchedule() {
         syncPositions();
     }
 
     /**
-     * Core reconciliation logic. Guarded by broker session check.
+     * Core reconciliation logic. Guarded by broker session check and concurrency lock.
      */
     public void syncPositions() {
         if (!tokenStore.authenticated()) {
             log.debug("Position sync skipped: broker session not active");
             return;
         }
+        if (!syncInProgress.compareAndSet(false, true)) {
+            log.debug("Position sync skipped: another sync is already running");
+            return;
+        }
+        try {
+            doSyncPositions();
+        } finally {
+            syncInProgress.set(false);
+        }
+    }
 
+    void doSyncPositions() {
         try {
             List<Position> brokerPositions = brokerClient.positions();
             List<TradeEntity> openTrades = tradeRepository.findByStatus(TradeStatus.OPEN);
@@ -139,25 +166,53 @@ public class PositionSynchronizer {
         tradeRepository.save(entity);
         log.info("Position sync created trade: tradeId={}, instrument={}, qty={}, avgPrice={}",
                 tradeId, pos.instrumentKey(), pos.quantity(), pos.averagePrice());
+        telegramAlertService.systemAlert(String.format(
+                "🔄 Position Sync: Found %s in broker (not in DB)\nQty: %d | Avg Price: ₹%.2f\nCreated trade: %s",
+                pos.instrumentKey(), pos.quantity(), pos.averagePrice().doubleValue(), tradeId));
     }
 
     private void closeStaleTrade(TradeEntity trade) {
-        // Use live market price if available, fallback to entry price
-        BigDecimal exitPrice = marketDataService.quote(trade.getInstrumentKey())
+        // Re-read from DB to catch races (another sync or exit monitor may have closed it)
+        TradeEntity fresh = tradeRepository.findById(trade.getTradeId()).orElse(null);
+        if (fresh == null || fresh.getStatus() != TradeStatus.OPEN) {
+            log.debug("Position sync: trade {} already closed — skipping", trade.getTradeId());
+            return;
+        }
+
+        // Use live market price — best approximation of the manual close price
+        BigDecimal exitPrice = marketDataService.quote(fresh.getInstrumentKey())
                 .map(q -> q.lastPrice())
                 .filter(p -> p != null && p.signum() > 0)
-                .orElse(trade.getEntryPrice());
-        BigDecimal realizedPnl = exitPrice.subtract(trade.getEntryPrice())
-                .multiply(BigDecimal.valueOf(trade.getQuantity()));
-        trade.close(
-                exitPrice,
-                Instant.now(),
-                realizedPnl,
-                "position-sync: not found in broker"
-        );
-        tradeRepository.save(trade);
-        log.info("Position sync closed trade: tradeId={}, instrument={}",
-                trade.getTradeId(), trade.getInstrumentKey());
+                .orElse(fresh.getEntryPrice());
+
+        // Account for short entries (selling strategies)
+        boolean isShort = false;
+        if (fresh.getStrategyType() != null && !fresh.getStrategyType().isBlank()) {
+            try {
+                isShort = com.algo.trade.strategy.StrategyType.valueOf(fresh.getStrategyType()).isSellingStrategy();
+            } catch (IllegalArgumentException ignored) {}
+        }
+        if (!isShort && fresh.getEntryReason() != null) {
+            isShort = fresh.getEntryReason().contains("[SELL_CE]") || fresh.getEntryReason().contains("[SELL_PE]");
+        }
+
+        // P&L on remaining quantity only (after any partial closes)
+        BigDecimal realizedPnl = isShort
+                ? fresh.getEntryPrice().subtract(exitPrice).multiply(BigDecimal.valueOf(fresh.getQuantity()))
+                : exitPrice.subtract(fresh.getEntryPrice()).multiply(BigDecimal.valueOf(fresh.getQuantity()));
+
+        fresh.close(exitPrice, Instant.now(), realizedPnl,
+                "position-sync: manually closed from broker app");
+        tradeRepository.save(fresh);
+
+        log.warn("Position sync closed trade (manual broker close): tradeId={}, instrument={}, entry={}, exit={}, pnl={}",
+                fresh.getTradeId(), fresh.getInstrumentKey(), fresh.getEntryPrice(), exitPrice, fresh.getRealizedPnl());
+
+        // Alert — operator should know the system detected a manual close
+        telegramAlertService.systemAlert(String.format(
+                "🔄 Position Sync: %s manually closed from broker\nEntry ₹%.2f → Exit ₹%.2f | P&L ₹%.2f\nTrade: %s",
+                fresh.getInstrumentKey(), fresh.getEntryPrice().doubleValue(),
+                exitPrice.doubleValue(), fresh.getRealizedPnl().doubleValue(), fresh.getTradeId()));
     }
 
     /**

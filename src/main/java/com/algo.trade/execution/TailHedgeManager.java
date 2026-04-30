@@ -85,7 +85,7 @@ public class TailHedgeManager {
      * Runs every 60 seconds. Checks open BUY positions and places hedge orders
      * for qualifying positions that haven't been hedged today.
      */
-    @Scheduled(fixedDelay = 60_000)
+    @Scheduled(fixedDelay = 60_000, initialDelay = 30_000)
     public void checkAndHedge() {
         // Guard: skip if outside market hours (09:20–15:20 IST)
         LocalTime now = ZonedDateTime.now(IST).toLocalTime();

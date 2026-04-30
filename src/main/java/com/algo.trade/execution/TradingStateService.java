@@ -47,6 +47,12 @@ public class TradingStateService {
     private volatile int extensionsUsedToday = 0;
     private static final int MAX_EXTENSIONS = 2;
 
+    /** Hourly trade timestamps for max-trades-per-hour cap. */
+    private final java.util.Deque<Instant> recentTradeTimestamps = new java.util.concurrent.ConcurrentLinkedDeque<>();
+    /** Rolling win/loss counters for win-rate auto-pause. */
+    private volatile int rollingWins = 0;
+    private volatile int rollingTotal = 0;
+
     public TradingStateService(TradingProperties properties, GlobalConfigService globalConfigService,
                                UnderlyingConfigService underlyingConfigService) {
         this.properties = properties;
@@ -156,11 +162,13 @@ public class TradingStateService {
             return "Max extensions reached (" + MAX_EXTENSIONS + "/day)";
         double baseLimit = properties.risk().totalCapital().doubleValue()
                 * properties.risk().maxDailyLossPercent().doubleValue() / 100.0;
-        dailyLossExtension += baseLimit;
+        // Each extension adds 50% of base (not 100%) — max total = 2× base with 2 extensions
+        double extensionAmount = baseLimit * 0.5;
+        dailyLossExtension += extensionAmount;
         extensionsUsedToday++;
         resumeFromHalt();
-        String msg = String.format("Daily loss limit extended by \u20b9%.0f (extension %d/%d). Trading resumed.",
-                baseLimit, extensionsUsedToday, MAX_EXTENSIONS);
+        String msg = String.format("Daily loss limit extended by \u20b9%.0f (extension %d/%d, total extension \u20b9%.0f). Trading resumed.",
+                extensionAmount, extensionsUsedToday, MAX_EXTENSIONS, dailyLossExtension);
         log.warn(msg);
         return msg;
     }
@@ -299,5 +307,43 @@ public class TradingStateService {
         RuntimeState withTimestamp(Instant timestamp) {
             return new RuntimeState(running, killSwitch, timestamp);
         }
+    }
+
+    // ── Hourly trade cap + rolling win rate ────────────────────────────────
+
+    /** Record a trade entry for hourly cap tracking. */
+    public void recordTradeEntry() {
+        recentTradeTimestamps.addLast(Instant.now());
+        // Prune entries older than 2 hours
+        Instant cutoff = Instant.now().minus(java.time.Duration.ofHours(2));
+        while (!recentTradeTimestamps.isEmpty() && recentTradeTimestamps.peekFirst().isBefore(cutoff)) {
+            recentTradeTimestamps.pollFirst();
+        }
+    }
+
+    /** Record a trade outcome for rolling win-rate tracking. */
+    public void recordTradeOutcome(boolean win) {
+        rollingTotal++;
+        if (win) rollingWins++;
+    }
+
+    /** Number of trades placed in the last 60 minutes. */
+    public int tradesInLastHour() {
+        Instant oneHourAgo = Instant.now().minus(java.time.Duration.ofHours(1));
+        return (int) recentTradeTimestamps.stream().filter(t -> t.isAfter(oneHourAgo)).count();
+    }
+
+    /** Rolling win rate as percentage (0-100). Returns 100 if no trades yet. */
+    public double rollingWinRate() {
+        return rollingTotal > 0 ? (double) rollingWins / rollingTotal * 100 : 100.0;
+    }
+
+    /** Reset daily counters at midnight. */
+    @Scheduled(cron = "0 0 0 * * *")
+    public void resetDailyCounters() {
+        rollingWins = 0;
+        rollingTotal = 0;
+        recentTradeTimestamps.clear();
+        log.info("Daily trade counters reset");
     }
 }

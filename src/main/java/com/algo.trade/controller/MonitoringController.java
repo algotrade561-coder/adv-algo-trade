@@ -34,18 +34,21 @@ public class MonitoringController {
     private final com.algo.trade.marketdata.ExpiryCalendar expiryCalendar;
     private final com.algo.trade.persistence.StrategyDecisionRepository decisionRepository;
     private final com.algo.trade.marketdata.PcrCalculator pcrCalculator;
+    private final com.algo.trade.reporting.PerformanceMetricsService performanceMetricsService;
 
     public MonitoringController(ReportingService reportingService, MarketGuard marketGuard,
                                  LiveInstrumentCache liveInstrumentCache,
                                  com.algo.trade.marketdata.ExpiryCalendar expiryCalendar,
                                  com.algo.trade.persistence.StrategyDecisionRepository decisionRepository,
-                                 com.algo.trade.marketdata.PcrCalculator pcrCalculator) {
+                                 com.algo.trade.marketdata.PcrCalculator pcrCalculator,
+                                 com.algo.trade.reporting.PerformanceMetricsService performanceMetricsService) {
         this.reportingService = reportingService;
         this.marketGuard = marketGuard;
         this.liveInstrumentCache = liveInstrumentCache;
         this.expiryCalendar = expiryCalendar;
         this.decisionRepository = decisionRepository;
         this.pcrCalculator = pcrCalculator;
+        this.performanceMetricsService = performanceMetricsService;
     }
 
     @GetMapping("/market")
@@ -71,6 +74,11 @@ public class MonitoringController {
         result.put("safeForLongPremium", marketGuard.isSafeForLongPremium());
         result.put("longPremiumBlockReason", marketGuard.longPremiumBlockReason());
         return result;
+    }
+
+    @GetMapping("/performance")
+    public com.algo.trade.reporting.PerformanceMetricsService.PerformanceSnapshot performance() {
+        return performanceMetricsService.getSnapshot();
     }
 
     private String vixStatus(double vix) {

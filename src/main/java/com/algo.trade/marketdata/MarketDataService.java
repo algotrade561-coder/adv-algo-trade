@@ -44,6 +44,8 @@ public class MarketDataService {
             if (isOptionSymbol) {
                 Optional<Quote> live = liveInstrumentCache.getBySymbol(symbol)
                         .filter(o -> o.getLastPrice() > 0)
+                        .filter(o -> o.getLastTickTimeMs() > 0
+                                && (System.currentTimeMillis() - o.getLastTickTimeMs()) < 120_000) // stale if > 2 min
                         .map(o -> new Quote(
                                 instrumentKey, Instant.now(),
                                 java.math.BigDecimal.valueOf(o.getLastPrice()),

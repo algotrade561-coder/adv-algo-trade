@@ -71,8 +71,7 @@ public class ReportingService {
                             .map(q -> q.lastPrice())
                             .filter(p -> p != null && p.signum() > 0)
                             .orElse(entry);
-                    boolean isShort = t.getEntryReason() != null
-                            && (t.getEntryReason().contains("[SELL_CE]") || t.getEntryReason().contains("[SELL_PE]"));
+                    boolean isShort = isShortTrade(t);
                     BigDecimal unrealized = isShort
                             ? entry.subtract(last).multiply(BigDecimal.valueOf(t.getQuantity()))
                             : last.subtract(entry).multiply(BigDecimal.valueOf(t.getQuantity()));
@@ -106,7 +105,9 @@ public class ReportingService {
                 .filter(t -> !t.isPaperTrade())
                 .map(TradeEntity::getRealizedPnl)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
+        // Unrealized: only live positions (exclude paper)
         BigDecimal unrealized = positions().stream()
+                .filter(p -> !isPaperPosition(p))
                 .map(Position::unrealizedPnl)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
         PnlSnapshot snapshot = new PnlSnapshot(Instant.now(), realized, unrealized, realized.add(unrealized));
@@ -325,5 +326,22 @@ public class ReportingService {
             long archiveBytes,
             String message
     ) {
+    }
+
+    /** Paper positions are identified by their instrument key matching an open paper trade. */
+    private boolean isPaperPosition(Position position) {
+        return tradeRepository.findByInstrumentKeyAndStatus(position.instrumentKey(), com.algo.trade.domain.TradeStatus.OPEN)
+                .stream().anyMatch(TradeEntity::isPaperTrade);
+    }
+
+    /** Determine if a trade is a short entry based on strategy type, with fallback to entry reason. */
+    private boolean isShortTrade(TradeEntity trade) {
+        if (trade.getStrategyType() != null && !trade.getStrategyType().isBlank()) {
+            try {
+                return com.algo.trade.strategy.StrategyType.valueOf(trade.getStrategyType()).isSellingStrategy();
+            } catch (IllegalArgumentException ignored) {}
+        }
+        String reason = trade.getEntryReason();
+        return reason != null && (reason.contains("[SELL_CE]") || reason.contains("[SELL_PE]"));
     }
 }

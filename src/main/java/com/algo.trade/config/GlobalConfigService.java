@@ -163,6 +163,8 @@ public class GlobalConfigService {
 
     public int getMaxLotsPerTrade() { return cached.getMaxLotsPerTrade(); }
 
+    public int getMaxTradesPerHour() { return cached.getMaxTradesPerHour(); }
+
     public BigDecimal getMlVirtualTradeThreshold() { return cached.getMlVirtualTradeThreshold(); }
 
     // ── Write operations ──────────────────────────────────────

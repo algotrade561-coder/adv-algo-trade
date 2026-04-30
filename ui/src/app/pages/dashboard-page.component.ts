@@ -143,6 +143,30 @@ import { MarketSnapshot, PnlSnapshot, RuntimeStatus, StrategyDecision, TradingSt
             </div>
           </div>
 
+          <!-- Performance metrics inline in the same card row -->
+          @if (perf) {
+            <div class="mcard" [class.mc-ok]="perf.profitFactorToday > 1.5" [class.mc-warn]="perf.profitFactorToday > 0.8 && perf.profitFactorToday <= 1.5" [class.mc-bad]="perf.profitFactorToday > 0 && perf.profitFactorToday <= 0.8" [class.mc-muted]="perf.tradesToday === 0">
+              <div class="mc-top"><span class="mc-label">Profit Factor</span></div>
+              <div class="mc-value">{{ perf.tradesToday > 0 ? (perf.profitFactorToday | number:'1.2-2') : '—' }}</div>
+              <div class="mc-desc">W₹{{ perf.avgWinToday | number:'1.0-0' }} L₹{{ perf.avgLossToday | number:'1.0-0' }}</div>
+            </div>
+            <div class="mcard" [class.mc-ok]="perf.winRateToday >= 50" [class.mc-warn]="perf.winRateToday >= 30 && perf.winRateToday < 50" [class.mc-bad]="perf.winRateToday < 30 && perf.tradesToday > 0" [class.mc-muted]="perf.tradesToday === 0">
+              <div class="mc-top"><span class="mc-label">Win Rate</span></div>
+              <div class="mc-value">{{ perf.tradesToday > 0 ? (perf.winRateToday | number:'1.0-0') + '%' : '—' }}</div>
+              <div class="mc-desc">{{ perf.winsToday }}W {{ perf.lossesToday }}L</div>
+            </div>
+            <div class="mcard" [class.mc-bad]="perf.maxDrawdownToday > 2000" [class.mc-warn]="perf.maxDrawdownToday > 500" [class.mc-muted]="perf.tradesToday === 0">
+              <div class="mc-top"><span class="mc-label">Drawdown</span></div>
+              <div class="mc-value">{{ perf.tradesToday > 0 ? '₹' + (perf.maxDrawdownToday | number:'1.0-0') : '—' }}</div>
+              <div class="mc-desc">Peak ₹{{ perf.peakPnlToday | number:'1.0-0' }}</div>
+            </div>
+            <div class="mcard" [class.mc-ok]="perf.winRateLast7 >= 50" [class.mc-warn]="perf.winRateLast7 >= 30 && perf.winRateLast7 < 50" [class.mc-muted]="perf.tradesLast7 === 0">
+              <div class="mc-top"><span class="mc-label">7d WR</span></div>
+              <div class="mc-value">{{ perf.tradesLast7 > 0 ? (perf.winRateLast7 | number:'1.0-0') + '%' : '—' }}</div>
+              <div class="mc-desc">PF {{ perf.profitFactorLast7 | number:'1.1-1' }}</div>
+            </div>
+          }
+
         </div>
 
         <!-- ── PnL Row ───────────────────────────────────────────────── -->
@@ -336,6 +360,7 @@ export class DashboardPageComponent implements OnInit, OnDestroy {
   pnl?: PnlSnapshot;
   market?: MarketSnapshot;
   tradingStatus?: TradingStatus;
+  perf?: any;
   latestSignal?: StrategyDecision | null;
   loading = false;
   loadError = '';
@@ -388,9 +413,11 @@ export class DashboardPageComponent implements OnInit, OnDestroy {
   private refreshMarket(): void {
     forkJoin({
       market: this.api.market().pipe(catchError(() => of(null as MarketSnapshot | null))),
-      status: this.api.tradingStatus().pipe(catchError(() => of(null as TradingStatus | null)))
-    }).subscribe(({ market, status }) => {
+      status: this.api.tradingStatus().pipe(catchError(() => of(null as TradingStatus | null))),
+      perf: this.api.performance().pipe(catchError(() => of(null)))
+    }).subscribe(({ market, status, perf }) => {
       if (market) this.market = market;
+      if (perf) this.perf = perf;
       if (status) this.tradingStatus = status;
       this.lastUpdatedAt = new Date().toLocaleTimeString();
       this.cd.detectChanges();

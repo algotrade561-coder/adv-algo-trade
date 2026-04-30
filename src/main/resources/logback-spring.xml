@@ -12,15 +12,29 @@
     <timestamp key="startTimestamp" datePattern="yyyyMMdd-HHmmss"/>
 
     <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
-        <file>logs/algo-trade-${startTimestamp}.log</file>
+        <file>logs/application/algo-trade-${startTimestamp}.log</file>
         <encoder>
             <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{50} - %msg%n</pattern>
         </encoder>
         <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
-            <fileNamePattern>logs/algo-trade-%d{yyyyMMdd}-${startTimestamp}.%i.log</fileNamePattern>
+            <fileNamePattern>logs/application/algo-trade-%d{yyyyMMdd}-${startTimestamp}.%i.log</fileNamePattern>
             <maxFileSize>50MB</maxFileSize>
             <maxHistory>30</maxHistory>
             <totalSizeCap>500MB</totalSizeCap>
+        </rollingPolicy>
+    </appender>
+
+    <!-- ── Diagnostic log — separate file for system health monitoring ── -->
+    <appender name="DIAG_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>logs//audit/diagnostics-${startTimestamp}.log</file>
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level %msg%n</pattern>
+        </encoder>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>logs/audit/diagnostics-%d{yyyyMMdd}-${startTimestamp}.%i.log</fileNamePattern>
+            <maxFileSize>20MB</maxFileSize>
+            <maxHistory>14</maxHistory>
+            <totalSizeCap>200MB</totalSizeCap>
         </rollingPolicy>
     </appender>
 
@@ -28,6 +42,12 @@
     <logger name="com.algo.trade" level="INFO"/>
     <logger name="org.springframework" level="WARN"/>
     <logger name="org.hibernate" level="WARN"/>
+
+    <!-- Diagnostic logger — writes to its own file only -->
+    <logger name="DIAGNOSTICS" level="INFO" additivity="false">
+        <appender-ref ref="DIAG_FILE"/>
+        <appender-ref ref="CONSOLE"/>
+    </logger>
 
     <root level="INFO">
         <appender-ref ref="CONSOLE"/>

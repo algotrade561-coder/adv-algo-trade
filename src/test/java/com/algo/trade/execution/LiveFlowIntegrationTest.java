@@ -66,6 +66,8 @@ class LiveFlowIntegrationTest {
         when(globalConfigService.getSameInstrumentReentryMinPriceMovePercent()).thenReturn(BigDecimal.ZERO);
         when(globalConfigService.getCooldownMinutes()).thenReturn(0);
         when(globalConfigService.getEnabledOptionTypes()).thenReturn(List.of(OptionType.CE, OptionType.PE));
+        when(globalConfigService.getMaxTradesPerHour()).thenReturn(0);
+        when(globalConfigService.getDailyProfitTarget()).thenReturn(BigDecimal.ZERO);
 
         brokerClient = mock(BrokerClient.class);
         tradingStateService = mock(TradingStateService.class);
@@ -83,6 +85,7 @@ class LiveFlowIntegrationTest {
 
         strategyConfigService = mock(StrategyConfigService.class);
         when(strategyConfigService.getDirectionalBuyConfig()).thenReturn(new StrategyConfig(StrategyType.DIRECTIONAL_BUY));
+        when(strategyConfigService.getDirectionalBuyConfig(any())).thenReturn(new StrategyConfig(StrategyType.DIRECTIONAL_BUY));
 
         clock = Clock.fixed(Instant.parse("2026-04-27T04:30:00Z"), ZoneId.of("Asia/Kolkata"));
 
@@ -101,10 +104,16 @@ class LiveFlowIntegrationTest {
         marketDataService = mock(MarketDataService.class);
         when(marketDataService.quote(any())).thenReturn(Optional.empty());
 
+        var smartRouter = mock(SmartOrderRouter.class);
+        when(smartRouter.route(any(), any(), any())).thenReturn(
+                new SmartOrderRouter.RoutingDecision(
+                        com.algo.trade.domain.OrderType.LIMIT, Optional.of(BigDecimal.valueOf(30)),
+                        "test", 0, SmartOrderRouter.LiquidityClass.UNKNOWN));
+
         executionEngine = new ExecutionEngine(properties, globalConfigService, brokerClient, riskEngine,
                 tradingStateService, tradeRepository, orderRepository, errorEventRepository,
                 decisionRepository, outcomeCsvRecorder, telegramAlertService, new PositionSyncProperties(true),
-                strategyConfigService, marketDataService, clock);
+                strategyConfigService, marketDataService, smartRouter, clock);
     }
 
     private StrategyDecision testDecision(String reason) {

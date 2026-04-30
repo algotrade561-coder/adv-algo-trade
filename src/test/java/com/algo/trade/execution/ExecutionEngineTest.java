@@ -69,15 +69,22 @@ class ExecutionEngineTest {
         when(globalConfigService.getSameInstrumentReentryMinPriceMovePercent()).thenReturn(BigDecimal.TEN);
         when(globalConfigService.getCooldownMinutes()).thenReturn(10);
         when(globalConfigService.getDailyProfitTarget()).thenReturn(BigDecimal.ZERO);
+        when(globalConfigService.getMaxTradesPerHour()).thenReturn(0);
 
         var mockConfigService = mock(StrategyConfigService.class);
         StrategyConfig directionalBuyConfig = new StrategyConfig(StrategyType.DIRECTIONAL_BUY);
         directionalBuyConfig.setStopLossPercent(BigDecimal.valueOf(12));
         when(mockConfigService.getDirectionalBuyConfig()).thenReturn(directionalBuyConfig);
+        when(mockConfigService.getDirectionalBuyConfig(any())).thenReturn(directionalBuyConfig);
         when(marketDataService.quote(any())).thenReturn(Optional.empty());
+        var smartRouter = mock(SmartOrderRouter.class);
+        when(smartRouter.route(any(), any(), any())).thenReturn(
+                new SmartOrderRouter.RoutingDecision(
+                        com.algo.trade.domain.OrderType.LIMIT, Optional.of(BigDecimal.valueOf(100)),
+                        "test", 0, SmartOrderRouter.LiquidityClass.UNKNOWN));
         executionEngine = new ExecutionEngine(properties, globalConfigService, brokerClient, new RiskEngine(globalConfigService, properties, mockConfigService, tradingStateService, null), tradingStateService,
                 tradeRepository, orderRepository, errorEventRepository, decisionRepository, outcomeCsvRecorder,
-                telegramAlertService, new PositionSyncProperties(true), mockConfigService, marketDataService, clock);
+                telegramAlertService, new PositionSyncProperties(true), mockConfigService, marketDataService, smartRouter, clock);
         when(tradeRepository.findByStatus(TradeStatus.OPEN)).thenReturn(List.of());
         when(tradeRepository.findByEntryTimeBetween(any(), any())).thenReturn(List.of());
         when(tradeRepository.findAll()).thenReturn(List.of());

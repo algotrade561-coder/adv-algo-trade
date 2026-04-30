@@ -27,6 +27,9 @@ public enum StrategyType {
     EXPIRY_REVERSAL("Expiry Reversal",
             "Near expiry (0-1 days), fades a sharp intraday spike — buys against the move expecting pin or reversal to key strike", false),
 
+    MOMENTUM("Momentum",
+            "Rate-of-change momentum with acceleration, EMA trend alignment, and volume confirmation — rides sustained directional moves", false),
+
     // ── Spread Strategies (involve selling legs — DISABLED by default) ─────────
     BULL_CALL_SPREAD("Bull Call Spread",
             "Buy ATM CE + Sell OTM CE — net debit, capped risk and reward", true),

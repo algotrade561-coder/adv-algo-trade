@@ -160,8 +160,7 @@ public class TradingControlController {
                 .map(t -> {
                     var quote = marketDataService.quote(t.getInstrumentKey());
                     if (quote.isEmpty() || quote.get().lastPrice().signum() <= 0) return BigDecimal.ZERO;
-                    boolean isShort = t.getEntryReason() != null
-                            && (t.getEntryReason().contains("[SELL_CE]") || t.getEntryReason().contains("[SELL_PE]"));
+                    boolean isShort = isShortTrade(t);
                     BigDecimal unrealizedPerUnit = isShort
                             ? t.getEntryPrice().subtract(quote.get().lastPrice())
                             : quote.get().lastPrice().subtract(t.getEntryPrice());
@@ -439,4 +438,15 @@ public class TradingControlController {
     public record ManualOrderRequest(
             String instrumentKey, String side, String orderType,
             String productType, int quantity, BigDecimal limitPrice, String tag) {}
+
+    /** Determine if a trade is a short entry based on strategy type. */
+    private boolean isShortTrade(com.algo.trade.persistence.TradeEntity trade) {
+        if (trade.getStrategyType() != null && !trade.getStrategyType().isBlank()) {
+            try {
+                return com.algo.trade.strategy.StrategyType.valueOf(trade.getStrategyType()).isSellingStrategy();
+            } catch (IllegalArgumentException ignored) {}
+        }
+        String reason = trade.getEntryReason();
+        return reason != null && (reason.contains("[SELL_CE]") || reason.contains("[SELL_PE]"));
+    }
 }

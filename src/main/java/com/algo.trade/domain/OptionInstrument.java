@@ -37,6 +37,7 @@ public class OptionInstrument {
     private volatile double gamma;
     private volatile double theta;
     private volatile double vega;
+    private volatile long lastTickTimeMs;
 
     public OptionInstrument(long instrumentToken, String tradingSymbol, String exchange,
                              IndexType indexType, int strikePrice, String optionType,
@@ -112,4 +113,6 @@ public class OptionInstrument {
     public void setGamma(double v) { this.gamma = v; }
     public void setTheta(double v) { this.theta = v; }
     public void setVega(double v) { this.vega = v; }
+    public long getLastTickTimeMs() { return lastTickTimeMs; }
+    public void setLastTickTimeMs(long v) { this.lastTickTimeMs = v; }
 }

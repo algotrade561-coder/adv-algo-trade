@@ -53,6 +53,13 @@ public class LiveCandleBuilder {
      */
     public void onTick(long instrumentToken, double price, long volume, long oi, Instant timestamp) {
         if (price <= 0) return;
+        // Reject ticks with timestamps too far in the past or future (clock skew / out-of-order)
+        long ageMs = Math.abs(System.currentTimeMillis() - timestamp.toEpochMilli());
+        if (ageMs > 300_000) { // > 5 minutes off
+            log.debug("Tick rejected: token={} price={} timestamp={} age={}ms — too far from current time",
+                    instrumentToken, price, timestamp, ageMs);
+            return;
+        }
         for (Timeframe tf : TRACKED_TIMEFRAMES) {
             processTick(instrumentToken, price, volume, oi, timestamp, tf);
         }

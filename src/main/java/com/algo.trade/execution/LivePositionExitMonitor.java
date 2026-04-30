@@ -114,6 +114,15 @@ public class LivePositionExitMonitor {
         }
     }
 
+    /**
+     * Public entry point for scheduled backup evaluation (MaxHoldExitMonitor).
+     * Delegates to the same evaluate() pipeline used by CandleClosedEvent.
+     * This ensures a single unified exit flow — no duplicated logic.
+     */
+    public void evaluateForScheduledCheck(TradeEntity trade) {
+        evaluate(trade);
+    }
+
     private void evaluate(TradeEntity trade) {
         Object lock = evaluationLocks.computeIfAbsent(trade.getTradeId(), id -> new Object());
         synchronized (lock) {
@@ -360,20 +369,30 @@ public class LivePositionExitMonitor {
                 int rawQty = (int) Math.round(trade.getQuantity() * l.exitFraction());
                 // F&O orders must be whole-lot multiples — round DOWN to nearest lot
                 int partialQty = (rawQty / lotSize) * lotSize;
-                fired.add(l.name()); // mark fired regardless so we don't re-check this layer
                 if (partialQty > 0) {
+                    fired.add(l.name());
                     log.info("[ExitMonitor] PROGRESSIVE BOOKING {}: tradeId={} profit={}% qty={} lotSize={}",
                             l.name(), trade.getTradeId(), String.format("%.1f", profitPct), partialQty, lotSize);
                     executionEngine.closePartialTrade(trade.getTradeId(), partialQty, currentPrice, l.name());
-                } else {
-                    log.debug("[ExitMonitor] PROGRESSIVE BOOKING {}: skipped — position too small for lot-size rounding (remaining={} lotSize={})",
-                            l.name(), trade.getQuantity(), lotSize);
+                } else if (trade.getQuantity() <= lotSize && profitPct >= l.triggerProfitPct()) {
+                    // Position is 1 lot — can't partial close. If this is the last layer (80%+), do a full close.
+                    if (l.triggerProfitPct() >= 80.0) {
+                        fired.add(l.name());
+                        log.info("[ExitMonitor] PROGRESSIVE BOOKING {} → FULL CLOSE (1-lot position): tradeId={} profit={}%",
+                                l.name(), trade.getTradeId(), String.format("%.1f", profitPct));
+                        close(trade, currentPrice, "PROGRESSIVE_FULL_CLOSE_" + l.name());
+                        return;
+                    }
+                    // Earlier layers on 1-lot: skip without marking fired — let higher layers try
+                    log.debug("[ExitMonitor] PROGRESSIVE BOOKING {}: deferred — 1-lot position, waiting for higher layer",
+                            l.name());
                 }
             }
         }
 
         // ── 6. Stall detection — exit dead trades bleeding theta ───────────────
-        if (useAtrExits && profitPct > -10 && profitPct < 8 && !candles1m.isEmpty()) {
+        // Extended range: -10% to +15% (was +8%). Trades above +8% that stall also bleed theta.
+        if (useAtrExits && profitPct > -10 && profitPct < 15 && !candles1m.isEmpty()) {
             if (dynamicExitManager.isStalled(candles1m, trade.getEntryTime(), atr, 10)) {
                 log.info("[ExitMonitor] STALL EXIT: tradeId={} — underlying flat for 10 candles, profit={}%",
                         trade.getTradeId(), String.format("%.1f", profitPct));
@@ -424,6 +443,25 @@ public class LivePositionExitMonitor {
         // ── 9. VWAP reversal exit — close long options when underlying crosses back through VWAP ──
         if (globalConfigService.isVwapExitEnabled() && profitPct > 0) {
             checkVwapReversal(trade, currentPrice, profitPct);
+        }
+
+        // ── 10. Bid-ask spread widening exit — liquidity evaporating ──────────
+        BigDecimal bid = quoteOpt.get().bid().orElse(BigDecimal.ZERO);
+        BigDecimal ask = quoteOpt.get().ask().orElse(BigDecimal.ZERO);
+        if (bid.signum() > 0 && ask.signum() > 0 && currentPrice.signum() > 0) {
+            double spreadPct = ask.subtract(bid).doubleValue() / currentPrice.doubleValue() * 100;
+            if (spreadPct > 5.0) {
+                // Spread > 5% of premium — liquidity is evaporating (common near expiry)
+                log.warn("[ExitMonitor] SPREAD WIDENING: tradeId={} spread={}% bid={} ask={} — liquidity deteriorating",
+                        trade.getTradeId(), String.format("%.1f", spreadPct), bid, ask);
+                if (spreadPct > 10.0) {
+                    // Spread > 10% — exit immediately to avoid being trapped
+                    telegramAlertService.systemAlert(String.format(
+                            "⚠️ Spread Widening Exit: %s | Spread %.1f%% (bid ₹%.2f / ask ₹%.2f) — liquidity gone",
+                            trade.getInstrumentKey(), spreadPct, bid.doubleValue(), ask.doubleValue()));
+                    close(trade, currentPrice, "SPREAD_WIDENING_EXIT");
+                }
+            }
         }
     }
 

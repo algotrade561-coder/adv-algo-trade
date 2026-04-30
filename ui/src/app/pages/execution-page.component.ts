@@ -179,40 +179,6 @@ import { ApiRecord, ExecutionMode, MarketDataMode, RuntimeStatus, TradingMode, U
         </div>
       </div>
 
-      <!-- ── Mode & Routing ────────────────────────────────────────── -->
-      <div class="grid two" style="margin-top:16px">
-        <div class="panel">
-          <h2><mat-icon class="hi">tune</mat-icon> Mode</h2>
-          <form [formGroup]="modeForm" class="inline-form" (ngSubmit)="applyMode()">
-            <mat-form-field appearance="outline">
-              <mat-label>Mode</mat-label>
-              <mat-select formControlName="mode">
-                @for (m of tradingModes; track m) { <mat-option [value]="m">{{ m }}</mat-option> }
-              </mat-select>
-            </mat-form-field>
-            <button mat-flat-button color="primary" type="submit">Apply</button>
-          </form>
-        </div>
-        <div class="panel">
-          <h2><mat-icon class="hi">alt_route</mat-icon> Routing</h2>
-          <form [formGroup]="routingForm" class="inline-form" (ngSubmit)="applyRouting()">
-            <mat-form-field appearance="outline">
-              <mat-label>Data</mat-label>
-              <mat-select formControlName="marketDataMode">
-                @for (m of marketDataModes; track m) { <mat-option [value]="m">{{ m }}</mat-option> }
-              </mat-select>
-            </mat-form-field>
-            <mat-form-field appearance="outline">
-              <mat-label>Exec</mat-label>
-              <mat-select formControlName="executionMode">
-                @for (m of executionModes; track m) { <mat-option [value]="m">{{ m }}</mat-option> }
-              </mat-select>
-            </mat-form-field>
-            <button mat-flat-button color="primary" type="submit">Apply</button>
-          </form>
-        </div>
-      </div>
-
       <!-- ── Underlyings ───────────────────────────────────────────── -->
       <div class="panel" style="margin-top:16px">
         <h2><mat-icon class="hi">bar_chart</mat-icon> Scan Underlyings</h2>

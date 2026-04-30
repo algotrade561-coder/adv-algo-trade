@@ -1,0 +1,79 @@
+package com.algo.trade.execution;
+
+import com.algo.trade.notification.TelegramAlertService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Component;
+
+import java.time.Duration;
+import java.time.Instant;
+import java.time.LocalTime;
+import java.time.ZoneId;
+
+/**
+ * Scheduler Watchdog — detects if AlgoTradeExecution has stopped scanning.
+ *
+ * Checks every 5 minutes during market hours. If no scan has occurred in the
+ * last 10 minutes while the scanner is supposed to be running, sends a Telegram alert.
+ */
+@Component
+public class SchedulerWatchdog {
+
+    private static final Logger log = LoggerFactory.getLogger(SchedulerWatchdog.class);
+    private static final ZoneId IST = ZoneId.of("Asia/Kolkata");
+    private static final Duration MAX_SCAN_GAP = Duration.ofMinutes(10);
+
+    private final TradingStateService tradingStateService;
+    private final TelegramAlertService alertService;
+    private final com.algo.trade.broker.zerodha.KiteWebSocketClient webSocketClient;
+    private volatile boolean alertSentThisSession = false;
+
+    public SchedulerWatchdog(TradingStateService tradingStateService,
+                              TelegramAlertService alertService,
+                              com.algo.trade.broker.zerodha.KiteWebSocketClient webSocketClient) {
+        this.tradingStateService = tradingStateService;
+        this.alertService = alertService;
+        this.webSocketClient = webSocketClient;
+    }
+
+    @Scheduled(fixedDelay = 300_000, initialDelay = 600_000) // every 5 min, start after 10 min
+    public void check() {
+        LocalTime now = LocalTime.now(IST);
+        if (now.isBefore(LocalTime.of(9, 20)) || now.isAfter(LocalTime.of(15, 25))) {
+            alertSentThisSession = false; // reset for next session
+            return;
+        }
+
+        if (!tradingStateService.running()) return;
+        if (!tradingStateService.schedulerEnabled()) return;
+
+        Instant lastScan = tradingStateService.lastScanAt();
+        if (lastScan == null) {
+            if (!alertSentThisSession) {
+                log.warn("[SchedulerWatchdog] No scan recorded since startup — scheduler may not be running");
+                alertService.systemAlert("⚠️ Scheduler Watchdog: No scan recorded since startup. Scanner may be stuck.");
+                alertSentThisSession = true;
+            }
+            return;
+        }
+
+        Duration gap = Duration.between(lastScan, Instant.now());
+        if (gap.compareTo(MAX_SCAN_GAP) > 0 && !alertSentThisSession) {
+            log.warn("[SchedulerWatchdog] Last scan was {} minutes ago — attempting WebSocket reconnect", gap.toMinutes());
+            alertService.systemAlert(String.format(
+                    "⚠️ Scheduler Watchdog: Last scan was %d minutes ago. Attempting WebSocket reconnect.",
+                    gap.toMinutes()));
+            // Force reconnect
+            try {
+                if (!webSocketClient.isConnected()) {
+                    webSocketClient.connect();
+                    log.info("[SchedulerWatchdog] WebSocket reconnect triggered");
+                }
+            } catch (Exception e) {
+                log.error("[SchedulerWatchdog] Reconnect failed: {}", e.getMessage());
+            }
+            alertSentThisSession = true;
+        }
+    }
+}

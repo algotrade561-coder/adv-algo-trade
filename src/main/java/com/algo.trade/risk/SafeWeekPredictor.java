@@ -34,7 +34,7 @@ public class SafeWeekPredictor {
         this.weeklyExposure = weeklyExposure;
     }
 
-    @Scheduled(fixedDelay = 60_000)
+    @Scheduled(fixedDelay = 60_000, initialDelay = 40_000)
     public void evaluate() {
         if (!isMarketHours()) return;
         int score = 50;

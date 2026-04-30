@@ -71,6 +71,7 @@ public class ExecutionEngine {
     private final com.algo.trade.config.PositionSyncProperties positionSyncProperties;
     private final StrategyConfigService strategyConfigService;
     private final MarketDataService marketDataService;
+    private final SmartOrderRouter smartOrderRouter;
     private final Clock clock;
 
     @Autowired
@@ -82,9 +83,10 @@ public class ExecutionEngine {
                            TelegramAlertService telegramAlertService,
                            com.algo.trade.config.PositionSyncProperties positionSyncProperties,
                            StrategyConfigService strategyConfigService,
-                           MarketDataService marketDataService) {
+                           MarketDataService marketDataService,
+                           SmartOrderRouter smartOrderRouter) {
         this(properties, globalConfigService, brokerClient, riskEngine, tradingStateService, tradeRepository, orderRepository, errorEventRepository, decisionRepository,
-                executionOutcomeCsvRecorder, telegramAlertService, positionSyncProperties, strategyConfigService, marketDataService, Clock.systemUTC());
+                executionOutcomeCsvRecorder, telegramAlertService, positionSyncProperties, strategyConfigService, marketDataService, smartOrderRouter, Clock.systemUTC());
     }
 
     ExecutionEngine(TradingProperties properties, GlobalConfigService globalConfigService, BrokerClient brokerClient, RiskEngine riskEngine, TradingStateService tradingStateService,
@@ -93,7 +95,7 @@ public class ExecutionEngine {
                     StrategyDecisionRepository decisionRepository, ExecutionOutcomeCsvRecorder executionOutcomeCsvRecorder,
                     TelegramAlertService telegramAlertService,
                     com.algo.trade.config.PositionSyncProperties positionSyncProperties, StrategyConfigService strategyConfigService,
-                    MarketDataService marketDataService, Clock clock) {
+                    MarketDataService marketDataService, SmartOrderRouter smartOrderRouter, Clock clock) {
         this.properties = properties;
         this.globalConfigService = globalConfigService;
         this.brokerClient = brokerClient;
@@ -108,6 +110,7 @@ public class ExecutionEngine {
         this.positionSyncProperties = positionSyncProperties;
         this.strategyConfigService = strategyConfigService;
         this.marketDataService = marketDataService;
+        this.smartOrderRouter = smartOrderRouter;
         this.clock = clock;
     }
 
@@ -120,7 +123,7 @@ public class ExecutionEngine {
      * Execute entry with optional per-strategy config for position sizing and CSV recording.
      * If strategyConfig is null, falls back to directional buy config.
      */
-    @Transactional
+    @Transactional(timeout = 30) // 30-second timeout prevents indefinite lock holding during slow broker I/O
     public ExecutionResult executeEntry(StrategyDecision decision, BigDecimal optionPremium, int lotSize, StrategyConfig strategyConfig) {
         StrategyConfig effectiveConfig = strategyConfig != null ? strategyConfig : strategyConfigService.getDirectionalBuyConfig(decision.underlying().name());
         BigDecimal stopLossPercent = effectiveConfig.getStopLossPercent();
@@ -197,11 +200,15 @@ public class ExecutionEngine {
         }
         try {
             String clientOrderId = "ENTRY-" + UUID.randomUUID();
+            // SmartOrderRouter decides MARKET vs LIMIT based on liquidity
+            SmartOrderRouter.RoutingDecision routing = smartOrderRouter.route(
+                    decision.selectedInstrumentKey().orElseThrow(), OrderSide.BUY, optionPremium);
             OrderRequest orderRequest = new OrderRequest(clientOrderId, decision.selectedInstrumentKey().orElseThrow(),
-                    OrderSide.BUY, OrderType.LIMIT, ProductType.MIS, sizing.quantity(), Optional.of(optionPremium), "strategy-entry");
-            log.info("Placing entry order: clientOrderId={}, instrument={}, side={}, orderType={}, product={}, quantity={}",
+                    OrderSide.BUY, routing.orderType(), ProductType.MIS, sizing.quantity(),
+                    routing.limitPrice().or(() -> Optional.of(optionPremium)), "strategy-entry");
+            log.info("Placing entry order: clientOrderId={}, instrument={}, side={}, orderType={}, product={}, quantity={}, routing={}",
                     orderRequest.clientOrderId(), orderRequest.instrumentKey(), orderRequest.side(),
-                    orderRequest.orderType(), orderRequest.productType(), orderRequest.quantity());
+                    orderRequest.orderType(), orderRequest.productType(), orderRequest.quantity(), routing.reason());
             OrderResponse order;
             try {
                 order = brokerClient.placeOrder(orderRequest);
@@ -241,6 +248,7 @@ public class ExecutionEngine {
                 tradeEntity.setAppliedTrailingStopActivationPercent(effectiveConfig.getTrailingStopActivationPercent());
                 tradeEntity.setAppliedTrailingGapPercent(effectiveConfig.getTrailingGapPercent());
                 tradeRepository.save(tradeEntity);
+                tradingStateService.recordTradeEntry();
                 log.info("Entry trade opened: tradeId={}, instrument={}, quantity={}, entryPrice={}",
                         tradeId, order.instrumentKey(), order.filledQuantity(), fillPrice);
                 List<String> reasons = List.of("Entry order filled and trade journal updated");
@@ -310,6 +318,7 @@ public class ExecutionEngine {
         updateExecutionStage(savedDecision, "PAPER_FILLED", "tradeId=" + tradeId);
         log.info("PAPER trade opened: tradeId={}, instrument={}, qty={}, entryPrice={}",
                 tradeId, instrumentKey, sizing.quantity(), optionPremium);
+        // Paper trades don't count toward hourly cap (no broker margin consumed)
 
         OrderResponse syntheticOrder = new OrderResponse(
                 "PAPER-" + UUID.randomUUID(), Optional.empty(), instrumentKey,
@@ -325,7 +334,7 @@ public class ExecutionEngine {
         }
     }
 
-    @Transactional
+    @Transactional(timeout = 30)
     public ExecutionResult closeTrade(String tradeId, BigDecimal lastPrice, String reason) {
         if (!closingInProgress.add(tradeId)) {
             log.warn("Close already in progress for tradeId={} reason={} — duplicate suppressed", tradeId, reason);
@@ -359,11 +368,8 @@ public class ExecutionEngine {
 
         // Paper trades: close without broker order — just compute P&L and update DB
         if (tradeId.startsWith("PAPER-")) {
-            // Determine P&L direction: SELL entries profit when price drops, BUY entries profit when price rises
-            boolean isShortEntry = trade.getEntryReason() != null
-                    && (trade.getEntryReason().contains("[SELL_CE]")
-                        || trade.getEntryReason().contains("[SELL_PE]"));
-            BigDecimal realizedPnl = isShortEntry
+            boolean isShort = isShortEntry(trade);
+            BigDecimal realizedPnl = isShort
                     ? trade.getEntryPrice().subtract(lastPrice).multiply(BigDecimal.valueOf(trade.getQuantity()))
                     : lastPrice.subtract(trade.getEntryPrice()).multiply(BigDecimal.valueOf(trade.getQuantity()));
             trade.close(lastPrice, Instant.now(clock), realizedPnl, "PAPER_EXIT: " + reason);
@@ -371,6 +377,7 @@ public class ExecutionEngine {
             executionOutcomeCsvRecorder.recordExit(trade, lastPrice, realizedPnl, reason, null);
             log.info("PAPER trade closed: tradeId={}, exitPrice={}, realizedPnl={}, reason={}",
                     tradeId, lastPrice, realizedPnl, reason);
+            // Paper trade outcomes don't affect rolling win rate for risk gates
             telegramAlertService.systemAlert(String.format(
                     "📝 Paper Trade Closed: %s | Entry ₹%.2f → Exit ₹%.2f | P&L ₹%.2f | %s",
                     trade.getInstrumentKey(), trade.getEntryPrice().doubleValue(),
@@ -429,21 +436,21 @@ public class ExecutionEngine {
         }
 
         BigDecimal exitPrice = order.averageFillPrice().orElse(lastPrice);
-        boolean isShortEntry = trade.getEntryReason() != null
-                && (trade.getEntryReason().contains("[SELL_CE]") || trade.getEntryReason().contains("[SELL_PE]"));
-        BigDecimal realizedPnl = isShortEntry
+        boolean isShort = isShortEntry(trade);
+        BigDecimal realizedPnl = isShort
                 ? trade.getEntryPrice().subtract(exitPrice).multiply(BigDecimal.valueOf(trade.getQuantity()))
                 : exitPrice.subtract(trade.getEntryPrice()).multiply(BigDecimal.valueOf(trade.getQuantity()));
         trade.close(exitPrice, Instant.now(clock), realizedPnl, reason);
         tradeRepository.save(trade);
         executionOutcomeCsvRecorder.recordExit(trade, exitPrice, realizedPnl, reason, order);
         log.info("Trade closed: tradeId={}, exitPrice={}, realizedPnl={}, reason={}", tradeId, exitPrice, realizedPnl, reason);
+        tradingStateService.recordTradeOutcome(realizedPnl.signum() > 0);
         telegramAlertService.tradeClosed(tradeId, trade.getInstrumentKey(), trade.getQuantity(),
                 trade.getEntryPrice(), exitPrice, realizedPnl, reason, order);
         return ExecutionResult.accepted(order, List.of("Exit order filled and trade journal updated"));
     }
 
-    @Transactional
+    @Transactional(timeout = 30)
     public ExecutionResult closePartialTrade(String tradeId, int partialQuantity, BigDecimal lastPrice, String layerReason) {
         log.info("Partial close requested: tradeId={}, partialQuantity={}, lastPrice={}, layer={}", tradeId, partialQuantity, lastPrice, layerReason);
         TradeEntity trade = tradeRepository.findById(tradeId)
@@ -458,10 +465,8 @@ public class ExecutionEngine {
         }
 
         if (trade.isPaperTrade()) {
-            boolean isShortEntry = trade.getEntryReason() != null
-                    && (trade.getEntryReason().contains("[SELL_CE]")
-                        || trade.getEntryReason().contains("[SELL_PE]"));
-            BigDecimal partialPnl = isShortEntry
+            boolean isShort = isShortEntry(trade);
+            BigDecimal partialPnl = isShort
                     ? trade.getEntryPrice().subtract(lastPrice).multiply(BigDecimal.valueOf(partialQuantity))
                     : lastPrice.subtract(trade.getEntryPrice()).multiply(BigDecimal.valueOf(partialQuantity));
             trade.partialClose(partialQuantity, partialPnl, layerReason);
@@ -499,9 +504,8 @@ public class ExecutionEngine {
             return ExecutionResult.rejected(List.of("Partial exit order not filled: " + order.status()));
         }
         BigDecimal exitPrice = order.averageFillPrice().orElse(lastPrice);
-        boolean isShortPartial = trade.getEntryReason() != null
-                && (trade.getEntryReason().contains("[SELL_CE]") || trade.getEntryReason().contains("[SELL_PE]"));
-        BigDecimal partialPnl = isShortPartial
+        boolean isShort = isShortEntry(trade);
+        BigDecimal partialPnl = isShort
                 ? trade.getEntryPrice().subtract(exitPrice).multiply(BigDecimal.valueOf(partialQuantity))
                 : exitPrice.subtract(trade.getEntryPrice()).multiply(BigDecimal.valueOf(partialQuantity));
         trade.partialClose(partialQuantity, partialPnl, layerReason);
@@ -616,6 +620,7 @@ public class ExecutionEngine {
 
         log.info("Watchdog opened trade from filled order: tradeId={}, clientOrderId={}, instrument={}, qty={}, price={}",
                 tradeId, orderEntity.getClientOrderId(), instrumentKey, filledQty, fillPrice);
+        tradingStateService.recordTradeEntry();
         telegramAlertService.systemAlert("Limit order filled (watchdog)"
                 + System.lineSeparator() + "Trade: " + tradeId
                 + System.lineSeparator() + "Instrument: " + instrumentKey
@@ -707,6 +712,23 @@ public class ExecutionEngine {
         });
     }
 
+    /**
+     * Determine if a trade is a short entry (SELL side) based on strategy type.
+     * Uses strategyType field first, falls back to entryReason parsing.
+     */
+    private boolean isShortEntry(TradeEntity trade) {
+        // Check strategy type — selling strategies have short entries
+        if (trade.getStrategyType() != null && !trade.getStrategyType().isBlank()) {
+            try {
+                return com.algo.trade.strategy.StrategyType.valueOf(trade.getStrategyType()).isSellingStrategy();
+            } catch (IllegalArgumentException ignored) {}
+        }
+        // Fallback: check entry reason for SELL signal markers
+        String reason = trade.getEntryReason();
+        return reason != null && (reason.contains("[SELL_CE]") || reason.contains("[SELL_PE]")
+                || reason.contains("SELL_CE") || reason.contains("SELL_PE"));
+    }
+
     /** Extract strategy type name from a StrategyDecision's reasons list. */
     private String extractStrategyType(StrategyDecision decision) {
         for (String reason : decision.reasons()) {
@@ -776,11 +798,19 @@ public class ExecutionEngine {
                 .limit(20) // only need to check recent trades
                 .toList();
         int losses = 0;
+        int consecutiveWins = 0;
         for (TradeEntity trade : recentClosed) {
             if (trade.getRealizedPnl().signum() < 0) {
-                losses++;
+                if (consecutiveWins < 2) {
+                    // Need 2 consecutive winners to truly clear the loss streak
+                    losses++;
+                    consecutiveWins = 0;
+                } else {
+                    break; // 2+ consecutive winners — streak is genuinely broken
+                }
             } else {
-                break;
+                if (losses == 0) break; // no losses to count
+                consecutiveWins++;
             }
         }
         return losses;

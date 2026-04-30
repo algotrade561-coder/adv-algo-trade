@@ -94,6 +94,10 @@ public class MlVirtualTradeTracker {
                 decision.underlying().name());
 
         String id = "ML-VT-" + UUID.randomUUID().toString().substring(0, 8);
+        // Apply simulated slippage (0.5% adverse) to make virtual P&L realistic
+        BigDecimal slippageMultiplier = BigDecimal.ONE.add(new BigDecimal("0.005")); // BUY side: pay 0.5% more
+        BigDecimal slippedEntry = entryPrice.multiply(slippageMultiplier, MC)
+                .setScale(2, java.math.RoundingMode.HALF_UP);
         VirtualTrade vt = new VirtualTrade(
                 id,
                 Instant.now(),
@@ -101,9 +105,9 @@ public class MlVirtualTradeTracker {
                 decision.optionType().map(Enum::name).orElse("CE"),
                 strategyType != null ? strategyType : "DIRECTIONAL_BUY",
                 instrumentKey,
-                entryPrice,
-                entryPrice, // currentPrice = entryPrice initially
-                entryPrice, // peakPrice = entryPrice initially
+                slippedEntry,
+                slippedEntry, // currentPrice = slippedEntry initially
+                slippedEntry, // peakPrice = slippedEntry initially
                 config.getStopLossPercent(),
                 config.getTargetPercent(),
                 config.getTrailingStopActivationPercent(),

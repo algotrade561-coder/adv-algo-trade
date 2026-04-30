@@ -30,7 +30,8 @@ class PositionSynchronizerTest {
         tradeRepository = mock(TradeRepository.class);
         tokenStore = mock(KiteAccessTokenStore.class);
         marketDataService = mock(com.algo.trade.marketdata.MarketDataService.class);
-        synchronizer = new PositionSynchronizer(brokerClient, tradeRepository, tokenStore, marketDataService);
+        var telegramAlertService = mock(com.algo.trade.notification.TelegramAlertService.class);
+        synchronizer = new PositionSynchronizer(brokerClient, tradeRepository, tokenStore, marketDataService, telegramAlertService);
     }
 
     @Test
@@ -74,6 +75,7 @@ class PositionSynchronizerTest {
                 TradeStatus.OPEN, 75, BigDecimal.valueOf(100), Instant.now(), "test-entry"
         );
         when(tradeRepository.findByStatus(TradeStatus.OPEN)).thenReturn(List.of(openTrade));
+        when(tradeRepository.findById("T-001")).thenReturn(java.util.Optional.of(openTrade));
 
         synchronizer.syncPositions();
 

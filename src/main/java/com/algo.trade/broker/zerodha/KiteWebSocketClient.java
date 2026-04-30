@@ -66,6 +66,11 @@ public class KiteWebSocketClient {
     private final AtomicBoolean intentionalClose = new AtomicBoolean(false);
     private final AtomicInteger reconnectDelay = new AtomicInteger(5);
     private List<Long> subscribedTokens = List.of();
+    private volatile Instant lastTickTime = null;
+    private volatile Instant lastConnectTime = null;
+    private volatile Instant lastSubscribeTime = null;
+    private volatile int subscribeCount = 0;
+    private volatile int reconnectCount = 0;
     private final java.util.concurrent.ExecutorService alertExecutor =
             java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
                 Thread t = new Thread(r, "ws-telegram-alert");
@@ -106,6 +111,8 @@ public class KiteWebSocketClient {
 
     public void subscribe(List<Long> tokens) {
         this.subscribedTokens = List.copyOf(tokens);
+        this.lastSubscribeTime = Instant.now();
+        this.subscribeCount++;
         if (!connected) return;
         WebSocket ws = this.webSocket;
         if (ws != null) sendSubscribe(ws, tokens);
@@ -121,6 +128,13 @@ public class KiteWebSocketClient {
     }
 
     public boolean isConnected() { return connected; }
+    public int getSubscribedTokenCount() { return subscribedTokens.size(); }
+    public List<Long> getSubscribedTokens() { return subscribedTokens; }
+    public Instant getLastTickTime() { return lastTickTime; }
+    public Instant getLastConnectTime() { return lastConnectTime; }
+    public Instant getLastSubscribeTime() { return lastSubscribeTime; }
+    public int getSubscribeCount() { return subscribeCount; }
+    public int getReconnectCount() { return reconnectCount; }
 
     // ── Internal ──────────────────────────────────────────────────────────────
 
@@ -157,6 +171,7 @@ public class KiteWebSocketClient {
         int delay = reconnectDelay.get();
         reconnectExecutor.schedule(() -> {
             log.info("[WS] Reconnecting (delay={}s)...", delay);
+            reconnectCount++;
             doConnect();
             reconnectDelay.set(Math.min(delay * 2, 60));
         }, delay, TimeUnit.SECONDS);
@@ -170,8 +185,14 @@ public class KiteWebSocketClient {
         public void onOpen(WebSocket ws, Response response) {
             connected = true;
             reconnectDelay.set(5);
+            lastConnectTime = Instant.now();
             log.info("[WS] Connected to Kite WebSocket");
-            if (!subscribedTokens.isEmpty()) sendSubscribe(ws, subscribedTokens);
+            if (!subscribedTokens.isEmpty()) {
+                sendSubscribe(ws, subscribedTokens);
+                lastSubscribeTime = Instant.now();
+                subscribeCount++;
+                log.info("[WS] Resubscribed to {} tokens after connect", subscribedTokens.size());
+            }
             alertExecutor.execute(() -> telegramAlertService.systemAlert("\uD83D\uDFE2 WebSocket connected to Kite"));
         }
 
@@ -200,6 +221,12 @@ public class KiteWebSocketClient {
                             String.format("📋 Order Update: %s | %s | Filled: %d @ ₹%.2f%s",
                                     symbol, status, filledQty, avgPrice,
                                     msg.isBlank() ? "" : " | " + msg)));
+                    // Trigger immediate position sync on any COMPLETE order
+                    // This catches manual closes from the broker app within seconds
+                    if ("COMPLETE".equalsIgnoreCase(status)) {
+                        alertExecutor.execute(() -> eventPublisher.publishEvent(
+                                new com.algo.trade.domain.OrderCompletedEvent(orderId, symbol, status, filledQty, avgPrice)));
+                    }
                 } else {
                     log.debug("[WS] Text frame type={}: {}", type, text);
                 }
@@ -233,6 +260,7 @@ public class KiteWebSocketClient {
 
     private void parseBinaryTicks(byte[] data) {
         if (data.length < 2) return;
+        lastTickTime = Instant.now();
         ByteBuffer buf = ByteBuffer.wrap(data).order(ByteOrder.BIG_ENDIAN);
         int numPackets = buf.getShort();
 

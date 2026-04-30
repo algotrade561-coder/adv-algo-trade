@@ -28,7 +28,7 @@ import java.util.Optional;
 /**
  * Handles post-evaluation work for any strategy signal: enrichment, risk gates,
  * ML shadow recording, execution routing, DB persistence, and CSV recording.
- * Eliminates the duplicate ML shadow blocks that previously existed in AlgoTradingScheduler.
+ * Eliminates the duplicate ML shadow blocks that previously existed in AlgoTradeExecution.
  */
 @Component
 public class StrategyExecutionPipeline {

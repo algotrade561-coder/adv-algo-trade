@@ -40,7 +40,15 @@ public class VerifyAllService {
     private static final Set<StrategyType> SINGLE_LEG_STRATEGIES = Set.of(
             StrategyType.DIRECTIONAL_BUY,
             StrategyType.SCALPING,
-            StrategyType.VOLATILITY_BREAKOUT
+            StrategyType.VOLATILITY_BREAKOUT,
+            StrategyType.EVENT_DRIVEN_BUY,
+            StrategyType.GAP_AND_GO,
+            StrategyType.REVERSAL_BUY,
+            StrategyType.OI_SHIFT_TRAP,
+            StrategyType.EXPIRY_GAMMA,
+            StrategyType.EXPIRY_REVERSAL,
+            StrategyType.MOMENTUM,
+            StrategyType.ITM_CONVICTION
     );
 
     /** Strategies that require live data (ATP) and cannot be backtested. */

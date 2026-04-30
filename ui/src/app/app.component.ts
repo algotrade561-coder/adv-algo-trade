@@ -516,6 +516,7 @@ export class AppComponent implements OnInit, OnDestroy {
     { label: 'AI Insights', path: 'ai-insights', icon: 'psychology' },
     { label: 'ML Scorecard', path: 'ml-scorecard', icon: 'analytics' },
     { label: 'Reports', path: 'reports', icon: 'description' },
+    { label: 'Diagnostics', path: 'diagnostics', icon: 'monitor_heart' },
     { label: 'Kite Auth', path: 'auth', icon: 'lock_open' },
     { label: 'Settings', path: 'settings', icon: 'tune' }
   ];
