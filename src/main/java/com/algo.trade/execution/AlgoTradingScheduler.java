@@ -21,15 +21,13 @@ import com.algo.trade.strategy.ScalpingStrategy;
 import com.algo.trade.strategy.SpreadStrategyEvaluator;
 import com.algo.trade.strategy.StrategyConfig;
 import com.algo.trade.strategy.StrategyConfigService;
+import com.algo.trade.strategy.StrategyContext;
 import com.algo.trade.strategy.StrategySignalCsvRecorder;
 import com.algo.trade.strategy.StrategyEvaluationRequest;
 import com.algo.trade.strategy.StrategyType;
 import com.algo.trade.strategy.VolatilityBreakoutStrategy;
 import com.algo.trade.strategy.spread.AbstractSpreadStrategy;
 import com.algo.trade.risk.MarketGuard;
-import com.algo.trade.indicator.RsiIndicator;
-import com.algo.trade.indicator.AtrIndicator;
-import com.algo.trade.indicator.EmaIndicator;
 import com.algo.trade.util.IstDateTimes;
 import java.math.BigDecimal;
 import java.math.MathContext;
@@ -90,13 +88,12 @@ public class AlgoTradingScheduler {
     private final com.algo.trade.risk.WeeklyExposureTracker weeklyExposureTracker;
     private final com.algo.trade.risk.SafeWeekPredictor safeWeekPredictor;
     private final com.algo.trade.indicator.IVRankTracker ivRankTracker;
+    private final com.algo.trade.indicator.RealizedVolatilityCalculator realizedVolatilityCalculator;
+    private final com.algo.trade.persistence.GreeksSampleRepository greeksSampleRepository;
     private final Map<String, Quote> previousQuotes = new ConcurrentHashMap<>();
     private final AtomicBoolean scanInProgress = new AtomicBoolean(false);
     private final Map<StrategyType, AbstractSpreadStrategy> spreadStrategyMap;
-    private final com.algo.trade.ml.MlShadowRecorder mlShadowRecorder;
-    private final RsiIndicator rsiIndicator;
-    private final AtrIndicator atrIndicator;
-    private final EmaIndicator emaIndicator;
+    private final StrategyExecutionPipeline executionPipeline;
 
     // Short-lived cache for underlying REST candles — avoids repeated REST calls within the same candle period.
     // Keyed by "instrumentKey:TIMEFRAME", expires after 60 seconds.
@@ -135,10 +132,9 @@ public class AlgoTradingScheduler {
             com.algo.trade.risk.SafeWeekPredictor safeWeekPredictor,
             com.algo.trade.indicator.IVRankTracker ivRankTracker,
             java.util.List<AbstractSpreadStrategy> spreadStrategies,
-            com.algo.trade.ml.MlShadowRecorder mlShadowRecorder,
-            RsiIndicator rsiIndicator,
-            AtrIndicator atrIndicator,
-            EmaIndicator emaIndicator
+            StrategyExecutionPipeline executionPipeline,
+            com.algo.trade.indicator.RealizedVolatilityCalculator realizedVolatilityCalculator,
+            com.algo.trade.persistence.GreeksSampleRepository greeksSampleRepository
     ) {
         this.properties = properties;
         this.globalConfigService = globalConfigService;
@@ -174,10 +170,9 @@ public class AlgoTradingScheduler {
             map.put(s.strategyType(), s);
         }
         this.spreadStrategyMap = java.util.Collections.unmodifiableMap(map);
-        this.mlShadowRecorder = mlShadowRecorder;
-        this.rsiIndicator = rsiIndicator;
-        this.atrIndicator = atrIndicator;
-        this.emaIndicator = emaIndicator;
+        this.executionPipeline = executionPipeline;
+        this.realizedVolatilityCalculator = realizedVolatilityCalculator;
+        this.greeksSampleRepository = greeksSampleRepository;
     }
 
     /**
@@ -239,13 +234,11 @@ public class AlgoTradingScheduler {
         }
 
         try {
-            // REST fallback: run directional buy on 1-min, then additional strategies on all timeframes
-            runScan(Timeframe.ONE_MINUTE);
-            // Also trigger 5-min and 15-min strategies since REST poll doesn't get candle events
-            runAdditionalStrategies(LocalTime.now(properties.timezone()),
-                    tradingStateService.enabledUnderlyings(), Timeframe.FIVE_MINUTE);
-            runAdditionalStrategies(LocalTime.now(properties.timezone()),
-                    tradingStateService.enabledUnderlyings(), Timeframe.FIFTEEN_MINUTE);
+            // REST fallback: simulate all three candle-close timeframes in sequence.
+            // Each runScan() applies market-window and market-guard checks before evaluating.
+            runScan(Timeframe.ONE_MINUTE);    // directional buy + 1-min strategies
+            runScan(Timeframe.FIVE_MINUTE);   // scalping and other 5-min strategies
+            runScan(Timeframe.FIFTEEN_MINUTE); // volatility breakout, spreads, event-driven
         } catch (Exception ex) {
             log.warn("Algo scan failed: {}", ex.getMessage(), ex);
         } finally {
@@ -513,187 +506,27 @@ public class AlgoTradingScheduler {
                         default -> Optional.empty();
                     };
 
-                    if (signal.isPresent()) {
-                        // Spread strategies: evaluateAndEnter() already persisted the PositionGroupEntity
-                        // and in-memory state. Bypass enrichment (which would replace groupId with a phantom
-                        // CE instrument) and skip single-leg execution engine routing entirely.
-                        if (spreadStrategyMap.containsKey(type)) {
-                            StrategyDecisionEntity spreadEntity = persistStrategyDecision(signal.get(), type.name(), config, ivRankSource);
-                            spreadEntity.setExecutionStage("NOT_EXECUTED");
-                            spreadEntity.setExecutionReason("Spread recorded — multi-leg broker execution not yet implemented");
-                            decisionRepository.save(spreadEntity);
-                            log.info("Spread entry recorded: type={} groupId={}",
-                                    type, signal.get().selectedInstrumentKey().orElse(""));
-                            continue;
-                        }
+                    // Spread strategies: evaluateAndEnter() already persisted the PositionGroupEntity.
+                    // Bypass enrichment (would replace groupId with a phantom CE instrument).
+                    if (signal.isPresent() && spreadStrategyMap.containsKey(type)) {
+                        StrategyDecisionEntity spreadEntity = persistStrategyDecision(signal.get(), type.name(), config, ivRankSource);
+                        spreadEntity.setExecutionStage("NOT_EXECUTED");
+                        spreadEntity.setExecutionReason("Spread recorded — multi-leg broker execution not yet implemented");
+                        decisionRepository.save(spreadEntity);
+                        log.info("Spread entry recorded: type={} groupId={}",
+                                type, signal.get().selectedInstrumentKey().orElse(""));
+                        continue;
+                    }
 
-                        StrategyDecision enriched = enrichWithOptionData(signal.get(), underlying);
-
-                        // Weekly exposure check: block if weekly cap exceeded (skip for paper trades)
-                        BigDecimal estimatedPremium = enriched.optionPrice().orElse(enriched.underlyingPrice());
-                        BigDecimal estimatedCost = estimatedPremium.multiply(
-                                BigDecimal.valueOf(config.getLots() * com.algo.trade.domain.IndexType.from(underlying).lotSize()));
-
-                        // Max open trades check for additional strategies (skip for paper trades)
-                        if (!config.isPaperTrading()) {
-                            int effectiveOpen = executionEngine.effectiveOpenTradeCount();
-                            if (effectiveOpen >= globalConfigService.getMaxOpenTrades()) {
-                                log.info("Entry blocked: max open trades reached ({} >= {})",
-                                        effectiveOpen, globalConfigService.getMaxOpenTrades());
-                                StrategyDecisionEntity blockedEntity = persistStrategyDecision(enriched, type.name(), config, ivRankSource);
-                                blockedEntity.setExecutionStage("NOT_EXECUTED");
-                                blockedEntity.setExecutionReason("Max open trades reached (" + effectiveOpen + "/" + globalConfigService.getMaxOpenTrades() + ")");
-                                decisionRepository.save(blockedEntity);
-                                continue;
-                            }
-                        }
-
-                        if (!config.isPaperTrading() && !weeklyExposureTracker.canTrade(estimatedCost)) {
-                            log.info("Entry blocked: weekly exposure cap reached (₹{}/₹{})",
-                                    weeklyExposureTracker.getWeeklyExposure().setScale(0, java.math.RoundingMode.HALF_UP),
-                                    weeklyExposureTracker.getWeeklyExposureCap().setScale(0, java.math.RoundingMode.HALF_UP));
-                            StrategyDecisionEntity blockedEntity = persistStrategyDecision(enriched, type.name(), config, ivRankSource);
-                            blockedEntity.setExecutionStage("NOT_EXECUTED");
-                            blockedEntity.setExecutionReason("Weekly exposure cap reached");
-                            decisionRepository.save(blockedEntity);
-                            continue;
-                        }
-
-                        boolean executed = false;
-                        // ML shadow recording for additional strategies
-                        try {
-                            // Key must match StrategySignalCsvRecorder.additionalDecisionKey():
-                            // strategyType|timestamp|underlying|optionType
-                            String decisionKey = Integer.toUnsignedString(
-                                    (type.name() + "|" + enriched.timestamp() + "|" + underlying + "|" + enriched.optionType().map(Enum::name).orElse("")).hashCode(), 16);
-                            List<String> reasons = enriched.reasons();
-                            List<BigDecimal> mlCloses1 = trendCandles.stream().map(Candle::close).toList();
-                            double mlRsi1 = rsiIndicator.calculate(mlCloses1, 14).doubleValue();
-                            double mlAtr1 = atrIndicator.calculateATR(trendCandles, 14);
-                            double mlEmaGap1 = mlCloses1.size() >= 21
-                                    ? emaIndicator.calculate(mlCloses1, 9).subtract(emaIndicator.calculate(mlCloses1, 21)).doubleValue()
-                                    : 0.0;
-                            Map<String, String> csvData = Map.ofEntries(
-                                    Map.entry("underlyingPrice", String.valueOf(enriched.underlyingPrice())),
-                                    Map.entry("optionLastPrice", enriched.optionPrice().map(String::valueOf).orElse("0")),
-                                    Map.entry("optionVolume", "0"),
-                                    Map.entry("optionOpenInterest", enriched.optionOpenInterest().map(String::valueOf).orElse("0")),
-                                    Map.entry("optionImpliedVolatility", ""),
-                                    Map.entry("nearbyPutCallOiImbalance", enriched.imbalance().map(String::valueOf).orElse("0")),
-                                    Map.entry("nearbyCallOpenInterest", "0"),
-                                    Map.entry("nearbyPutOpenInterest", "0"),
-                                    Map.entry("resistanceCallOiChange", "0"),
-                                    Map.entry("supportPutOiChange", "0"),
-                                    Map.entry("ivRank", String.valueOf(ivRank)),
-                                    Map.entry("vwapPassed", String.valueOf(enriched.vwapConditionPassed())),
-                                    Map.entry("breakoutPassed", "false"),
-                                    Map.entry("volumeSpike", String.valueOf(enriched.volumeSpike())),
-                                    Map.entry("oiPassed", "false"),
-                                    Map.entry("ivPassed", "true"),
-                                    Map.entry("liquidityPassed", "true"),
-                                    Map.entry("rsiPassed", "true"),
-                                    Map.entry("optionType", enriched.optionType().map(Enum::name).orElse("CE")),
-                                    Map.entry("marketTime", marketTime.toString()),
-                                    Map.entry("underlying", underlying.name()),
-                                    Map.entry("confidenceScore", String.valueOf(enriched.confidenceScore())),
-                                    Map.entry("rsiValue", String.valueOf(mlRsi1)),
-                                    Map.entry("atrValue", String.valueOf(mlAtr1)),
-                                    Map.entry("ema9Ema21Gap", String.valueOf(mlEmaGap1)),
-                                    Map.entry("bidAskSpread", "0"),
-                                    Map.entry("vixLevel", String.valueOf(marketGuard.getCurrentVix())),
-                                    Map.entry("daysToExpiry", String.valueOf(expiryCalendar.daysToExpiry(com.algo.trade.domain.IndexType.from(underlying))))
-                            );
-                            mlShadowRecorder.recordShadowScore(enriched, csvData, decisionKey,
-                                    globalConfigService.getMinSignalScorePercent());
-                        } catch (Exception e) {
-                            log.debug("ML shadow recording failed for {}: {}", type, e.getMessage());
-                        }
-
-                        if (enriched.signalType().name().startsWith("BUY_")
-                                && enriched.selectedInstrumentKey().isPresent()) {
-                            // Paper trading check: create simulated trade for full P&L tracking
-                            if (config.isPaperTrading()) {
-                                log.info("PAPER TRADE signal: type={} underlying={} signal={} instrument={}",
-                                        type, underlying, enriched.signalType(), enriched.selectedInstrumentKey().orElse(""));
-                                BigDecimal premium = enriched.optionPrice().orElse(enriched.underlyingPrice());
-                                executionEngine.executePaperEntry(enriched, premium,
-                                        config.getLots() * com.algo.trade.domain.IndexType.from(underlying).lotSize(),
-                                        config);
-                                executed = true; // paper trade counts as executed for CSV recording
-                            } else {
-                                log.info("Additional strategy signal: type={} underlying={} signal={} instrument={}",
-                                        type, underlying, enriched.signalType(), enriched.selectedInstrumentKey().orElse(""));
-                                BigDecimal premium = enriched.optionPrice().orElse(enriched.underlyingPrice());
-                                executionEngine.executeEntry(enriched, premium,
-                                        config.getLots() * com.algo.trade.domain.IndexType.from(underlying).lotSize(),
-                                        config);
-                                executed = true;
-                                // Record real trade cost for weekly exposure tracking
-                                weeklyExposureTracker.recordTrade(estimatedCost);
-                            }
-                        } else if (enriched.signalType().name().startsWith("SELL_")
-                                && enriched.selectedInstrumentKey().isPresent()) {
-                            // SELL signals — only paper mode for now (no multi-leg execution)
-                            if (config.isPaperTrading()) {
-                                log.info("PAPER SELL signal: type={} underlying={} signal={} instrument={}",
-                                        type, underlying, enriched.signalType(), enriched.selectedInstrumentKey().orElse(""));
-                                BigDecimal premium = enriched.optionPrice().orElse(enriched.underlyingPrice());
-                                executionEngine.executePaperEntry(enriched, premium,
-                                        config.getLots() * com.algo.trade.domain.IndexType.from(underlying).lotSize(),
-                                        config);
-                                executed = true;
-                            } else {
-                                log.warn("SELL signal from {} but paperTrading=false — blocking real SELL execution until multi-leg engine is built",
-                                        type);
-                            }
-                        } else if (enriched.signalType().name().startsWith("BUY_")) {
-                            log.info("Additional strategy signal persisted but not executed (no instrument resolved): type={} underlying={}",
-                                    type, underlying);
-                        }
-                        com.algo.trade.strategy.StrategyDiagnostics buyDiag = diagHolder[0];
-                        signalCsvRecorder.recordAdditionalStrategy(type.name(), enriched, executed,
-                                executed ? "EXECUTED" : "NOT_EXECUTED", null, null,
-                                strategyCandles,
-                                buyDiag.ema9(), buyDiag.ema21(), buyDiag.emaCrossType(), buyDiag.emaCrossConfirmCount(),
-                                buyDiag.bbUpper(), buyDiag.bbLower(), buyDiag.bbBandwidth(), buyDiag.bbSqueeze(), ivRank);
-                    } else if (type != StrategyType.DIRECTIONAL_BUY && evaluated[0]) {
-                        // Persist NO_TRADE with spot price for analysis (skip timeframe-mismatch skips)
-                        BigDecimal spotPrice = strategyCandles.isEmpty() ? BigDecimal.ZERO : strategyCandles.getLast().close();
-                        com.algo.trade.strategy.StrategyDiagnostics diag = diagHolder[0];
-                        String noTradeReason = diag.firstFailedFilter() != null
-                                ? diag.firstFailedFilter()
-                                : "No signal conditions met for " + type.displayName();
-                        for (OptionType ot : new OptionType[]{OptionType.CE, OptionType.PE}) {
-                            Instrument atmInst = resolveAtmInstrument(underlying, ot, spotPrice).orElse(null);
-                            StrategyDecisionEntity noTrade = StrategyDecisionEntity.forStrategy(
-                                    type.name(), Instant.now(), underlying.name(), "NO_TRADE",
-                                    ot.name(), spotPrice, BigDecimal.ZERO, noTradeReason);
-                            noTrade.setPaperTrade(config.isPaperTrading());
-                            noTrade.setIvRank(ivRank);
-                            noTrade.setIvRankSource(ivRankSource);
-                            noTrade.setFirstFailedFilter(diag.firstFailedFilter());
-                            if (diag.ema9() != null) noTrade.setFastEma(diag.ema9());
-                            if (diag.ema21() != null) noTrade.setSlowEma(diag.ema21());
-                            if (diag.emaCrossType() != null) noTrade.setEmaCrossType(diag.emaCrossType());
-                            if (diag.emaCrossConfirmCount() != null) noTrade.setEmaCrossConfirmCount(diag.emaCrossConfirmCount());
-                            if (diag.bbBandwidth() != null) noTrade.setBollingerBandwidth(diag.bbBandwidth());
-                            if (diag.bbUpper() != null) noTrade.setBbUpper(diag.bbUpper());
-                            if (diag.bbLower() != null) noTrade.setBbLower(diag.bbLower());
-                            if (diag.bbSqueeze() != null) noTrade.setBbSqueeze(diag.bbSqueeze());
-                            noTrade.setConfigSnapshot(configToSnapshot(config));
-                            noTrade.setExecutionStage("NO_TRADE");
-                            noTrade.setExecutionReason(noTradeReason);
-                            if (atmInst != null) {
-                                noTrade.setSelectedInstrumentKey(atmInst.instrumentKey());
-                                noTrade.setSelectedStrike(atmInst.strike().orElse(null));
-                            }
-                            decisionRepository.save(noTrade);
-                            signalCsvRecorder.recordAdditionalNoTrade(type.name(), underlying.name(), spotPrice,
-                                    "No signal conditions met for " + type.displayName(),
-                                    strategyCandles, diag, ivRank,
-                                    atmInst != null ? atmInst.instrumentKey() : null,
-                                    atmInst != null ? atmInst.strike().orElse(null) : null);
-                        }
+                    // All non-spread strategies that were evaluated: unified pipeline post-processing
+                    // (enrichment, risk gates, ML shadow, execution, CSV, DB persistence)
+                    if (evaluated[0] && type != StrategyType.DIRECTIONAL_BUY) {
+                        StrategyContext pipelineCtx = buildLiteStrategyContext(
+                                underlying, marketTime, strategyCandles, trendCandles,
+                                ivRank, ivRankSource, candleTf, trendTf);
+                        executionPipeline.process(
+                                new com.algo.trade.strategy.StrategyDiagnostics.WithSignal(signal, diagHolder[0]),
+                                pipelineCtx, config, type, ivRankSource);
                     }
                 } catch (Exception e) {
                     log.warn("Additional strategy evaluation failed: type={} underlying={}: {}",
@@ -773,58 +606,6 @@ public class AlgoTradingScheduler {
         return decisionRepository.save(entity);
     }
 
-    /**
-     * Enrich a strategy signal with actual option instrument data (strike, price, OI)
-     * by looking up the nearest ATM option from the instrument cache.
-     */
-    private StrategyDecision enrichWithOptionData(StrategyDecision decision, UnderlyingSymbol underlying) {
-        try {
-            OptionType optionType = decision.optionType().orElse(OptionType.CE);
-            Optional<LocalDate> expiry = instrumentCache.nearestExpiry(
-                    underlying, LocalDate.now(properties.timezone()), properties.symbols().defaultExpiry());
-            if (expiry.isEmpty()) return decision;
-
-            List<Instrument> options = instrumentCache.all().stream()
-                    .filter(Instrument::tradable)
-                    .filter(i -> i.underlying().filter(underlying::equals).isPresent())
-                    .filter(i -> i.expiry().filter(expiry.get()::equals).isPresent())
-                    .filter(i -> i.optionType().filter(optionType::equals).isPresent())
-                    .filter(i -> i.strike().isPresent())
-                    .toList();
-            if (options.isEmpty()) return decision;
-
-            BigDecimal spotPrice = decision.underlyingPrice();
-            Instrument nearest = options.stream()
-                    .min(java.util.Comparator.comparing(i -> i.strike().orElse(BigDecimal.ZERO).subtract(spotPrice).abs()))
-                    .orElse(null);
-            if (nearest == null) return decision;
-
-            // Get live quote for the selected option
-            Optional<Quote> quote = marketDataService.quote(nearest.instrumentKey());
-            BigDecimal optionPrice = quote.map(Quote::lastPrice).orElse(null);
-            Long oi = quote.map(Quote::openInterest).orElse(null);
-
-            return new StrategyDecision(
-                    decision.timestamp(), decision.underlying(), decision.signalType(),
-                    decision.underlyingPrice(),
-                    Optional.ofNullable(optionPrice),
-                    Optional.ofNullable(oi),
-                    Optional.of(nearest.lotSize()),
-                    optionPrice != null ? Optional.of(optionPrice.multiply(BigDecimal.valueOf(nearest.lotSize()))) : Optional.empty(),
-                    Optional.of(nearest.instrumentKey()),
-                    nearest.strike(),
-                    Optional.of(optionType),
-                    decision.vwapConditionPassed(),
-                    decision.imbalance(),
-                    decision.volumeSpike(),
-                    decision.confidenceScore(),
-                    decision.reasons()
-            );
-        } catch (Exception e) {
-            log.debug("Option enrichment failed for {}: {}", underlying, e.getMessage());
-            return decision;
-        }
-    }
 
     private Optional<Instrument> resolveAtmInstrument(UnderlyingSymbol underlying, OptionType optionType, BigDecimal spotPrice) {
         try {
@@ -1092,6 +873,10 @@ public class AlgoTradingScheduler {
                     if (callQuote.isEmpty() || putQuote.isEmpty()) {
                         return java.util.stream.Stream.empty();
                     }
+                    double callIv = callQuote.get().impliedVolatility()
+                            .map(java.math.BigDecimal::doubleValue).orElse(0.0);
+                    double putIv = putQuote.get().impliedVolatility()
+                            .map(java.math.BigDecimal::doubleValue).orElse(0.0);
                     return java.util.stream.Stream.of(new OptionChainLevel(
                             strike,
                             callQuote.get().openInterest(),
@@ -1099,7 +884,9 @@ public class AlgoTradingScheduler {
                             openInterestChange(callQuote.get()),
                             openInterestChange(putQuote.get()),
                             callQuote.get().lastPrice(),
-                            putQuote.get().lastPrice()
+                            putQuote.get().lastPrice(),
+                            callIv,
+                            putIv
                     ));
                 })
                 .toList();
@@ -1180,6 +967,29 @@ public class AlgoTradingScheduler {
             }
 
             Instant evaluationTimestamp = Instant.now();
+
+            // Greeks from LiveInstrumentCache (updated on every WebSocket tick)
+            String symbol = selectedInstrument.instrumentKey().contains(":")
+                    ? selectedInstrument.instrumentKey().split(":", 2)[1]
+                    : selectedInstrument.instrumentKey();
+            com.algo.trade.domain.OptionInstrument liveOption = liveInstrumentCache.getBySymbol(symbol).orElse(null);
+            double optDelta = liveOption != null ? liveOption.getDelta() : 0.0;
+            double optGamma = liveOption != null ? liveOption.getGamma() : 0.0;
+            double optTheta = liveOption != null ? liveOption.getTheta() : 0.0;
+            double optVega  = liveOption != null ? liveOption.getVega()  : 0.0;
+
+            // Realized volatility from underlying candles (5-day)
+            double rv5d = realizedVolatilityCalculator.calculate5Day(underlyingCandles);
+
+            // IV skew: 1-strike OTM put IV minus 1-strike OTM call IV
+            double ivSkew = computeIvSkew(underlying, entry.getKey(), selectedInstrument,
+                    context.optionChainSnapshot());
+
+            // Persist Greeks snapshot to DB for time-series analysis
+            persistGreeksSample(underlying, entry.getKey(), selectedInstrument,
+                    evaluationTimestamp, optDelta, optGamma, optTheta, optVega,
+                    liveOption, dbSpotPrice);
+
             StrategyEvaluationRequest request = new StrategyEvaluationRequest(
                     evaluationTimestamp,
                     IstDateTimes.istTime(evaluationTimestamp),
@@ -1196,60 +1006,22 @@ public class AlgoTradingScheduler {
                     Optional.ofNullable(previousQuotes.get(selectedInstrument.instrumentKey())),
                     ivRank,
                     marketGuard.getCurrentVix(),
-                    expiryCalendar.daysToExpiry(com.algo.trade.domain.IndexType.fromName(underlying.name()))
+                    expiryCalendar.daysToExpiry(com.algo.trade.domain.IndexType.fromName(underlying.name())),
+                    optDelta, optGamma, optTheta, optVega, rv5d, ivSkew
             );
 
             StrategyDecision decision = strategy.evaluateEntry(request);
 
             // ML shadow recording — observe ML score without affecting the decision
-            try {
-                String decisionKey = Integer.toUnsignedString(
-                        (request.timestamp() + "|" + request.underlying() + "|" + entry.getKey() + "|" + request.selectedInstrumentKey()).hashCode(), 16);
-                // Extract filter pass/fail from decision reasons for accurate ML features
-                List<String> reasons = decision.reasons();
-                List<BigDecimal> mlCloses = underlyingCandles.stream().map(Candle::close).toList();
-                double mlRsi = rsiIndicator.calculate(mlCloses, 14).doubleValue();
-                double mlAtr = atrIndicator.calculateATR(underlyingCandles, 14);
-                double mlEmaGap = mlCloses.size() >= 21
-                        ? emaIndicator.calculate(mlCloses, 9).subtract(emaIndicator.calculate(mlCloses, 21)).doubleValue()
-                        : 0.0;
-                double mlSpread = selectedQuote.ask().orElse(BigDecimal.ZERO)
-                        .subtract(selectedQuote.bid().orElse(BigDecimal.ZERO)).doubleValue();
-                Map<String, String> csvData = Map.ofEntries(
-                        Map.entry("underlyingPrice", String.valueOf(decision.underlyingPrice())),
-                        Map.entry("optionLastPrice", String.valueOf(selectedQuote.lastPrice())),
-                        Map.entry("optionVolume", String.valueOf(selectedQuote.volume())),
-                        Map.entry("optionOpenInterest", String.valueOf(selectedQuote.openInterest())),
-                        Map.entry("optionImpliedVolatility", selectedQuote.impliedVolatility().map(String::valueOf).orElse("")),
-                        Map.entry("nearbyPutCallOiImbalance", decision.imbalance().map(String::valueOf).orElse("0")),
-                        Map.entry("nearbyCallOpenInterest", "0"),
-                        Map.entry("nearbyPutOpenInterest", "0"),
-                        Map.entry("resistanceCallOiChange", "0"),
-                        Map.entry("supportPutOiChange", "0"),
-                        Map.entry("ivRank", String.valueOf(ivRank)),
-                        Map.entry("vwapPassed", String.valueOf(decision.vwapConditionPassed())),
-                        Map.entry("breakoutPassed", String.valueOf(reasonContains(reasons, "Breakout condition passed"))),
-                        Map.entry("volumeSpike", String.valueOf(decision.volumeSpike())),
-                        Map.entry("oiPassed", String.valueOf(reasonContains(reasons, "OI behavior supports"))),
-                        Map.entry("ivPassed", String.valueOf(reasonContains(reasons, "IV filter passed"))),
-                        Map.entry("liquidityPassed", String.valueOf(reasonContains(reasons, "Liquidity filter passed"))),
-                        Map.entry("rsiPassed", String.valueOf(reasonContains(reasons, "RSI momentum gate passed"))),
-                        Map.entry("optionType", entry.getKey().name()),
-                        Map.entry("marketTime", request.marketTime().toString()),
-                        Map.entry("underlying", request.underlying().name()),
-                        Map.entry("confidenceScore", String.valueOf(decision.confidenceScore())),
-                        Map.entry("rsiValue", String.valueOf(mlRsi)),
-                        Map.entry("atrValue", String.valueOf(mlAtr)),
-                        Map.entry("ema9Ema21Gap", String.valueOf(mlEmaGap)),
-                        Map.entry("bidAskSpread", String.valueOf(mlSpread)),
-                        Map.entry("vixLevel", String.valueOf(marketGuard.getCurrentVix())),
-                        Map.entry("daysToExpiry", String.valueOf(expiryCalendar.daysToExpiry(com.algo.trade.domain.IndexType.from(underlying))))
-                );
-                mlShadowRecorder.recordShadowScore(decision, csvData, decisionKey,
-                        globalConfigService.getMinSignalScorePercent());
-            } catch (Exception e) {
-                log.debug("ML shadow recording failed: {}", e.getMessage());
-            }
+            String decisionKey = Integer.toUnsignedString(
+                    (request.timestamp() + "|" + request.underlying() + "|" + entry.getKey() + "|" + request.selectedInstrumentKey()).hashCode(), 16);
+            double mlSpread = selectedQuote.ask().orElse(BigDecimal.ZERO)
+                    .subtract(selectedQuote.bid().orElse(BigDecimal.ZERO)).doubleValue();
+            StrategyContext mlCtx = buildLiteStrategyContext(underlying, request.marketTime(),
+                    underlyingCandles, trendUnderlyingCandles, ivRank, null,
+                    dbCandleTf, dbTrendTf);
+            executionPipeline.recordMlShadow(decision, mlCtx, underlyingCandles, decisionKey,
+                    String.valueOf(mlSpread), optDelta, optGamma, optTheta, optVega, rv5d, ivSkew);
 
             if (decision.signalType().name().startsWith("BUY_")) {
                 log.info("Algo scan generated entry signal: underlying={}, instrument={}, signalType={}, premium={}",
@@ -1318,10 +1090,6 @@ public class AlgoTradingScheduler {
         return quote.timestamp().plus(properties.safety().staleMarketDataThreshold()).isAfter(Instant.now());
     }
 
-    /** Check if any reason string contains the given prefix (for ML shadow feature extraction). */
-    private static boolean reasonContains(List<String> reasons, String prefix) {
-        return reasons.stream().anyMatch(r -> r.contains(prefix));
-    }
 
     private boolean freshCandles(List<Candle> candles) {
         if (candles.isEmpty()) {
@@ -1497,6 +1265,40 @@ public class AlgoTradingScheduler {
         return new IvRankResult(50.0, "NEUTRAL");
     }
 
+    /**
+     * Build a lightweight StrategyContext for additional strategies that do not need a live
+     * option chain snapshot. Uses synthetic spot quote derived from last candle close.
+     */
+    private StrategyContext buildLiteStrategyContext(
+            UnderlyingSymbol underlying, LocalTime marketTime,
+            List<Candle> strategyCandles, List<Candle> trendCandles,
+            double ivRank, String ivRankSource,
+            Timeframe strategyTf, Timeframe trendTf
+    ) {
+        java.util.EnumMap<Timeframe, List<Candle>> candlesByTf = new java.util.EnumMap<>(Timeframe.class);
+        candlesByTf.put(strategyTf, strategyCandles);
+        if (trendTf != strategyTf) candlesByTf.put(trendTf, trendCandles);
+
+        BigDecimal spotPrice = strategyCandles.isEmpty()
+                ? BigDecimal.ZERO : strategyCandles.getLast().close();
+        Instant now = Instant.now();
+        Quote syntheticSpot = new Quote(underlying.name(), now, spotPrice,
+                0, 0, Optional.empty(), Optional.empty(), Optional.empty());
+
+        com.algo.trade.domain.IndexType idx = com.algo.trade.domain.IndexType.from(underlying);
+        return new StrategyContext(
+                now, marketTime, underlying,
+                java.util.Collections.unmodifiableMap(candlesByTf),
+                null,   // optionChainSnapshot not needed for additional strategies
+                Map.of(), Map.of(), Map.of(),
+                Map.copyOf(previousQuotes),
+                syntheticSpot,
+                ivRank, ivRankSource != null ? ivRankSource : "",
+                marketGuard.getCurrentVix(),
+                expiryCalendar.daysToExpiry(idx)
+        );
+    }
+
     private record ScanContext(
             Quote spotQuote,
             OptionChainSnapshot optionChainSnapshot,
@@ -1510,5 +1312,60 @@ public class AlgoTradingScheduler {
             Quote quote,
             Instrument instrument
     ) {
+    }
+
+    /**
+     * IV skew = 1-strike OTM put IV minus 1-strike OTM call IV from the chain snapshot.
+     * Positive skew means puts are more expensive (fear premium); negative means calls are bid up.
+     */
+    private double computeIvSkew(
+            UnderlyingSymbol underlying, OptionType optionType,
+            Instrument selectedInstrument, OptionChainSnapshot chainSnapshot
+    ) {
+        if (chainSnapshot == null || chainSnapshot.levels().isEmpty()) return 0.0;
+        try {
+            BigDecimal spot = chainSnapshot.underlyingPrice();
+            com.algo.trade.domain.IndexType idx = com.algo.trade.domain.IndexType.from(underlying);
+            int atmStrike = idx.roundToATM(spot.doubleValue());
+            int interval  = idx.strikeInterval();
+            BigDecimal otmCallStrike = BigDecimal.valueOf(atmStrike + interval);
+            BigDecimal otmPutStrike  = BigDecimal.valueOf(atmStrike - interval);
+
+            double callIv = chainSnapshot.levels().stream()
+                    .filter(l -> l.strike().compareTo(otmCallStrike) == 0)
+                    .mapToDouble(com.algo.trade.domain.OptionChainLevel::callImpliedVolatility)
+                    .findFirst().orElse(0.0);
+            double putIv = chainSnapshot.levels().stream()
+                    .filter(l -> l.strike().compareTo(otmPutStrike) == 0)
+                    .mapToDouble(com.algo.trade.domain.OptionChainLevel::putImpliedVolatility)
+                    .findFirst().orElse(0.0);
+
+            return (callIv > 0 && putIv > 0) ? putIv - callIv : 0.0;
+        } catch (Exception e) {
+            return 0.0;
+        }
+    }
+
+    private void persistGreeksSample(
+            UnderlyingSymbol underlying, OptionType optionType,
+            Instrument selectedInstrument, Instant capturedAt,
+            double delta, double gamma, double theta, double vega,
+            com.algo.trade.domain.OptionInstrument liveOption, BigDecimal spotPrice
+    ) {
+        if (liveOption == null || delta == 0.0) return;
+        try {
+            com.algo.trade.persistence.GreeksSampleEntity sample = new com.algo.trade.persistence.GreeksSampleEntity(
+                    com.algo.trade.domain.IndexType.from(underlying).name(),
+                    optionType.name(),
+                    liveOption.getStrikePrice(),
+                    capturedAt,
+                    delta, gamma, theta, vega,
+                    liveOption.getImpliedVolatility(),
+                    spotPrice.doubleValue()
+            );
+            greeksSampleRepository.save(sample);
+        } catch (Exception e) {
+            log.debug("Greeks sample persistence failed: {}", e.getMessage());
+        }
     }
 }

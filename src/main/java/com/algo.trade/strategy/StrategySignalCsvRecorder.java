@@ -55,7 +55,8 @@ public class StrategySignalCsvRecorder {
             "scalpEma9", "scalpEma21", "scalpCrossType", "scalpConfirmCount",
             "bbUpperBand", "bbLowerBand", "bbBandwidth", "bbSqueeze", "ivRank",
             "confidenceScore", "firstFailedFilter", "reasons",
-            "rsiValue", "atrValue", "ema9Ema21Gap", "bidAskSpread", "vixLevel", "daysToExpiry"
+            "rsiValue", "atrValue", "ema9Ema21Gap", "bidAskSpread", "vixLevel", "daysToExpiry",
+            "delta", "gamma", "theta", "vega", "realizedVol5d", "ivRvSpread", "ivSkew"
     ) + System.lineSeparator();
 
     private static final String CANDLES_HEADER = String.join(",",
@@ -98,7 +99,13 @@ public class StrategySignalCsvRecorder {
             Double ema9Ema21Gap,
             Double bidAskSpread,
             Double vixLevel,
-            Long daysToExpiry
+            Long daysToExpiry,
+            Double delta,
+            Double gamma,
+            Double theta,
+            Double vega,
+            Double realizedVol5d,
+            Double ivSkew
     ) {
         try {
             Files.createDirectories(OUTPUT.getParent());
@@ -106,7 +113,8 @@ public class StrategySignalCsvRecorder {
             String signalId = java.util.UUID.randomUUID().toString().substring(0, 12);
             append(OUTPUT, HEADER, fullRow("DIRECTIONAL_BUY", decisionKey, signalId, request, decision, chain, vwap,
                     breakoutPassed, oiPassed, ivPassed, liquidityPassed, timePassed,
-                    rsiValue, atrValue, ema9Ema21Gap, bidAskSpread, vixLevel, daysToExpiry));
+                    rsiValue, atrValue, ema9Ema21Gap, bidAskSpread, vixLevel, daysToExpiry,
+                    delta, gamma, theta, vega, realizedVol5d, ivSkew));
             append(CANDLES, CANDLES_HEADER, candleRows(decisionKey, request));
             append(OPTION_CHAIN_LEVELS, OPTION_CHAIN_LEVELS_HEADER, optionChainRows(decisionKey, request));
         } catch (IOException ex) {
@@ -183,7 +191,8 @@ public class StrategySignalCsvRecorder {
                     csv(decision.confidenceScore()),
                     csv(null),
                     csv(String.join("; ", decision.reasons())),
-                    csv(null), csv(null), csv(null), csv(null), csv(null), csv(null) // ML columns
+                    csv(null), csv(null), csv(null), csv(null), csv(null), csv(null), // ML columns
+                    csv(null), csv(null), csv(null), csv(null), csv(null), csv(null), csv(null) // Greeks + RV + skew
             ) + System.lineSeparator();
             append(OUTPUT, HEADER, row);
         } catch (IOException ex) {
@@ -274,7 +283,8 @@ public class StrategySignalCsvRecorder {
                     csv(null),
                     csv(diagnostics.firstFailedFilter()),
                     csv(reason),
-                    csv(null), csv(null), csv(null), csv(null), csv(null), csv(null) // ML columns
+                    csv(null), csv(null), csv(null), csv(null), csv(null), csv(null), // ML columns
+                    csv(null), csv(null), csv(null), csv(null), csv(null), csv(null), csv(null) // Greeks + RV + skew
             ) + System.lineSeparator();
             append(OUTPUT, HEADER, row);
         } catch (IOException ex) {
@@ -302,7 +312,13 @@ public class StrategySignalCsvRecorder {
             Double ema9Ema21Gap,
             Double bidAskSpread,
             Double vixLevel,
-            Long daysToExpiry
+            Long daysToExpiry,
+            Double delta,
+            Double gamma,
+            Double theta,
+            Double vega,
+            Double realizedVol5d,
+            Double ivSkew
     ) {
         Candle underlying = last(request.underlyingCandles());
         Candle option = last(request.selectedOptionCandles());
@@ -381,7 +397,14 @@ public class StrategySignalCsvRecorder {
                 csv(null), // firstFailedFilter — N/A for DIRECTIONAL_BUY
                 csv(String.join("; ", decision.reasons())),
                 csv(rsiValue), csv(atrValue), csv(ema9Ema21Gap),
-                csv(bidAskSpread), csv(vixLevel), csv(daysToExpiry)
+                csv(bidAskSpread), csv(vixLevel), csv(daysToExpiry),
+                csv(delta), csv(gamma), csv(theta), csv(vega),
+                csv(realizedVol5d),
+                csv(realizedVol5d != null && realizedVol5d > 0
+                        ? request.selectedOptionQuote().impliedVolatility()
+                              .map(iv -> iv.doubleValue() - realizedVol5d).orElse(null)
+                        : null),
+                csv(ivSkew)
         ) + System.lineSeparator();
     }
 

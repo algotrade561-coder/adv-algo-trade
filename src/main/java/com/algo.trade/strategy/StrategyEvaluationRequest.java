@@ -30,7 +30,13 @@ public record StrategyEvaluationRequest(
         Optional<Quote> previousSelectedOptionQuote,
         double ivRank,
         double vixLevel,
-        long daysToExpiry
+        long daysToExpiry,
+        double delta,
+        double gamma,
+        double theta,
+        double vega,
+        double realizedVol5d,
+        double ivSkew
 ) {
     public StrategyEvaluationRequest {
         underlyingCandles = List.copyOf(underlyingCandles == null ? List.of() : underlyingCandles);
@@ -42,7 +48,7 @@ public record StrategyEvaluationRequest(
         previousSelectedOptionQuote = previousSelectedOptionQuote == null ? Optional.empty() : previousSelectedOptionQuote;
     }
 
-    /** Backward-compatible constructor without vixLevel and daysToExpiry. */
+    /** Backward-compatible constructor without vixLevel, daysToExpiry, or Greeks. */
     public StrategyEvaluationRequest(
             Instant timestamp, LocalTime marketTime, UnderlyingSymbol underlying,
             List<Candle> underlyingCandles, List<Candle> trendUnderlyingCandles,
@@ -54,6 +60,22 @@ public record StrategyEvaluationRequest(
         this(timestamp, marketTime, underlying, underlyingCandles, trendUnderlyingCandles,
                 selectedOptionCandles, optionChainSnapshot, selectedInstrumentKey, selectedStrike,
                 selectedLotSize, optionType, selectedOptionQuote, previousSelectedOptionQuote,
-                ivRank, 0, 0);
+                ivRank, 0, 0, 0, 0, 0, 0, 0, 0);
+    }
+
+    /** Backward-compatible constructor with vixLevel and daysToExpiry but without Greeks. */
+    public StrategyEvaluationRequest(
+            Instant timestamp, LocalTime marketTime, UnderlyingSymbol underlying,
+            List<Candle> underlyingCandles, List<Candle> trendUnderlyingCandles,
+            List<Candle> selectedOptionCandles, OptionChainSnapshot optionChainSnapshot,
+            String selectedInstrumentKey, BigDecimal selectedStrike, int selectedLotSize,
+            OptionType optionType, Quote selectedOptionQuote,
+            Optional<Quote> previousSelectedOptionQuote, double ivRank,
+            double vixLevel, long daysToExpiry
+    ) {
+        this(timestamp, marketTime, underlying, underlyingCandles, trendUnderlyingCandles,
+                selectedOptionCandles, optionChainSnapshot, selectedInstrumentKey, selectedStrike,
+                selectedLotSize, optionType, selectedOptionQuote, previousSelectedOptionQuote,
+                ivRank, vixLevel, daysToExpiry, 0, 0, 0, 0, 0, 0);
     }
 }

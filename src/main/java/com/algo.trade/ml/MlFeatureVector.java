@@ -50,7 +50,16 @@ public record MlFeatureVector(
         double ema9Ema21Gap,
         double bidAskSpread,
         double vixLevel,
-        double daysToExpiry
+        double daysToExpiry,
+
+        // Greeks + volatility surface features
+        double delta,
+        double gamma,
+        double theta,
+        double vega,
+        double realizedVol5d,
+        double ivRvSpread,
+        double ivSkew
 ) {
 
     /** Feature names matching the order of {@link #toArray()}. */
@@ -61,7 +70,8 @@ public record MlFeatureVector(
             "ivRank", "vwapPassed", "breakoutPassed", "volumeSpike", "oiPassed",
             "ivPassed", "liquidityPassed", "rsiPassed", "optionType", "minutesSinceOpen",
             "underlying", "premiumToUnderlyingRatio", "oiImbalanceAbs", "ruleBasedScore",
-            "rsiValue", "atrValue", "ema9Ema21Gap", "bidAskSpread", "vixLevel", "daysToExpiry"
+            "rsiValue", "atrValue", "ema9Ema21Gap", "bidAskSpread", "vixLevel", "daysToExpiry",
+            "delta", "gamma", "theta", "vega", "realizedVol5d", "ivRvSpread", "ivSkew"
     };
 
     public double[] toArray() {
@@ -72,7 +82,8 @@ public record MlFeatureVector(
                 ivRank, vwapPassed, breakoutPassed, volumeSpike, oiPassed,
                 ivPassed, liquidityPassed, rsiPassed, optionType, minutesSinceOpen,
                 underlying, premiumToUnderlyingRatio, oiImbalanceAbs, ruleBasedScore,
-                rsiValue, atrValue, ema9Ema21Gap, bidAskSpread, vixLevel, daysToExpiry
+                rsiValue, atrValue, ema9Ema21Gap, bidAskSpread, vixLevel, daysToExpiry,
+                delta, gamma, theta, vega, realizedVol5d, ivRvSpread, ivSkew
         };
     }
 

@@ -69,7 +69,8 @@ public class MlFeatureExtractor {
                 optTypeVal, minSinceOpen, ulVal,
                 premiumRatio, imbalanceAbs,
                 ruleBasedScore.doubleValue(),
-                0, 0, 0, 0, 0, 0 // rsi, atr, emaGap, spread, vix, dte — filled by caller via csvRowData
+                0, 0, 0, 0, 0, 0, // rsi, atr, emaGap, spread, vix, dte — filled by caller via csvRowData
+                0, 0, 0, 0, 0, 0, 0 // delta, gamma, theta, vega, rv5d, ivRvSpread, ivSkew
         );
     }
 
@@ -112,6 +113,9 @@ public class MlFeatureExtractor {
         double imbalanceAbs = Math.abs(imbalance);
         double ruleScore = parseDouble(row.get("confidenceScore"));
 
+        double rv5d = parseDouble(row.get("realizedVol5d"));
+        double ivRvSpread = optIv > 0 && rv5d > 0 ? optIv - rv5d : 0.0;
+
         return new MlFeatureVector(
                 ulPrice, optPrice, optVol, optOi, optIv,
                 imbalance, callOi, putOi, resCallOiChange, supPutOiChange,
@@ -125,7 +129,14 @@ public class MlFeatureExtractor {
                 parseDouble(row.get("ema9Ema21Gap")),
                 parseDouble(row.get("bidAskSpread")),
                 parseDouble(row.get("vixLevel")),
-                parseDouble(row.get("daysToExpiry"))
+                parseDouble(row.get("daysToExpiry")),
+                parseDouble(row.get("delta")),
+                parseDouble(row.get("gamma")),
+                parseDouble(row.get("theta")),
+                parseDouble(row.get("vega")),
+                rv5d,
+                ivRvSpread,
+                parseDouble(row.get("ivSkew"))
         );
     }
 

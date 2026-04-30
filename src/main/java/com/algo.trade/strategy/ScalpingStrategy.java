@@ -21,7 +21,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * Tight stops, 30-min max hold, no entries after 14:00.
  */
 @Component
-public class ScalpingStrategy {
+public class ScalpingStrategy implements StrategyEvaluator {
 
     private static final Logger log = LoggerFactory.getLogger(ScalpingStrategy.class);
     private static final LocalTime CUTOFF = LocalTime.of(14, 0);
@@ -35,6 +35,15 @@ public class ScalpingStrategy {
 
     public ScalpingStrategy(EmaIndicator emaIndicator) {
         this.emaIndicator = emaIndicator;
+    }
+
+    @Override
+    public StrategyType strategyType() { return StrategyType.SCALPING; }
+
+    @Override
+    public StrategyDiagnostics.WithSignal evaluate(StrategyContext ctx, StrategyConfig config) {
+        Timeframe tf = resolveTimeframe(config.getCandleTimeframe(), Timeframe.FIVE_MINUTE);
+        return evaluateWithDiagnostics(ctx.candles(tf), ctx.marketTime(), config, ctx.underlying());
     }
 
     public Optional<StrategyDecision> evaluate(List<Candle> candles5m, LocalTime marketTime,

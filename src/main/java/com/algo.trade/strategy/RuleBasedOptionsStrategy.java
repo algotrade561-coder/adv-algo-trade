@@ -559,7 +559,13 @@ public class RuleBasedOptionsStrategy {
         signalCsvRecorder.record(request, decision, chain, vwap, breakoutPassed, oiPassed, ivPassed, liquidityPassed,
                 timePassed, rsiValue, atrValue, ema9Ema21Gap, bidAskSpread,
                 request.vixLevel() > 0 ? request.vixLevel() : null,
-                request.daysToExpiry() > 0 ? request.daysToExpiry() : null);
+                request.daysToExpiry() > 0 ? request.daysToExpiry() : null,
+                request.delta() != 0 ? request.delta() : null,
+                request.gamma() != 0 ? request.gamma() : null,
+                request.theta() != 0 ? request.theta() : null,
+                request.vega() != 0 ? request.vega() : null,
+                request.realizedVol5d() > 0 ? request.realizedVol5d() : null,
+                request.ivSkew() != 0 ? request.ivSkew() : null);
     }
 
     private Double computeRsiValue(StrategyEvaluationRequest request) {
