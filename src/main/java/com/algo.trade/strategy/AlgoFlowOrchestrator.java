@@ -50,6 +50,7 @@ public class AlgoFlowOrchestrator {
     private final LiveCandleBuilder liveCandleBuilder;
     private final com.algo.trade.indicator.VolumeDeltaTracker volumeDeltaTracker;
     private final com.algo.trade.indicator.RangeBoundDetector rangeBoundDetector;
+    private final com.algo.trade.indicator.OIPriceActionFilter oiPriceActionFilter;
 
     // ── Per-filter enable/disable flags ───────────────────────────────────
 
@@ -67,6 +68,9 @@ public class AlgoFlowOrchestrator {
 
     @Value("${algo-flow.pcr-filter-enabled:true}")
     private boolean pcrFilterEnabled;
+
+    @Value("${algo-flow.oi-price-action-filter-enabled:true}")
+    private boolean oiPriceActionFilterEnabled;
 
     // ── VIX regime thresholds ─────────────────────────────────────────────
 
@@ -115,7 +119,8 @@ public class AlgoFlowOrchestrator {
                                  IVRankTracker ivRankTracker,
                                  LiveCandleBuilder liveCandleBuilder,
                                  com.algo.trade.indicator.VolumeDeltaTracker volumeDeltaTracker,
-                                 com.algo.trade.indicator.RangeBoundDetector rangeBoundDetector) {
+                                 com.algo.trade.indicator.RangeBoundDetector rangeBoundDetector,
+                                 com.algo.trade.indicator.OIPriceActionFilter oiPriceActionFilter) {
         this.marketGuard = marketGuard;
         this.globalConfigService = globalConfigService;
         this.newsFeedService = newsFeedService;
@@ -125,6 +130,7 @@ public class AlgoFlowOrchestrator {
         this.liveCandleBuilder = liveCandleBuilder;
         this.volumeDeltaTracker = volumeDeltaTracker;
         this.rangeBoundDetector = rangeBoundDetector;
+        this.oiPriceActionFilter = oiPriceActionFilter;
     }
 
     // ── Result type ───────────────────────────────────────────────────────
@@ -318,6 +324,31 @@ public class AlgoFlowOrchestrator {
             }
         } else {
             passed.add("PCR:DISABLED");
+        }
+
+        // 2c. OI Price Action — confirm breakout direction with OI shifts
+        if (oiPriceActionFilterEnabled) {
+            IndexType idx = IndexType.from(underlying);
+            // For buying strategies, check if OI supports the likely direction
+            // CE strategies = bullish, PE strategies = bearish
+            // For non-directional strategies (spreads), skip this filter
+            if (!strategyType.isSellingStrategy() && !strategyType.isSpreadStrategy()) {
+                // Determine direction from PCR bias or default to bullish for CE strategies
+                boolean isBullish = true; // default; strategies will refine at entry time
+                String rejectReason = oiPriceActionFilter.getRejectReason(idx, isBullish);
+                if (rejectReason != null) {
+                    // Soft block: log as failed filter but don't reject outright
+                    // The strategy's own OI divergence check is the hard gate
+                    failed.add("OI_PRICE_ACTION:" + (isBullish ? "BULLISH" : "BEARISH") + "_NOT_CONFIRMED");
+                    log.info("[AlgoFlow] OI Price Action soft-block for {} on {}: {}", strategyType, underlying, rejectReason);
+                } else {
+                    passed.add("OI_PRICE_ACTION:CONFIRMED(snapshots=" + oiPriceActionFilter.getSnapshotCount(idx) + ")");
+                }
+            } else {
+                passed.add("OI_PRICE_ACTION:SKIPPED(non_directional)");
+            }
+        } else {
+            passed.add("OI_PRICE_ACTION:DISABLED");
         }
 
         // ═══════════════════════════════════════════════════════════════════

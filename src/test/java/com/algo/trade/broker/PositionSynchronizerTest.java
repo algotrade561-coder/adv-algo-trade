@@ -31,7 +31,18 @@ class PositionSynchronizerTest {
         tokenStore = mock(KiteAccessTokenStore.class);
         marketDataService = mock(com.algo.trade.marketdata.MarketDataService.class);
         var telegramAlertService = mock(com.algo.trade.notification.TelegramAlertService.class);
-        synchronizer = new PositionSynchronizer(brokerClient, tradeRepository, tokenStore, marketDataService, telegramAlertService);
+        var errorEventService = mock(com.algo.trade.monitoring.ErrorEventService.class);
+        synchronizer = new PositionSynchronizer(brokerClient, tradeRepository, tokenStore, marketDataService, telegramAlertService, errorEventService);
+        // Inject SchedulerRegistry mock via reflection (field is @Autowired, not in constructor)
+        var schedulerRegistry = mock(com.algo.trade.monitoring.SchedulerRegistry.class);
+        when(schedulerRegistry.isEnabled(any())).thenReturn(true);
+        try {
+            var field = PositionSynchronizer.class.getDeclaredField("schedulerRegistry");
+            field.setAccessible(true);
+            field.set(synchronizer, schedulerRegistry);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to inject SchedulerRegistry mock", e);
+        }
     }
 
     @Test

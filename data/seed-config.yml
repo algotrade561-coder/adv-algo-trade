@@ -44,6 +44,7 @@ globalConfig:
   partialProfitBookingEnabled: false
   maxHoldMinutes: 0
   vwapExitEnabled: false
+  globalExitOverride: false
   # Risk
   totalCapital: 80000
   maxRiskPerTradePercent: 20

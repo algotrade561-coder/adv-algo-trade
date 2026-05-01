@@ -157,6 +157,13 @@ algo-flow:
   event-filter-enabled: true
   volume-activity-enabled: true
   pcr-filter-enabled: true
+  oi-price-action-filter-enabled: true
+
+# OI Price Action Filter — confirms breakouts with OI shifts
+oi-price-action:
+  enabled: true
+  min-oi-change-percent: 5.0
+  max-snapshots: 50
 
 # VIX Regime thresholds
 vix-regime:

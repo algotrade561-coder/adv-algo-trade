@@ -14,8 +14,8 @@ class GradientBoostedTreeModelTest {
     void loadAndPredictBootstrapModel() throws IOException {
         GradientBoostedTreeModel model = GradientBoostedTreeModel.loadFromClasspath("ml/signal-model.json");
         assertNotNull(model);
-        assertEquals(5, model.treeCount());
-        assertEquals(30, model.featureNames().length);
+        assertEquals(8, model.treeCount());
+        assertEquals(38, model.featureNames().length);
     }
 
     @Test
@@ -23,7 +23,7 @@ class GradientBoostedTreeModelTest {
         GradientBoostedTreeModel model = GradientBoostedTreeModel.loadFromClasspath("ml/signal-model.json");
 
         // Feature vector: good signal — high rule score, vwap passed, volume spike, OI passed, breakout passed
-        double[] features = new double[30];
+        double[] features = new double[38];
         features[23] = 85;  // ruleBasedScore (high)
         features[11] = 1;   // vwapPassed
         features[12] = 1;   // breakoutPassed
@@ -46,7 +46,7 @@ class GradientBoostedTreeModelTest {
         GradientBoostedTreeModel model = GradientBoostedTreeModel.loadFromClasspath("ml/signal-model.json");
 
         // Feature vector: bad signal — low rule score, nothing passed
-        double[] features = new double[30];
+        double[] features = new double[38];
         features[23] = 15;  // ruleBasedScore (low)
         features[11] = 0;   // vwapPassed = false
         features[12] = 0;   // breakoutPassed = false
@@ -68,7 +68,7 @@ class GradientBoostedTreeModelTest {
 
         // Test with various inputs — score should always be 0–100
         for (int i = 0; i < 100; i++) {
-            double[] features = new double[30];
+            double[] features = new double[38];
             features[23] = i; // varying rule score
             int score = model.predictConfidenceScore(features);
             assertTrue(score >= 0 && score <= 100,

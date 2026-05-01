@@ -56,7 +56,8 @@ public class StrategySignalCsvRecorder {
             "bbUpperBand", "bbLowerBand", "bbBandwidth", "bbSqueeze", "ivRank",
             "confidenceScore", "firstFailedFilter", "reasons",
             "rsiValue", "atrValue", "ema9Ema21Gap", "bidAskSpread", "vixLevel", "daysToExpiry",
-            "delta", "gamma", "theta", "vega", "realizedVol5d", "ivRvSpread", "ivSkew"
+            "delta", "gamma", "theta", "vega", "realizedVol5d", "ivRvSpread", "ivSkew",
+            "oiPriceActionConfirmed"
     ) + System.lineSeparator();
 
     private static final String CANDLES_HEADER = String.join(",",
@@ -75,10 +76,13 @@ public class StrategySignalCsvRecorder {
 
     private final TradingProperties properties;
     private final StrategyConfigService strategyConfigService;
+    private final com.algo.trade.indicator.OIPriceActionFilter oiPriceActionFilter;
 
-    public StrategySignalCsvRecorder(TradingProperties properties, StrategyConfigService strategyConfigService) {
+    public StrategySignalCsvRecorder(TradingProperties properties, StrategyConfigService strategyConfigService,
+                                      com.algo.trade.indicator.OIPriceActionFilter oiPriceActionFilter) {
         this.properties = properties;
         this.strategyConfigService = strategyConfigService;
+        this.oiPriceActionFilter = oiPriceActionFilter;
     }
 
     /**
@@ -192,7 +196,8 @@ public class StrategySignalCsvRecorder {
                     csv(null),
                     csv(String.join("; ", decision.reasons())),
                     csv(null), csv(null), csv(null), csv(null), csv(null), csv(null), // ML columns
-                    csv(null), csv(null), csv(null), csv(null), csv(null), csv(null), csv(null) // Greeks + RV + skew
+                    csv(null), csv(null), csv(null), csv(null), csv(null), csv(null), csv(null), // Greeks + RV + skew
+                    csv(null) // oiPriceActionConfirmed
             ) + System.lineSeparator();
             append(OUTPUT, HEADER, row);
         } catch (IOException ex) {
@@ -284,7 +289,8 @@ public class StrategySignalCsvRecorder {
                     csv(diagnostics.firstFailedFilter()),
                     csv(reason),
                     csv(null), csv(null), csv(null), csv(null), csv(null), csv(null), // ML columns
-                    csv(null), csv(null), csv(null), csv(null), csv(null), csv(null), csv(null) // Greeks + RV + skew
+                    csv(null), csv(null), csv(null), csv(null), csv(null), csv(null), csv(null), // Greeks + RV + skew
+                    csv(null) // oiPriceActionConfirmed
             ) + System.lineSeparator();
             append(OUTPUT, HEADER, row);
         } catch (IOException ex) {
@@ -404,7 +410,8 @@ public class StrategySignalCsvRecorder {
                         ? request.selectedOptionQuote().impliedVolatility()
                               .map(iv -> iv.doubleValue() - realizedVol5d).orElse(null)
                         : null),
-                csv(ivSkew)
+                csv(ivSkew),
+                csv(resolveOiPriceActionConfirmed(request))
         ) + System.lineSeparator();
     }
 
@@ -493,5 +500,19 @@ public class StrategySignalCsvRecorder {
         if (value == null) return "";
         String text = String.valueOf(value);
         return '"' + text.replace("\"", "\"\"") + '"';
+    }
+
+    /**
+     * Query the OIPriceActionFilter for the current breakout confirmation status.
+     * Returns true/false based on the option type (CE = bullish, PE = bearish).
+     */
+    private Boolean resolveOiPriceActionConfirmed(StrategyEvaluationRequest request) {
+        try {
+            com.algo.trade.domain.IndexType idx = com.algo.trade.domain.IndexType.fromName(request.underlying().name());
+            boolean isBullish = request.optionType() == com.algo.trade.domain.OptionType.CE;
+            return oiPriceActionFilter.isBreakoutConfirmed(idx, isBullish);
+        } catch (Exception e) {
+            return null;
+        }
     }
 }

@@ -153,6 +153,21 @@ regime-filter:
   enabled: true
   check-interval-seconds: 30
 
+# ── Algo Flow Orchestrator — pre-trade filter pipeline ────────────────────
+algo-flow:
+  vix-filter-enabled: true
+  session-filter-enabled: true
+  event-filter-enabled: true
+  volume-activity-enabled: true
+  pcr-filter-enabled: true
+  oi-price-action-filter-enabled: true   # NEW: confirm breakouts with OI shifts
+
+# ── OI Price Action Filter ────────────────────────────────────────────────
+oi-price-action:
+  enabled: true                          # master switch for OI snapshot capture
+  min-oi-change-percent: 5.0             # minimum OI change % to confirm breakout
+  max-snapshots: 50                      # how many 5-min snapshots to keep in memory
+
 # ── ATR Indicator ─────────────────────────────────────────────────────────
 atr:
   default-period: 14

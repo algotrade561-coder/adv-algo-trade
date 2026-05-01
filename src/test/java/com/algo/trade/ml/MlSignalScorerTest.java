@@ -22,7 +22,7 @@ class MlSignalScorerTest {
 
         GradientBoostedTreeModel model = scorer.getModel();
         assertNotNull(model);
-        assertEquals(5, model.treeCount());
+        assertEquals(8, model.treeCount());
     }
 
     @Test

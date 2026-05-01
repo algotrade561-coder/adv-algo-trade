@@ -404,6 +404,31 @@ public class LivePositionExitMonitor {
             }
         }
 
+        // ── 4b. IV Collapse Exit — exit when IV drops significantly from entry ──
+        // Options lose value when IV crushes even if the underlying hasn't moved against you.
+        // Common after events (budget, RBI, earnings) where IV was elevated at entry.
+        if (trade.getEntryIV() != null && trade.getEntryIV() > 0) {
+            Optional<java.math.BigDecimal> currentIvOpt = quoteOpt.get().impliedVolatility();
+            if (currentIvOpt.isPresent() && currentIvOpt.get().doubleValue() > 0) {
+                double entryIV = trade.getEntryIV();
+                double currentIV = currentIvOpt.get().doubleValue();
+                double ivDropPct = ((entryIV - currentIV) / entryIV) * 100;
+                // Exit if IV has dropped more than 15% from entry AND trade is not already profitable
+                // (if profitable, let trailing stop handle it — IV crush is helping us via theta)
+                if (ivDropPct >= 15.0 && profitPct < 5.0) {
+                    log.info("[ExitMonitor] IV COLLAPSE EXIT: tradeId={} entryIV={} currentIV={} drop={}% profit={}%",
+                            trade.getTradeId(), String.format("%.1f", entryIV),
+                            String.format("%.1f", currentIV), String.format("%.1f", ivDropPct),
+                            String.format("%.1f", profitPct));
+                    telegramAlertService.systemAlert(String.format(
+                            "📉 IV Collapse Exit: %s | IV %.1f%% → %.1f%% (drop %.1f%%) | P&L %.1f%%",
+                            trade.getInstrumentKey(), entryIV, currentIV, ivDropPct, profitPct));
+                    close(trade, currentPrice, "IV_COLLAPSE_EXIT");
+                    return;
+                }
+            }
+        }
+
         // ── 5. Progressive profit booking ──────────────────────────────────────
         if (useAtrExits && profitPct > 0) {
             Set<String> fired = firedLayers.computeIfAbsent(trade.getTradeId(),

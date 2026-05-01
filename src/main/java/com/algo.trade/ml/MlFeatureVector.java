@@ -59,7 +59,10 @@ public record MlFeatureVector(
         double vega,
         double realizedVol5d,
         double ivRvSpread,
-        double ivSkew
+        double ivSkew,
+
+        // OI Price Action filter result (binary 0/1)
+        double oiPriceActionConfirmed
 ) {
 
     /** Feature names matching the order of {@link #toArray()}. */
@@ -71,7 +74,8 @@ public record MlFeatureVector(
             "ivPassed", "liquidityPassed", "rsiPassed", "optionType", "minutesSinceOpen",
             "underlying", "premiumToUnderlyingRatio", "oiImbalanceAbs", "ruleBasedScore",
             "rsiValue", "atrValue", "ema9Ema21Gap", "bidAskSpread", "vixLevel", "daysToExpiry",
-            "delta", "gamma", "theta", "vega", "realizedVol5d", "ivRvSpread", "ivSkew"
+            "delta", "gamma", "theta", "vega", "realizedVol5d", "ivRvSpread", "ivSkew",
+            "oiPriceActionConfirmed"
     };
 
     public double[] toArray() {
@@ -83,7 +87,8 @@ public record MlFeatureVector(
                 ivPassed, liquidityPassed, rsiPassed, optionType, minutesSinceOpen,
                 underlying, premiumToUnderlyingRatio, oiImbalanceAbs, ruleBasedScore,
                 rsiValue, atrValue, ema9Ema21Gap, bidAskSpread, vixLevel, daysToExpiry,
-                delta, gamma, theta, vega, realizedVol5d, ivRvSpread, ivSkew
+                delta, gamma, theta, vega, realizedVol5d, ivRvSpread, ivSkew,
+                oiPriceActionConfirmed
         };
     }
 

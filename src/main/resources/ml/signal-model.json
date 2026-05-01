@@ -6,7 +6,9 @@
     "ivRank", "vwapPassed", "breakoutPassed", "volumeSpike", "oiPassed",
     "ivPassed", "liquidityPassed", "rsiPassed", "optionType", "minutesSinceOpen",
     "underlying", "premiumToUnderlyingRatio", "oiImbalanceAbs", "ruleBasedScore",
-    "rsiValue", "atrValue", "ema9Ema21Gap", "bidAskSpread", "vixLevel", "daysToExpiry"
+    "rsiValue", "atrValue", "ema9Ema21Gap", "bidAskSpread", "vixLevel", "daysToExpiry",
+    "delta", "gamma", "theta", "vega", "realizedVol5d", "ivRvSpread", "ivSkew",
+    "oiPriceActionConfirmed"
   ],
   "learningRate": 0.2,
   "baseScore": 0.0,
@@ -105,11 +107,54 @@
         "left": { "leafValue": 0.15 },
         "right": { "leafValue": -0.1 }
       }
+    },
+    {
+      "featureIndex": 30,
+      "threshold": 0.0,
+      "left": { "leafValue": -0.05 },
+      "right": {
+        "featureIndex": 32,
+        "threshold": 0.0,
+        "left": {
+          "featureIndex": 33,
+          "threshold": 0.0,
+          "left": { "leafValue": 0.1 },
+          "right": { "leafValue": 0.2 }
+        },
+        "right": { "leafValue": -0.15 }
+      }
+    },
+    {
+      "featureIndex": 35,
+      "threshold": 0.0,
+      "left": {
+        "featureIndex": 34,
+        "threshold": 0.0,
+        "left": { "leafValue": -0.1 },
+        "right": { "leafValue": 0.15 }
+      },
+      "right": { "leafValue": -0.2 }
+    },
+    {
+      "featureIndex": 37,
+      "threshold": 0.5,
+      "left": {
+        "featureIndex": 14,
+        "threshold": 0.5,
+        "left": { "leafValue": -0.3 },
+        "right": { "leafValue": -0.05 }
+      },
+      "right": {
+        "featureIndex": 14,
+        "threshold": 0.5,
+        "left": { "leafValue": 0.05 },
+        "right": { "leafValue": 0.25 }
+      }
     }
   ],
   "metadata": {
-    "type": "bootstrap-v2",
-    "features": 30,
-    "description": "Heuristic bootstrap model using all 30 features including RSI, ATR, VIX, EMA gap, bid-ask spread, and days-to-expiry"
+    "type": "bootstrap-v3",
+    "features": 38,
+    "description": "Bootstrap model with 38 features: 30 original + 7 Greeks/volatility surface + 1 OI price action confirmation. Trees 1-5 use original features, tree 6 uses delta/theta/vega, tree 7 uses IV-RV spread/realized vol, tree 8 uses oiPriceActionConfirmed. Replace with trained model after collecting data."
   }
 }

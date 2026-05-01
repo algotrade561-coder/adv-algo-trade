@@ -70,7 +70,8 @@ public class MlFeatureExtractor {
                 premiumRatio, imbalanceAbs,
                 ruleBasedScore.doubleValue(),
                 0, 0, 0, 0, 0, 0, // rsi, atr, emaGap, spread, vix, dte — filled by caller via csvRowData
-                0, 0, 0, 0, 0, 0, 0 // delta, gamma, theta, vega, rv5d, ivRvSpread, ivSkew
+                0, 0, 0, 0, 0, 0, 0, // delta, gamma, theta, vega, rv5d, ivRvSpread, ivSkew
+                0 // oiPriceActionConfirmed — filled by caller
         );
     }
 
@@ -136,7 +137,8 @@ public class MlFeatureExtractor {
                 parseDouble(row.get("vega")),
                 rv5d,
                 ivRvSpread,
-                parseDouble(row.get("ivSkew"))
+                parseDouble(row.get("ivSkew")),
+                parseBool(row.get("oiPriceActionConfirmed"))
         );
     }
 
