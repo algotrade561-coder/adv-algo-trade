@@ -62,6 +62,7 @@ public class LivePositionExitMonitor {
     private final TradingStateService tradingStateService;
     private final VwapIndicator vwapIndicator;
     private final com.algo.trade.monitoring.ErrorEventService errorEventService;
+    private final com.algo.trade.monitoring.SchedulerRegistry schedulerRegistry;
 
     // tradeId → highest price seen since entry
     private final Map<String, BigDecimal> peakPrices = new ConcurrentHashMap<>();
@@ -85,7 +86,8 @@ public class LivePositionExitMonitor {
                                     GlobalConfigService globalConfigService,
                                     TradingStateService tradingStateService,
                                     VwapIndicator vwapIndicator,
-                                    com.algo.trade.monitoring.ErrorEventService errorEventService) {
+                                    com.algo.trade.monitoring.ErrorEventService errorEventService,
+                                    com.algo.trade.monitoring.SchedulerRegistry schedulerRegistry) {
         this.tradeRepository = tradeRepository;
         this.executionEngine = executionEngine;
         this.marketDataService = marketDataService;
@@ -100,6 +102,8 @@ public class LivePositionExitMonitor {
         this.tradingStateService = tradingStateService;
         this.vwapIndicator = vwapIndicator;
         this.errorEventService = errorEventService;
+        this.schedulerRegistry = schedulerRegistry;
+        schedulerRegistry.register("exitBackup", "Scheduled backup exit evaluation (60s)", 60_000, this::scheduledBackupCheck);
     }
 
     @EventListener
@@ -119,12 +123,37 @@ public class LivePositionExitMonitor {
     }
 
     /**
-     * Public entry point for scheduled backup evaluation (MaxHoldExitMonitor).
+     * Public entry point for scheduled backup evaluation.
      * Delegates to the same evaluate() pipeline used by CandleClosedEvent.
      * This ensures a single unified exit flow — no duplicated logic.
      */
     public void evaluateForScheduledCheck(TradeEntity trade) {
         evaluate(trade);
+    }
+
+    /**
+     * Scheduled backup — evaluates all open trades every 60 seconds.
+     * Safety net for when WebSocket ticks stop flowing (no CandleClosedEvent = no primary evaluation).
+     * Uses the same evaluate() pipeline as the candle-driven path.
+     */
+    @org.springframework.scheduling.annotation.Scheduled(fixedDelay = 60_000, initialDelay = 20_000)
+    public void scheduledBackupCheck() {
+        if (!schedulerRegistry.isEnabled("exitBackup")) return;
+        if (!tradingStateService.isExitAllowed()) return;
+        List<TradeEntity> openTrades = tradeRepository.findByStatus(TradeStatus.OPEN);
+        if (openTrades.isEmpty()) return;
+
+        log.debug("[ExitMonitor-Backup] Evaluating {} open trades via scheduled backup", openTrades.size());
+        for (TradeEntity trade : openTrades) {
+            if (!positionSyncProperties.manageSyncedTrades() && trade.getTradeId().startsWith("SYNC-")) continue;
+            try {
+                evaluate(trade);
+            } catch (Exception e) {
+                log.error("[ExitMonitor-Backup] Error evaluating trade {}: {}", trade.getTradeId(), e.getMessage());
+                errorEventService.critical("ExitMonitor-Backup", "Error evaluating trade " + trade.getTradeId() + ": " + e.getMessage(), e);
+            }
+        }
+        schedulerRegistry.recordRun("exitBackup");
     }
 
     private void evaluate(TradeEntity trade) {
@@ -153,6 +182,11 @@ public class LivePositionExitMonitor {
 
         BigDecimal entryPrice = trade.getEntryPrice();
         StrategyConfig config = cfg;
+
+        // ── Global exit override: when enabled, global config values replace per-strategy exit params ──
+        if (globalConfigService.isGlobalExitOverride()) {
+            config = applyGlobalExitOverride(config);
+        }
 
         // ── Time-based exits run FIRST — they don't need a live quote ─────────
 
@@ -309,14 +343,23 @@ public class LivePositionExitMonitor {
         }
 
         // ── 3. Trailing Stop ──────────────────────────────────────────────────
-        // Use trailing params locked at entry time (appliedTrailing*) so mid-trade config changes
+        // When global exit override is active, use global trailing params regardless of entry-locked values.
+        // Otherwise, use trailing params locked at entry time (appliedTrailing*) so mid-trade config changes
         // don't alter the trailing behavior. Fall back to current config if not set (legacy trades).
-        BigDecimal trailActivation = trade.getAppliedTrailingStopActivationPercent() != null
-                ? trade.getAppliedTrailingStopActivationPercent()
-                : config.getTrailingStopActivationPercent();
-        BigDecimal trailGap = trade.getAppliedTrailingGapPercent() != null
-                ? trade.getAppliedTrailingGapPercent()
-                : config.getTrailingGapPercent();
+        BigDecimal trailActivation;
+        BigDecimal trailGap;
+        if (globalConfigService.isGlobalExitOverride()) {
+            // Global override takes priority over entry-locked values
+            trailActivation = config.getTrailingStopActivationPercent();
+            trailGap = config.getTrailingGapPercent();
+        } else {
+            trailActivation = trade.getAppliedTrailingStopActivationPercent() != null
+                    ? trade.getAppliedTrailingStopActivationPercent()
+                    : config.getTrailingStopActivationPercent();
+            trailGap = trade.getAppliedTrailingGapPercent() != null
+                    ? trade.getAppliedTrailingGapPercent()
+                    : config.getTrailingGapPercent();
+        }
 
         // Recover trailing stop from DB if not in memory (restart recovery)
         if (!trailingStops.containsKey(trade.getTradeId()) && trade.getTrailingStopPrice() != null) {
@@ -553,6 +596,40 @@ public class LivePositionExitMonitor {
                 .filter(c -> c.getUnderlying().equals(underlying) && entryReason.contains(c.getStrategyType().name()))
                 .findFirst()
                 .orElseGet(() -> strategyConfigService.getDirectionalBuyConfig(underlying));
+    }
+
+    /**
+     * Creates a shallow copy of the strategy config with global exit values overlaid.
+     * Only overrides SL, target, trailing stop, max hold, and squareoff time.
+     * Strategy type, underlying, lots, and entry params are preserved.
+     */
+    private StrategyConfig applyGlobalExitOverride(StrategyConfig original) {
+        StrategyConfig overridden = new StrategyConfig(original.getStrategyType());
+        // Copy all fields from original
+        overridden.setUnderlying(original.getUnderlying());
+        overridden.setEnabled(original.isEnabled());
+        overridden.setLots(original.getLots());
+        overridden.setPaperTrading(original.isPaperTrading());
+        overridden.setMinCombinedPremium(original.getMinCombinedPremium());
+        overridden.setMaxIvRankForBuying(original.getMaxIvRankForBuying());
+        overridden.setScanTimeframe(original.getScanTimeframe());
+        overridden.setCandleTimeframe(original.getCandleTimeframe());
+        overridden.setTrendTimeframe(original.getTrendTimeframe());
+        // Override exit params with global config values
+        overridden.setStopLossPercent(globalConfigService.getStopLossPercent());
+        overridden.setTargetPercent(globalConfigService.getTargetPercent());
+        overridden.setTrailingStopActivationPercent(globalConfigService.getTrailingStopActivationPercent());
+        overridden.setTrailingGapPercent(globalConfigService.getTrailingGapPercent());
+        overridden.setMaxHoldMinutes(globalConfigService.getMaxHoldMinutes());
+        // Squareoff time from global forcedExitTime
+        java.time.LocalTime forcedExit = globalConfigService.getForcedExitTime();
+        overridden.setSquareoffHour(forcedExit.getHour());
+        overridden.setSquareoffMinute(forcedExit.getMinute());
+        log.debug("[ExitMonitor] Global exit override active: SL={}% target={}% trailing={}%/{}% maxHold={}min squareoff={}",
+                overridden.getStopLossPercent(), overridden.getTargetPercent(),
+                overridden.getTrailingStopActivationPercent(), overridden.getTrailingGapPercent(),
+                overridden.getMaxHoldMinutes(), forcedExit);
+        return overridden;
     }
 
     private double profitPercent(BigDecimal entry, BigDecimal current) {

@@ -177,9 +177,13 @@ import { MarketSnapshot, PnlSnapshot, RuntimeStatus, StrategyDecision, TradingSt
                 Open: {{ tradingStatus.openTrades }} &nbsp;|&nbsp;
                 Paper: {{ tradingStatus.openPaperTrades }} &nbsp;|&nbsp;
                 Today: {{ tradingStatus.tradesToday }} &nbsp;|&nbsp;
+                Hr: {{ tradingStatus.tradesThisHour }}/{{ tradingStatus.maxTradesPerHour }} &nbsp;|&nbsp;
+                Orders: {{ tradingStatus.buyOrdersToday }} &nbsp;|&nbsp;
                 Losses: {{ tradingStatus.consecutiveLosses }} &nbsp;|&nbsp;
+                WR: {{ tradingStatus.rollingWinRate | number:'1.0-0' }}% &nbsp;|&nbsp;
                 P&amp;L: <span [class.pos]="tradingStatus.dailyPnl >= 0" [class.neg]="tradingStatus.dailyPnl < 0">₹{{ tradingStatus.dailyPnl | number:'1.0-0' }}</span>
                 / ₹{{ tradingStatus.effectiveDailyLossLimit | number:'1.0-0' }} limit
+                @if (tradingStatus.globalExitOverride) { &nbsp;|&nbsp; <span class="warn">EXIT OVERRIDE</span> }
               </span>
             </div>
             @if (tradingStatus.blockingReasons.length > 0) {

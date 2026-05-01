@@ -42,6 +42,9 @@ public class PcrCalculator {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.algo.trade.monitoring.ErrorEventService errorEventService;
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.algo.trade.monitoring.SchedulerRegistry schedulerRegistry;
+
     public PcrCalculator(LiveInstrumentCache liveInstrumentCache,
                          BrokerClient brokerClient,
                          MarketGuard marketGuard,
@@ -57,8 +60,14 @@ public class PcrCalculator {
         return latestPcr.get();
     }
 
+    @jakarta.annotation.PostConstruct
+    void registerScheduler() {
+        if (schedulerRegistry != null) schedulerRegistry.register("pcrCalculator", "Full-chain PCR calculation (2min)", 120_000, this::compute);
+    }
+
     @Scheduled(fixedDelay = 120_000, initialDelay = 30_000)
     public void compute() {
+        if (schedulerRegistry != null && !schedulerRegistry.isEnabled("pcrCalculator")) return;
         if (!isMarketHours()) return;
         if (!liveInstrumentCache.isReady()) return;
 
@@ -69,6 +78,7 @@ public class PcrCalculator {
                 marketGuard.updatePcr(pcr);
                 log.info("[PcrCalculator] Full-chain NIFTY PCR: {}", String.format("%.3f", pcr));
             }
+            if (schedulerRegistry != null) schedulerRegistry.recordRun("pcrCalculator");
         } catch (Exception e) {
             log.warn("[PcrCalculator] Failed: {}", e.getMessage());
             if (errorEventService != null) errorEventService.medium("PcrCalculator", "PCR calculation failed: " + e.getMessage());

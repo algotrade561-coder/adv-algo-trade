@@ -102,6 +102,9 @@ public class AlgoTradeExecution {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.algo.trade.monitoring.ErrorEventService errorEventService;
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.algo.trade.monitoring.SchedulerRegistry schedulerRegistry;
+
     // Short-lived cache for underlying REST candles — avoids repeated REST calls within the same candle period.
     // Keyed by "instrumentKey:TIMEFRAME", expires after 60 seconds.
     private record CachedCandles(List<Candle> candles, Instant fetchedAt) {}
@@ -190,6 +193,11 @@ public class AlgoTradeExecution {
         this.scanContextBuilder = scanContextBuilder;
     }
 
+    @jakarta.annotation.PostConstruct
+    void registerScheduler() {
+        if (schedulerRegistry != null) schedulerRegistry.register("algoScan", "REST fallback algo scan (configurable)", properties.algo().scanIntervalMs(), this::scan);
+    }
+
     /**
      * PRIMARY trigger: fires when a candle closes from WebSocket tick data.
      * Each strategy is triggered on its own timeframe:
@@ -224,6 +232,7 @@ public class AlgoTradeExecution {
             fixedDelayString = "${trading.algo.scan-interval-ms:60000}"
     )
     public void scan() {
+        if (schedulerRegistry != null && !schedulerRegistry.isEnabled("algoScan")) return;
         if (!tradingStateService.schedulerEnabled()) {
             log.debug("Algo scan skipped: REST poll scheduler disabled at runtime");
             return;
@@ -260,6 +269,7 @@ public class AlgoTradeExecution {
             if (errorEventService != null) errorEventService.high("AlgoTradeExecution", "Algo REST scan failed: " + ex.getMessage(), ex);
         } finally {
             scanInProgress.set(false);
+            if (schedulerRegistry != null) schedulerRegistry.recordRun("algoScan");
         }
     }
 

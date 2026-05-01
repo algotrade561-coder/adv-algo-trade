@@ -30,6 +30,9 @@ public class SchedulerWatchdog {
     private final com.algo.trade.monitoring.ErrorEventService errorEventService;
     private volatile boolean alertSentThisSession = false;
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.algo.trade.monitoring.SchedulerRegistry schedulerRegistry;
+
     public SchedulerWatchdog(TradingStateService tradingStateService,
                               TelegramAlertService alertService,
                               com.algo.trade.broker.zerodha.KiteWebSocketClient webSocketClient,
@@ -40,8 +43,14 @@ public class SchedulerWatchdog {
         this.errorEventService = errorEventService;
     }
 
+    @jakarta.annotation.PostConstruct
+    void registerScheduler() {
+        if (schedulerRegistry != null) schedulerRegistry.register("watchdog", "Scanner stall detection (5min)", 300_000, this::check);
+    }
+
     @Scheduled(fixedDelay = 300_000, initialDelay = 600_000) // every 5 min, start after 10 min
     public void check() {
+        if (schedulerRegistry != null && !schedulerRegistry.isEnabled("watchdog")) return;
         LocalTime now = LocalTime.now(IST);
         if (now.isBefore(LocalTime.of(9, 20)) || now.isAfter(LocalTime.of(15, 25))) {
             alertSentThisSession = false; // reset for next session
@@ -80,5 +89,6 @@ public class SchedulerWatchdog {
             }
             alertSentThisSession = true;
         }
+        if (schedulerRegistry != null) schedulerRegistry.recordRun("watchdog");
     }
 }

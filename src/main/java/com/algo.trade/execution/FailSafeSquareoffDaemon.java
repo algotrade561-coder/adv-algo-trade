@@ -37,6 +37,9 @@ public class FailSafeSquareoffDaemon {
     private final com.algo.trade.broker.BrokerClient brokerClient;
     private final com.algo.trade.monitoring.ErrorEventService errorEventService;
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.algo.trade.monitoring.SchedulerRegistry schedulerRegistry;
+
     public FailSafeSquareoffDaemon(TradeRepository tradeRepository,
                                     ExecutionEngine executionEngine,
                                     TelegramAlertService alertService,
@@ -53,8 +56,14 @@ public class FailSafeSquareoffDaemon {
         this.errorEventService = errorEventService;
     }
 
+    @jakarta.annotation.PostConstruct
+    void registerScheduler() {
+        if (schedulerRegistry != null) schedulerRegistry.register("failSafe", "FailSafe EOD square-off (cron 15:*)", 0, this::check);
+    }
+
     @Scheduled(cron = "0 * 15 * * MON-FRI", zone = "Asia/Kolkata")
     public void check() {
+        // Note: FailSafe does NOT check schedulerRegistry.isEnabled() — it's a safety net that must always run
         LocalTime now = LocalTime.now(IST);
         if (now.isBefore(FAILSAFE_TIME)) return;
 
@@ -111,5 +120,6 @@ public class FailSafeSquareoffDaemon {
                     + " trades NOT closed:\n" + String.join("\n", failures));
             log.error("[FailSafe] Partial square-off failure: {} trades not closed: {}", failures.size(), failures);
         }
+        if (schedulerRegistry != null) schedulerRegistry.recordRun("failSafe");
     }
 }

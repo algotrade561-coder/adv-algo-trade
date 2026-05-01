@@ -18,7 +18,7 @@ import java.util.List;
  * Seeds from {@link TradingProperties} on first startup; caches in memory for hot-path reads.
  */
 @Service
-@DependsOn({"databaseSchemaMigration", "configSeedLoader"})
+@DependsOn("configSeedLoader")
 public class GlobalConfigService {
 
     private static final Logger log = LoggerFactory.getLogger(GlobalConfigService.class);
@@ -136,6 +136,8 @@ public class GlobalConfigService {
 
     public boolean isPartialProfitBookingEnabled() { return cached.isPartialProfitBookingEnabled(); }
     public boolean isVwapExitEnabled() { return cached.isVwapExitEnabled(); }
+
+    public boolean isGlobalExitOverride() { return cached.isGlobalExitOverride(); }
 
     public int getMaxHoldMinutes() { return cached.getMaxHoldMinutes(); }
 

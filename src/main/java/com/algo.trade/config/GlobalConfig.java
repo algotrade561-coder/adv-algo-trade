@@ -118,6 +118,9 @@ public class GlobalConfig {
     /** Exit long option positions when underlying crosses back through VWAP (thesis reversal). */
     private boolean vwapExitEnabled = false;
 
+    /** When true, global exit config (SL, target, trailing, maxHold) overrides per-strategy exit config. */
+    private boolean globalExitOverride = false;
+
     // ── Risk Fields ───────────────────────────────────────────
 
     @Column(precision = 19, scale = 4)
@@ -389,6 +392,9 @@ public class GlobalConfig {
 
     public boolean isVwapExitEnabled() { return vwapExitEnabled; }
     public void setVwapExitEnabled(boolean vwapExitEnabled) { this.vwapExitEnabled = vwapExitEnabled; }
+
+    public boolean isGlobalExitOverride() { return globalExitOverride; }
+    public void setGlobalExitOverride(boolean globalExitOverride) { this.globalExitOverride = globalExitOverride; }
 
     // Risk getters/setters
 

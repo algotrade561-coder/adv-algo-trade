@@ -73,6 +73,9 @@ public class SystemDiagnosticsService {
     private final Map<String, Instant> componentLastActive = new java.util.concurrent.ConcurrentHashMap<>();
     private volatile boolean criticalAlertSentThisCycle = false;
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private SchedulerRegistry schedulerRegistry;
+
     public SystemDiagnosticsService(KiteWebSocketClient webSocketClient,
                                      KiteAccessTokenStore tokenStore,
                                      LiveInstrumentCache liveInstrumentCache,
@@ -97,6 +100,11 @@ public class SystemDiagnosticsService {
         this.telegramAlertService = telegramAlertService;
     }
 
+    @jakarta.annotation.PostConstruct
+    void registerScheduler() {
+        schedulerRegistry.register("diagnostics", "System health snapshot (10s)", 10_000, this::compute);
+    }
+
     // ── Public API for counters (called by other components) ──────────────
 
     public void recordRestCall() { restCallCount.incrementAndGet(); }
@@ -116,12 +124,12 @@ public class SystemDiagnosticsService {
 
     @Scheduled(fixedDelay = 10_000, initialDelay = 15_000)
     public void compute() {
+        if (!schedulerRegistry.isEnabled("diagnostics")) return;
         try {
             DiagnosticSnapshot snapshot = buildSnapshot();
             latestSnapshot.set(snapshot);
-
-            // Log critical issues to diagnostic log
             logDiagnostics(snapshot);
+            schedulerRegistry.recordRun("diagnostics");
         } catch (Exception e) {
             log.debug("[Diagnostics] Compute failed: {}", e.getMessage());
         }

@@ -139,6 +139,47 @@ public class TradingControlController {
         String marketBlock = marketGuard.longPremiumBlockReason();
         if (marketBlock != null) blockingReasons.add(marketBlock);
 
+        // Layer 5 — Hourly trade cap
+        int maxTradesPerHour = globalConfigService.getMaxTradesPerHour();
+        if (maxTradesPerHour > 0) {
+            int tradesThisHour = tradingStateService.tradesInLastHour();
+            if (tradesThisHour >= maxTradesPerHour) {
+                blockingReasons.add("Max trades per hour reached (" + tradesThisHour + "/" + maxTradesPerHour + ")");
+            }
+        }
+
+        // Layer 6 — Rolling win-rate auto-pause
+        double rollingWinRate = tradingStateService.rollingWinRate();
+        int rollingTotal = liveTradesToday; // approximate — uses today's trade count
+        if (rollingTotal >= 5 && rollingWinRate < 25.0) {
+            blockingReasons.add(String.format("Rolling win rate too low (%.0f%% on %d trades) — auto-paused",
+                    rollingWinRate, rollingTotal));
+        }
+
+        // Layer 7 — Entry time window
+        java.time.LocalTime marketTime = java.time.LocalTime.now(tradingProperties.timezone());
+        java.time.LocalTime entryStart = globalConfigService.getEntryStartTime();
+        java.time.LocalTime entryCutoff = globalConfigService.getForcedExitTime();
+        if (marketTime.isBefore(entryStart)) {
+            blockingReasons.add("Before entry window (opens at " + entryStart + ")");
+        } else if (marketTime.isAfter(entryCutoff)) {
+            blockingReasons.add("After entry cutoff (" + entryCutoff + ")");
+        }
+
+        // Layer 8 — Max orders per day
+        int buyOrdersToday = (int) orderRepository.findBySideAndUpdatedAtBetween(
+                com.algo.trade.domain.OrderSide.BUY.name(), todayStart, todayEnd).stream()
+                .filter(o -> o.getStatus() == com.algo.trade.domain.OrderStatus.COMPLETE
+                        || o.getStatus() == com.algo.trade.domain.OrderStatus.OPEN
+                        || o.getStatus() == com.algo.trade.domain.OrderStatus.NEW)
+                .count();
+        if (buyOrdersToday >= globalConfigService.getMaxOrdersPerDay()) {
+            blockingReasons.add("Max buy orders per day reached (" + buyOrdersToday + "/" + globalConfigService.getMaxOrdersPerDay() + ")");
+        }
+
+        // Layer 9 — Global exit override indicator (not a block, but useful context)
+        boolean globalExitOverride = globalConfigService.isGlobalExitOverride();
+
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("entryAllowed", blockingReasons.isEmpty());
         result.put("blockingReasons", blockingReasons);
@@ -149,6 +190,12 @@ public class TradingControlController {
         result.put("paperTradesToday", paperTradesToday);
         result.put("consecutiveLosses", consecutiveLosses);
         result.put("dailyPnl", pnl.realizedPnl());
+        result.put("tradesThisHour", tradingStateService.tradesInLastHour());
+        result.put("maxTradesPerHour", maxTradesPerHour);
+        result.put("rollingWinRate", rollingWinRate);
+        result.put("buyOrdersToday", buyOrdersToday);
+        result.put("entryWindowOpen", !marketTime.isBefore(entryStart) && !marketTime.isAfter(entryCutoff));
+        result.put("globalExitOverride", globalExitOverride);
         // Paper P&L — today's closed + unrealized from open
         BigDecimal paperClosedPnl = todayTrades.stream()
                 .filter(t -> t.isPaperTrade() && t.getStatus() == com.algo.trade.domain.TradeStatus.CLOSED)

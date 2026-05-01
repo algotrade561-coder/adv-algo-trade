@@ -347,7 +347,7 @@ public class ExecutionEngine {
             ExecutionResult result = doCloseTrade(tradeId, lastPrice, reason);
             if (result.accepted()) {
                 // Keep tradeId in closingInProgress permanently — prevents any subsequent
-                // close attempts from other monitors (MaxHoldExitMonitor, FailSafe, etc.)
+                // close attempts from other monitors (scheduled backup, FailSafe, etc.)
                 // that may fire before they re-read the CLOSED status from DB.
                 log.debug("Trade {} closed successfully — retaining close guard", tradeId);
             } else {

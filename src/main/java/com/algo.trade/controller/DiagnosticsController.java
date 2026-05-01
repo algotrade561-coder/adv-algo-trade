@@ -1,6 +1,7 @@
 package com.algo.trade.controller;
 
 import com.algo.trade.monitoring.OrderAuditService;
+import com.algo.trade.monitoring.SchedulerRegistry;
 import com.algo.trade.monitoring.SystemDiagnosticsService;
 import org.springframework.web.bind.annotation.*;
 
@@ -21,13 +22,16 @@ public class DiagnosticsController {
     private final SystemDiagnosticsService diagnosticsService;
     private final OrderAuditService orderAuditService;
     private final com.algo.trade.monitoring.ErrorEventService errorEventService;
+    private final SchedulerRegistry schedulerRegistry;
 
     public DiagnosticsController(SystemDiagnosticsService diagnosticsService,
                                   OrderAuditService orderAuditService,
-                                  com.algo.trade.monitoring.ErrorEventService errorEventService) {
+                                  com.algo.trade.monitoring.ErrorEventService errorEventService,
+                                  SchedulerRegistry schedulerRegistry) {
         this.diagnosticsService = diagnosticsService;
         this.orderAuditService = orderAuditService;
         this.errorEventService = errorEventService;
+        this.schedulerRegistry = schedulerRegistry;
     }
 
     /** Full system health snapshot — WebSocket, REST, DB, scanner, orders, trades. */
@@ -83,5 +87,26 @@ public class DiagnosticsController {
                 )).toList(),
                 "counts", counts
         );
+    }
+
+    /** All registered scheduler tasks with status, health, and run counts. */
+    @GetMapping("/schedulers")
+    public java.util.List<SchedulerRegistry.TaskStatus> schedulers() {
+        return schedulerRegistry.getAllStatus();
+    }
+
+    /** Enable or disable a scheduler task at runtime. */
+    @PostMapping("/schedulers/{name}/toggle")
+    public Map<String, Object> toggleScheduler(@PathVariable String name, @RequestBody Map<String, Boolean> body) {
+        boolean enabled = body.getOrDefault("enabled", true);
+        schedulerRegistry.setEnabled(name, enabled);
+        return Map.of("name", name, "enabled", enabled);
+    }
+
+    /** Force-trigger a scheduler task immediately. */
+    @PostMapping("/schedulers/{name}/trigger")
+    public Map<String, Object> triggerScheduler(@PathVariable String name) {
+        boolean triggered = schedulerRegistry.triggerNow(name);
+        return Map.of("name", name, "triggered", triggered);
     }
 }

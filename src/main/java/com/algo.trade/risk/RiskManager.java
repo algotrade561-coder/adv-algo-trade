@@ -49,6 +49,9 @@ public class RiskManager {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.algo.trade.monitoring.ErrorEventService errorEventService;
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.algo.trade.monitoring.SchedulerRegistry schedulerRegistry;
+
     public RiskManager(GlobalConfigService globalConfigService, TradingProperties properties, TradeRepository tradeRepository,
                        TelegramAlertService alertService,
                        com.algo.trade.persistence.DailySummaryRepository dailySummaryRepository,
@@ -59,6 +62,14 @@ public class RiskManager {
         this.alertService = alertService;
         this.dailySummaryRepository = dailySummaryRepository;
         this.decisionRepository = decisionRepository;
+    }
+
+    @jakarta.annotation.PostConstruct
+    void registerSchedulers() {
+        if (schedulerRegistry != null) {
+            schedulerRegistry.register("pnlMonitor", "Daily P&L monitor + loss warning (30s)", 30_000, this::monitorPnl);
+            schedulerRegistry.register("dailySummary", "Write daily summary to DB (5min)", 300_000, this::writeDailySummary);
+        }
     }
 
     // ── Order validation ──────────────────────────────────────────────────────
@@ -151,6 +162,7 @@ public class RiskManager {
 
     @Scheduled(fixedDelay = 30_000)
     public void monitorPnl() {
+        if (schedulerRegistry != null && !schedulerRegistry.isEnabled("pnlMonitor")) return;
         if (!tradingAllowed.get()) return;
         BigDecimal pnl = getDailyPnl();
         BigDecimal maxLoss = globalConfigService.getTotalCapital()
@@ -167,11 +179,13 @@ public class RiskManager {
         if (profitTarget.compareTo(BigDecimal.ZERO) > 0 && pnl.compareTo(profitTarget) >= 0) {
             log.info("[RiskManager] Daily profit target reached: ₹{} (target: ₹{})", pnl, profitTarget);
         }
+        if (schedulerRegistry != null) schedulerRegistry.recordRun("pnlMonitor");
     }
 
     /** Write daily summary to H2 every 5 minutes for long-term analysis. */
     @Scheduled(fixedDelay = 300_000)
     public void writeDailySummary() {
+        if (schedulerRegistry != null && !schedulerRegistry.isEnabled("dailySummary")) return;
         try {
             LocalDate today = LocalDate.now(IST);
             Instant dayStart = today.atStartOfDay(IST).toInstant();
@@ -179,10 +193,41 @@ public class RiskManager {
 
             var trades = tradeRepository.findByEntryTimeBetween(dayStart, dayEnd);
             var liveTrades = trades.stream().filter(t -> !t.isPaperTrade()).toList();
+            var closedLive = liveTrades.stream()
+                    .filter(t -> t.getStatus() == com.algo.trade.domain.TradeStatus.CLOSED)
+                    .toList();
             int tradeCount = liveTrades.size();
-            int wins = (int) liveTrades.stream().filter(t -> t.getRealizedPnl() != null && t.getRealizedPnl().signum() > 0).count();
-            int losses = (int) liveTrades.stream().filter(t -> t.getRealizedPnl() != null && t.getRealizedPnl().signum() < 0).count();
-            BigDecimal pnl = getDailyPnl();
+            int wins = (int) closedLive.stream().filter(t -> t.getRealizedPnl() != null && t.getRealizedPnl().signum() > 0).count();
+            int losses = (int) closedLive.stream().filter(t -> t.getRealizedPnl() != null && t.getRealizedPnl().signum() < 0).count();
+            BigDecimal realizedPnl = closedLive.stream()
+                    .map(t -> t.getRealizedPnl())
+                    .filter(p -> p != null)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+            // Top strategy by trade count
+            String topStrategy = closedLive.stream()
+                    .filter(t -> t.getStrategyType() != null)
+                    .collect(java.util.stream.Collectors.groupingBy(
+                            com.algo.trade.persistence.TradeEntity::getStrategyType,
+                            java.util.stream.Collectors.counting()))
+                    .entrySet().stream()
+                    .max(java.util.Map.Entry.comparingByValue())
+                    .map(java.util.Map.Entry::getKey)
+                    .orElse(null);
+
+            // Max drawdown: lowest cumulative P&L point during the day
+            BigDecimal maxDrawdown = BigDecimal.ZERO;
+            BigDecimal runningPnl = BigDecimal.ZERO;
+            for (var t : closedLive.stream()
+                    .sorted(java.util.Comparator.comparing(tr -> tr.getExitTime() != null ? tr.getExitTime() : tr.getEntryTime()))
+                    .toList()) {
+                if (t.getRealizedPnl() != null) {
+                    runningPnl = runningPnl.add(t.getRealizedPnl());
+                    if (runningPnl.compareTo(maxDrawdown) < 0) {
+                        maxDrawdown = runningPnl;
+                    }
+                }
+            }
 
             long signals = decisionRepository.findTop200BySignalTypeInOrderByTimestampDesc(
                     java.util.List.of("BUY_CE", "BUY_PE")).stream()
@@ -197,13 +242,18 @@ public class RiskManager {
             summary.setTrades(tradeCount);
             summary.setWins(wins);
             summary.setLosses(losses);
-            summary.setRealizedPnl(pnl);
+            summary.setRealizedPnl(realizedPnl);
+            summary.setMaxDrawdown(maxDrawdown.abs());
+            summary.setTopStrategy(topStrategy);
             summary.setSignalsGenerated((int) signals);
             summary.setSignalsRejected((int) rejected);
             dailySummaryRepository.save(summary);
+            log.debug("Daily summary written: date={} trades={} wins={} losses={} pnl={}", today, tradeCount, wins, losses, realizedPnl);
         } catch (Exception e) {
-            log.debug("Daily summary write failed: {}", e.getMessage());
+            log.warn("Daily summary write failed: {}", e.getMessage(), e);
+            if (errorEventService != null) errorEventService.medium("RiskManager", "Daily summary write failed: " + e.getMessage());
         }
+        if (schedulerRegistry != null) schedulerRegistry.recordRun("dailySummary");
     }
 
     // ── Result DTO ────────────────────────────────────────────────────────────

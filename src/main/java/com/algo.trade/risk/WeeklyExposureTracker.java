@@ -32,8 +32,16 @@ public class WeeklyExposureTracker {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.algo.trade.monitoring.ErrorEventService errorEventService;
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.algo.trade.monitoring.SchedulerRegistry schedulerRegistry;
+
     public WeeklyExposureTracker(TradeRepository tradeRepository) {
         this.tradeRepository = tradeRepository;
+    }
+
+    @jakarta.annotation.PostConstruct
+    void registerScheduler() {
+        if (schedulerRegistry != null) schedulerRegistry.register("weeklyExposure", "Weekly exposure recalculation (5min)", 300_000, this::recalculate);
     }
 
     public boolean canTrade(BigDecimal premiumCost) {
@@ -60,6 +68,7 @@ public class WeeklyExposureTracker {
 
     @Scheduled(fixedDelay = 300_000, initialDelay = 1_000)
     public void recalculate() {
+        if (schedulerRegistry != null && !schedulerRegistry.isEnabled("weeklyExposure")) return;
         try {
             LocalDate monday = LocalDate.now(IST).with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY));
             Instant weekStart = monday.atStartOfDay(IST).toInstant();
@@ -81,5 +90,6 @@ public class WeeklyExposureTracker {
             log.warn("[WeeklyExposure] Recalculate failed: {}", e.getMessage());
             if (errorEventService != null) errorEventService.medium("WeeklyExposure", "Recalculate failed: " + e.getMessage());
         }
+        if (schedulerRegistry != null) schedulerRegistry.recordRun("weeklyExposure");
     }
 }

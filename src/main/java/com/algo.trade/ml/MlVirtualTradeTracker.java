@@ -71,6 +71,16 @@ public class MlVirtualTradeTracker {
         this.globalConfigService = globalConfigService;
     }
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.algo.trade.monitoring.SchedulerRegistry schedulerRegistry;
+
+    @jakarta.annotation.PostConstruct
+    void registerScheduler() {
+        if (schedulerRegistry != null) {
+            schedulerRegistry.register("mlVirtualTrades", "ML virtual trade evaluation (10s)", 10_000, this::evaluateOpenTrades);
+        }
+    }
+
     /**
      * Called by MlShadowRecorder when ML says ENTER but system says SKIP.
      * Opens a virtual trade if we have capacity.
@@ -133,6 +143,7 @@ public class MlVirtualTradeTracker {
      */
     @Scheduled(fixedDelay = 10_000)
     public void evaluateOpenTrades() {
+        if (schedulerRegistry != null && !schedulerRegistry.isEnabled("mlVirtualTrades")) return;
         if (openTrades.isEmpty()) return;
 
         LocalTime now = LocalTime.now(IST);
@@ -145,6 +156,7 @@ public class MlVirtualTradeTracker {
                 log.debug("[ML-VirtualTrade] Error evaluating {}: {}", vt.virtualTradeId, e.getMessage());
             }
         }
+        if (schedulerRegistry != null) schedulerRegistry.recordRun("mlVirtualTrades");
     }
 
     private void evaluateTrade(VirtualTrade vt, LocalTime now) {

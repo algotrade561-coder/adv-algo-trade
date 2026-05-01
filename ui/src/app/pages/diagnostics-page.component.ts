@@ -7,6 +7,7 @@ import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { MatSelectModule } from '@angular/material/select';
 import { MatAutocompleteModule } from '@angular/material/autocomplete';
+import { MatSlideToggleModule } from '@angular/material/slide-toggle';
 import { ApiService } from '../core/api.service';
 import { interval, Subscription, catchError, of } from 'rxjs';
 
@@ -14,7 +15,7 @@ import { interval, Subscription, catchError, of } from 'rxjs';
   selector: 'app-diagnostics-page',
   standalone: true,
   imports: [CommonModule, FormsModule, DecimalPipe, MatButtonModule, MatIconModule,
-    MatFormFieldModule, MatInputModule, MatSelectModule, MatAutocompleteModule],
+    MatFormFieldModule, MatInputModule, MatSelectModule, MatAutocompleteModule, MatSlideToggleModule],
   template: `
     <section class="page">
       <div class="hdr">
@@ -136,6 +137,31 @@ import { interval, Subscription, catchError, of } from 'rxjs';
             <div class="card-value">Open: {{ health.orderStats?.openPaperTrades }} | Closed: {{ health.orderStats?.closedPaperTrades }}</div>
           </div>
         </div>
+      }
+
+      <!-- ── Scheduled Tasks ── -->
+      <h2 class="sec-title"><mat-icon class="sec-icon">schedule</mat-icon> Scheduled Tasks</h2>
+      @if (schedulers.length) {
+        <table class="audit-table">
+          <thead><tr><th>Task</th><th>Description</th><th>Interval</th><th>Last Run</th><th>Runs</th><th>Errors</th><th>Health</th><th>Enabled</th><th>Action</th></tr></thead>
+          <tbody>
+            @for (s of schedulers; track s.name) {
+              <tr [class.row-ok]="s.health === 'OK'" [class.row-bad]="s.health === 'STALE' || s.health === 'ERROR'" [class.row-warn]="s.health === 'DISABLED' || s.health === 'NEVER_RUN'">
+                <td><strong>{{ s.name }}</strong></td>
+                <td class="desc-cell">{{ s.description }}</td>
+                <td class="mono">{{ s.intervalMs > 0 ? (s.intervalMs / 1000) + 's' : 'cron' }}</td>
+                <td class="mono">{{ s.lastRunAgeSec >= 0 ? s.lastRunAgeSec + 's ago' : 'never' }}</td>
+                <td class="mono">{{ s.runCount }}</td>
+                <td class="mono" [class.err-count]="s.errorCount > 0">{{ s.errorCount }}</td>
+                <td><span class="badge" [class.badge-ok]="s.health === 'OK'" [class.badge-bad]="s.health === 'STALE' || s.health === 'ERROR'" [class.badge-warn]="s.health === 'DISABLED'" [class.badge-muted]="s.health === 'NEVER_RUN'">{{ s.health }}</span></td>
+                <td><mat-slide-toggle [checked]="s.enabled" (change)="toggleTask(s.name, $event.checked)" color="primary" class="sm-toggle"></mat-slide-toggle></td>
+                <td><button mat-stroked-button class="trigger-btn" (click)="triggerTask(s.name)"><mat-icon>play_arrow</mat-icon></button></td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      } @else {
+        <div class="no-data">No scheduled tasks registered</div>
       }
 
       <!-- ── Order Audit Trail ── -->
@@ -341,6 +367,12 @@ import { interval, Subscription, catchError, of } from 'rxjs';
     .badge-warn { background: #3d2e00; color: #d29922; }
     .badge-muted { background: rgba(255,255,255,.05); color: #8b949e; }
     .no-data { color: #6e7681; font-size: 0.82rem; padding: 12px; text-align: center; }
+    .desc-cell { font-size: 0.72rem; color: #8b949e; max-width: 250px; }
+    .err-count { color: #f85149; font-weight: 700; }
+    .row-warn { background: #2d2600; }
+    .sm-toggle { transform: scale(0.8); }
+    .trigger-btn { min-width: 32px !important; padding: 0 4px !important; line-height: 28px !important; }
+    .trigger-btn mat-icon { font-size: 16px; width: 16px; height: 16px; }
     h3 { color: #c9d1d9; font-size: 0.95rem; margin: 14px 0 8px; }
   `]
 })
@@ -350,6 +382,7 @@ export class DiagnosticsPageComponent implements OnInit, OnDestroy {
   failures: any = null;
   recentErrors: any[] = [];
   errorCounts: any = {};
+  schedulers: any[] = [];
   searchTradeId = '';
   searchInstrument = '';
   failurePeriod = 'TODAY';
@@ -361,7 +394,7 @@ export class DiagnosticsPageComponent implements OnInit, OnDestroy {
 
   ngOnInit(): void {
     this.load();
-    this.pollSub = interval(10000).subscribe(() => this.loadHealth());
+    this.pollSub = interval(10000).subscribe(() => { this.loadHealth(); this.loadSchedulers(); });
   }
 
   ngOnDestroy(): void { this.pollSub?.unsubscribe(); }
@@ -370,6 +403,7 @@ export class DiagnosticsPageComponent implements OnInit, OnDestroy {
     this.loadHealth();
     this.loadLookup();
     this.loadRecentErrors();
+    this.loadSchedulers();
   }
 
   loadHealth(): void {
@@ -419,6 +453,23 @@ export class DiagnosticsPageComponent implements OnInit, OnDestroy {
         this.errorCounts = d.counts ?? {};
         this.cd.detectChanges();
       }
+    });
+  }
+
+  loadSchedulers(): void {
+    this.api.diagnosticsSchedulers().pipe(catchError(() => of([]))).subscribe(d => {
+      this.schedulers = d ?? [];
+      this.cd.detectChanges();
+    });
+  }
+
+  toggleTask(name: string, enabled: boolean): void {
+    this.api.diagnosticsToggleScheduler(name, enabled).subscribe(() => this.loadSchedulers());
+  }
+
+  triggerTask(name: string): void {
+    this.api.diagnosticsTriggerScheduler(name).subscribe(() => {
+      setTimeout(() => this.loadSchedulers(), 1000); // refresh after trigger completes
     });
   }
 

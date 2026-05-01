@@ -181,6 +181,13 @@ import { ApiService, GlobalConfigDto } from '../core/api.service';
         </div>
         @if (exitOpen) {
           <div class="form-grid">
+            <div class="toggle-row override-row">
+              <span>Override Strategy Exit Config <span class="toggle-hint">When ON, these global exit values replace per-strategy SL/target/trailing/maxHold for ALL trades</span></span>
+              <mat-slide-toggle [(ngModel)]="config.globalExitOverride" color="warn"></mat-slide-toggle>
+            </div>
+            @if (config.globalExitOverride) {
+              <div class="override-banner">⚠️ Global exit override is ACTIVE — all strategies will use the values below instead of their own exit config</div>
+            }
             <mat-form-field appearance="outline">
               <mat-label>Stop Loss %</mat-label>
               <input matInput type="number" step="1" [(ngModel)]="config.stopLossPercent">
@@ -329,6 +336,8 @@ import { ApiService, GlobalConfigDto } from '../core/api.service';
       background: rgba(255,255,255,.04); font-size: 13px; color: var(--text);
     }
     .toggle-hint { display: block; font-size: 11px; color: var(--muted); margin-top: 2px; }
+    .override-row { border: 1px solid rgba(242,189,75,.3); border-radius: 8px; padding: 12px 16px; background: rgba(242,189,75,.04); }
+    .override-banner { grid-column: 1 / -1; padding: 8px 14px; border-radius: 6px; font-size: 12px; font-weight: 600; background: rgba(242,189,75,.1); color: var(--warn); border: 1px solid rgba(242,189,75,.3); }
 
     .actions { display: flex; gap: 12px; margin-top: 24px; padding-bottom: 32px; }
     .actions button:first-child { min-width: 120px; }

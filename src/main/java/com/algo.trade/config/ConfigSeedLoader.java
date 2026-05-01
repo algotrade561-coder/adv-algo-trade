@@ -10,7 +10,6 @@ import com.algo.trade.underlying.UnderlyingConfigRepository;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.context.annotation.DependsOn;
 import org.springframework.stereotype.Component;
 import org.yaml.snakeyaml.Yaml;
 
@@ -36,7 +35,6 @@ import java.util.Map;
  * so they read the already-populated DB rather than falling back to Java defaults.
  */
 @Component("configSeedLoader")
-@DependsOn("databaseSchemaMigration")
 public class ConfigSeedLoader {
 
     private static final Logger log = LoggerFactory.getLogger(ConfigSeedLoader.class);
@@ -129,6 +127,7 @@ public class ConfigSeedLoader {
         cfg.setPartialProfitBookingEnabled(bool(map, "partialProfitBookingEnabled", false));
         cfg.setMaxHoldMinutes(integer(map, "maxHoldMinutes", 0));
         cfg.setVwapExitEnabled(bool(map, "vwapExitEnabled", false));
+        cfg.setGlobalExitOverride(bool(map, "globalExitOverride", false));
         // Risk
         cfg.setTotalCapital(decimal(map, "totalCapital", "80000"));
         cfg.setMaxRiskPerTradePercent(decimal(map, "maxRiskPerTradePercent", "20"));

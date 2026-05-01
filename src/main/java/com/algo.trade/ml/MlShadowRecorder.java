@@ -77,6 +77,14 @@ public class MlShadowRecorder {
         this.virtualTradeTracker = virtualTradeTracker;
     }
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.algo.trade.monitoring.SchedulerRegistry schedulerRegistry;
+
+    @jakarta.annotation.PostConstruct
+    void registerScheduler() {
+        if (schedulerRegistry != null) schedulerRegistry.register("mlOutcomeEnrich", "ML shadow outcome enrichment (5min)", 300_000, this::enrichOutcomes);
+    }
+
     /**
      * Record a shadow ML score for a signal. Called from the scheduler after each evaluation.
      * Does NOT affect the trading decision in any way.
@@ -165,6 +173,7 @@ public class MlShadowRecorder {
      */
     @Scheduled(fixedDelay = 300_000, initialDelay = 60_000)
     public void enrichOutcomes() {
+        if (schedulerRegistry != null && !schedulerRegistry.isEnabled("mlOutcomeEnrich")) return;
         if (pendingOutcomes.isEmpty()) return;
 
         List<PendingRow> toProcess = new ArrayList<>();
@@ -194,6 +203,7 @@ public class MlShadowRecorder {
         if (enriched > 0) {
             log.info("ML shadow: enriched {} rows with trade outcomes", enriched);
         }
+        if (schedulerRegistry != null) schedulerRegistry.recordRun("mlOutcomeEnrich");
     }
 
     /**

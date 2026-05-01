@@ -41,6 +41,9 @@ public class PositionSynchronizer {
     private final com.algo.trade.notification.TelegramAlertService telegramAlertService;
     private final com.algo.trade.monitoring.ErrorEventService errorEventService;
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.algo.trade.monitoring.SchedulerRegistry schedulerRegistry;
+
     /** Prevents concurrent sync runs from the event listener and the scheduled timer. */
     private final java.util.concurrent.atomic.AtomicBoolean syncInProgress = new java.util.concurrent.atomic.AtomicBoolean(false);
 
@@ -63,6 +66,7 @@ public class PositionSynchronizer {
      */
     @EventListener(ApplicationReadyEvent.class)
     public void onStartup() {
+        schedulerRegistry.register("positionSync", "Broker position reconciliation (60s)", 60_000, this::syncPositions);
         syncPositions();
     }
 
@@ -81,6 +85,7 @@ public class PositionSynchronizer {
      */
     @Scheduled(fixedDelay = 60_000, initialDelay = 10_000)
     public void onSchedule() {
+        if (!schedulerRegistry.isEnabled("positionSync")) return;
         syncPositions();
     }
 
@@ -148,7 +153,10 @@ public class PositionSynchronizer {
         } catch (Exception ex) {
             log.error("Position sync failed: {}", ex.getMessage(), ex);
             errorEventService.critical("PositionSynchronizer", "Position sync failed: " + ex.getMessage(), ex);
+            schedulerRegistry.recordError("positionSync", ex.getMessage());
+            return;
         }
+        schedulerRegistry.recordRun("positionSync");
     }
 
     private void createTradeFromBrokerPosition(Position pos) {

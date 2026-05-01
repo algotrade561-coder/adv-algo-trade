@@ -40,6 +40,13 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.algo.trade.monitoring.ErrorEventService errorEventService;
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.algo.trade.monitoring.SchedulerRegistry schedulerRegistry;
+
+    /** Debounce: minimum 30s between resubscriptions to prevent thrashing. */
+    private volatile long lastResubscribeTimeMs = 0;
+    private static final long RESUBSCRIBE_DEBOUNCE_MS = 30_000;
+
     public KiteStartupLogin(
             TradingProperties properties,
             KiteAccessTokenStore tokenStore,
@@ -67,6 +74,46 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
     @Override
     public int getOrder() {
         return Ordered.HIGHEST_PRECEDENCE + 10;
+    }
+
+    @jakarta.annotation.PostConstruct
+    void registerScheduler() {
+        if (schedulerRegistry != null) schedulerRegistry.register("atmResubscribe", "WebSocket option resubscription on ATM drift (5min)", 300_000, this::resubscribeIfAtmMoved);
+    }
+
+    /**
+     * Event-driven ATM drift check — fires on every 1-min candle close.
+     * If spot has moved more than RESUBSCRIBE_STRIKE_THRESHOLD strikes from last subscription,
+     * triggers immediate resubscription (with 30s debounce).
+     */
+    @org.springframework.context.event.EventListener
+    public void onCandleCloseAtmCheck(com.algo.trade.domain.CandleClosedEvent event) {
+        if (event.timeframe() != com.algo.trade.domain.Timeframe.ONE_MINUTE) return;
+        if (!webSocketConnected) return;
+        long now = System.currentTimeMillis();
+        if ((now - lastResubscribeTimeMs) < RESUBSCRIBE_DEBOUNCE_MS) return;
+
+        // Quick check: has any underlying's ATM drifted beyond threshold?
+        boolean needsResub = false;
+        for (var underlying : tradingStateService.enabledUnderlyings()) {
+            var indexType = com.algo.trade.domain.IndexType.from(underlying);
+            double currentSpot = liveInstrumentCache.getFuturesPrice(indexType);
+            if (currentSpot <= 0) continue;
+            int currentAtm = indexType.roundToATM(currentSpot);
+            Integer prevAtm = lastSubscribedAtm.get(indexType);
+            if (prevAtm != null) {
+                int strikeDrift = Math.abs(currentAtm - prevAtm) / indexType.strikeInterval();
+                if (strikeDrift >= RESUBSCRIBE_STRIKE_THRESHOLD) {
+                    needsResub = true;
+                    break;
+                }
+            }
+        }
+        if (needsResub) {
+            lastResubscribeTimeMs = now;
+            org.slf4j.LoggerFactory.getLogger(getClass()).info("[ATM-Drift] Immediate resubscription triggered by candle close");
+            resubscribeIfAtmMoved();
+        }
     }
 
     @Override
@@ -292,6 +339,7 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
      */
     @org.springframework.scheduling.annotation.Scheduled(fixedDelay = 5 * 60 * 1000)
     public void resubscribeIfAtmMoved() {
+        if (schedulerRegistry != null && !schedulerRegistry.isEnabled("atmResubscribe")) return;
         if (!webSocketConnected) return;
 
         var baseTokens = new java.util.ArrayList<Long>();
@@ -351,6 +399,7 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
                 if (errorEventService != null) errorEventService.medium("KiteStartup", "WebSocket re-subscription failed: " + e.getMessage());
             }
         }
+        if (schedulerRegistry != null) schedulerRegistry.recordRun("atmResubscribe");
     }
 
     /**
