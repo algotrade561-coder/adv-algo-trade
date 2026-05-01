@@ -61,6 +61,7 @@ public class LivePositionExitMonitor {
     private final GlobalConfigService globalConfigService;
     private final TradingStateService tradingStateService;
     private final VwapIndicator vwapIndicator;
+    private final com.algo.trade.monitoring.ErrorEventService errorEventService;
 
     // tradeId → highest price seen since entry
     private final Map<String, BigDecimal> peakPrices = new ConcurrentHashMap<>();
@@ -83,7 +84,8 @@ public class LivePositionExitMonitor {
                                     PositionSyncProperties positionSyncProperties,
                                     GlobalConfigService globalConfigService,
                                     TradingStateService tradingStateService,
-                                    VwapIndicator vwapIndicator) {
+                                    VwapIndicator vwapIndicator,
+                                    com.algo.trade.monitoring.ErrorEventService errorEventService) {
         this.tradeRepository = tradeRepository;
         this.executionEngine = executionEngine;
         this.marketDataService = marketDataService;
@@ -97,6 +99,7 @@ public class LivePositionExitMonitor {
         this.globalConfigService = globalConfigService;
         this.tradingStateService = tradingStateService;
         this.vwapIndicator = vwapIndicator;
+        this.errorEventService = errorEventService;
     }
 
     @EventListener
@@ -110,6 +113,7 @@ public class LivePositionExitMonitor {
                 evaluate(trade);
             } catch (Exception e) {
                 log.error("[ExitMonitor] Error evaluating trade {}: {}", trade.getTradeId(), e.getMessage());
+                errorEventService.critical("ExitMonitor", "Error evaluating trade " + trade.getTradeId() + ": " + e.getMessage(), e);
             }
         }
     }

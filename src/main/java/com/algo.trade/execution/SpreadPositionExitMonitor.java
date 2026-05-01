@@ -43,15 +43,18 @@ public class SpreadPositionExitMonitor {
     private final SpreadStrategyRegistry registry;
     private final MarketDataService marketDataService;
     private final TradingStateService tradingStateService;
+    private final com.algo.trade.monitoring.ErrorEventService errorEventService;
 
     public SpreadPositionExitMonitor(PositionGroupRepository positionGroupRepository,
                                      SpreadStrategyRegistry registry,
                                      MarketDataService marketDataService,
-                                     TradingStateService tradingStateService) {
+                                     TradingStateService tradingStateService,
+                                     com.algo.trade.monitoring.ErrorEventService errorEventService) {
         this.positionGroupRepository = positionGroupRepository;
         this.registry = registry;
         this.marketDataService = marketDataService;
         this.tradingStateService = tradingStateService;
+        this.errorEventService = errorEventService;
     }
 
     @EventListener
@@ -70,6 +73,7 @@ public class SpreadPositionExitMonitor {
             } catch (Exception e) {
                 log.error("[SpreadExitMonitor] Error evaluating group {}: {}",
                         entity.getGroupId(), e.getMessage(), e);
+                errorEventService.critical("SpreadExitMonitor", "Error evaluating group " + entity.getGroupId() + ": " + e.getMessage(), e);
             }
         }
     }

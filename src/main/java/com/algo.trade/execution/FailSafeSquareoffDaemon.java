@@ -35,19 +35,22 @@ public class FailSafeSquareoffDaemon {
     private final com.algo.trade.marketdata.MarketDataService marketDataService;
     private final com.algo.trade.persistence.OrderRepository orderRepository;
     private final com.algo.trade.broker.BrokerClient brokerClient;
+    private final com.algo.trade.monitoring.ErrorEventService errorEventService;
 
     public FailSafeSquareoffDaemon(TradeRepository tradeRepository,
                                     ExecutionEngine executionEngine,
                                     TelegramAlertService alertService,
                                     com.algo.trade.marketdata.MarketDataService marketDataService,
                                     com.algo.trade.persistence.OrderRepository orderRepository,
-                                    com.algo.trade.broker.BrokerClient brokerClient) {
+                                    com.algo.trade.broker.BrokerClient brokerClient,
+                                    com.algo.trade.monitoring.ErrorEventService errorEventService) {
         this.tradeRepository = tradeRepository;
         this.executionEngine = executionEngine;
         this.alertService = alertService;
         this.marketDataService = marketDataService;
         this.orderRepository = orderRepository;
         this.brokerClient = brokerClient;
+        this.errorEventService = errorEventService;
     }
 
     @Scheduled(cron = "0 * 15 * * MON-FRI", zone = "Asia/Kolkata")
@@ -76,6 +79,7 @@ public class FailSafeSquareoffDaemon {
                     }
                 } catch (Exception e) {
                     log.error("[FailSafe] Failed to cancel order {}: {}", order.getClientOrderId(), e.getMessage());
+                    errorEventService.high("FailSafe", "Failed to cancel order " + order.getClientOrderId() + ": " + e.getMessage(), e);
                 }
             }
             if (!pendingOrders.isEmpty()) {
@@ -83,6 +87,7 @@ public class FailSafeSquareoffDaemon {
             }
         } catch (Exception e) {
             log.error("[FailSafe] Order cancellation sweep failed: {}", e.getMessage());
+            errorEventService.critical("FailSafe", "Order cancellation sweep failed: " + e.getMessage(), e);
         }
 
         List<String> failures = new java.util.ArrayList<>();
@@ -97,6 +102,7 @@ public class FailSafeSquareoffDaemon {
                 log.warn("[FailSafe] Force-closed: tradeId={} instrument={} exitPrice={}", trade.getTradeId(), trade.getInstrumentKey(), exitPrice);
             } catch (Exception e) {
                 log.error("[FailSafe] Failed to close trade {}: {}", trade.getTradeId(), e.getMessage());
+                errorEventService.critical("FailSafe", "Failed to close trade " + trade.getTradeId() + ": " + e.getMessage(), e);
                 failures.add(trade.getTradeId() + " (" + trade.getInstrumentKey() + "): " + e.getMessage());
             }
         }

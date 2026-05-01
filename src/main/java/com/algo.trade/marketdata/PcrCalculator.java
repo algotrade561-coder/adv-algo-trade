@@ -39,6 +39,9 @@ public class PcrCalculator {
 
     private final AtomicReference<Double> latestPcr = new AtomicReference<>(0.0);
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.monitoring.ErrorEventService errorEventService;
+
     public PcrCalculator(LiveInstrumentCache liveInstrumentCache,
                          BrokerClient brokerClient,
                          MarketGuard marketGuard,
@@ -68,6 +71,7 @@ public class PcrCalculator {
             }
         } catch (Exception e) {
             log.warn("[PcrCalculator] Failed: {}", e.getMessage());
+            if (errorEventService != null) errorEventService.medium("PcrCalculator", "PCR calculation failed: " + e.getMessage());
         }
     }
 

@@ -48,6 +48,9 @@ public class KiteWebSocketClient {
     private final com.algo.trade.risk.MarketGuard marketGuard;
     private final com.algo.trade.notification.TelegramAlertService telegramAlertService;
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.monitoring.ErrorEventService errorEventService;
+
     private final OkHttpClient httpClient = new OkHttpClient.Builder()
             .readTimeout(0, TimeUnit.MILLISECONDS) // no timeout for WebSocket
             .build();
@@ -239,7 +242,10 @@ public class KiteWebSocketClient {
         public void onFailure(WebSocket ws, Throwable t, Response response) {
             connected = false;
             log.error("[WS] Failure: {}", t.getMessage());
-            alertExecutor.execute(() -> telegramAlertService.systemAlert("\uD83D\uDD34 WebSocket disconnected (failure): " + t.getMessage()));
+            alertExecutor.execute(() -> {
+                telegramAlertService.systemAlert("\uD83D\uDD34 WebSocket disconnected (failure): " + t.getMessage());
+                if (errorEventService != null) errorEventService.critical("WebSocket", "WebSocket failure: " + t.getMessage(), t);
+            });
             scheduleReconnect();
         }
 

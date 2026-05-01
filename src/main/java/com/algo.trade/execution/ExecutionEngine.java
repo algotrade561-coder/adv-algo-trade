@@ -74,6 +74,9 @@ public class ExecutionEngine {
     private final SmartOrderRouter smartOrderRouter;
     private final Clock clock;
 
+    @Autowired(required = false)
+    private com.algo.trade.monitoring.ErrorEventService errorEventService;
+
     @Autowired
     public ExecutionEngine(TradingProperties properties, GlobalConfigService globalConfigService, BrokerClient brokerClient, RiskEngine riskEngine, TradingStateService tradingStateService,
                            TradeRepository tradeRepository, OrderRepository orderRepository,
@@ -405,6 +408,7 @@ public class ExecutionEngine {
         } catch (RuntimeException ex) {
             // Retry once with MARKET order if LIMIT fails
             log.warn("Exit LIMIT order failed for tradeId={}, retrying with MARKET order: {}", tradeId, ex.getMessage());
+            if (errorEventService != null) errorEventService.high("ExecutionEngine", "Exit LIMIT failed for " + tradeId + " — retrying MARKET: " + ex.getMessage(), ex);
             telegramAlertService.systemAlert("⚠️ Exit LIMIT failed for " + trade.getInstrumentKey() + " — retrying MARKET order");
             try {
                 OrderRequest marketRequest = new OrderRequest("EXIT-MKT-" + UUID.randomUUID(), trade.getInstrumentKey(),
@@ -413,6 +417,7 @@ public class ExecutionEngine {
                 order = brokerClient.placeOrder(marketRequest);
             } catch (RuntimeException retryEx) {
                 log.error("Exit MARKET retry also failed for tradeId={}: {}", tradeId, retryEx.getMessage());
+                if (errorEventService != null) errorEventService.critical("ExecutionEngine", "Exit MARKET retry failed for " + tradeId + " (" + trade.getInstrumentKey() + "): " + retryEx.getMessage(), retryEx);
                 telegramAlertService.systemAlert("🚨 URGENT: Exit failed for " + trade.getInstrumentKey()
                         + " — POSITION STILL OPEN! Manual intervention required.");
                 return ExecutionResult.rejected(List.of("Exit order failed after retry: " + retryEx.getMessage()));
@@ -488,6 +493,7 @@ public class ExecutionEngine {
             order = brokerClient.placeOrder(orderRequest);
         } catch (RuntimeException ex) {
             log.warn("Partial exit LIMIT failed for tradeId={}, retrying MARKET: {}", tradeId, ex.getMessage());
+            if (errorEventService != null) errorEventService.high("ExecutionEngine", "Partial exit LIMIT failed for " + tradeId + " — retrying MARKET: " + ex.getMessage(), ex);
             try {
                 OrderRequest marketReq = new OrderRequest("PARTIAL-MKT-" + UUID.randomUUID(), trade.getInstrumentKey(),
                         OrderSide.SELL, OrderType.MARKET, ProductType.MIS, partialQuantity, Optional.empty(),
@@ -495,6 +501,7 @@ public class ExecutionEngine {
                 order = brokerClient.placeOrder(marketReq);
             } catch (RuntimeException retryEx) {
                 log.error("Partial exit MARKET retry failed for tradeId={}: {}", tradeId, retryEx.getMessage());
+                if (errorEventService != null) errorEventService.critical("ExecutionEngine", "Partial exit retry failed for " + tradeId + ": " + retryEx.getMessage(), retryEx);
                 return ExecutionResult.rejected(List.of("Partial exit failed after retry: " + retryEx.getMessage()));
             }
         }
@@ -582,6 +589,7 @@ public class ExecutionEngine {
         if (orderEntity.getAverageFillPrice() == null || orderEntity.getAverageFillPrice().signum() <= 0) {
             log.error("openTradeFromFilledOrder skipped: fill price is null/zero for clientOrderId={} instrument={}",
                     orderEntity.getClientOrderId(), instrumentKey);
+            if (errorEventService != null) errorEventService.critical("ExecutionEngine", "Fill price missing for " + instrumentKey + " order=" + orderEntity.getClientOrderId() + " — trade NOT opened");
             telegramAlertService.systemAlert("🚨 Watchdog: fill price missing for " + instrumentKey
                     + " order=" + orderEntity.getClientOrderId() + " — trade NOT opened, manual review needed");
             return;
@@ -846,7 +854,28 @@ public class ExecutionEngine {
             rejections.add("Open trade already exists for instrument: " + instrumentKey);
         }
 
-        // 4. Same instrument re-entry price move check (includes orders placed today, not just trades)
+        // 4. Per-underlying open trade limit — prevent concentration on a single underlying
+        //    Max 2 open live trades per underlying (or maxOpenTrades if smaller)
+        String underlying = decision.underlying().name();
+        long openTradesForUnderlying = tradeRepository.findByStatus(TradeStatus.OPEN).stream()
+                .filter(t -> !t.isPaperTrade())
+                .filter(t -> underlying.equals(t.getUnderlying()))
+                .count();
+        // Also count pending BUY orders for the same underlying
+        long pendingOrdersForUnderlying = orderRepository.findByStatusIn(
+                List.of(OrderStatus.OPEN, OrderStatus.NEW)).stream()
+                .filter(o -> OrderSide.BUY.name().equals(o.getSide()))
+                .filter(o -> o.getInstrumentKey() != null && o.getInstrumentKey().toUpperCase().contains(underlying))
+                .count();
+        long totalOpenForUnderlying = openTradesForUnderlying + pendingOrdersForUnderlying;
+        int maxPerUnderlying = Math.min(2, globalConfigService.getMaxOpenTrades());
+        if (totalOpenForUnderlying >= maxPerUnderlying) {
+            rejections.add("Max open trades per underlying reached for " + underlying
+                    + " (" + totalOpenForUnderlying + "/" + maxPerUnderlying
+                    + ", trades=" + openTradesForUnderlying + " pending=" + pendingOrdersForUnderlying + ")");
+        }
+
+        // 5. Same instrument re-entry price move check (includes orders placed today, not just trades)
         // Check trades
         tradeRepository.findByInstrumentKeyAndEntryTimeBetween(instrumentKey, todayStart(), tomorrowStart()).stream()
                 .map(TradeEntity::getEntryPrice)
@@ -866,7 +895,7 @@ public class ExecutionEngine {
                 .findFirst()
                 .ifPresent(o -> rejections.add("Same instrument order placed today without required price move: " + instrumentKey));
 
-        // 5. Cooldown check — include both trades AND orders placed within cooldown window
+        // 6. Cooldown check — include both trades AND orders placed within cooldown window
         if (globalConfigService.getCooldownMinutes() > 0) {
             Instant cooldownStart = clock.instant().minus(Duration.ofMinutes(globalConfigService.getCooldownMinutes()));
             // Check trades

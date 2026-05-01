@@ -16,6 +16,9 @@ public class AiInsightsScheduler {
 
     private final AiAnalysisService aiAnalysisService;
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.monitoring.ErrorEventService errorEventService;
+
     public AiInsightsScheduler(AiAnalysisService aiAnalysisService) {
         this.aiAnalysisService = aiAnalysisService;
     }
@@ -30,6 +33,7 @@ public class AiInsightsScheduler {
             aiAnalysisService.runAnalysis(runType);
         } catch (Exception e) {
             log.error("AI insights scheduler failed: {}", e.getMessage(), e);
+            if (errorEventService != null) errorEventService.low("AiInsights", "AI insights scheduler failed: " + e.getMessage());
         }
     }
 }

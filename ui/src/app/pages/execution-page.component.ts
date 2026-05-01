@@ -1,4 +1,4 @@
-import { Component, OnInit, signal } from '@angular/core';
+import { ChangeDetectorRef, Component, OnInit, signal } from '@angular/core';
 import { DecimalPipe } from '@angular/common';
 import { FormBuilder, FormsModule, ReactiveFormsModule, Validators } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
@@ -413,7 +413,7 @@ export class ExecutionPageComponent implements OnInit {
   readonly modeForm = this.fb.nonNullable.group({ mode: ['PAPER' as TradingMode, Validators.required] });
   readonly routingForm = this.fb.nonNullable.group({ marketDataMode: ['MOCK' as MarketDataMode, Validators.required], executionMode: ['PAPER' as ExecutionMode, Validators.required] });
 
-  constructor(private readonly api: ApiService, private readonly fb: FormBuilder) {}
+  constructor(private readonly api: ApiService, private readonly fb: FormBuilder, private readonly cd: ChangeDetectorRef) {}
   ngOnInit(): void { this.load(); }
 
   load(): void {
@@ -473,5 +473,6 @@ export class ExecutionPageComponent implements OnInit {
     this.runtime = r;
     this.modeForm.patchValue({ mode: r.requestedMode });
     this.routingForm.patchValue({ marketDataMode: r.marketDataMode, executionMode: r.executionMode });
+    this.cd.detectChanges();
   }
 }

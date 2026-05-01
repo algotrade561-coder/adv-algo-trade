@@ -75,16 +75,13 @@ import { interval, Subscription, catchError, of } from 'rxjs';
         <!-- ── Data Health ── -->
         <h2 class="sec-title"><mat-icon class="sec-icon">bar_chart</mat-icon> Data Health (Scanner Dependencies)</h2>
         <div class="cards">
-          <div class="card" [class.card-ok]="health.dataHealth?.niftySpot > 0" [class.card-bad]="!health.dataHealth?.niftySpot">
-            <div class="card-label">NIFTY Spot</div>
-            <div class="card-value">{{ health.dataHealth?.niftySpot > 0 ? (health.dataHealth?.niftySpot | number:'1.2-2') : 'NO DATA' }}</div>
-            <div class="card-sub">Candles: 1m={{ health.dataHealth?.niftyCandles1m }} 5m={{ health.dataHealth?.niftyCandles5m }} 15m={{ health.dataHealth?.niftyCandles15m }}</div>
-          </div>
-          <div class="card" [class.card-ok]="health.dataHealth?.bankniftySpot > 0" [class.card-bad]="!health.dataHealth?.bankniftySpot">
-            <div class="card-label">BANKNIFTY Spot</div>
-            <div class="card-value">{{ health.dataHealth?.bankniftySpot > 0 ? (health.dataHealth?.bankniftySpot | number:'1.2-2') : 'NO DATA' }}</div>
-            <div class="card-sub">Candles: 1m={{ health.dataHealth?.bankniftyCandles1m }} 5m={{ health.dataHealth?.bankniftyCandles5m }}</div>
-          </div>
+          @for (idx of enabledUnderlyings(); track idx) {
+            <div class="card" [class.card-ok]="health.dataHealth?.[idx.toLowerCase() + 'Spot'] > 0" [class.card-bad]="!health.dataHealth?.[idx.toLowerCase() + 'Spot']">
+              <div class="card-label">{{ idx }} Spot</div>
+              <div class="card-value">{{ health.dataHealth?.[idx.toLowerCase() + 'Spot'] > 0 ? (health.dataHealth?.[idx.toLowerCase() + 'Spot'] | number:'1.2-2') : 'NO DATA' }}</div>
+              <div class="card-sub">Candles: 1m={{ health.dataHealth?.[idx.toLowerCase() + 'Candles1m'] }} 5m={{ health.dataHealth?.[idx.toLowerCase() + 'Candles5m'] }} 15m={{ health.dataHealth?.[idx.toLowerCase() + 'Candles15m'] }}</div>
+            </div>
+          }
           <div class="card" [class.card-ok]="health.dataHealth?.vix > 0" [class.card-bad]="!health.dataHealth?.vix">
             <div class="card-label">VIX</div>
             <div class="card-value">{{ health.dataHealth?.vix > 0 ? (health.dataHealth?.vix | number:'1.2-2') : 'NO DATA' }}</div>
@@ -95,21 +92,26 @@ import { interval, Subscription, catchError, of } from 'rxjs';
           </div>
         </div>
         <div class="cards">
-          <div class="card" [class.card-ok]="health.dataHealth?.niftyOptionDataStatus === 'OK'" [class.card-bad]="health.dataHealth?.niftyOptionDataStatus === 'NO_DATA'">
-            <div class="card-label">NIFTY Option Chain</div>
-            <div class="card-value">{{ health.dataHealth?.niftyOptionDataStatus }}</div>
-            <div class="card-sub">Chain: {{ health.dataHealth?.niftyOptionChainSize }} | Live OI: {{ health.dataHealth?.niftyOptionsWithLiveOI }} | Live Price: {{ health.dataHealth?.niftyOptionsWithLivePrice }}</div>
-          </div>
-          <div class="card" [class.card-ok]="health.dataHealth?.bankniftyOptionDataStatus === 'OK'" [class.card-bad]="health.dataHealth?.bankniftyOptionDataStatus === 'NO_DATA'">
-            <div class="card-label">BANKNIFTY Option Chain</div>
-            <div class="card-value">{{ health.dataHealth?.bankniftyOptionDataStatus }}</div>
-            <div class="card-sub">Chain: {{ health.dataHealth?.bankniftyOptionChainSize }} | Live OI: {{ health.dataHealth?.bankniftyOptionsWithLiveOI }}</div>
-          </div>
-          <div class="card" [class.card-ok]="health.dataHealth?.niftyCandleStatus === 'FRESH'" [class.card-bad]="health.dataHealth?.niftyCandleStatus === 'VERY_STALE' || health.dataHealth?.niftyCandleStatus === 'NO_DATA'">
-            <div class="card-label">NIFTY Candle Freshness</div>
-            <div class="card-value">{{ health.dataHealth?.niftyCandleStatus }}</div>
-            <div class="card-sub">Last candle: {{ health.dataHealth?.niftyLastCandleAge }}</div>
-          </div>
+          @for (idx of enabledUnderlyings(); track idx) {
+            <div class="card" [class.card-ok]="health.dataHealth?.[idx.toLowerCase() + 'OptionDataStatus'] === 'OK'"
+                              [class.card-bad]="health.dataHealth?.[idx.toLowerCase() + 'OptionDataStatus'] === 'NO_DATA' || health.dataHealth?.[idx.toLowerCase() + 'OptionDataStatus'] === 'ERROR'"
+                              [class.card-warn]="health.dataHealth?.[idx.toLowerCase() + 'OptionDataStatus'] === 'PARTIAL'">
+              <div class="card-label">{{ idx }} Option Chain</div>
+              <div class="card-value">{{ health.dataHealth?.[idx.toLowerCase() + 'OptionDataStatus'] }}</div>
+              <div class="card-sub">Chain: {{ health.dataHealth?.[idx.toLowerCase() + 'OptionChainSize'] }} | Live OI: {{ health.dataHealth?.[idx.toLowerCase() + 'OptionsWithLiveOI'] }} | Live Price: {{ health.dataHealth?.[idx.toLowerCase() + 'OptionsWithLivePrice'] }}</div>
+            </div>
+          }
+        </div>
+        <div class="cards">
+          @for (idx of enabledUnderlyings(); track idx) {
+            <div class="card" [class.card-ok]="health.dataHealth?.[idx.toLowerCase() + 'CandleStatus'] === 'FRESH'"
+                              [class.card-bad]="health.dataHealth?.[idx.toLowerCase() + 'CandleStatus'] === 'VERY_STALE' || health.dataHealth?.[idx.toLowerCase() + 'CandleStatus'] === 'NO_DATA'"
+                              [class.card-warn]="health.dataHealth?.[idx.toLowerCase() + 'CandleStatus'] === 'STALE'">
+              <div class="card-label">{{ idx }} Candle Freshness</div>
+              <div class="card-value">{{ health.dataHealth?.[idx.toLowerCase() + 'CandleStatus'] }}</div>
+              <div class="card-sub">Last candle: {{ health.dataHealth?.[idx.toLowerCase() + 'LastCandleAge'] ?? '—' }}</div>
+            </div>
+          }
           <div class="card" [class.card-ok]="health.dataHealth?.safeForLongPremium" [class.card-bad]="!health.dataHealth?.safeForLongPremium">
             <div class="card-label">Market Guard</div>
             <div class="card-value">{{ health.dataHealth?.safeForLongPremium ? 'SAFE' : 'BLOCKED' }}</div>
@@ -141,8 +143,9 @@ import { interval, Subscription, catchError, of } from 'rxjs';
       <div class="search-row">
         <mat-form-field appearance="outline" class="search-field">
           <mat-label>Trade ID</mat-label>
-          <input matInput [(ngModel)]="searchTradeId" [matAutocomplete]="tradeIdAuto" placeholder="TRD-xxx">
-          <mat-autocomplete #tradeIdAuto="matAutocomplete">
+          <input matInput [(ngModel)]="searchTradeId" [matAutocomplete]="tradeIdAuto"
+                 (input)="cd.detectChanges()" (focus)="cd.detectChanges()" placeholder="TRD-xxx">
+          <mat-autocomplete #tradeIdAuto="matAutocomplete" autoActiveFirstOption>
             @for (id of filteredTradeIds(); track id) {
               <mat-option [value]="id">{{ id }}</mat-option>
             }
@@ -153,8 +156,9 @@ import { interval, Subscription, catchError, of } from 'rxjs';
         </button>
         <mat-form-field appearance="outline" class="search-field">
           <mat-label>Instrument Key</mat-label>
-          <input matInput [(ngModel)]="searchInstrument" [matAutocomplete]="instrAuto" placeholder="NFO:NIFTY...">
-          <mat-autocomplete #instrAuto="matAutocomplete">
+          <input matInput [(ngModel)]="searchInstrument" [matAutocomplete]="instrAuto"
+                 (input)="cd.detectChanges()" (focus)="cd.detectChanges()" placeholder="NFO:NIFTY...">
+          <mat-autocomplete #instrAuto="matAutocomplete" autoActiveFirstOption>
             @for (k of filteredInstruments(); track k) {
               <mat-option [value]="k">{{ k }}</mat-option>
             }
@@ -196,6 +200,40 @@ import { interval, Subscription, catchError, of } from 'rxjs';
             <div class="error-msg">{{ auditResult.error }}</div>
           }
         </div>
+      }
+
+      <!-- ── Recent Errors (from ErrorEventService) ── -->
+      <h2 class="sec-title"><mat-icon class="sec-icon">bug_report</mat-icon> Recent Errors (Today)</h2>
+      <div class="cards">
+        <div class="card" [class.card-bad]="(errorCounts?.CRITICAL ?? 0) > 0">
+          <div class="card-label">Critical</div>
+          <div class="card-value">{{ errorCounts?.CRITICAL ?? 0 }}</div>
+        </div>
+        <div class="card" [class.card-warn]="(errorCounts?.HIGH ?? 0) > 0">
+          <div class="card-label">High</div>
+          <div class="card-value">{{ errorCounts?.HIGH ?? 0 }}</div>
+        </div>
+        <div class="card">
+          <div class="card-label">Medium</div>
+          <div class="card-value">{{ errorCounts?.MEDIUM ?? 0 }}</div>
+        </div>
+      </div>
+      @if (recentErrors.length) {
+        <table class="audit-table">
+          <thead><tr><th>Time</th><th>Severity</th><th>Component</th><th>Message</th></tr></thead>
+          <tbody>
+            @for (e of recentErrors; track e.id) {
+              <tr [class.row-bad]="e.severity === 'CRITICAL'" [class.row-warn]="e.severity === 'HIGH'">
+                <td class="mono">{{ formatTime(e.timestamp) }}</td>
+                <td><span class="badge" [class.badge-bad]="e.severity === 'CRITICAL'" [class.badge-warn]="e.severity === 'HIGH'" [class.badge-muted]="e.severity === 'MEDIUM'">{{ e.severity }}</span></td>
+                <td><strong>{{ e.component }}</strong></td>
+                <td class="err-msg-cell">{{ e.message }}</td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      } @else {
+        <div class="no-data">No errors recorded today</div>
       }
 
       <!-- ── Failures ── -->
@@ -278,6 +316,7 @@ import { interval, Subscription, catchError, of } from 'rxjs';
     .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 10px 14px; min-width: 150px; flex: 1; }
     .card-ok { border-left: 3px solid #3fb950; }
     .card-bad { border-left: 3px solid #f85149; }
+    .card-warn { border-left: 3px solid #d29922; }
     .card-label { font-size: 0.7rem; color: #8b949e; text-transform: uppercase; letter-spacing: 0.3px; }
     .card-value { font-size: 1rem; font-weight: 700; font-family: Consolas, monospace; margin: 3px 0; color: #e6edf3; }
     .card-sub { font-size: 0.7rem; color: #6e7681; }
@@ -297,6 +336,11 @@ import { interval, Subscription, catchError, of } from 'rxjs';
     .mono { font-family: Consolas, monospace; font-size: 0.78rem; }
     .json-block { background: #0d1117; border: 1px solid #30363d; border-radius: 6px; padding: 10px; font-size: 0.75rem; overflow-x: auto; max-height: 300px; color: #8b949e; }
     .error-msg { color: #f85149; font-weight: 600; padding: 12px; background: #2d1215; border-radius: 6px; }
+    .err-msg-cell { max-width: 500px; word-break: break-word; font-size: 0.75rem; }
+    .row-warn { background: #2d2600; }
+    .badge-warn { background: #3d2e00; color: #d29922; }
+    .badge-muted { background: rgba(255,255,255,.05); color: #8b949e; }
+    .no-data { color: #6e7681; font-size: 0.82rem; padding: 12px; text-align: center; }
     h3 { color: #c9d1d9; font-size: 0.95rem; margin: 14px 0 8px; }
   `]
 })
@@ -304,6 +348,8 @@ export class DiagnosticsPageComponent implements OnInit, OnDestroy {
   health: any = null;
   auditResult: any = null;
   failures: any = null;
+  recentErrors: any[] = [];
+  errorCounts: any = {};
   searchTradeId = '';
   searchInstrument = '';
   failurePeriod = 'TODAY';
@@ -311,7 +357,7 @@ export class DiagnosticsPageComponent implements OnInit, OnDestroy {
   lookupInstruments: string[] = [];
   private pollSub?: Subscription;
 
-  constructor(private api: ApiService, private cd: ChangeDetectorRef) {}
+  constructor(private api: ApiService, public cd: ChangeDetectorRef) {}
 
   ngOnInit(): void {
     this.load();
@@ -323,6 +369,7 @@ export class DiagnosticsPageComponent implements OnInit, OnDestroy {
   load(): void {
     this.loadHealth();
     this.loadLookup();
+    this.loadRecentErrors();
   }
 
   loadHealth(): void {
@@ -356,10 +403,21 @@ export class DiagnosticsPageComponent implements OnInit, OnDestroy {
   }
 
   loadLookup(): void {
-    this.api.diagnosticsLookup('TODAY').pipe(catchError(() => of(null))).subscribe(d => {
+    this.api.diagnosticsLookup('LAST7').pipe(catchError(() => of(null))).subscribe(d => {
       if (d) {
         this.lookupTradeIds = d.tradeIds ?? [];
         this.lookupInstruments = d.instrumentKeys ?? [];
+        this.cd.detectChanges();
+      }
+    });
+  }
+
+  loadRecentErrors(): void {
+    this.api.diagnosticsRecentErrors(50).pipe(catchError(() => of(null))).subscribe(d => {
+      if (d) {
+        this.recentErrors = d.errors ?? [];
+        this.errorCounts = d.counts ?? {};
+        this.cd.detectChanges();
       }
     });
   }
@@ -372,6 +430,10 @@ export class DiagnosticsPageComponent implements OnInit, OnDestroy {
   filteredInstruments(): string[] {
     const q = this.searchInstrument.toLowerCase();
     return q ? this.lookupInstruments.filter(k => k.toLowerCase().includes(q)).slice(0, 20) : this.lookupInstruments.slice(0, 20);
+  }
+
+  enabledUnderlyings(): string[] {
+    return this.health?.dataHealth?.enabledUnderlyings ?? [];
   }
 
   isGoodStatus(s: string): boolean { return ['OPEN', 'COMPLETE', 'ORDER_FILLED', 'CLOSED'].includes(s); }

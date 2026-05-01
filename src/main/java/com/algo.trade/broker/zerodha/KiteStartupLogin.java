@@ -37,6 +37,9 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
     private final com.algo.trade.marketdata.LiveCandleBuilder candleBuilder;
     private final com.algo.trade.persistence.TradeRepository tradeRepository;
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.monitoring.ErrorEventService errorEventService;
+
     public KiteStartupLogin(
             TradingProperties properties,
             KiteAccessTokenStore tokenStore,
@@ -123,6 +126,7 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
             }
         } catch (Exception e) {
             log.warn("LiveInstrumentCache population failed: {}", e.getMessage());
+            if (errorEventService != null) errorEventService.medium("KiteStartup", "LiveInstrumentCache population failed: " + e.getMessage());
         }
 
         // Always connect WebSocket for real-time tick data (primary trigger)
@@ -167,6 +171,7 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
                         log.info("LiveInstrumentCache populated: {} instruments", instruments.size());
                     } else {
                         log.warn("Instrument cache still empty after refresh — option subscriptions will be skipped");
+                        if (errorEventService != null) errorEventService.medium("KiteStartup", "Instrument cache empty after refresh — option subscriptions skipped");
                     }
 
                     // Wait up to 15s for spot ticks to arrive via WebSocket; retry REST fallback each attempt
@@ -211,6 +216,7 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
                         log.info("WebSocket subscribed with {} option tokens after {}ms", optionTokens.size(), attemptMs);
                     } else {
                         log.warn("Option token subscription failed after {}ms — resubscribeIfAtmMoved() will retry", attemptMs);
+                        if (errorEventService != null) errorEventService.medium("KiteStartup", "Option token subscription failed after " + attemptMs + "ms — will retry");
                     }
                     webSocketConnected = true;
                     // Seed candle history from REST if app was restarted during market hours
@@ -219,12 +225,14 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
                     }
                 } catch (Exception e) {
                     log.warn("Option token subscription failed: {}", e.getMessage());
+                    if (errorEventService != null) errorEventService.medium("KiteStartup", "Option token subscription failed: " + e.getMessage());
                     webSocketConnected = true; // allow scheduler to recover
                 }
             }, "ws-option-subscribe").start();
 
         } catch (Exception e) {
             log.warn("WebSocket connection failed on startup (will use REST fallback): {}", e.getMessage());
+            if (errorEventService != null) errorEventService.high("KiteStartup", "WebSocket connection failed on startup — using REST fallback: " + e.getMessage(), e);
         }
     }
 
@@ -326,6 +334,7 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
                 newOptionTokens.addAll(tokens);
             } catch (Exception e) {
                 log.warn("Re-subscription token fetch failed for {}: {}", underlying, e.getMessage());
+                if (errorEventService != null) errorEventService.medium("KiteStartup", "Re-subscription token fetch failed for " + underlying + ": " + e.getMessage());
             }
         }
 
@@ -339,6 +348,7 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
                 log.info("WebSocket re-subscribed: {} option tokens", newOptionTokens.size());
             } catch (Exception e) {
                 log.warn("WebSocket re-subscription failed: {}", e.getMessage());
+                if (errorEventService != null) errorEventService.medium("KiteStartup", "WebSocket re-subscription failed: " + e.getMessage());
             }
         }
     }

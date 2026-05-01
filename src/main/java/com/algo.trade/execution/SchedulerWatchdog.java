@@ -27,14 +27,17 @@ public class SchedulerWatchdog {
     private final TradingStateService tradingStateService;
     private final TelegramAlertService alertService;
     private final com.algo.trade.broker.zerodha.KiteWebSocketClient webSocketClient;
+    private final com.algo.trade.monitoring.ErrorEventService errorEventService;
     private volatile boolean alertSentThisSession = false;
 
     public SchedulerWatchdog(TradingStateService tradingStateService,
                               TelegramAlertService alertService,
-                              com.algo.trade.broker.zerodha.KiteWebSocketClient webSocketClient) {
+                              com.algo.trade.broker.zerodha.KiteWebSocketClient webSocketClient,
+                              com.algo.trade.monitoring.ErrorEventService errorEventService) {
         this.tradingStateService = tradingStateService;
         this.alertService = alertService;
         this.webSocketClient = webSocketClient;
+        this.errorEventService = errorEventService;
     }
 
     @Scheduled(fixedDelay = 300_000, initialDelay = 600_000) // every 5 min, start after 10 min
@@ -53,6 +56,7 @@ public class SchedulerWatchdog {
             if (!alertSentThisSession) {
                 log.warn("[SchedulerWatchdog] No scan recorded since startup — scheduler may not be running");
                 alertService.systemAlert("⚠️ Scheduler Watchdog: No scan recorded since startup. Scanner may be stuck.");
+                errorEventService.high("SchedulerWatchdog", "No scan recorded since startup — scheduler may be stuck");
                 alertSentThisSession = true;
             }
             return;
@@ -72,6 +76,7 @@ public class SchedulerWatchdog {
                 }
             } catch (Exception e) {
                 log.error("[SchedulerWatchdog] Reconnect failed: {}", e.getMessage());
+                errorEventService.critical("SchedulerWatchdog", "WebSocket reconnect failed: " + e.getMessage(), e);
             }
             alertSentThisSession = true;
         }

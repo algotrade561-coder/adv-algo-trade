@@ -29,15 +29,18 @@ public class MaxHoldExitMonitor {
     private final LivePositionExitMonitor livePositionExitMonitor;
     private final TradingStateService tradingStateService;
     private final PositionSyncProperties positionSyncProperties;
+    private final com.algo.trade.monitoring.ErrorEventService errorEventService;
 
     public MaxHoldExitMonitor(TradeRepository tradeRepository,
                                LivePositionExitMonitor livePositionExitMonitor,
                                TradingStateService tradingStateService,
-                               PositionSyncProperties positionSyncProperties) {
+                               PositionSyncProperties positionSyncProperties,
+                               com.algo.trade.monitoring.ErrorEventService errorEventService) {
         this.tradeRepository = tradeRepository;
         this.livePositionExitMonitor = livePositionExitMonitor;
         this.tradingStateService = tradingStateService;
         this.positionSyncProperties = positionSyncProperties;
+        this.errorEventService = errorEventService;
     }
 
     /**
@@ -57,6 +60,7 @@ public class MaxHoldExitMonitor {
                 livePositionExitMonitor.evaluateForScheduledCheck(trade);
             } catch (Exception e) {
                 log.error("[MaxHoldBackup] Error evaluating trade {}: {}", trade.getTradeId(), e.getMessage());
+                errorEventService.critical("MaxHoldExitMonitor", "Error evaluating trade " + trade.getTradeId() + ": " + e.getMessage(), e);
             }
         }
     }

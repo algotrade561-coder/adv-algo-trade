@@ -24,6 +24,9 @@ public class TokenExpiryMonitor {
     private final TelegramAlertService telegramAlertService;
     private final com.algo.trade.config.TradingProperties properties;
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.monitoring.ErrorEventService errorEventService;
+
     public TokenExpiryMonitor(KiteAccessTokenStore tokenStore,
                                KiteWebSocketClient webSocketClient,
                                TelegramAlertService telegramAlertService,
@@ -44,6 +47,7 @@ public class TokenExpiryMonitor {
                     "🔑 Kite access token expired or missing!\n"
                     + "Re-authenticate now:\n" + loginUrl);
             log.warn("[TokenMonitor] Access token missing at market open");
+            if (errorEventService != null) errorEventService.high("TokenMonitor", "Access token missing at market open — trading blocked");
         } else {
             log.info("[TokenMonitor] Access token present at 8:00 AM");
         }
@@ -57,6 +61,7 @@ public class TokenExpiryMonitor {
                     "⚠️ Still not authenticated! Market opens in 30 minutes.\n"
                     + "WebSocket connected: " + webSocketClient.isConnected());
             log.warn("[TokenMonitor] 8:45 AM reminder — still not authenticated");
+            if (errorEventService != null) errorEventService.high("TokenMonitor", "8:45 AM — still not authenticated, market opens in 30 min");
         }
     }
 }

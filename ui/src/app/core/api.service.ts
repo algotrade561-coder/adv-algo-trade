@@ -146,6 +146,7 @@ export class ApiService {
   diagnosticsSearchStrategy(type: string, period = 'TODAY'): Observable<any> { return this.http.get<any>(`${this.base}/diagnostics/search/strategy?type=${type}&period=${period}`); }
   diagnosticsFailures(period = 'TODAY'): Observable<any> { return this.http.get<any>(`${this.base}/diagnostics/failures?period=${period}`); }
   diagnosticsLookup(period = 'TODAY'): Observable<any> { return this.http.get<any>(`${this.base}/diagnostics/lookup?period=${period}`); }
+  diagnosticsRecentErrors(limit = 50): Observable<any> { return this.http.get<any>(`${this.base}/diagnostics/errors/recent?limit=${limit}`); }
   latestSignal(): Observable<StrategyDecision | null> { return this.http.get<StrategyDecision | null>(`${this.base}/signals/latest`); }
   recentSignals(): Observable<StrategyDecision[]> { return this.http.get<StrategyDecision[]>(`${this.base}/signals/recent`); }
   tradeJournalCsv(): Observable<string> {

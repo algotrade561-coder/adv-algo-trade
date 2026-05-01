@@ -77,6 +77,9 @@ public abstract class AbstractSpreadStrategy {
     @Autowired
     private StrategyConfigService strategyConfigService;
 
+    @Autowired(required = false)
+    private com.algo.trade.monitoring.ErrorEventService errorEventService;
+
     protected AbstractSpreadStrategy(ExpiryCalendar expiryCalendar,
                                      InstrumentCache instrumentCache,
                                      MarketDataService marketDataService,
@@ -311,6 +314,7 @@ public abstract class AbstractSpreadStrategy {
                 }
             } catch (Exception ex) {
                 log.error("Error managing position group {}: {}", group.groupId(), ex.getMessage(), ex);
+                if (errorEventService != null) errorEventService.high("SpreadStrategy", "Error managing group " + group.groupId() + ": " + ex.getMessage(), ex);
             }
         }
     }

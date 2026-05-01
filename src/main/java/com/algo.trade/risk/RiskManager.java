@@ -46,6 +46,9 @@ public class RiskManager {
     private final AtomicInteger openPositionCount = new AtomicInteger(0);
     private volatile HaltMode haltMode = HaltMode.NONE;
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.monitoring.ErrorEventService errorEventService;
+
     public RiskManager(GlobalConfigService globalConfigService, TradingProperties properties, TradeRepository tradeRepository,
                        TelegramAlertService alertService,
                        com.algo.trade.persistence.DailySummaryRepository dailySummaryRepository,
@@ -119,6 +122,7 @@ public class RiskManager {
         tradingAllowed.set(false);
         haltMode = HaltMode.HARD;
         log.error("TRADING HALTED: {}", reason);
+        if (errorEventService != null) errorEventService.critical("RiskManager", "TRADING HALTED: " + reason);
         alertService.systemAlert("🚨 TRADING HALTED: " + reason);
     }
 
@@ -126,6 +130,7 @@ public class RiskManager {
     public void softHalt(String reason) {
         haltMode = HaltMode.SOFT;
         log.warn("SOFT HALT: {} — no new entries, managing existing positions", reason);
+        if (errorEventService != null) errorEventService.high("RiskManager", "SOFT HALT: " + reason);
         alertService.systemAlert("⚠️ SOFT HALT: " + reason);
     }
 

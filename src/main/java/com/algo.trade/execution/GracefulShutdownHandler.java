@@ -29,19 +29,22 @@ public class GracefulShutdownHandler {
     private final TelegramAlertService alertService;
     private final com.algo.trade.marketdata.MarketDataService marketDataService;
     private final PositionSyncProperties positionSyncProperties;
+    private final com.algo.trade.monitoring.ErrorEventService errorEventService;
 
     public GracefulShutdownHandler(TradeRepository tradeRepository,
                                     ExecutionEngine executionEngine,
                                     KiteWebSocketClient webSocketClient,
                                     TelegramAlertService alertService,
                                     com.algo.trade.marketdata.MarketDataService marketDataService,
-                                    PositionSyncProperties positionSyncProperties) {
+                                    PositionSyncProperties positionSyncProperties,
+                                    com.algo.trade.monitoring.ErrorEventService errorEventService) {
         this.tradeRepository = tradeRepository;
         this.executionEngine = executionEngine;
         this.webSocketClient = webSocketClient;
         this.alertService = alertService;
         this.marketDataService = marketDataService;
         this.positionSyncProperties = positionSyncProperties;
+        this.errorEventService = errorEventService;
     }
 
     @EventListener
@@ -67,6 +70,7 @@ public class GracefulShutdownHandler {
                     log.info("[Shutdown] Closed: tradeId={} exitPrice={}", trade.getTradeId(), exitPrice);
                 } catch (Exception e) {
                     log.error("[Shutdown] Failed to close trade {}: {}", trade.getTradeId(), e.getMessage());
+                    errorEventService.critical("GracefulShutdown", "Failed to close trade " + trade.getTradeId() + ": " + e.getMessage(), e);
                 }
             }
         }

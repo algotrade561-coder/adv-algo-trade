@@ -20,11 +20,14 @@ public class DiagnosticsController {
 
     private final SystemDiagnosticsService diagnosticsService;
     private final OrderAuditService orderAuditService;
+    private final com.algo.trade.monitoring.ErrorEventService errorEventService;
 
     public DiagnosticsController(SystemDiagnosticsService diagnosticsService,
-                                  OrderAuditService orderAuditService) {
+                                  OrderAuditService orderAuditService,
+                                  com.algo.trade.monitoring.ErrorEventService errorEventService) {
         this.diagnosticsService = diagnosticsService;
         this.orderAuditService = orderAuditService;
+        this.errorEventService = errorEventService;
     }
 
     /** Full system health snapshot — WebSocket, REST, DB, scanner, orders, trades. */
@@ -63,5 +66,22 @@ public class DiagnosticsController {
     @GetMapping("/lookup")
     public Map<String, Object> lookup(@RequestParam(defaultValue = "TODAY") String period) {
         return orderAuditService.lookupValues(period);
+    }
+
+    /** Recent error events with severity breakdown. */
+    @GetMapping("/errors/recent")
+    public Map<String, Object> recentErrors(@RequestParam(defaultValue = "50") int limit) {
+        var errors = errorEventService.recentErrors(limit);
+        var counts = errorEventService.errorCountsBySeverity();
+        return Map.of(
+                "errors", errors.stream().map(e -> Map.of(
+                        "id", e.getId(),
+                        "timestamp", e.getTimestamp().toString(),
+                        "component", e.getComponent() != null ? e.getComponent() : "",
+                        "severity", e.getSeverity() != null ? e.getSeverity() : "MEDIUM",
+                        "message", e.getMessage() != null ? e.getMessage() : ""
+                )).toList(),
+                "counts", counts
+        );
     }
 }

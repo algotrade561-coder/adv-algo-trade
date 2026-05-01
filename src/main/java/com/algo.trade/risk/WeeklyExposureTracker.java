@@ -29,6 +29,9 @@ public class WeeklyExposureTracker {
     private final AtomicReference<BigDecimal> weeklyExposure = new AtomicReference<>(BigDecimal.ZERO);
     private BigDecimal weeklyExposureCap = BigDecimal.valueOf(50_000);
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.monitoring.ErrorEventService errorEventService;
+
     public WeeklyExposureTracker(TradeRepository tradeRepository) {
         this.tradeRepository = tradeRepository;
     }
@@ -76,6 +79,7 @@ public class WeeklyExposureTracker {
             }
         } catch (Exception e) {
             log.warn("[WeeklyExposure] Recalculate failed: {}", e.getMessage());
+            if (errorEventService != null) errorEventService.medium("WeeklyExposure", "Recalculate failed: " + e.getMessage());
         }
     }
 }

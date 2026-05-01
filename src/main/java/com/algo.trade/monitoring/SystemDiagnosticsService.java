@@ -146,9 +146,11 @@ public class SystemDiagnosticsService {
         long connectAgeSec = lastConnectTime != null ? Duration.between(lastConnectTime, now).toSeconds() : -1;
         long subscribeAgeSec = lastSubscribeTime != null ? Duration.between(lastSubscribeTime, now).toSeconds() : -1;
 
+        // Enabled underlyings → IndexType list
+        List<IndexType> enabledIndices = tradingStateService.enabledUnderlyings().stream()
+                .map(IndexType::from).toList();
+
         // Data freshness
-        double niftySpot = liveInstrumentCache.getFuturesPrice(IndexType.NIFTY);
-        double bankniftySpot = liveInstrumentCache.getFuturesPrice(IndexType.BANKNIFTY);
         double vix = marketGuard.getCurrentVix();
         boolean instrumentCacheReady = liveInstrumentCache.isReady();
 
@@ -222,58 +224,55 @@ public class SystemDiagnosticsService {
 
         // ── Build DATA HEALTH map (everything the scanner needs) ──────────
         Map<String, Object> dataHealth = new LinkedHashMap<>();
-        // Spot prices
-        dataHealth.put("niftySpot", niftySpot);
-        dataHealth.put("niftySpotStatus", niftySpot > 0 ? "OK" : "NO_DATA");
-        dataHealth.put("bankniftySpot", bankniftySpot);
-        dataHealth.put("bankniftySpotStatus", bankniftySpot > 0 ? "OK" : "NO_DATA");
+        // Enabled underlyings list (for UI to iterate)
+        dataHealth.put("enabledUnderlyings", enabledIndices.stream().map(Enum::name).toList());
+        // Spot prices per enabled underlying
+        for (IndexType idx : enabledIndices) {
+            String key = idx.name().toLowerCase();
+            double spot = liveInstrumentCache.getFuturesPrice(idx);
+            dataHealth.put(key + "Spot", spot);
+            dataHealth.put(key + "SpotStatus", spot > 0 ? "OK" : "NO_DATA");
+        }
         // VIX
         dataHealth.put("vix", vix);
         dataHealth.put("vixStatus", vix > 0 ? "OK" : "NO_DATA");
-        // PCR
-        double pcr = 0;
-        try { pcr = com.algo.trade.marketdata.PcrCalculator.class.cast(
-                org.springframework.beans.factory.BeanFactoryUtils.class).equals(null) ? 0 : 0; } catch (Exception ignored) {}
-        // Use MarketGuard's cached PCR
+        // PCR — use MarketGuard's cached PCR
         double cachedPcr = marketGuard.getCurrentPcr();
         dataHealth.put("pcr", cachedPcr);
         dataHealth.put("pcrStatus", cachedPcr > 0 ? "OK" : "NO_DATA");
-        // IV Rank per underlying
-        for (IndexType idx : new IndexType[]{IndexType.NIFTY, IndexType.BANKNIFTY}) {
-            double ivRank = com.algo.trade.indicator.IVRankTracker.class.isInstance(null) ? 0 : 0;
+        // Option chain health per enabled underlying
+        for (IndexType idx : enabledIndices) {
+            String key = idx.name().toLowerCase();
             try {
-                // Access IVRankTracker via field — it's injected but we need to call it
-                // Use the LiveInstrumentCache to check if option data is flowing
-                var chain = liveInstrumentCache.getStrikeChain(idx,
-                        com.algo.trade.marketdata.ExpiryCalendar.class.isInstance(null) ? java.time.LocalDate.now() : java.time.LocalDate.now());
-                dataHealth.put(idx.name().toLowerCase() + "OptionChainSize", chain.size());
+                var chain = liveInstrumentCache.getStrikeChain(idx, java.time.LocalDate.now());
+                dataHealth.put(key + "OptionChainSize", chain.size());
                 long optionsWithOI = chain.stream().filter(o -> o.getOpenInterest() > 0).count();
-                dataHealth.put(idx.name().toLowerCase() + "OptionsWithLiveOI", optionsWithOI);
+                dataHealth.put(key + "OptionsWithLiveOI", optionsWithOI);
                 long optionsWithPrice = chain.stream().filter(o -> o.getLastPrice() > 0).count();
-                dataHealth.put(idx.name().toLowerCase() + "OptionsWithLivePrice", optionsWithPrice);
-                dataHealth.put(idx.name().toLowerCase() + "OptionDataStatus",
+                dataHealth.put(key + "OptionsWithLivePrice", optionsWithPrice);
+                dataHealth.put(key + "OptionDataStatus",
                         optionsWithPrice > 5 ? "OK" : optionsWithPrice > 0 ? "PARTIAL" : "NO_DATA");
             } catch (Exception ignored) {
-                dataHealth.put(idx.name().toLowerCase() + "OptionDataStatus", "ERROR");
+                dataHealth.put(key + "OptionDataStatus", "ERROR");
             }
         }
-        // Candle data freshness per underlying
-        for (IndexType idx : new IndexType[]{IndexType.NIFTY, IndexType.BANKNIFTY}) {
+        // Candle data freshness per enabled underlying
+        for (IndexType idx : enabledIndices) {
+            String key = idx.name().toLowerCase();
             long spotToken = idx.spotToken();
             var candles1m = liveCandleBuilder.getHistory(spotToken, com.algo.trade.domain.Timeframe.ONE_MINUTE);
             var candles5m = liveCandleBuilder.getHistory(spotToken, com.algo.trade.domain.Timeframe.FIVE_MINUTE);
             var candles15m = liveCandleBuilder.getHistory(spotToken, com.algo.trade.domain.Timeframe.FIFTEEN_MINUTE);
-            dataHealth.put(idx.name().toLowerCase() + "Candles1m", candles1m.size());
-            dataHealth.put(idx.name().toLowerCase() + "Candles5m", candles5m.size());
-            dataHealth.put(idx.name().toLowerCase() + "Candles15m", candles15m.size());
-            // Last candle age
+            dataHealth.put(key + "Candles1m", candles1m.size());
+            dataHealth.put(key + "Candles5m", candles5m.size());
+            dataHealth.put(key + "Candles15m", candles15m.size());
             if (!candles1m.isEmpty()) {
                 long candleAge = Duration.between(candles1m.getLast().timestamp(), now).toSeconds();
-                dataHealth.put(idx.name().toLowerCase() + "LastCandleAge", candleAge + "s");
-                dataHealth.put(idx.name().toLowerCase() + "CandleStatus",
+                dataHealth.put(key + "LastCandleAge", candleAge + "s");
+                dataHealth.put(key + "CandleStatus",
                         candleAge < 120 ? "FRESH" : candleAge < 300 ? "STALE" : "VERY_STALE");
             } else {
-                dataHealth.put(idx.name().toLowerCase() + "CandleStatus", "NO_DATA");
+                dataHealth.put(key + "CandleStatus", "NO_DATA");
             }
         }
         // Market Guard status
@@ -312,7 +311,10 @@ public class SystemDiagnosticsService {
         if (wsReconnectCount > 5) alerts.add("🟡 WebSocket reconnected " + wsReconnectCount + "x today — unstable");
         // Data alerts
         if (vix <= 0) alerts.add("🔴 VIX feed unavailable — entries blocked");
-        if (niftySpot <= 0 && wsConnected) alerts.add("🔴 NIFTY spot unavailable despite WS connected");
+        for (IndexType idx : enabledIndices) {
+            double spot = liveInstrumentCache.getFuturesPrice(idx);
+            if (spot <= 0 && wsConnected) alerts.add("🔴 " + idx.name() + " spot unavailable despite WS connected");
+        }
         if (cachedPcr <= 0) alerts.add("🟡 PCR data unavailable");
         // Order alerts
         if (pendingOrders > 3) alerts.add("🟡 " + pendingOrders + " pending orders — possible fill issues");
@@ -326,14 +328,21 @@ public class SystemDiagnosticsService {
         var sys = s.systemHealth();
         var data = s.dataHealth();
         var ord = s.orderStats();
+        // Build spot summary for log
+        StringBuilder spotSummary = new StringBuilder();
+        for (String key : data.keySet()) {
+            if (key.endsWith("Spot") && !key.endsWith("SpotStatus")) {
+                spotSummary.append(key.replace("Spot", "").toUpperCase()).append("=").append(data.get(key)).append(" ");
+            }
+        }
         diagLog.info("SYS: WS={} tokens={} lastTick={} reconnects={} | Auth={} Scanner={} scanGap={}s | " +
-                        "DATA: NIFTY={} BN={} VIX={} PCR={} | " +
+                        "DATA: {} VIX={} PCR={} | " +
                         "ORDERS: pending={} filled={} rejected={} | TRADES: openLive={} closedLive={} | Alerts={}",
                 sys.getOrDefault("wsConnected", false), sys.getOrDefault("wsSubscribedTokens", 0),
                 sys.getOrDefault("wsLastTickAge", "?"), sys.getOrDefault("wsReconnectCount", 0),
                 sys.getOrDefault("brokerAuthenticated", false), sys.getOrDefault("scannerRunning", false),
                 sys.getOrDefault("scanGapSeconds", -1),
-                data.getOrDefault("niftySpot", 0), data.getOrDefault("bankniftySpot", 0),
+                spotSummary.toString().trim(),
                 data.getOrDefault("vix", 0), data.getOrDefault("pcr", 0),
                 ord.getOrDefault("pendingOrders", 0), ord.getOrDefault("completedOrders", 0),
                 ord.getOrDefault("rejectedOrders", 0),

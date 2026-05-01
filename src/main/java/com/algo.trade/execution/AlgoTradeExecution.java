@@ -99,6 +99,9 @@ public class AlgoTradeExecution {
     private final AlgoFlowOrchestrator algoFlowOrchestrator;
     private final ScanContextBuilder scanContextBuilder;
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.monitoring.ErrorEventService errorEventService;
+
     // Short-lived cache for underlying REST candles — avoids repeated REST calls within the same candle period.
     // Keyed by "instrumentKey:TIMEFRAME", expires after 60 seconds.
     private record CachedCandles(List<Candle> candles, Instant fetchedAt) {}
@@ -207,6 +210,7 @@ public class AlgoTradeExecution {
             runScan(tf);
         } catch (Exception ex) {
             log.warn("CandleClosedEvent scan failed: {}", ex.getMessage(), ex);
+            if (errorEventService != null) errorEventService.high("AlgoTradeExecution", "CandleClosedEvent scan failed: " + ex.getMessage(), ex);
         } finally {
             scanInProgress.set(false);
         }
@@ -253,6 +257,7 @@ public class AlgoTradeExecution {
             runScan(Timeframe.FIFTEEN_MINUTE); // volatility breakout, spreads, event-driven
         } catch (Exception ex) {
             log.warn("Algo scan failed: {}", ex.getMessage(), ex);
+            if (errorEventService != null) errorEventService.high("AlgoTradeExecution", "Algo REST scan failed: " + ex.getMessage(), ex);
         } finally {
             scanInProgress.set(false);
         }
@@ -294,6 +299,8 @@ public class AlgoTradeExecution {
         // UNIFIED STRATEGY LOOP — single entry point for ALL strategies
         // ═══════════════════════════════════════════════════════════════════════
         int totalEntries = 0;
+        // Track entries per underlying within this scan to prevent concentration
+        Map<UnderlyingSymbol, Integer> entriesPerUnderlying = new EnumMap<>(UnderlyingSymbol.class);
         for (UnderlyingSymbol underlying : enabledUnderlyings) {
             if (totalEntries >= properties.algo().maxEntriesPerScan()) break;
 
@@ -325,6 +332,9 @@ public class AlgoTradeExecution {
 
             for (StrategyConfig config : allConfigs) {
                 if (totalEntries >= properties.algo().maxEntriesPerScan()) break;
+                // Max 1 entry per underlying per scan cycle — prevents multiple strategies
+                // from piling into the same underlying in a single candle close
+                if (entriesPerUnderlying.getOrDefault(underlying, 0) >= 1) break;
 
                 StrategyType type = config.getStrategyType();
 
@@ -362,10 +372,13 @@ public class AlgoTradeExecution {
 
                 // ── Gate 4: Strategy-specific pre-checks ──
                 try {
-                    totalEntries += evaluateStrategy(type, config, underlying, marketTime,
+                    int entries = evaluateStrategy(type, config, underlying, marketTime,
                             triggerTimeframe, candleCache, ivRank, ivRankSource, flowDecision);
+                    totalEntries += entries;
+                    entriesPerUnderlying.merge(underlying, entries, Integer::sum);
                 } catch (Exception e) {
                     log.warn("Strategy evaluation failed: type={} underlying={}: {}", type, underlying, e.getMessage());
+                    if (errorEventService != null) errorEventService.medium("AlgoTradeExecution", "Strategy " + type + " evaluation failed for " + underlying + ": " + e.getMessage(), e);
                 }
             }
 
@@ -809,6 +822,7 @@ public class AlgoTradeExecution {
         } catch (Exception ex) {
             log.warn("Historical candle request failed: instrumentKey={}, timeframe={}, message={}",
                     instrumentKey, timeframe, ex.getMessage());
+            if (errorEventService != null) errorEventService.medium("AlgoTradeExecution", "Historical candle fetch failed: " + instrumentKey + " " + timeframe + ": " + ex.getMessage());
             // Return stale cache rather than empty — stale candles are better than no candles
             return cached != null ? cached.candles() : List.of();
         }

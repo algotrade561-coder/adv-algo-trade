@@ -212,6 +212,12 @@ public class GlobalConfigService {
         if (config.getMaxOrdersPerDay() < 1) {
             throw new IllegalArgumentException("maxOrdersPerDay must be >= 1");
         }
+        if (config.getMaxLotsPerTrade() < 1) {
+            throw new IllegalArgumentException("maxLotsPerTrade must be >= 1");
+        }
+        if (config.getMaxOpenTrades() < 1) {
+            throw new IllegalArgumentException("maxOpenTrades must be >= 1");
+        }
         if (config.getTotalCapital() != null && config.getTotalCapital().compareTo(BigDecimal.ZERO) < 0) {
             throw new IllegalArgumentException("totalCapital must be >= 0");
         }

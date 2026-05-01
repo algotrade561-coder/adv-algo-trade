@@ -43,6 +43,9 @@ public class StraddleAdjustmentEngine {
     private final ExpiryCalendar expiryCalendar;
     private final ExecutionEngine executionEngine;
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.monitoring.ErrorEventService errorEventService;
+
     public StraddleAdjustmentEngine(InstrumentCache instrumentCache,
                                      MarketDataService marketDataService,
                                      ExpiryCalendar expiryCalendar,
@@ -208,6 +211,7 @@ public class StraddleAdjustmentEngine {
                     clientOrderId, instrumentKey, side, quantity, limitPrice);
         } catch (Exception ex) {
             log.error("Failed to place adjustment order for {}: {}", instrumentKey, ex.getMessage(), ex);
+            if (errorEventService != null) errorEventService.critical("StraddleAdjustment", "Failed to place adjustment order for " + instrumentKey + ": " + ex.getMessage(), ex);
         }
     }
 }

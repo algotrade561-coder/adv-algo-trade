@@ -39,6 +39,7 @@ public class PositionSynchronizer {
     private final KiteAccessTokenStore tokenStore;
     private final com.algo.trade.marketdata.MarketDataService marketDataService;
     private final com.algo.trade.notification.TelegramAlertService telegramAlertService;
+    private final com.algo.trade.monitoring.ErrorEventService errorEventService;
 
     /** Prevents concurrent sync runs from the event listener and the scheduled timer. */
     private final java.util.concurrent.atomic.AtomicBoolean syncInProgress = new java.util.concurrent.atomic.AtomicBoolean(false);
@@ -47,12 +48,14 @@ public class PositionSynchronizer {
                                 TradeRepository tradeRepository,
                                 KiteAccessTokenStore tokenStore,
                                 com.algo.trade.marketdata.MarketDataService marketDataService,
-                                com.algo.trade.notification.TelegramAlertService telegramAlertService) {
+                                com.algo.trade.notification.TelegramAlertService telegramAlertService,
+                                com.algo.trade.monitoring.ErrorEventService errorEventService) {
         this.brokerClient = brokerClient;
         this.tradeRepository = tradeRepository;
         this.tokenStore = tokenStore;
         this.marketDataService = marketDataService;
         this.telegramAlertService = telegramAlertService;
+        this.errorEventService = errorEventService;
     }
 
     /**
@@ -144,6 +147,7 @@ public class PositionSynchronizer {
 
         } catch (Exception ex) {
             log.error("Position sync failed: {}", ex.getMessage(), ex);
+            errorEventService.critical("PositionSynchronizer", "Position sync failed: " + ex.getMessage(), ex);
         }
     }
 
