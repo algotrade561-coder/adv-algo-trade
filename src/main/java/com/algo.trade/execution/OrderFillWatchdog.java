@@ -28,6 +28,13 @@ public class OrderFillWatchdog {
     private final BrokerClient brokerClient;
     private final ExecutionEngine executionEngine;
 
+    /** Prevents concurrent watchdog runs from creating duplicate trades. */
+    private final java.util.concurrent.atomic.AtomicBoolean checkInProgress =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+
+    /** Tracks orders currently being processed to prevent duplicate handling. */
+    private final java.util.Set<String> processingOrders = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
     public OrderFillWatchdog(OrderRepository orderRepository, BrokerClient brokerClient,
                              ExecutionEngine executionEngine) {
         this.orderRepository = orderRepository;
@@ -37,22 +44,30 @@ public class OrderFillWatchdog {
 
     @Scheduled(fixedDelay = 2000, initialDelay = 5000)
     public void checkPendingOrders() {
-        List<OrderEntity> pending = orderRepository.findByStatusIn(
-                List.of(OrderStatus.OPEN, OrderStatus.NEW));
-        if (pending.isEmpty()) {
-            // Safety net: check for COMPLETE BUY orders that have no matching trade
-            reconcileOrphanedFilledOrders();
+        if (!checkInProgress.compareAndSet(false, true)) {
+            log.debug("OrderFillWatchdog: previous check still running, skipping");
             return;
         }
-
-        log.debug("OrderFillWatchdog checking {} pending orders", pending.size());
-
-        for (OrderEntity order : pending) {
-            try {
-                checkOrder(order);
-            } catch (Exception ex) {
-                log.warn("OrderFillWatchdog failed for order {}: {}", order.getClientOrderId(), ex.getMessage());
+        try {
+            List<OrderEntity> pending = orderRepository.findByStatusIn(
+                    List.of(OrderStatus.OPEN, OrderStatus.NEW));
+            if (pending.isEmpty()) {
+                // Safety net: check for COMPLETE BUY orders that have no matching trade
+                reconcileOrphanedFilledOrders();
+                return;
             }
+
+            log.debug("OrderFillWatchdog checking {} pending orders", pending.size());
+
+            for (OrderEntity order : pending) {
+                try {
+                    checkOrder(order);
+                } catch (Exception ex) {
+                    log.warn("OrderFillWatchdog failed for order {}: {}", order.getClientOrderId(), ex.getMessage());
+                }
+            }
+        } finally {
+            checkInProgress.set(false);
         }
     }
 
@@ -104,11 +119,18 @@ public class OrderFillWatchdog {
                 }
             }
         } catch (Exception ex) {
-            log.debug("OrderFillWatchdog reconciliation failed: {}", ex.getMessage());
+            log.warn("OrderFillWatchdog reconciliation failed: {}", ex.getMessage());
         }
     }
 
-    private static final long MAX_FILL_WAIT_MINUTES = 5; // auto-cancel after 5 minutes
+    private static final long MAX_FILL_WAIT_MINUTES = 1; // fallback if GlobalConfig unavailable
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.config.GlobalConfigService globalConfigService;
+
+    private long getMaxFillWaitMinutes() {
+        return globalConfigService != null ? globalConfigService.getLimitOrderCancelMinutes() : MAX_FILL_WAIT_MINUTES;
+    }
 
     private void checkOrder(OrderEntity order) {
         String brokerOrderId = order.getBrokerOrderId();
@@ -120,7 +142,7 @@ public class OrderFillWatchdog {
         // Auto-cancel stale unfilled orders after MAX_FILL_WAIT_MINUTES
         if (order.getOrderPlacedAt() != null) {
             long waitMinutes = java.time.Duration.between(order.getOrderPlacedAt(), java.time.Instant.now()).toMinutes();
-            if (waitMinutes >= MAX_FILL_WAIT_MINUTES) {
+            if (waitMinutes >= getMaxFillWaitMinutes()) {
                 log.warn("OrderFillWatchdog: order expired after {}min — cancelling: clientOrderId={}, brokerOrderId={}",
                         waitMinutes, order.getClientOrderId(), brokerOrderId);
                 try {
@@ -130,6 +152,8 @@ public class OrderFillWatchdog {
                 }
                 order.setStatus(OrderStatus.CANCELLED);
                 orderRepository.save(order);
+                // Release entry gate — the order is dead, allow new entries
+                executionEngine.releaseEntryInFlightGate();
                 return;
             }
         }
@@ -158,7 +182,22 @@ public class OrderFillWatchdog {
             if (order.getClientOrderId().startsWith("EXIT-")) {
                 closeTradeFromFilledExitOrder(order);
             } else {
-                executionEngine.openTradeFromFilledOrder(order);
+                // Guard against duplicate trade creation if watchdog runs twice before DB commits
+                if (!processingOrders.add(order.getClientOrderId())) {
+                    log.debug("OrderFillWatchdog: order {} already being processed, skipping", order.getClientOrderId());
+                    return;
+                }
+                try {
+                    // Double-check: does a trade already exist for this instrument?
+                    if (!executionEngine.findOpenTradesByInstrument(order.getInstrumentKey()).isEmpty()) {
+                        log.info("OrderFillWatchdog: trade already exists for instrument {} — skipping duplicate creation",
+                                order.getInstrumentKey());
+                        return;
+                    }
+                    executionEngine.openTradeFromFilledOrder(order);
+                } finally {
+                    processingOrders.remove(order.getClientOrderId());
+                }
             }
 
         } else if (latest.status() == OrderStatus.REJECTED || latest.status() == OrderStatus.CANCELLED) {
@@ -167,6 +206,8 @@ public class OrderFillWatchdog {
             order.setStatus(latest.status());
             order.setUpdatedAt(latest.updatedAt());
             orderRepository.save(order);
+            // Release entry gate — the order is dead, allow new entries
+            executionEngine.releaseEntryInFlightGate();
         }
     }
 

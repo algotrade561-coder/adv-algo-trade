@@ -107,6 +107,13 @@ public class GlobalConfigController {
         m.put("maxLotsPerTrade", c.getMaxLotsPerTrade());
         m.put("maxTradesPerHour", c.getMaxTradesPerHour());
         m.put("mlVirtualTradeThreshold", c.getMlVirtualTradeThreshold());
+        // Execution tuning
+        m.put("limitOrderCancelMinutes", c.getLimitOrderCancelMinutes());
+        m.put("failSafeSquareoffTime", c.getFailSafeSquareoffTime());
+        m.put("maxPendingOrders", c.getMaxPendingOrders());
+        m.put("ivCollapseExitThresholdPercent", c.getIvCollapseExitThresholdPercent());
+        m.put("ivCollapseMaxProfitPercent", c.getIvCollapseMaxProfitPercent());
+        m.put("maxEntriesPerScanPerUnderlying", c.getMaxEntriesPerScanPerUnderlying());
         return m;
     }
 }

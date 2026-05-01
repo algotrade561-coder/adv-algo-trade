@@ -169,6 +169,13 @@ public class GlobalConfigService {
 
     public BigDecimal getMlVirtualTradeThreshold() { return cached.getMlVirtualTradeThreshold(); }
 
+    public int getLimitOrderCancelMinutes() { return cached.getLimitOrderCancelMinutes(); }
+    public java.time.LocalTime getFailSafeSquareoffTime() { return cached.getFailSafeSquareoffTimeAsLocalTime(); }
+    public int getMaxPendingOrders() { return cached.getMaxPendingOrders(); }
+    public BigDecimal getIvCollapseExitThresholdPercent() { return cached.getIvCollapseExitThresholdPercent(); }
+    public BigDecimal getIvCollapseMaxProfitPercent() { return cached.getIvCollapseMaxProfitPercent(); }
+    public int getMaxEntriesPerScanPerUnderlying() { return cached.getMaxEntriesPerScanPerUnderlying(); }
+
     // ── Write operations ──────────────────────────────────────
 
     /**

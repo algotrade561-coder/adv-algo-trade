@@ -92,6 +92,13 @@ export interface GlobalConfigDto {
   maxLotsPerTrade: number;
   maxTradesPerHour: number;
   mlVirtualTradeThreshold: number;
+  // Execution tuning
+  limitOrderCancelMinutes: number;
+  failSafeSquareoffTime: string;
+  maxPendingOrders: number;
+  ivCollapseExitThresholdPercent: number;
+  ivCollapseMaxProfitPercent: number;
+  maxEntriesPerScanPerUnderlying: number;
 }
 
 @Injectable({ providedIn: 'root' })

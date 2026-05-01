@@ -50,8 +50,8 @@ public class TradingStateService {
     /** Hourly trade timestamps for max-trades-per-hour cap. */
     private final java.util.Deque<Instant> recentTradeTimestamps = new java.util.concurrent.ConcurrentLinkedDeque<>();
     /** Rolling win/loss counters for win-rate auto-pause. */
-    private volatile int rollingWins = 0;
-    private volatile int rollingTotal = 0;
+    private final java.util.concurrent.atomic.AtomicInteger rollingWins = new java.util.concurrent.atomic.AtomicInteger(0);
+    private final java.util.concurrent.atomic.AtomicInteger rollingTotal = new java.util.concurrent.atomic.AtomicInteger(0);
 
     public TradingStateService(TradingProperties properties, GlobalConfigService globalConfigService,
                                UnderlyingConfigService underlyingConfigService) {
@@ -323,8 +323,8 @@ public class TradingStateService {
 
     /** Record a trade outcome for rolling win-rate tracking. */
     public void recordTradeOutcome(boolean win) {
-        rollingTotal++;
-        if (win) rollingWins++;
+        rollingTotal.incrementAndGet();
+        if (win) rollingWins.incrementAndGet();
     }
 
     /** Number of trades placed in the last 60 minutes. */
@@ -335,14 +335,15 @@ public class TradingStateService {
 
     /** Rolling win rate as percentage (0-100). Returns 100 if no trades yet. */
     public double rollingWinRate() {
-        return rollingTotal > 0 ? (double) rollingWins / rollingTotal * 100 : 100.0;
+        int total = rollingTotal.get();
+        return total > 0 ? (double) rollingWins.get() / total * 100 : 100.0;
     }
 
     /** Reset daily counters at midnight. */
     @Scheduled(cron = "0 0 0 * * *")
     public void resetDailyCounters() {
-        rollingWins = 0;
-        rollingTotal = 0;
+        rollingWins.set(0);
+        rollingTotal.set(0);
         recentTradeTimestamps.clear();
         log.info("Daily trade counters reset");
     }

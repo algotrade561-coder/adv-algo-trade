@@ -70,6 +70,8 @@ class ExecutionEngineTest {
         when(globalConfigService.getCooldownMinutes()).thenReturn(10);
         when(globalConfigService.getDailyProfitTarget()).thenReturn(BigDecimal.ZERO);
         when(globalConfigService.getMaxTradesPerHour()).thenReturn(0);
+        when(globalConfigService.getMaxPendingOrders()).thenReturn(3);
+        when(globalConfigService.getLimitOrderCancelMinutes()).thenReturn(1);
 
         var mockConfigService = mock(StrategyConfigService.class);
         StrategyConfig directionalBuyConfig = new StrategyConfig(StrategyType.DIRECTIONAL_BUY);
@@ -91,6 +93,7 @@ class ExecutionEngineTest {
         when(tradeRepository.findByInstrumentKeyAndStatus(any(), eq(TradeStatus.OPEN))).thenReturn(List.of());
         when(tradeRepository.findByInstrumentKeyAndEntryTimeBetween(any(), any(), any())).thenReturn(List.of());
         when(orderRepository.findBySideAndUpdatedAtBetween(eq(OrderSide.BUY.name()), any(), any())).thenReturn(List.of());
+        when(orderRepository.findByStatusIn(any())).thenReturn(List.of());
         when(orderRepository.findByInstrumentKeyAndSideAndStatusIn(any(), eq(OrderSide.BUY.name()), anyCollection()))
                 .thenReturn(List.of());
     }
@@ -142,6 +145,7 @@ class ExecutionEngineTest {
     void recordsBrokerFailureAsRejectedEntry() {
         tradingStateService.start();
         when(brokerClient.placeOrder(any(OrderRequest.class))).thenThrow(new IllegalStateException("Broker timeout"));
+        when(brokerClient.positions()).thenReturn(List.of()); // idempotency check: no position exists
 
         ExecutionResult result = executionEngine.executeEntry(buyDecision(), BigDecimal.valueOf(100), 75);
 

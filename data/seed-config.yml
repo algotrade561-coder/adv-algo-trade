@@ -58,6 +58,13 @@ globalConfig:
   dailyProfitTarget: 0
   maxLotsPerTrade: 1
   mlVirtualTradeThreshold: 45
+  # Execution tuning
+  limitOrderCancelMinutes: 1
+  failSafeSquareoffTime: "15:20"
+  maxPendingOrders: 3
+  ivCollapseExitThresholdPercent: 15
+  ivCollapseMaxProfitPercent: 15
+  maxEntriesPerScanPerUnderlying: 1
 
 strategyConfigs:
   # ── BEAR_PUT_SPREAD ────────────────────────────────────────────────────────

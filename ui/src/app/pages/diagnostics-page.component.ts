@@ -75,6 +75,9 @@ import { interval, Subscription, catchError, of } from 'rxjs';
 
         <!-- ── Data Health ── -->
         <h2 class="sec-title"><mat-icon class="sec-icon">bar_chart</mat-icon> Data Health (Scanner Dependencies)</h2>
+
+        <!-- Sub-group: Market Data Feeds -->
+        <h3 class="sub-group-title">📡 Market Data Feeds</h3>
         <div class="cards">
           @for (idx of enabledUnderlyings(); track idx) {
             <div class="card" [class.card-ok]="health.dataHealth?.[idx.toLowerCase() + 'Spot'] > 0" [class.card-bad]="!health.dataHealth?.[idx.toLowerCase() + 'Spot']">
@@ -92,6 +95,9 @@ import { interval, Subscription, catchError, of } from 'rxjs';
             <div class="card-value">{{ health.dataHealth?.pcr > 0 ? (health.dataHealth?.pcr | number:'1.3-3') : 'NO DATA' }}</div>
           </div>
         </div>
+
+        <!-- Sub-group: Option Chain Status -->
+        <h3 class="sub-group-title">🔗 Option Chain Status</h3>
         <div class="cards">
           @for (idx of enabledUnderlyings(); track idx) {
             <div class="card" [class.card-ok]="health.dataHealth?.[idx.toLowerCase() + 'OptionDataStatus'] === 'OK'"
@@ -103,6 +109,9 @@ import { interval, Subscription, catchError, of } from 'rxjs';
             </div>
           }
         </div>
+
+        <!-- Sub-group: Candle Freshness & Market Guard -->
+        <h3 class="sub-group-title">🕐 Candle Freshness &amp; Market Guard</h3>
         <div class="cards">
           @for (idx of enabledUnderlyings(); track idx) {
             <div class="card" [class.card-ok]="health.dataHealth?.[idx.toLowerCase() + 'CandleStatus'] === 'FRESH'"
@@ -117,6 +126,15 @@ import { interval, Subscription, catchError, of } from 'rxjs';
             <div class="card-label">Market Guard</div>
             <div class="card-value">{{ health.dataHealth?.safeForLongPremium ? 'SAFE' : 'BLOCKED' }}</div>
             <div class="card-sub">{{ health.dataHealth?.longPremiumBlockReason ?? 'All clear' }}</div>
+          </div>
+          <div class="card" [class.card-ok]="!health.dataHealth?.circuitBreakerTriggered" [class.card-bad]="health.dataHealth?.circuitBreakerTriggered">
+            <div class="card-label">Circuit Breaker</div>
+            <div class="card-value">{{ health.dataHealth?.circuitBreakerTriggered ? 'TRIGGERED' : 'OK' }}</div>
+          </div>
+          <div class="card" [class.card-warn]="health.dataHealth?.eventDay">
+            <div class="card-label">Event Day</div>
+            <div class="card-value">{{ health.dataHealth?.eventDay ? 'YES' : 'NO' }}</div>
+            <div class="card-sub">Pre-event: {{ health.dataHealth?.preEventDay ? 'YES' : 'NO' }}</div>
           </div>
         </div>
 
@@ -338,6 +356,7 @@ import { interval, Subscription, catchError, of } from 'rxjs';
     .subtitle { font-size: 0.85rem; color: #8b949e; margin: 4px 0 0; }
     .sec-title { display: flex; align-items: center; gap: 8px; font-size: 1.05rem; margin: 20px 0 10px; color: #8b949e; border-bottom: 1px solid #30363d; padding-bottom: 6px; }
     .sec-icon { font-size: 18px; width: 18px; height: 18px; color: #58a6ff; }
+    .sub-group-title { font-size: 0.82rem; font-weight: 600; color: #8b949e; margin: 14px 0 6px 4px; letter-spacing: 0.2px; }
     .cards { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
     .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 10px 14px; min-width: 150px; flex: 1; }
     .card-ok { border-left: 3px solid #3fb950; }

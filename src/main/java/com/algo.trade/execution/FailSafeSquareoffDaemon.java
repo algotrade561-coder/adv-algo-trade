@@ -27,7 +27,14 @@ public class FailSafeSquareoffDaemon {
 
     private static final Logger log = LoggerFactory.getLogger(FailSafeSquareoffDaemon.class);
     private static final ZoneId IST = ZoneId.of("Asia/Kolkata");
-    private static final LocalTime FAILSAFE_TIME = LocalTime.of(15, 20);
+    private static final LocalTime DEFAULT_FAILSAFE_TIME = LocalTime.of(15, 20);
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.config.GlobalConfigService globalConfigService;
+
+    private LocalTime getFailSafeTime() {
+        return globalConfigService != null ? globalConfigService.getFailSafeSquareoffTime() : DEFAULT_FAILSAFE_TIME;
+    }
 
     private final TradeRepository tradeRepository;
     private final ExecutionEngine executionEngine;
@@ -39,6 +46,10 @@ public class FailSafeSquareoffDaemon {
 
     @org.springframework.beans.factory.annotation.Autowired
     private com.algo.trade.monitoring.SchedulerRegistry schedulerRegistry;
+
+    /** Prevents concurrent FailSafe runs from attempting duplicate closes. */
+    private final java.util.concurrent.atomic.AtomicBoolean failSafeInProgress =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
 
     public FailSafeSquareoffDaemon(TradeRepository tradeRepository,
                                     ExecutionEngine executionEngine,
@@ -65,13 +76,19 @@ public class FailSafeSquareoffDaemon {
     public void check() {
         // Note: FailSafe does NOT check schedulerRegistry.isEnabled() — it's a safety net that must always run
         LocalTime now = LocalTime.now(IST);
-        if (now.isBefore(FAILSAFE_TIME)) return;
+        if (now.isBefore(getFailSafeTime())) return;
+
+        if (!failSafeInProgress.compareAndSet(false, true)) {
+            log.debug("[FailSafe] Previous check still running, skipping");
+            return;
+        }
+        try {
 
         List<TradeEntity> openTrades = tradeRepository.findByStatus(TradeStatus.OPEN);
         if (openTrades.isEmpty()) return;
 
-        log.warn("[FailSafe] {} open trades remain after {} — forcing close", openTrades.size(), FAILSAFE_TIME);
-        alertService.systemAlert("🚨 FailSafe: " + openTrades.size() + " open trades after " + FAILSAFE_TIME + " — forcing close");
+        log.warn("[FailSafe] {} open trades remain after {} — forcing close", openTrades.size(), getFailSafeTime());
+        alertService.systemAlert("🚨 FailSafe: " + openTrades.size() + " open trades after " + getFailSafeTime() + " — forcing close");
 
         // Cancel all pending limit orders first — prevent overnight broker exposure
         try {
@@ -121,5 +138,8 @@ public class FailSafeSquareoffDaemon {
             log.error("[FailSafe] Partial square-off failure: {} trades not closed: {}", failures.size(), failures);
         }
         if (schedulerRegistry != null) schedulerRegistry.recordRun("failSafe");
+        } finally {
+            failSafeInProgress.set(false);
+        }
     }
 }

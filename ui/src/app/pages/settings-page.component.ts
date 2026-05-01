@@ -220,6 +220,26 @@ import { ApiService, GlobalConfigDto } from '../core/api.service';
               <mat-label>Max Hold Minutes (0 = no limit)</mat-label>
               <input matInput type="number" min="0" [(ngModel)]="config.maxHoldMinutes">
             </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Limit Order Cancel Minutes</mat-label>
+              <input matInput type="number" min="1" max="10" [(ngModel)]="config.limitOrderCancelMinutes">
+              <mat-hint>Auto-cancel unfilled limit orders after this many minutes</mat-hint>
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>FailSafe Squareoff Time (HH:mm)</mat-label>
+              <input matInput type="text" [(ngModel)]="config.failSafeSquareoffTime">
+              <mat-hint>Force-close ALL positions after this time (safety net)</mat-hint>
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>IV Collapse Exit Threshold %</mat-label>
+              <input matInput type="number" step="1" min="5" max="50" [(ngModel)]="config.ivCollapseExitThresholdPercent">
+              <mat-hint>Exit when IV drops this % from entry</mat-hint>
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>IV Collapse Max Profit %</mat-label>
+              <input matInput type="number" step="1" min="0" max="50" [(ngModel)]="config.ivCollapseMaxProfitPercent">
+              <mat-hint>Don't trigger IV collapse exit if profit is above this %</mat-hint>
+            </mat-form-field>
           </div>
         }
 
@@ -289,6 +309,16 @@ import { ApiService, GlobalConfigDto } from '../core/api.service';
               <mat-label>ML Virtual Trade Threshold</mat-label>
               <input matInput type="number" step="1" min="0" max="100" [(ngModel)]="config.mlVirtualTradeThreshold">
               <mat-hint>ML score threshold for virtual trades (independent of signal score). Lower = more virtual trades.</mat-hint>
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Max Entries Per Scan Per Underlying</mat-label>
+              <input matInput type="number" min="1" max="5" [(ngModel)]="config.maxEntriesPerScanPerUnderlying">
+              <mat-hint>How many strategies can enter the same index in one scan cycle. 1 = conservative, 2+ = allow stacking.</mat-hint>
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Max Pending Orders</mat-label>
+              <input matInput type="number" min="1" max="10" [(ngModel)]="config.maxPendingOrders">
+              <mat-hint>Max simultaneous unfilled limit orders. Prevents order pile-up.</mat-hint>
             </mat-form-field>
           </div>
         }

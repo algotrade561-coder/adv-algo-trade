@@ -141,6 +141,13 @@ public class ConfigSeedLoader {
         cfg.setDailyProfitTarget(decimal(map, "dailyProfitTarget", "0"));
         cfg.setMaxLotsPerTrade(integer(map, "maxLotsPerTrade", 1));
         cfg.setMlVirtualTradeThreshold(decimal(map, "mlVirtualTradeThreshold", "45"));
+        // Execution tuning
+        cfg.setLimitOrderCancelMinutes(integer(map, "limitOrderCancelMinutes", 1));
+        cfg.setFailSafeSquareoffTime(str(map, "failSafeSquareoffTime", "15:20"));
+        cfg.setMaxPendingOrders(integer(map, "maxPendingOrders", 3));
+        cfg.setIvCollapseExitThresholdPercent(decimal(map, "ivCollapseExitThresholdPercent", "15"));
+        cfg.setIvCollapseMaxProfitPercent(decimal(map, "ivCollapseMaxProfitPercent", "15"));
+        cfg.setMaxEntriesPerScanPerUnderlying(integer(map, "maxEntriesPerScanPerUnderlying", 1));
         globalConfigRepository.save(cfg);
         log.info("GlobalConfig seeded from seed file");
     }

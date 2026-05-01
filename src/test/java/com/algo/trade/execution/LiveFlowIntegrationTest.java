@@ -68,6 +68,8 @@ class LiveFlowIntegrationTest {
         when(globalConfigService.getEnabledOptionTypes()).thenReturn(List.of(OptionType.CE, OptionType.PE));
         when(globalConfigService.getMaxTradesPerHour()).thenReturn(0);
         when(globalConfigService.getDailyProfitTarget()).thenReturn(BigDecimal.ZERO);
+        when(globalConfigService.getMaxPendingOrders()).thenReturn(3);
+        when(globalConfigService.getLimitOrderCancelMinutes()).thenReturn(1);
 
         brokerClient = mock(BrokerClient.class);
         tradingStateService = mock(TradingStateService.class);
@@ -97,6 +99,7 @@ class LiveFlowIntegrationTest {
         when(tradeRepository.findByInstrumentKeyAndStatus(any(), any())).thenReturn(List.of());
         when(tradeRepository.findByInstrumentKeyAndEntryTimeBetween(any(), any(), any())).thenReturn(List.of());
         when(orderRepository.findBySideAndUpdatedAtBetween(any(), any(), any())).thenReturn(List.of());
+        when(orderRepository.findByStatusIn(any())).thenReturn(List.of());
         when(orderRepository.findByInstrumentKeyAndSideAndStatusIn(any(), any(), any())).thenReturn(List.of());
         when(decisionRepository.save(any())).thenAnswer(i -> i.getArgument(0));
         when(tradeRepository.save(any())).thenAnswer(i -> i.getArgument(0));

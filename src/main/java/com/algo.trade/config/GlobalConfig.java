@@ -163,6 +163,29 @@ public class GlobalConfig {
     @Column(columnDefinition = "INTEGER DEFAULT 0")
     private int configVersion = 0;
 
+    // ── Execution Tuning Fields ───────────────────────────────
+
+    /** Minutes to wait before auto-cancelling unfilled limit orders. Default 1. */
+    private int limitOrderCancelMinutes = 1;
+
+    /** Time (HH:mm) when FailSafe daemon force-closes all remaining positions. Default 15:20. */
+    @Column(columnDefinition = "VARCHAR(5)")
+    private String failSafeSquareoffTime = "15:20";
+
+    /** Max simultaneous pending limit orders. Prevents order pile-up when broker is slow. Default 3. */
+    private int maxPendingOrders = 3;
+
+    /** IV drop % from entry that triggers exit. Default 15. */
+    @Column(precision = 19, scale = 4)
+    private BigDecimal ivCollapseExitThresholdPercent = BigDecimal.valueOf(15);
+
+    /** Don't trigger IV collapse exit if profit is above this %. Default 15. */
+    @Column(precision = 19, scale = 4)
+    private BigDecimal ivCollapseMaxProfitPercent = BigDecimal.valueOf(15);
+
+    /** Max entries per scan cycle per underlying. Default 1. Controls strategy stacking on same index. */
+    private int maxEntriesPerScanPerUnderlying = 1;
+
     // ── Constructors ──────────────────────────────────────────
 
     protected GlobalConfig() {}
@@ -439,4 +462,24 @@ public class GlobalConfig {
 
     public int getConfigVersion() { return configVersion; }
     public void setConfigVersion(int configVersion) { this.configVersion = configVersion; }
+
+    public int getLimitOrderCancelMinutes() { return limitOrderCancelMinutes; }
+    public void setLimitOrderCancelMinutes(int v) { this.limitOrderCancelMinutes = v; }
+
+    public String getFailSafeSquareoffTime() { return failSafeSquareoffTime; }
+    public void setFailSafeSquareoffTime(String v) { this.failSafeSquareoffTime = v; }
+    public LocalTime getFailSafeSquareoffTimeAsLocalTime() { return LocalTime.parse(failSafeSquareoffTime, HH_MM); }
+    public void setFailSafeSquareoffTime(LocalTime v) { this.failSafeSquareoffTime = v.format(HH_MM); }
+
+    public int getMaxPendingOrders() { return maxPendingOrders; }
+    public void setMaxPendingOrders(int v) { this.maxPendingOrders = v; }
+
+    public BigDecimal getIvCollapseExitThresholdPercent() { return ivCollapseExitThresholdPercent; }
+    public void setIvCollapseExitThresholdPercent(BigDecimal v) { this.ivCollapseExitThresholdPercent = v; }
+
+    public BigDecimal getIvCollapseMaxProfitPercent() { return ivCollapseMaxProfitPercent; }
+    public void setIvCollapseMaxProfitPercent(BigDecimal v) { this.ivCollapseMaxProfitPercent = v; }
+
+    public int getMaxEntriesPerScanPerUnderlying() { return maxEntriesPerScanPerUnderlying; }
+    public void setMaxEntriesPerScanPerUnderlying(int v) { this.maxEntriesPerScanPerUnderlying = v; }
 }

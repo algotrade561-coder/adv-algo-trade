@@ -342,9 +342,10 @@ public class AlgoTradeExecution {
 
             for (StrategyConfig config : allConfigs) {
                 if (totalEntries >= properties.algo().maxEntriesPerScan()) break;
-                // Max 1 entry per underlying per scan cycle — prevents multiple strategies
-                // from piling into the same underlying in a single candle close
-                if (entriesPerUnderlying.getOrDefault(underlying, 0) >= 1) break;
+                // Max entries per underlying per scan cycle — configurable from GlobalConfig
+                // Prevents multiple strategies from piling into the same underlying in a single candle close
+                int maxPerUnderlying = globalConfigService.getMaxEntriesPerScanPerUnderlying();
+                if (entriesPerUnderlying.getOrDefault(underlying, 0) >= maxPerUnderlying) break;
 
                 StrategyType type = config.getStrategyType();
 

@@ -54,8 +54,12 @@ public class ExecutionEngine {
 
     /** Prevents two monitors from placing duplicate broker SELL orders for the same trade. */
     private final Set<String> closingInProgress = ConcurrentHashMap.newKeySet();
-    /** Prevents concurrent entry executions racing past the DB open-trade check. */
-    private final java.util.concurrent.atomic.AtomicBoolean entryInFlight = new java.util.concurrent.atomic.AtomicBoolean(false);
+    /**
+     * Counts concurrent entry executions in flight (order placed but trade not yet created).
+     * Used together with max-open-trades to prevent over-entry.
+     * Value = number of pending LIMIT orders that haven't filled/cancelled yet.
+     */
+    private final java.util.concurrent.atomic.AtomicInteger entriesInFlight = new java.util.concurrent.atomic.AtomicInteger(0);
 
     private final TradingProperties properties;
     private final GlobalConfigService globalConfigService;
@@ -195,12 +199,15 @@ public class ExecutionEngine {
         log.info("Entry sizing accepted: quantity={}, riskAmount={}, estimatedCost={}, reason={}",
                 sizing.quantity(), sizing.riskAmount(), sizing.estimatedCost(), sizing.reason());
 
-        if (!entryInFlight.compareAndSet(false, true)) {
-            log.warn("Entry execution rejected: another entry is already in progress (concurrent scan)");
-            List<String> reasons = List.of("Concurrent entry blocked — another entry is in progress");
+        if (!entryAllowed(openTradeCount)) {
+            log.warn("Entry execution rejected: open trades ({}) + in-flight entries ({}) >= max open trades ({})",
+                    openTradeCount, entriesInFlight.get(), globalConfigService.getMaxOpenTrades());
+            List<String> reasons = List.of("Max open trades reached (including " + entriesInFlight.get() + " pending limit orders)");
             updateExecutionStage(savedDecision, "CONCURRENT_ENTRY_BLOCKED", reasons.getFirst());
             return ExecutionResult.rejected(reasons);
         }
+        entriesInFlight.incrementAndGet();
+        boolean releaseEntryInFlight = true; // default: release in finally. Set to false for pending limit orders.
         try {
             String clientOrderId = "ENTRY-" + UUID.randomUUID();
             // SmartOrderRouter decides MARKET vs LIMIT based on liquidity
@@ -214,7 +221,7 @@ public class ExecutionEngine {
                     orderRequest.orderType(), orderRequest.productType(), orderRequest.quantity(), routing.reason());
             OrderResponse order;
             try {
-                order = brokerClient.placeOrder(orderRequest);
+                order = placeOrderWithRetry(orderRequest, 2);
                 persistOrderWithSignalTime(order, decision.timestamp(), optionPremium, extractStrategyType(decision));
                 log.info("Entry order response: clientOrderId={}, brokerOrderId={}, status={}, requestedQuantity={}, filledQuantity={}, averageFillPrice={}, rejectionReason={}",
                         order.clientOrderId(), order.brokerOrderId().orElse(""), order.status(), order.requestedQuantity(),
@@ -225,8 +232,11 @@ public class ExecutionEngine {
             }
 
             // Limit order in book — watchdog will poll for fill and create TradeEntity
+            // IMPORTANT: Do NOT release entryInFlight here — keep it held until the order
+            // fills, cancels, or expires. This prevents duplicate entries from concurrent scans.
+            // The OrderFillWatchdog or the auto-cancel timer will release it.
             if (order.status() == OrderStatus.OPEN || order.status() == OrderStatus.NEW) {
-                log.info("Entry limit order placed — OrderFillWatchdog will track: clientOrderId={}, brokerOrderId={}",
+                log.info("Entry limit order placed — OrderFillWatchdog will track: clientOrderId={}, brokerOrderId={} (entryInFlight held)",
                         order.clientOrderId(), order.brokerOrderId().orElse(""));
                 List<String> reasons = List.of("Limit order placed — awaiting fill");
                 updateExecutionStage(savedDecision, "ORDER_OPEN", "brokerOrderId=" + order.brokerOrderId().orElse(""));
@@ -238,6 +248,10 @@ public class ExecutionEngine {
                         + System.lineSeparator() + "Quantity: " + sizing.quantity()
                         + System.lineSeparator() + "Limit price: ₹" + optionPremium
                         + System.lineSeparator() + "Broker order: " + order.brokerOrderId().orElse(""));
+                // Schedule a safety release of entriesInFlight after (cancelMinutes + 1) minutes
+                int cancelMinutes = globalConfigService.getLimitOrderCancelMinutes();
+                scheduleEntryInFlightRelease(cancelMinutes + 1);
+                releaseEntryInFlight = false; // tell finally block NOT to decrement
                 return ExecutionResult.accepted(order, reasons);
             }
 
@@ -270,7 +284,9 @@ public class ExecutionEngine {
             telegramAlertService.orderNotFilled(decision, optionPremium, sizing.quantity(), order, reasons);
             return ExecutionResult.rejected(reasons);
         } finally {
-            entryInFlight.set(false);
+            if (releaseEntryInFlight) {
+                entriesInFlight.decrementAndGet();
+            }
         }
     }
 
@@ -300,11 +316,12 @@ public class ExecutionEngine {
             return ExecutionResult.rejected(List.of(sizing.reason()));
         }
 
-        if (!entryInFlight.compareAndSet(false, true)) {
-            log.warn("PAPER entry rejected: another entry is already in progress (concurrent scan)");
+        if (!entryAllowed(0)) {
+            log.warn("PAPER entry rejected: max open trades reached (in-flight={})", entriesInFlight.get());
             updateExecutionStage(savedDecision, "CONCURRENT_ENTRY_BLOCKED", "Concurrent entry blocked");
-            return ExecutionResult.rejected(List.of("Concurrent entry blocked — another entry is in progress"));
+            return ExecutionResult.rejected(List.of("Concurrent entry blocked — max open trades reached"));
         }
+        entriesInFlight.incrementAndGet();
         try {
         String tradeId = "PAPER-TRD-" + UUID.randomUUID();
         String instrumentKey = decision.selectedInstrumentKey().orElse("UNKNOWN");
@@ -333,7 +350,7 @@ public class ExecutionEngine {
 
         return ExecutionResult.accepted(syntheticOrder, List.of("Paper trade opened"));
         } finally {
-            entryInFlight.set(false);
+            entriesInFlight.decrementAndGet();
         }
     }
 
@@ -629,11 +646,111 @@ public class ExecutionEngine {
         log.info("Watchdog opened trade from filled order: tradeId={}, clientOrderId={}, instrument={}, qty={}, price={}",
                 tradeId, orderEntity.getClientOrderId(), instrumentKey, filledQty, fillPrice);
         tradingStateService.recordTradeEntry();
+        // Release the entry gate — the limit order has been converted to a trade
+        releaseEntryInFlightGate();
         telegramAlertService.systemAlert("Limit order filled (watchdog)"
                 + System.lineSeparator() + "Trade: " + tradeId
                 + System.lineSeparator() + "Instrument: " + instrumentKey
                 + System.lineSeparator() + "Qty: " + filledQty
                 + System.lineSeparator() + "Price: " + fillPrice);
+    }
+
+    /**
+     * Place order with retry on transient failures.
+     * Before retrying, checks if the order already exists in the broker (idempotency).
+     * Max retries with exponential backoff (500ms, 1000ms).
+     */
+    private OrderResponse placeOrderWithRetry(OrderRequest request, int maxRetries) {
+        RuntimeException lastException = null;
+        for (int attempt = 0; attempt <= maxRetries; attempt++) {
+            try {
+                return brokerClient.placeOrder(request);
+            } catch (RuntimeException ex) {
+                lastException = ex;
+                String msg = ex.getMessage() != null ? ex.getMessage().toLowerCase() : "";
+                // Only retry on transient failures (timeout, connection reset)
+                boolean transient_ = msg.contains("timeout") || msg.contains("timed out")
+                        || msg.contains("connection reset") || msg.contains("connection refused")
+                        || msg.contains("socket") || msg.contains("eof");
+                if (!transient_ || attempt >= maxRetries) {
+                    throw ex; // non-transient or exhausted retries — propagate
+                }
+                // Idempotency check: verify the order wasn't actually placed despite the error
+                try {
+                    List<com.algo.trade.domain.Position> positions = brokerClient.positions();
+                    boolean alreadyHasPosition = positions.stream()
+                            .anyMatch(p -> p.instrumentKey().equals(request.instrumentKey()) && p.quantity() > 0);
+                    if (alreadyHasPosition) {
+                        log.warn("Broker retry aborted: position already exists for {} — order likely went through despite error",
+                                request.instrumentKey());
+                        throw ex; // don't retry — the order was placed
+                    }
+                } catch (Exception posEx) {
+                    log.debug("Idempotency check failed: {}", posEx.getMessage());
+                    // Can't verify — don't retry to be safe
+                    throw ex;
+                }
+                long backoffMs = 500L * (attempt + 1);
+                log.warn("Broker order failed (attempt {}/{}), retrying in {}ms: {}",
+                        attempt + 1, maxRetries + 1, backoffMs, ex.getMessage());
+                try { Thread.sleep(backoffMs); } catch (InterruptedException ie) { Thread.currentThread().interrupt(); throw ex; }
+            }
+        }
+        throw lastException;
+    }
+
+    /**
+     * Release one entry-in-flight slot. Called by OrderFillWatchdog after a pending limit order
+     * fills, cancels, or expires. Also called by the safety timer.
+     */
+    public void releaseEntryInFlightGate() {
+        int prev = entriesInFlight.getAndUpdate(v -> Math.max(0, v - 1));
+        if (prev > 0) {
+            log.info("entriesInFlight decremented: {} → {}", prev, prev - 1);
+        }
+    }
+
+    /**
+     * Schedule a safety release of one entriesInFlight slot after the given minutes.
+     * Prevents permanent counter leak if OrderFillWatchdog fails to process the order.
+     */
+    private void scheduleEntryInFlightRelease(int minutes) {
+        Thread.ofVirtual().name("entry-gate-safety-release").start(() -> {
+            try {
+                Thread.sleep(java.time.Duration.ofMinutes(minutes));
+                int prev = entriesInFlight.getAndUpdate(v -> Math.max(0, v - 1));
+                if (prev > 0) {
+                    log.warn("entriesInFlight safety release after {}min: {} → {} — watchdog may have missed the order",
+                            minutes, prev, prev - 1);
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        });
+    }
+
+    /**
+     * Check if a new entry is allowed given current open trades and in-flight entries.
+     * openTradeCount already includes pending orders from DB, so we only add
+     * entriesInFlight for orders placed in THIS JVM session that haven't been
+     * persisted to the order table yet (the brief window between broker response
+     * and DB write).
+     */
+    private boolean entryAllowed(int openTradeCount) {
+        int maxOpen = globalConfigService.getMaxOpenTrades();
+        int maxPending = globalConfigService.getMaxPendingOrders();
+        // openTradeCount already includes pending orders from DB.
+        // entriesInFlight covers the brief gap between broker order placement
+        // and the order being persisted to DB (typically < 1 second).
+        // We use max() instead of sum to avoid double-counting.
+        int pendingFromDb = orderRepository.findByStatusIn(
+                List.of(com.algo.trade.domain.OrderStatus.OPEN, com.algo.trade.domain.OrderStatus.NEW)).size();
+        int effectiveInFlight = Math.max(0, entriesInFlight.get() - pendingFromDb);
+
+        // Check both: total open positions AND pending order count
+        if ((openTradeCount + effectiveInFlight) >= maxOpen) return false;
+        if (pendingFromDb >= maxPending) return false;
+        return true;
     }
 
     private ExecutionResult rejectBrokerFailure(

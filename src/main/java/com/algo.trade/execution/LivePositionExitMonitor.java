@@ -181,6 +181,11 @@ public class LivePositionExitMonitor {
         }
 
         BigDecimal entryPrice = trade.getEntryPrice();
+        if (entryPrice == null || entryPrice.signum() <= 0) {
+            log.warn("[ExitMonitor] Invalid entry price for trade {}: {} — skipping evaluation",
+                    trade.getTradeId(), entryPrice);
+            return;
+        }
         StrategyConfig config = cfg;
 
         // ── Global exit override: when enabled, global config values replace per-strategy exit params ──
@@ -230,7 +235,15 @@ public class LivePositionExitMonitor {
             log.debug("[ExitMonitor] No quote for {}", trade.getInstrumentKey());
             return;
         }
-        BigDecimal currentPrice = quoteOpt.get().lastPrice();
+        // Reject stale quotes — if WebSocket is down, quotes can be minutes old
+        Quote quote = quoteOpt.get();
+        if (quote.timestamp() != null
+                && quote.timestamp().isBefore(java.time.Instant.now().minus(java.time.Duration.ofMinutes(5)))) {
+            log.warn("[ExitMonitor] Stale quote for {} (age > 5min, timestamp={}) — skipping price-based exits",
+                    trade.getInstrumentKey(), quote.timestamp());
+            return;
+        }
+        BigDecimal currentPrice = quote.lastPrice();
         if (currentPrice == null || currentPrice.signum() <= 0) return;
 
         // Expiry danger zone: force-exit all positions after 3 PM on expiry day
@@ -386,6 +399,7 @@ public class LivePositionExitMonitor {
                         trade.getInstrumentKey(), entryPrice.doubleValue(), currentPrice.doubleValue(),
                         updatedStop.get().doubleValue(), profitPct));
                 close(trade, currentPrice, "TRAILING_STOP");
+                return;
             }
         }
 
@@ -408,14 +422,15 @@ public class LivePositionExitMonitor {
         // Options lose value when IV crushes even if the underlying hasn't moved against you.
         // Common after events (budget, RBI, earnings) where IV was elevated at entry.
         if (trade.getEntryIV() != null && trade.getEntryIV() > 0) {
-            Optional<java.math.BigDecimal> currentIvOpt = quoteOpt.get().impliedVolatility();
+            Optional<java.math.BigDecimal> currentIvOpt = quote.impliedVolatility();
             if (currentIvOpt.isPresent() && currentIvOpt.get().doubleValue() > 0) {
                 double entryIV = trade.getEntryIV();
                 double currentIV = currentIvOpt.get().doubleValue();
                 double ivDropPct = ((entryIV - currentIV) / entryIV) * 100;
-                // Exit if IV has dropped more than 15% from entry AND trade is not already profitable
-                // (if profitable, let trailing stop handle it — IV crush is helping us via theta)
-                if (ivDropPct >= 15.0 && profitPct < 5.0) {
+                double ivCollapseThreshold = globalConfigService.getIvCollapseExitThresholdPercent().doubleValue();
+                double ivCollapseMaxProfit = globalConfigService.getIvCollapseMaxProfitPercent().doubleValue();
+                // Exit if IV has dropped more than threshold AND trade is not already profitable beyond max profit gate
+                if (ivDropPct >= ivCollapseThreshold && profitPct < ivCollapseMaxProfit) {
                     log.info("[ExitMonitor] IV COLLAPSE EXIT: tradeId={} entryIV={} currentIV={} drop={}% profit={}%",
                             trade.getTradeId(), String.format("%.1f", entryIV),
                             String.format("%.1f", currentIV), String.format("%.1f", ivDropPct),
@@ -518,8 +533,8 @@ public class LivePositionExitMonitor {
         }
 
         // ── 10. Bid-ask spread widening exit — liquidity evaporating ──────────
-        BigDecimal bid = quoteOpt.get().bid().orElse(BigDecimal.ZERO);
-        BigDecimal ask = quoteOpt.get().ask().orElse(BigDecimal.ZERO);
+        BigDecimal bid = quote.bid().orElse(BigDecimal.ZERO);
+        BigDecimal ask = quote.ask().orElse(BigDecimal.ZERO);
         if (bid.signum() > 0 && ask.signum() > 0 && currentPrice.signum() > 0) {
             double spreadPct = ask.subtract(bid).doubleValue() / currentPrice.doubleValue() * 100;
             if (spreadPct > 5.0) {
@@ -532,6 +547,7 @@ public class LivePositionExitMonitor {
                             "⚠️ Spread Widening Exit: %s | Spread %.1f%% (bid ₹%.2f / ask ₹%.2f) — liquidity gone",
                             trade.getInstrumentKey(), spreadPct, bid.doubleValue(), ask.doubleValue()));
                     close(trade, currentPrice, "SPREAD_WIDENING_EXIT");
+                    return;
                 }
             }
         }
@@ -571,6 +587,7 @@ public class LivePositionExitMonitor {
                         "🔄 VWAP Reversal Exit: %s | Spot ₹%.2f crossed VWAP ₹%.2f | P&L +%.1f%%",
                         trade.getInstrumentKey(), spotPrice.doubleValue(), vwap.doubleValue(), profitPct));
                 close(trade, currentPrice, "VWAP_REVERSAL");
+                return;
             }
         } catch (Exception e) {
             log.debug("[ExitMonitor] VWAP reversal check error for {}: {}", trade.getTradeId(), e.getMessage());
