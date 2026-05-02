@@ -32,6 +32,10 @@
               {
                 "glob": "**/*",
                 "input": "public"
+              },
+              {
+                "glob": "manifest.json",
+                "input": "src"
               }
             ],
             "styles": [

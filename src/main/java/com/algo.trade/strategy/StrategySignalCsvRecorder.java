@@ -86,6 +86,135 @@ public class StrategySignalCsvRecorder {
     }
 
     /**
+     * Unified signal recording — single method for ALL strategies.
+     * Records full 38+ ML features regardless of strategy type.
+     */
+    public synchronized void recordUnified(SignalRecordContext ctx) {
+        try {
+            Files.createDirectories(OUTPUT.getParent());
+            String decisionKey = unifiedDecisionKey(ctx);
+            String signalId = java.util.UUID.randomUUID().toString().substring(0, 12);
+
+            Candle underlying = last(ctx.underlyingCandles());
+            Candle option = last(ctx.optionCandles());
+            Quote quote = ctx.selectedOptionQuote();
+            Quote prevQuote = ctx.previousOptionQuote();
+            OptionChainAnalysis chain = ctx.chainAnalysis();
+            StrategyDecision decision = ctx.decision();
+            StrategyConfig config = resolveConfig(ctx.strategyType());
+
+            String row = String.join(",",
+                    csv(decisionKey),
+                    csv(signalId),
+                    csv(decision != null ? IstDateTimes.formatInstant(decision.timestamp()) : IstDateTimes.formatInstant(java.time.Instant.now())),
+                    csv(IstDateTimes.formatLocalTime(java.time.LocalTime.now(java.time.ZoneId.of("Asia/Kolkata")))),
+                    csv(ctx.strategyType()),
+                    csv(ctx.underlying()),
+                    csv(decision != null ? decision.signalType() : "NO_TRADE"),
+                    csv(decision != null ? decision.optionType().map(Enum::name).orElse(null) : null),
+                    csv(properties.marketDataMode()),
+                    csv(properties.executionMode()),
+                    csv(null), csv(null), csv(null), // trendFilterEnabled, trendTimeframe, rsiFilterEnabled
+                    csv(config.getStopLossPercent()),
+                    csv(config.getTargetPercent()),
+                    csv(config.getTrailingStopActivationPercent()),
+                    csv(config.getTrailingGapPercent()),
+                    csv(properties.risk() != null ? properties.risk().maxRiskPerTradePercent() : null),
+                    csv(properties.risk() != null ? properties.risk().totalCapital() : null),
+                    csv(properties.risk() != null ? properties.risk().maxOpenTrades() : null),
+                    csv(null), csv(null), csv(null), // minSignalScore, volumeSpike, breakoutBuffer
+                    csv(null), csv(null), csv(null), csv(null), // breakoutLookback, volumeLookback, minLiquidity, maxIv
+                    csv(ctx.selectedInstrumentKey() != null ? ctx.selectedInstrumentKey()
+                            : (decision != null ? decision.selectedInstrumentKey().orElse(null) : null)),
+                    csv(ctx.selectedStrike() != null ? ctx.selectedStrike()
+                            : (decision != null ? decision.selectedStrike().orElse(null) : null)),
+                    csv(decision != null ? decision.underlyingPrice() : (underlying != null ? underlying.close() : null)),
+                    csv(ctx.vwap()),
+                    csv(quote != null ? quote.lastPrice() : (decision != null ? decision.optionPrice().orElse(null) : null)),
+                    csv(quote != null ? quote.volume() : null),
+                    csv(quote != null ? quote.openInterest() : null),
+                    csv(quote != null ? quote.impliedVolatility().orElse(null) : null),
+                    csv(prevQuote != null ? prevQuote.lastPrice() : null),
+                    csv(prevQuote != null ? prevQuote.openInterest() : null),
+                    csv(ctx.underlyingCandles().size()),
+                    csv(ctx.trendCandles().size()),
+                    csv(ctx.optionCandles().size()),
+                    csv(underlying != null ? underlying.open() : null),
+                    csv(underlying != null ? underlying.high() : null),
+                    csv(underlying != null ? underlying.low() : null),
+                    csv(underlying != null ? underlying.close() : null),
+                    csv(underlying != null ? underlying.volume() : null),
+                    csv(option != null ? option.open() : null),
+                    csv(option != null ? option.high() : null),
+                    csv(option != null ? option.low() : null),
+                    csv(option != null ? option.close() : null),
+                    csv(option != null ? option.volume() : null),
+                    csv(chain != null ? chain.resistanceStrike().orElse(null) : null),
+                    csv(chain != null ? chain.supportStrike().orElse(null) : null),
+                    csv(chain != null ? chain.nearbyPutCallOiImbalance() : null),
+                    csv(chain != null ? chain.nearbyCallOpenInterest() : null),
+                    csv(chain != null ? chain.nearbyPutOpenInterest() : null),
+                    csv(chain != null ? chain.resistanceCallOiChange() : null),
+                    csv(chain != null ? chain.supportPutOiChange() : null),
+                    csv(decision != null ? decision.vwapConditionPassed() : null),
+                    csv(ctx.breakoutPassed()),
+                    csv(decision != null ? decision.volumeSpike() : null),
+                    csv(ctx.oiPassed()),
+                    csv(ctx.ivPassed()),
+                    csv(ctx.liquidityPassed()),
+                    csv(ctx.timePassed()),
+                    csv(ctx.scalpEma9()), csv(ctx.scalpEma21()), csv(ctx.scalpCrossType()), csv(ctx.scalpConfirmCount()),
+                    csv(ctx.bbUpperBand()), csv(ctx.bbLowerBand()), csv(ctx.bbBandwidth()), csv(ctx.bbSqueeze()),
+                    csv(ctx.ivRank() > 0 ? ctx.ivRank() : null),
+                    csv(decision != null ? decision.confidenceScore() : null),
+                    csv(ctx.firstFailedFilter()),
+                    csv(decision != null ? String.join("; ", decision.reasons()) : ctx.executionStage()),
+                    csv(ctx.rsiValue()), csv(ctx.atrValue()), csv(ctx.ema9Ema21Gap()),
+                    csv(ctx.bidAskSpread()), csv(ctx.vixLevel()), csv(ctx.daysToExpiry()),
+                    csv(ctx.delta()), csv(ctx.gamma()), csv(ctx.theta()), csv(ctx.vega()),
+                    csv(ctx.realizedVol5d()),
+                    csv(ctx.realizedVol5d() != null && ctx.realizedVol5d() > 0 && quote != null
+                            ? quote.impliedVolatility().map(iv -> iv.doubleValue() - ctx.realizedVol5d()).orElse(null)
+                            : null),
+                    csv(ctx.ivSkew()),
+                    csv(resolveOiPriceActionForContext(ctx))
+            ) + System.lineSeparator();
+
+            append(OUTPUT, HEADER, row);
+        } catch (IOException ex) {
+            log.warn("Unified signal CSV write failed: {}", ex.getMessage());
+        }
+    }
+
+    private String unifiedDecisionKey(SignalRecordContext ctx) {
+        String raw = ctx.strategyType() + "|" + ctx.underlying() + "|"
+                + (ctx.decision() != null ? ctx.decision().timestamp() : java.time.Instant.now())
+                + "|" + (ctx.decision() != null ? ctx.decision().optionType().map(Enum::name).orElse("") : "");
+        return Integer.toUnsignedString(raw.hashCode(), 16);
+    }
+
+    private Boolean resolveOiPriceActionForContext(SignalRecordContext ctx) {
+        try {
+            if (ctx.underlying() == null || ctx.decision() == null) return null;
+            com.algo.trade.domain.IndexType idx = com.algo.trade.domain.IndexType.from(ctx.underlying());
+            boolean isBullish = ctx.decision().optionType()
+                    .map(ot -> ot == com.algo.trade.domain.OptionType.CE).orElse(true);
+            return oiPriceActionFilter.isBreakoutConfirmed(idx, isBullish);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private StrategyConfig resolveConfig(String strategyType) {
+        try {
+            return strategyConfigService.getConfig(
+                    StrategyType.valueOf(strategyType), "NIFTY");
+        } catch (Exception e) {
+            return strategyConfigService.getDirectionalBuyConfig();
+        }
+    }
+
+    /**
      * Records a full DIRECTIONAL_BUY evaluation with all filter details, option chain, and candles.
      */
     public synchronized void record(
@@ -123,85 +252,6 @@ public class StrategySignalCsvRecorder {
             append(OPTION_CHAIN_LEVELS, OPTION_CHAIN_LEVELS_HEADER, optionChainRows(decisionKey, request));
         } catch (IOException ex) {
             log.warn("Strategy signal CSV write failed: {}", ex.getMessage());
-        }
-    }
-
-    /**
-     * Records a signal from any additional strategy (SCALPING, VOLATILITY_BREAKOUT, etc.)
-     * into the same entry-signals.csv. Fields not available are written as empty.
-     */
-    public synchronized void recordAdditionalStrategy(
-            String strategyType,
-            StrategyDecision decision,
-            boolean executed,
-            String executionStage,
-            Integer positionQuantity,
-            BigDecimal estimatedCost,
-            List<Candle> underlyingCandles,
-            Double scalpEma9, Double scalpEma21, String scalpCrossType, Integer scalpConfirmCount,
-            Double bbUpperBand, Double bbLowerBand, Double bbBandwidth, Boolean bbSqueeze, Double ivRank
-    ) {
-        try {
-            Files.createDirectories(OUTPUT.getParent());
-            Candle latestUnderlying = last(underlyingCandles);
-            StrategyConfig config = resolveConfig(strategyType);
-            String decisionKey = additionalDecisionKey(strategyType, decision);
-            String signalId = java.util.UUID.randomUUID().toString().substring(0, 12);
-            String row = String.join(",",
-                    csv(decisionKey),
-                    csv(signalId),
-                    csv(IstDateTimes.formatInstant(decision.timestamp())),
-                    csv(java.time.LocalTime.now(java.time.ZoneId.of("Asia/Kolkata")).toString()),
-                    csv(strategyType),
-                    csv(decision.underlying()),
-                    csv(decision.signalType()),
-                    csv(decision.optionType().map(Enum::name).orElse(null)),
-                    csv(properties.marketDataMode()),
-                    csv(properties.executionMode()),
-                    csv(null), csv(null), csv(null),
-                    csv(config.getStopLossPercent()),
-                    csv(config.getTargetPercent()),
-                    csv(config.getTrailingStopActivationPercent()),
-                    csv(config.getTrailingGapPercent()),
-                    csv(properties.risk().maxRiskPerTradePercent()),
-                    csv(properties.risk().totalCapital()),
-                    csv(properties.risk().maxOpenTrades()),
-                    csv(null), csv(null), csv(null),
-                    csv(null), csv(null), csv(null), csv(null),
-                    csv(decision.selectedInstrumentKey().orElse(null)),
-                    csv(decision.selectedStrike().orElse(null)),
-                    csv(decision.underlyingPrice()),
-                    csv(null),
-                    csv(decision.optionPrice().orElse(null)),
-                    csv(null),
-                    csv(decision.optionOpenInterest().orElse(null)),
-                    csv(null),
-                    csv(null), csv(null),
-                    csv(underlyingCandles != null ? underlyingCandles.size() : 0),
-                    csv(0), csv(0),
-                    csv(latestUnderlying != null ? latestUnderlying.open() : null),
-                    csv(latestUnderlying != null ? latestUnderlying.high() : null),
-                    csv(latestUnderlying != null ? latestUnderlying.low() : null),
-                    csv(latestUnderlying != null ? latestUnderlying.close() : null),
-                    csv(latestUnderlying != null ? latestUnderlying.volume() : null),
-                    csv(null), csv(null), csv(null), csv(null), csv(null),
-                    csv(null), csv(null),
-                    csv(null), csv(null), csv(null),
-                    csv(null), csv(null),
-                    csv(null), csv(null), csv(null), csv(null),
-                    csv(null), csv(null), csv(null),
-                    csv(scalpEma9), csv(scalpEma21), csv(scalpCrossType), csv(scalpConfirmCount),
-                    csv(bbUpperBand), csv(bbLowerBand), csv(bbBandwidth), csv(bbSqueeze), csv(ivRank),
-                    csv(decision.confidenceScore()),
-                    csv(null),
-                    csv(String.join("; ", decision.reasons())),
-                    csv(null), csv(null), csv(null), csv(null), csv(null), csv(null), // ML columns
-                    csv(null), csv(null), csv(null), csv(null), csv(null), csv(null), csv(null), // Greeks + RV + skew
-                    csv(null) // oiPriceActionConfirmed
-            ) + System.lineSeparator();
-            append(OUTPUT, HEADER, row);
-        } catch (IOException ex) {
-            log.warn("Additional strategy signal CSV write failed: {}", ex.getMessage());
         }
     }
 
@@ -465,19 +515,6 @@ public class StrategySignalCsvRecorder {
             )).append(System.lineSeparator());
         }
         return rows.toString();
-    }
-
-    private StrategyConfig resolveConfig(String strategyType) {
-        try {
-            StrategyType type = StrategyType.valueOf(strategyType);
-            List<StrategyConfig> configs = strategyConfigService.getEnabled();
-            return configs.stream()
-                    .filter(c -> c.getStrategyType() == type)
-                    .findFirst()
-                    .orElse(strategyConfigService.getDirectionalBuyConfig());
-        } catch (Exception e) {
-            return strategyConfigService.getDirectionalBuyConfig();
-        }
     }
 
     private String decisionKey(StrategyEvaluationRequest request) {

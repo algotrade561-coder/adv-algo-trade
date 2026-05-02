@@ -42,6 +42,8 @@ public class EventDrivenBuyStrategy {
 
     public Optional<StrategyDecision> evaluate(double ivRank, StrategyConfig config,
                                                UnderlyingSymbol underlying, BigDecimal spotPrice) {
+        if (config == null) return Optional.empty();
+
         LocalDate today = LocalDate.now();
         Optional<LocalDate> upcomingEvent = EVENT_DATES.stream()
                 .filter(d -> d.equals(today.plusDays(1)) || d.equals(today.plusDays(2)))
@@ -49,7 +51,7 @@ public class EventDrivenBuyStrategy {
 
         if (upcomingEvent.isEmpty()) return Optional.empty();
 
-        if (ivRank > config.getMaxIvRankForBuying().doubleValue()) {
+        if (config.getMaxIvRankForBuying() != null && ivRank > config.getMaxIvRankForBuying().doubleValue()) {
             log.debug("[EventDriven] IV rank {} too high for event buy (max {})", ivRank,
                     config.getMaxIvRankForBuying());
             return Optional.empty();

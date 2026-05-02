@@ -230,11 +230,33 @@ public class StrategyExecutionPipeline {
         }
 
         Timeframe csvTf = resolveTimeframe(config.getCandleTimeframe(), Timeframe.ONE_MINUTE);
-        signalCsvRecorder.recordAdditionalStrategy(type.name(), enriched, executed,
-                executed ? "EXECUTED" : "NOT_EXECUTED", null, null,
-                ctx.candles(csvTf),
-                diag.ema9(), diag.ema21(), diag.emaCrossType(), diag.emaCrossConfirmCount(),
-                diag.bbUpper(), diag.bbLower(), diag.bbBandwidth(), diag.bbSqueeze(), ctx.ivRank());
+        // Compute ML enrichment values for unified recording
+        List<Candle> csvCandles = ctx.candles(csvTf);
+        Timeframe trendTfForCsv = resolveTimeframe(config.getTrendTimeframe(), Timeframe.FIVE_MINUTE);
+        List<Candle> trendCandlesForCsv = ctx.candles(trendTfForCsv);
+        Double rsiVal = computeRsi(csvCandles, 14);
+        Double atrVal = computeAtr(csvCandles, 14);
+        Double emaGap = computeEmaGap(csvCandles);
+        Double bidAsk = enriched.optionPrice().isPresent() && enriched.selectedInstrumentKey().isPresent()
+                ? computeBidAskFromQuote(ctx, enriched) : null;
+
+        signalCsvRecorder.recordUnified(SignalRecordContext.builder()
+                .strategyType(type.name())
+                .underlying(ctx.underlying())
+                .decision(enriched)
+                .underlyingCandles(csvCandles)
+                .trendCandles(trendCandlesForCsv)
+                .ivRank(ctx.ivRank())
+                .vixLevel(ctx.vixLevel() > 0 ? ctx.vixLevel() : null)
+                .daysToExpiry(ctx.daysToExpiry() > 0 ? ctx.daysToExpiry() : null)
+                .rsiValue(rsiVal)
+                .atrValue(atrVal)
+                .ema9Ema21Gap(emaGap)
+                .bidAskSpread(bidAsk)
+                .executed(executed)
+                .executionStage(executed ? "EXECUTED" : "NOT_EXECUTED")
+                .diagnostics(diag)
+                .build());
 
         return executed;
     }
@@ -302,11 +324,30 @@ public class StrategyExecutionPipeline {
                 noTrade.setSelectedStrike(atmInst.strike().orElse(null));
             }
             decisionRepository.save(noTrade);
-            signalCsvRecorder.recordAdditionalNoTrade(type.name(), ctx.underlying().name(), spotPrice,
-                    "No signal conditions met for " + type.displayName(),
-                    ctx.candles(csvTf), diag, ctx.ivRank(),
-                    atmInst != null ? atmInst.instrumentKey() : null,
-                    atmInst != null ? atmInst.strike().orElse(null) : null);
+            List<Candle> csvCandles = ctx.candles(csvTf);
+            signalCsvRecorder.recordUnified(SignalRecordContext.builder()
+                    .strategyType(type.name())
+                    .underlying(ctx.underlying())
+                    .decision(new StrategyDecision(
+                            java.time.Instant.now(), ctx.underlying(),
+                            com.algo.trade.domain.SignalType.NO_TRADE, spotPrice,
+                            java.util.Optional.empty(), java.util.Optional.empty(), java.util.Optional.empty(),
+                            java.util.Optional.empty(), java.util.Optional.empty(), java.util.Optional.empty(),
+                            java.util.Optional.of(ot), false, java.util.Optional.empty(), false,
+                            java.math.BigDecimal.ZERO, java.util.List.of(noTradeReason)))
+                    .underlyingCandles(csvCandles)
+                    .ivRank(ctx.ivRank())
+                    .vixLevel(ctx.vixLevel() > 0 ? ctx.vixLevel() : null)
+                    .daysToExpiry(ctx.daysToExpiry() > 0 ? ctx.daysToExpiry() : null)
+                    .rsiValue(computeRsi(csvCandles, 14))
+                    .atrValue(computeAtr(csvCandles, 14))
+                    .ema9Ema21Gap(computeEmaGap(csvCandles))
+                    .selectedInstrumentKey(atmInst != null ? atmInst.instrumentKey() : null)
+                    .selectedStrike(atmInst != null ? atmInst.strike().orElse(null) : null)
+                    .firstFailedFilter(diag.firstFailedFilter())
+                    .executionStage("NO_TRADE")
+                    .diagnostics(diag)
+                    .build());
         }
     }
 
@@ -465,5 +506,60 @@ public class StrategyExecutionPipeline {
         if (configured == null || configured.isBlank()) return defaultTf;
         try { return Timeframe.valueOf(configured); }
         catch (IllegalArgumentException e) { return defaultTf; }
+    }
+
+    // ── ML enrichment helpers ─────────────────────────────────────────────
+
+    private static Double computeRsi(List<Candle> candles, int period) {
+        try {
+            if (candles == null || candles.size() < period + 1) return null;
+            List<BigDecimal> closes = candles.stream().map(Candle::close).toList();
+            return new com.algo.trade.indicator.RsiIndicator().calculate(closes, period).doubleValue();
+        } catch (Exception e) { return null; }
+    }
+
+    private static Double computeAtr(List<Candle> candles, int period) {
+        try {
+            if (candles == null || candles.size() < period + 1) return null;
+            double sum = 0;
+            for (int i = candles.size() - period; i < candles.size(); i++) {
+                Candle c = candles.get(i);
+                Candle prev = candles.get(i - 1);
+                double tr = Math.max(c.high().subtract(c.low()).doubleValue(),
+                        Math.max(Math.abs(c.high().subtract(prev.close()).doubleValue()),
+                                Math.abs(c.low().subtract(prev.close()).doubleValue())));
+                sum += tr;
+            }
+            return sum / period;
+        } catch (Exception e) { return null; }
+    }
+
+    private static Double computeEmaGap(List<Candle> candles) {
+        try {
+            if (candles == null || candles.size() < 22) return null;
+            List<BigDecimal> closes = candles.stream().map(Candle::close).toList();
+            var ema = new com.algo.trade.indicator.EmaIndicator();
+            BigDecimal ema9 = ema.calculate(closes, 9);
+            BigDecimal ema21 = ema.calculate(closes, 21);
+            if (ema21.signum() == 0) return null;
+            return ema9.subtract(ema21).divide(ema21, java.math.MathContext.DECIMAL64)
+                    .multiply(BigDecimal.valueOf(100)).doubleValue();
+        } catch (Exception e) { return null; }
+    }
+
+    private Double computeBidAskFromQuote(StrategyContext ctx, StrategyDecision decision) {
+        try {
+            String instrumentKey = decision.selectedInstrumentKey().orElse(null);
+            if (instrumentKey == null) return null;
+            return marketDataService.quote(instrumentKey)
+                    .flatMap(q -> {
+                        if (q.bid().isEmpty() || q.ask().isEmpty()) return java.util.Optional.<Double>empty();
+                        BigDecimal bid = q.bid().get();
+                        BigDecimal ask = q.ask().get();
+                        if (bid.signum() <= 0 || ask.signum() <= 0 || q.lastPrice().signum() <= 0) return java.util.Optional.<Double>empty();
+                        return java.util.Optional.of(ask.subtract(bid).divide(q.lastPrice(), java.math.MathContext.DECIMAL64)
+                                .multiply(BigDecimal.valueOf(100)).doubleValue());
+                    }).orElse(null);
+        } catch (Exception e) { return null; }
     }
 }

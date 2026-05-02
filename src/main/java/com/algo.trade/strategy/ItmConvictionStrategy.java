@@ -44,6 +44,9 @@ public class ItmConvictionStrategy {
                                                BigDecimal underlyingPrice,
                                                Map<String, Quote> optionQuotes,
                                                StrategyConfig config) {
+        if (config == null || underlyingPrice == null || underlyingPrice.signum() <= 0) {
+            return Optional.empty();
+        }
         if (optionQuotes == null || optionQuotes.isEmpty()) {
             return Optional.empty();
         }
@@ -160,6 +163,7 @@ public class ItmConvictionStrategy {
 
     private Direction detectDirection(BigDecimal currentPrice, BigDecimal minimumMove) {
         if (previousUnderlyingPrice == null) return Direction.NONE;
+        if (minimumMove == null || minimumMove.signum() <= 0) return Direction.NONE;
         BigDecimal diff = currentPrice.subtract(previousUnderlyingPrice);
         if (diff.compareTo(minimumMove) > 0) return Direction.UP;
         if (diff.compareTo(minimumMove.negate()) < 0) return Direction.DOWN;
