@@ -20,15 +20,18 @@ public class MlController {
     private final MlShadowRecorder shadowRecorder;
     private final TrainingDataCollector trainingDataCollector;
     private final MlVirtualTradeTracker virtualTradeTracker;
+    private final MlExitShadowRecorder exitShadowRecorder;
 
     public MlController(MlSignalScorer scorer,
                          MlShadowRecorder shadowRecorder,
                          TrainingDataCollector trainingDataCollector,
-                         MlVirtualTradeTracker virtualTradeTracker) {
+                         MlVirtualTradeTracker virtualTradeTracker,
+                         MlExitShadowRecorder exitShadowRecorder) {
         this.scorer = scorer;
         this.shadowRecorder = shadowRecorder;
         this.trainingDataCollector = trainingDataCollector;
         this.virtualTradeTracker = virtualTradeTracker;
+        this.exitShadowRecorder = exitShadowRecorder;
     }
 
     /** Get current ML scorer status. */
@@ -69,5 +72,11 @@ public class MlController {
     @GetMapping("/virtual-trades")
     public MlVirtualTradeTracker.VirtualTradeSummary virtualTrades() {
         return virtualTradeTracker.getSummary();
+    }
+
+    /** Get ML exit shadow summary — exit evaluation observations. */
+    @GetMapping("/exit-shadow")
+    public MlExitShadowRecorder.ExitShadowSummary exitShadow(@RequestParam(defaultValue = "TODAY") String period) {
+        return exitShadowRecorder.getSummary(period);
     }
 }

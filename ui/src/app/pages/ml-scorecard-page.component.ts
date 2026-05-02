@@ -30,24 +30,26 @@ import { ApiService } from '../core/api.service';
               <mat-option value="ALL">All Time</mat-option>
             </mat-select>
           </mat-form-field>
-          <mat-form-field appearance="outline" class="period-select">
-            <mat-label>Filter</mat-label>
-            <mat-select [(ngModel)]="selectedFilter" (selectionChange)="applyFilter()">
-              <mat-option value="ALL">All Signals</mat-option>
-              <mat-option value="BOTH_ENTER">Both ENTER</mat-option>
-              <mat-option value="ML_ENTER">ML ENTER · System SKIP</mat-option>
-              <mat-option value="SYS_ENTER">System ENTER · ML SKIP</mat-option>
-              <mat-option value="BOTH_SKIP">Both SKIP</mat-option>
-              <mat-option value="DISAGREE">All Disagreements</mat-option>
-            </mat-select>
-          </mat-form-field>
           <button mat-stroked-button (click)="load()" [disabled]="loading()">
             <mat-icon>refresh</mat-icon> Refresh
           </button>
         </div>
       </div>
 
-      <!-- Model Status -->
+      <!-- Tab Selector -->
+      <div class="tab-bar">
+        <button class="tab-btn" [class.tab-active]="activeTab === 'entry'" (click)="activeTab = 'entry'">
+          <mat-icon>login</mat-icon> Entry Shadow
+        </button>
+        <button class="tab-btn" [class.tab-active]="activeTab === 'exit'" (click)="activeTab = 'exit'">
+          <mat-icon>exit_to_app</mat-icon> Exit Shadow
+        </button>
+        <button class="tab-btn" [class.tab-active]="activeTab === 'virtual'" (click)="activeTab = 'virtual'">
+          <mat-icon>science</mat-icon> Virtual Trades
+        </button>
+      </div>
+
+      <!-- Model Status (always visible) -->
       @if (data()) {
         <div class="model-status" [ngClass]="data()!.modelStatus?.modelLoaded ? 'status-ok' : 'status-warn'">
           <mat-icon>{{ data()!.modelStatus?.modelLoaded ? 'check_circle' : 'warning' }}</mat-icon>
@@ -67,8 +69,23 @@ import { ApiService } from '../core/api.service';
         </div>
       }
 
-      <!-- Summary Cards -->
-      @if (data()) {
+      <!-- ═══════════════════════════════════════════════════════════════ -->
+      <!-- TAB: Entry Shadow                                              -->
+      <!-- ═══════════════════════════════════════════════════════════════ -->
+      @if (activeTab === 'entry' && data()) {
+        <div class="filter-bar">
+          <mat-form-field appearance="outline" class="period-select">
+            <mat-label>Filter</mat-label>
+            <mat-select [(ngModel)]="selectedFilter" (selectionChange)="applyFilter()">
+              <mat-option value="ALL">All Signals</mat-option>
+              <mat-option value="BOTH_ENTER">Both ENTER</mat-option>
+              <mat-option value="ML_ENTER">ML ENTER · System SKIP</mat-option>
+              <mat-option value="SYS_ENTER">System ENTER · ML SKIP</mat-option>
+              <mat-option value="BOTH_SKIP">Both SKIP</mat-option>
+              <mat-option value="DISAGREE">All Disagreements</mat-option>
+            </mat-select>
+          </mat-form-field>
+        </div>
         <div class="summary-grid">
           <div class="card">
             <div class="card-label">Total Signals Scored</div>
@@ -217,11 +234,7 @@ import { ApiService } from '../core/api.service';
         }
       }
 
-      @if (loading()) {
-        <div class="toast info"><mat-icon>hourglass_top</mat-icon> Loading…</div>
-      }
-
-      <!-- ML Virtual Trades — "What If ML Decided?" -->
+      @if (activeTab === 'virtual') {
       @if (vtData()) {
         <h2 class="section-title">
           <mat-icon class="vt-icon">science</mat-icon>
@@ -257,6 +270,7 @@ import { ApiService } from '../core/api.service';
             <div class="card-value" [ngClass]="vtData()!.totalPnlPercent >= 0 ? 'agree' : 'disagree'">
               {{ vtData()!.totalPnlPercent | number:'1.1-1' }}%
             </div>
+            <div class="card-sub">Avg: {{ vtData()!.avgPnlPercent | number:'1.1-1' }}% per trade</div>
           </div>
         </div>
 
@@ -274,6 +288,7 @@ import { ApiService } from '../core/api.service';
                   <th>Current ₹</th>
                   <th>Peak ₹</th>
                   <th>P&L %</th>
+                  <th>P&L ₹</th>
                   <th>Sys Score</th>
                   <th>ML Score</th>
                   <th>Hold</th>
@@ -289,6 +304,7 @@ import { ApiService } from '../core/api.service';
                     <td class="mono">{{ t['currentPrice'] }}</td>
                     <td class="mono">{{ t['peakPrice'] }}</td>
                     <td class="mono" [ngClass]="pnlClass(t)">{{ t['profitPercent'] }}%</td>
+                    <td class="mono" [ngClass]="pnlClass(t)">₹{{ t['pnlAmount'] }}</td>
                     <td class="mono">{{ t['systemScore'] }}</td>
                     <td class="mono score-higher">{{ t['mlScore'] }}</td>
                     <td class="mono">{{ t['holdMinutes'] }}m</td>
@@ -312,6 +328,7 @@ import { ApiService } from '../core/api.service';
                   <th>Entry ₹</th>
                   <th>Exit ₹</th>
                   <th>P&L %</th>
+                  <th>P&L ₹</th>
                   <th>Exit Reason</th>
                   <th>Sys Score</th>
                   <th>ML Score</th>
@@ -328,6 +345,7 @@ import { ApiService } from '../core/api.service';
                     <td class="mono">{{ t['entryPrice'] }}</td>
                     <td class="mono">{{ t['exitPrice'] }}</td>
                     <td class="mono" [ngClass]="pnlClass(t)">{{ t['profitPercent'] }}%</td>
+                    <td class="mono" [ngClass]="pnlClass(t)">₹{{ t['pnlAmount'] }}</td>
                     <td>{{ t['exitReason'] }}</td>
                     <td class="mono">{{ t['systemScore'] }}</td>
                     <td class="mono score-higher">{{ t['mlScore'] }}</td>
@@ -349,6 +367,119 @@ import { ApiService } from '../core/api.service';
           </div>
         }
       }
+      }
+
+      <!-- ═══════════════════════════════════════════════════════════════ -->
+      <!-- TAB: Exit Shadow                                               -->
+      <!-- ═══════════════════════════════════════════════════════════════ -->
+      @if (activeTab === 'exit') {
+
+      <!-- ML Exit Shadow — Exit Evaluation Observations -->
+      <h2 class="section-title">
+        <mat-icon class="vt-icon">exit_to_app</mat-icon>
+        ML Exit Shadow — Exit Evaluation Observations
+      </h2>
+      <p class="vt-desc">Every exit evaluation is recorded: what the system decided (exit or hold) and the market state at that moment.</p>
+
+      @if (exitData()) {
+        <div class="summary-grid">
+          <div class="card">
+            <div class="card-label">Total Evaluations</div>
+            <div class="card-value">{{ exitData()!.totalEvaluations | number }}</div>
+          </div>
+          <div class="card">
+            <div class="card-label">Exit Decisions</div>
+            <div class="card-value disagree">{{ exitData()!.exitDecisions | number }}</div>
+          </div>
+          <div class="card">
+            <div class="card-label">Hold Decisions</div>
+            <div class="card-value agree">{{ exitData()!.holdDecisions | number }}</div>
+          </div>
+          <div class="card">
+            <div class="card-label">Exit Rate</div>
+            <div class="card-value">{{ exitData()!.exitRatePercent | number:'1.1-1' }}%</div>
+          </div>
+          <div class="card">
+            <div class="card-label">Avg Hold at Exit</div>
+            <div class="card-value">{{ exitData()!.avgHoldMinutesAtExit | number:'1.0-0' }}m</div>
+          </div>
+          <div class="card">
+            <div class="card-label">Avg Profit at Exit</div>
+            <div class="card-value" [ngClass]="exitData()!.avgProfitAtExit >= 0 ? 'agree' : 'disagree'">{{ exitData()!.avgProfitAtExit | number:'1.1-1' }}%</div>
+          </div>
+          <div class="card">
+            <div class="card-label">Avg Drawdown at Exit</div>
+            <div class="card-value">{{ exitData()!.avgDrawdownAtExit | number:'1.1-1' }}%</div>
+            <div class="card-sub">From peak profit to exit point</div>
+          </div>
+        </div>
+
+        @if (exitData()!.exitReasonCounts && objectKeys(exitData()!.exitReasonCounts).length) {
+          <h3 class="subsection-title">Exit Reason Breakdown</h3>
+          <div class="summary-grid">
+            @for (reason of objectKeys(exitData()!.exitReasonCounts); track reason) {
+              <div class="card">
+                <div class="card-label">{{ reason }}</div>
+                <div class="card-value">{{ exitData()!.exitReasonCounts[reason] }}</div>
+              </div>
+            }
+          </div>
+        }
+
+        @if (exitData()!.recentEvaluations?.length) {
+          <h3 class="subsection-title">Recent Exit Evaluations</h3>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Trade</th>
+                  <th>Strategy</th>
+                  <th>Profit %</th>
+                  <th>Peak %</th>
+                  <th>Drawdown</th>
+                  <th>Hold Min</th>
+                  <th>VIX</th>
+                  <th>IV Change %</th>
+                  <th>Trail Active</th>
+                  <th>Decision</th>
+                  <th>Reason</th>
+                </tr>
+              </thead>
+              <tbody>
+                @for (row of exitData()!.recentEvaluations.slice(0, 50); track $index) {
+                  <tr [ngClass]="row['systemDecision'] === 'EXIT' ? 'row-loss' : ''">
+                    <td class="mono">{{ formatTime(row['timestamp']) }}</td>
+                    <td class="mono inst-cell">{{ row['tradeId'] }}</td>
+                    <td>{{ row['strategyType'] }}</td>
+                    <td class="mono" [ngClass]="parseFloat(row['profitPercent']) >= 0 ? 'pnl-positive' : 'pnl-negative'">{{ row['profitPercent'] }}</td>
+                    <td class="mono">{{ row['peakProfitPercent'] }}</td>
+                    <td class="mono">{{ row['drawdownFromPeak'] }}</td>
+                    <td class="mono">{{ row['holdMinutes'] }}</td>
+                    <td class="mono">{{ row['vixLevel'] }}</td>
+                    <td class="mono">{{ row['ivChangePercent'] }}</td>
+                    <td>{{ row['trailingStopActive'] === '1.0000' ? '✅' : '—' }}</td>
+                    <td [ngClass]="row['systemDecision'] === 'EXIT' ? 'disagree' : 'agree'">{{ row['systemDecision'] }}</td>
+                    <td>{{ row['exitReason'] }}</td>
+                  </tr>
+                }
+              </tbody>
+            </table>
+          </div>
+        } @else {
+          <div class="empty-state">
+            <mat-icon>exit_to_app</mat-icon>
+            <p>No exit evaluations yet. Data will appear here as the exit monitor evaluates open trades during market hours.</p>
+          </div>
+        }
+      } @else {
+        <div class="empty-state">
+          <mat-icon>exit_to_app</mat-icon>
+          <p>Loading exit shadow data…</p>
+        </div>
+      }
+      }
+
       @if (error()) {
         <div class="toast error"><mat-icon>error</mat-icon> {{ error() }}</div>
       }
@@ -362,6 +493,12 @@ import { ApiService } from '../core/api.service';
     .top-row { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 16px; margin-bottom: 24px; }
     .page-title { margin: 0; font-size: 24px; font-weight: 500; }
     .page-subtitle { margin: 4px 0 0; color: #888; font-size: 14px; }
+    .tab-bar { display: flex; gap: 4px; margin-bottom: 20px; border-bottom: 2px solid #2a2a3a; padding-bottom: 0; }
+    .tab-btn { background: none; border: none; color: #888; font-size: 14px; font-weight: 500; padding: 10px 20px; cursor: pointer; display: flex; align-items: center; gap: 6px; border-bottom: 2px solid transparent; margin-bottom: -2px; transition: all 0.2s; }
+    .tab-btn:hover { color: #ccc; background: rgba(255,255,255,0.03); }
+    .tab-btn.tab-active { color: #90caf9; border-bottom-color: #90caf9; }
+    .tab-btn mat-icon { font-size: 18px; width: 18px; height: 18px; }
+    .filter-bar { margin-bottom: 16px; }
     .actions { display: flex; gap: 8px; align-items: center; }
     .period-select { width: 140px; }
     ::ng-deep .period-select .mat-mdc-form-field-subscript-wrapper { display: none; }
@@ -447,11 +584,13 @@ import { ApiService } from '../core/api.service';
 export class MlScorecardPageComponent implements OnInit {
   data = signal<any>(null);
   vtData = signal<any>(null);
+  exitData = signal<any>(null);
   loading = signal(false);
   error = signal('');
   actionMsg = signal('');
   selectedPeriod = 'TODAY';
   selectedFilter = 'ALL';
+  activeTab = 'entry';
 
   constructor(private readonly api: ApiService) {}
 
@@ -467,6 +606,10 @@ export class MlScorecardPageComponent implements OnInit {
     this.api.mlVirtualTrades().subscribe({
       next: d => this.vtData.set(d),
       error: () => {} // silent — virtual trades are optional
+    });
+    this.api.mlExitShadow(this.selectedPeriod).subscribe({
+      next: d => this.exitData.set(d),
+      error: () => {} // silent — exit shadow is optional
     });
   }
 
@@ -581,9 +724,17 @@ export class MlScorecardPageComponent implements OnInit {
   }
 
   pnlClass(row: any): string {
-    const pnl = parseFloat(row['tradePnl'] || '0');
+    const pnl = parseFloat(row['tradePnl'] || row['profitPercent'] || '0');
     if (pnl > 0) return 'pnl-positive';
     if (pnl < 0) return 'pnl-negative';
     return '';
+  }
+
+  objectKeys(obj: any): string[] {
+    return obj ? Object.keys(obj) : [];
+  }
+
+  parseFloat(v: string): number {
+    return globalThis.parseFloat(v) || 0;
   }
 }

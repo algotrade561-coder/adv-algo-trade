@@ -63,6 +63,8 @@ public class LivePositionExitMonitor {
     private final VwapIndicator vwapIndicator;
     private final com.algo.trade.monitoring.ErrorEventService errorEventService;
     private final com.algo.trade.monitoring.SchedulerRegistry schedulerRegistry;
+    private final com.algo.trade.ml.MlExitShadowRecorder mlExitShadowRecorder;
+    private final com.algo.trade.risk.MarketGuard marketGuard;
 
     // tradeId → highest price seen since entry
     private final Map<String, BigDecimal> peakPrices = new ConcurrentHashMap<>();
@@ -87,7 +89,9 @@ public class LivePositionExitMonitor {
                                     TradingStateService tradingStateService,
                                     VwapIndicator vwapIndicator,
                                     com.algo.trade.monitoring.ErrorEventService errorEventService,
-                                    com.algo.trade.monitoring.SchedulerRegistry schedulerRegistry) {
+                                    com.algo.trade.monitoring.SchedulerRegistry schedulerRegistry,
+                                    com.algo.trade.ml.MlExitShadowRecorder mlExitShadowRecorder,
+                                    com.algo.trade.risk.MarketGuard marketGuard) {
         this.tradeRepository = tradeRepository;
         this.executionEngine = executionEngine;
         this.marketDataService = marketDataService;
@@ -103,6 +107,8 @@ public class LivePositionExitMonitor {
         this.vwapIndicator = vwapIndicator;
         this.errorEventService = errorEventService;
         this.schedulerRegistry = schedulerRegistry;
+        this.mlExitShadowRecorder = mlExitShadowRecorder;
+        this.marketGuard = marketGuard;
         schedulerRegistry.register("exitBackup", "Scheduled backup exit evaluation (60s)", 60_000, this::scheduledBackupCheck);
     }
 
@@ -551,6 +557,10 @@ public class LivePositionExitMonitor {
                 }
             }
         }
+
+        // ── ML Exit Shadow: record HOLD evaluation (no exit triggered this cycle) ──
+        recordExitShadow(trade, entryPrice, currentPrice, profitPct, peakPct, atr,
+                useAtrExits, false, "HOLD");
     }
 
     /**
@@ -595,6 +605,12 @@ public class LivePositionExitMonitor {
     }
 
     private void close(TradeEntity trade, BigDecimal price, String reason) {
+        // Record ML exit shadow BEFORE closing (trade still has OPEN status and all data)
+        double profitPct = profitPercent(trade.getEntryPrice(), price);
+        BigDecimal peak = peakPrices.getOrDefault(trade.getTradeId(), price);
+        double peakPct = profitPercent(trade.getEntryPrice(), peak);
+        recordExitShadow(trade, trade.getEntryPrice(), price, profitPct, peakPct, 0, false, true, reason);
+
         try {
             executionEngine.closeTrade(trade.getTradeId(), price, reason);
             // Only clear in-memory state after confirmed successful close
@@ -605,6 +621,118 @@ public class LivePositionExitMonitor {
             log.warn("[ExitMonitor] Failed to close trade {} — retaining trailing stop state for next evaluation: {}",
                     trade.getTradeId(), e.getMessage());
         }
+    }
+
+    /**
+     * Record exit evaluation to ML shadow CSV for future model training.
+     */
+    private void recordExitShadow(TradeEntity trade, BigDecimal entryPrice, BigDecimal currentPrice,
+                                   double profitPct, double peakPct, double atr, boolean useAtr,
+                                   boolean systemExited, String exitReason) {
+        try {
+            double holdMinutes = trade.getEntryTime() != null
+                    ? java.time.Duration.between(trade.getEntryTime(), java.time.Instant.now()).toMinutes() : 0;
+            double vix = marketGuard.getCurrentVix();
+            IndexType idx = IndexType.fromName(trade.getUnderlying());
+            long dte = expiryCalendar.daysToExpiry(idx);
+            double entryIV = trade.getEntryIV() != null ? trade.getEntryIV() : 0;
+            double currentIV = marketDataService.quote(trade.getInstrumentKey())
+                    .flatMap(q -> q.impliedVolatility()).map(BigDecimal::doubleValue).orElse(0.0);
+            double ivChange = entryIV > 0 ? ((currentIV - entryIV) / entryIV) * 100 : 0;
+
+            BigDecimal trailStop = trailingStops.get(trade.getTradeId());
+            double trailActive = trailStop != null ? 1.0 : 0.0;
+            double trailDistance = trailStop != null && currentPrice.signum() > 0
+                    ? currentPrice.subtract(trailStop).doubleValue() / currentPrice.doubleValue() * 100 : 0;
+
+            double optType = "PE".equals(trade.getOptionType()) ? 1.0 : 0.0;
+            double minSinceOpen = java.time.Duration.between(
+                    java.time.LocalTime.of(9, 15),
+                    java.time.LocalTime.now(java.time.ZoneId.of("Asia/Kolkata"))).toMinutes();
+            double isExpiry = expiryCalendar.isExpiryDay(idx) ? 1.0 : 0.0;
+
+            double bidAskSpread = 0;
+            var quoteOpt = marketDataService.quote(trade.getInstrumentKey());
+            if (quoteOpt.isPresent()) {
+                BigDecimal bid = quoteOpt.get().bid().orElse(BigDecimal.ZERO);
+                BigDecimal ask = quoteOpt.get().ask().orElse(BigDecimal.ZERO);
+                if (bid.signum() > 0 && ask.signum() > 0 && currentPrice.signum() > 0) {
+                    bidAskSpread = ask.subtract(bid).doubleValue() / currentPrice.doubleValue() * 100;
+                }
+            }
+
+            double strategyEncoded = encodeStrategy(trade.getStrategyType());
+            double underlyingEncoded = encodeUnderlying(trade.getUnderlying());
+
+            var features = new com.algo.trade.ml.MlExitFeatureVector(
+                    profitPct, peakPct, peakPct - profitPct, holdMinutes,
+                    entryPrice.doubleValue(), currentPrice.doubleValue(),
+                    vix, atr, dte,
+                    entryIV, currentIV, ivChange,
+                    trailActive, trailDistance,
+                    strategyEncoded, optType, underlyingEncoded,
+                    minSinceOpen, isExpiry, bidAskSpread,
+                    systemExited ? 1.0 : 0.0, encodeExitReason(exitReason)
+            );
+
+            mlExitShadowRecorder.recordExitEvaluation(
+                    trade.getTradeId(), trade.getInstrumentKey(),
+                    trade.getStrategyType(), trade.getUnderlying(),
+                    features, systemExited, exitReason);
+        } catch (Exception e) {
+            log.debug("[ExitMonitor] ML exit shadow recording failed: {}", e.getMessage());
+        }
+    }
+
+    private static double encodeStrategy(String strategyType) {
+        if (strategyType == null) return 0;
+        return switch (strategyType) {
+            case "DIRECTIONAL_BUY" -> 0;
+            case "SCALPING" -> 1;
+            case "VOLATILITY_BREAKOUT" -> 2;
+            case "EVENT_DRIVEN_BUY" -> 3;
+            case "GAP_AND_GO" -> 4;
+            case "REVERSAL_BUY" -> 5;
+            case "OI_SHIFT_TRAP" -> 6;
+            case "EXPIRY_GAMMA" -> 7;
+            case "EXPIRY_REVERSAL" -> 8;
+            case "MOMENTUM" -> 9;
+            case "ITM_CONVICTION" -> 10;
+            default -> 99;
+        };
+    }
+
+    private static double encodeUnderlying(String underlying) {
+        if (underlying == null) return 0;
+        return switch (underlying) {
+            case "NIFTY" -> 0;
+            case "BANKNIFTY" -> 1;
+            case "SENSEX" -> 2;
+            case "FINNIFTY" -> 3;
+            case "MIDCPNIFTY" -> 4;
+            default -> 0;
+        };
+    }
+
+    private static double encodeExitReason(String reason) {
+        if (reason == null) return 0;
+        return switch (reason) {
+            case "HOLD" -> 0;
+            case "STOP_LOSS" -> 1;
+            case "TARGET" -> 2;
+            case "TRAILING_STOP" -> 3;
+            case "ATR_TRAILING_STOP" -> 4;
+            case "MAX_HOLD_TIME" -> 5;
+            case "SQUAREOFF_TIME" -> 6;
+            case "IV_COLLAPSE_EXIT" -> 7;
+            case "STALL_EXIT" -> 8;
+            case "GAMMA_SPIKE_PROFIT", "GAMMA_SPIKE_PROTECTION" -> 9;
+            case "EXPIRY_DANGER_ZONE", "EXPIRY_AFTERNOON_EXIT" -> 10;
+            case "SPREAD_WIDENING_EXIT" -> 11;
+            case "VWAP_REVERSAL" -> 12;
+            case "MOMENTUM_BREAKOUT_EXIT" -> 13;
+            default -> 99;
+        };
     }
 
     /**

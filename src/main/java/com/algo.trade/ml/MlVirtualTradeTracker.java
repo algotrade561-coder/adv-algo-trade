@@ -50,7 +50,7 @@ public class MlVirtualTradeTracker {
             "maxHoldMinutes", "squareoffTime",
             "systemScore", "mlScore", "mlProbability",
             "status", "exitTime", "exitPrice", "exitReason",
-            "profitPercent", "holdMinutes"
+            "profitPercent", "holdMinutes", "quantity"
     ) + System.lineSeparator();
 
     private final MarketDataService marketDataService;
@@ -129,7 +129,8 @@ public class MlVirtualTradeTracker {
                 mlProbability,
                 "OPEN",
                 null, null, null,
-                0.0, 0
+                0.0, 0,
+                config.getLots() * com.algo.trade.domain.IndexType.fromName(decision.underlying().name()).lotSize()
         );
 
         openTrades.put(id, vt);
@@ -224,7 +225,8 @@ public class MlVirtualTradeTracker {
                 vt.systemScore, vt.mlScore, vt.mlProbability,
                 profitPct > 0 ? "PROFIT" : "LOSS",
                 Instant.now(), exitPrice, reason,
-                profitPct, (int) holdMinutes
+                profitPct, (int) holdMinutes,
+                vt.quantity
         );
 
         openTrades.remove(vt.virtualTradeId);
@@ -310,6 +312,12 @@ public class MlVirtualTradeTracker {
         m.put("exitReason", vt.exitReason);
         m.put("profitPercent", String.format("%.1f", vt.profitPercent));
         m.put("holdMinutes", vt.holdMinutes);
+        // P&L in rupees: (currentOrExit - entry) × quantity
+        int qty = vt.quantity > 0 ? vt.quantity : com.algo.trade.domain.IndexType.fromName(vt.underlying).lotSize();
+        java.math.BigDecimal priceDiff = (vt.exitPrice != null && vt.exitPrice.signum() > 0 ? vt.exitPrice : vt.currentPrice)
+                .subtract(vt.entryPrice);
+        m.put("pnlAmount", priceDiff.multiply(java.math.BigDecimal.valueOf(qty)).setScale(2, java.math.RoundingMode.HALF_UP));
+        m.put("quantity", qty);
         return m;
     }
 
@@ -330,7 +338,8 @@ public class MlVirtualTradeTracker {
                     csv(vt.maxHoldMinutes), csv(vt.squareoffTime),
                     csv(vt.systemScore), csv(vt.mlScore), csv(String.format("%.4f", vt.mlProbability)),
                     csv(vt.status), csv(vt.exitTime), csv(vt.exitPrice), csv(vt.exitReason),
-                    csv(String.format("%.2f", vt.profitPercent)), csv(vt.holdMinutes)
+                    csv(String.format("%.2f", vt.profitPercent)), csv(vt.holdMinutes),
+                    csv(vt.quantity)
             ) + System.lineSeparator();
             Files.writeString(VIRTUAL_TRADES_CSV, row, StandardOpenOption.APPEND);
         } catch (IOException e) {
@@ -350,10 +359,16 @@ public class MlVirtualTradeTracker {
                 String[] v = line.split(",", -1);
                 if (v.length < 23) continue;
                 try {
-                    // Support both old format (23 cols, no strategyType) and new format (24 cols)
+                    // Support old format (23/24 cols) and new format (25 cols with quantity)
                     boolean hasStrategyType = v.length >= 24;
                     int offset = hasStrategyType ? 1 : 0;
                     String strategyType = hasStrategyType ? v[4] : "DIRECTIONAL_BUY";
+                    int quantity = (v.length > 23 + offset) ? parseInt(v[23 + offset]) : 0;
+                    if (quantity <= 0) {
+                        // Estimate from underlying for old CSV rows
+                        try { quantity = com.algo.trade.domain.IndexType.fromName(v[2]).lotSize(); }
+                        catch (Exception e) { quantity = 65; }
+                    }
                     result.add(new VirtualTrade(
                             v[0], parseInstant(v[1]), v[2], v[3], strategyType, v[4 + offset],
                             parseBd(v[5 + offset]), parseBd(v[6 + offset]), parseBd(v[7 + offset]),
@@ -361,7 +376,8 @@ public class MlVirtualTradeTracker {
                             parseInt(v[12 + offset]), parseTime(v[13 + offset]),
                             parseInt(v[14 + offset]), parseInt(v[15 + offset]), parseDouble(v[16 + offset]),
                             v[17 + offset], parseInstant(v[18 + offset]), parseBd(v[19 + offset]), v[20 + offset],
-                            parseDouble(v[21 + offset]), parseInt(v[22 + offset])
+                            parseDouble(v[21 + offset]), parseInt(v[22 + offset]),
+                            quantity
                     ));
                 } catch (Exception ignored) {}
             }
@@ -434,21 +450,22 @@ public class MlVirtualTradeTracker {
             BigDecimal exitPrice,
             String exitReason,
             double profitPercent,
-            int holdMinutes
+            int holdMinutes,
+            int quantity
     ) {
         VirtualTrade withCurrentPrice(BigDecimal price) {
             return new VirtualTrade(virtualTradeId, entryTime, underlying, optionType, strategyType, instrumentKey,
                     entryPrice, price, peakPrice, stopLossPercent, targetPercent,
                     trailingActivationPercent, trailingGapPercent, maxHoldMinutes, squareoffTime,
                     systemScore, mlScore, mlProbability, status, exitTime, exitPrice, exitReason,
-                    profitPercent, holdMinutes);
+                    profitPercent, holdMinutes, quantity);
         }
         VirtualTrade withPeakPrice(BigDecimal price) {
             return new VirtualTrade(virtualTradeId, entryTime, underlying, optionType, strategyType, instrumentKey,
                     entryPrice, currentPrice, price, stopLossPercent, targetPercent,
                     trailingActivationPercent, trailingGapPercent, maxHoldMinutes, squareoffTime,
                     systemScore, mlScore, mlProbability, status, exitTime, exitPrice, exitReason,
-                    profitPercent, holdMinutes);
+                    profitPercent, holdMinutes, quantity);
         }
     }
 
