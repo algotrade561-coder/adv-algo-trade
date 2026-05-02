@@ -99,6 +99,7 @@ export interface GlobalConfigDto {
   ivCollapseExitThresholdPercent: number;
   ivCollapseMaxProfitPercent: number;
   maxEntriesPerScanPerUnderlying: number;
+  maxEntriesPerScan: number;
 }
 
 @Injectable({ providedIn: 'root' })

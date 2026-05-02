@@ -311,6 +311,11 @@ import { ApiService, GlobalConfigDto } from '../core/api.service';
               <mat-hint>ML score threshold for virtual trades (independent of signal score). Lower = more virtual trades.</mat-hint>
             </mat-form-field>
             <mat-form-field appearance="outline">
+              <mat-label>Max Entries Per Scan (Total)</mat-label>
+              <input matInput type="number" min="1" max="10" [(ngModel)]="config.maxEntriesPerScan">
+              <mat-hint>Total entries across all underlyings per scan cycle. Overall ceiling.</mat-hint>
+            </mat-form-field>
+            <mat-form-field appearance="outline">
               <mat-label>Max Entries Per Scan Per Underlying</mat-label>
               <input matInput type="number" min="1" max="5" [(ngModel)]="config.maxEntriesPerScanPerUnderlying">
               <mat-hint>How many strategies can enter the same index in one scan cycle. 1 = conservative, 2+ = allow stacking.</mat-hint>

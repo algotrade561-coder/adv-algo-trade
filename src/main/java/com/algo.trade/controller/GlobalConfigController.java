@@ -114,6 +114,7 @@ public class GlobalConfigController {
         m.put("ivCollapseExitThresholdPercent", c.getIvCollapseExitThresholdPercent());
         m.put("ivCollapseMaxProfitPercent", c.getIvCollapseMaxProfitPercent());
         m.put("maxEntriesPerScanPerUnderlying", c.getMaxEntriesPerScanPerUnderlying());
+        m.put("maxEntriesPerScan", c.getMaxEntriesPerScan());
         return m;
     }
 }

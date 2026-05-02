@@ -186,6 +186,9 @@ public class GlobalConfig {
     /** Max entries per scan cycle per underlying. Default 1. Controls strategy stacking on same index. */
     private int maxEntriesPerScanPerUnderlying = 1;
 
+    /** Max total entries across all underlyings per scan cycle. Default 1. Overall ceiling for per-scan entries. */
+    private int maxEntriesPerScan = 1;
+
     // ── Constructors ──────────────────────────────────────────
 
     protected GlobalConfig() {}
@@ -482,4 +485,7 @@ public class GlobalConfig {
 
     public int getMaxEntriesPerScanPerUnderlying() { return maxEntriesPerScanPerUnderlying; }
     public void setMaxEntriesPerScanPerUnderlying(int v) { this.maxEntriesPerScanPerUnderlying = v; }
+
+    public int getMaxEntriesPerScan() { return maxEntriesPerScan; }
+    public void setMaxEntriesPerScan(int v) { this.maxEntriesPerScan = v; }
 }

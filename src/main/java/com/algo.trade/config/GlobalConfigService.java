@@ -175,6 +175,7 @@ public class GlobalConfigService {
     public BigDecimal getIvCollapseExitThresholdPercent() { return cached.getIvCollapseExitThresholdPercent(); }
     public BigDecimal getIvCollapseMaxProfitPercent() { return cached.getIvCollapseMaxProfitPercent(); }
     public int getMaxEntriesPerScanPerUnderlying() { return cached.getMaxEntriesPerScanPerUnderlying(); }
+    public int getMaxEntriesPerScan() { return cached.getMaxEntriesPerScan(); }
 
     // ── Write operations ──────────────────────────────────────
 

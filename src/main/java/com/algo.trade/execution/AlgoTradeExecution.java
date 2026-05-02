@@ -312,7 +312,7 @@ public class AlgoTradeExecution {
         // Track entries per underlying within this scan to prevent concentration
         Map<UnderlyingSymbol, Integer> entriesPerUnderlying = new EnumMap<>(UnderlyingSymbol.class);
         for (UnderlyingSymbol underlying : enabledUnderlyings) {
-            if (totalEntries >= properties.algo().maxEntriesPerScan()) break;
+            if (totalEntries >= globalConfigService.getMaxEntriesPerScan()) break;
 
             // Get ALL enabled strategies for this underlying (including DIRECTIONAL_BUY)
             List<StrategyConfig> allConfigs = strategyConfigService.getEnabledFor(underlying);
@@ -341,7 +341,7 @@ public class AlgoTradeExecution {
             String ivRankSource = ivRankResult.source();
 
             for (StrategyConfig config : allConfigs) {
-                if (totalEntries >= properties.algo().maxEntriesPerScan()) break;
+                if (totalEntries >= globalConfigService.getMaxEntriesPerScan()) break;
                 // Max entries per underlying per scan cycle — configurable from GlobalConfig
                 // Prevents multiple strategies from piling into the same underlying in a single candle close
                 int maxPerUnderlying = globalConfigService.getMaxEntriesPerScanPerUnderlying();

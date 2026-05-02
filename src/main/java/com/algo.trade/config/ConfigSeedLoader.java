@@ -148,6 +148,7 @@ public class ConfigSeedLoader {
         cfg.setIvCollapseExitThresholdPercent(decimal(map, "ivCollapseExitThresholdPercent", "15"));
         cfg.setIvCollapseMaxProfitPercent(decimal(map, "ivCollapseMaxProfitPercent", "15"));
         cfg.setMaxEntriesPerScanPerUnderlying(integer(map, "maxEntriesPerScanPerUnderlying", 1));
+        cfg.setMaxEntriesPerScan(integer(map, "maxEntriesPerScan", 1));
         globalConfigRepository.save(cfg);
         log.info("GlobalConfig seeded from seed file");
     }

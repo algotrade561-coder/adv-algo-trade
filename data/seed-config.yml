@@ -65,6 +65,7 @@ globalConfig:
   ivCollapseExitThresholdPercent: 15
   ivCollapseMaxProfitPercent: 15
   maxEntriesPerScanPerUnderlying: 1
+  maxEntriesPerScan: 3
 
 strategyConfigs:
   # ── BEAR_PUT_SPREAD ────────────────────────────────────────────────────────
