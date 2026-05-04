@@ -31,7 +31,10 @@ class IndicatorTest {
                 BigDecimal.valueOf(120)
         ), 3);
 
-        assertThat(ema).isEqualByComparingTo(BigDecimal.valueOf(112.5));
+        // EMA with period=3 on [100, 110, 120]:
+        // Seed = SMA of all 3 values = (100+110+120)/3 = 110
+        // No remaining values after seed → EMA = 110
+        assertThat(ema).isEqualByComparingTo(BigDecimal.valueOf(110));
     }
 
     @Test
