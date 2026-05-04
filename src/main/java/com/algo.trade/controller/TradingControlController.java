@@ -48,6 +48,7 @@ public class TradingControlController {
     private final com.algo.trade.risk.RiskEngine riskEngine;
     private final com.algo.trade.persistence.OrderRepository orderRepository;
     private final com.algo.trade.marketdata.MarketDataService marketDataService;
+    private final com.algo.trade.execution.ExecutionEngine executionEngine;
 
     public TradingControlController(
             TradingProperties tradingProperties,
@@ -63,7 +64,8 @@ public class TradingControlController {
             com.algo.trade.config.GlobalConfigService globalConfigService,
             com.algo.trade.risk.RiskEngine riskEngine,
             com.algo.trade.persistence.OrderRepository orderRepository,
-            com.algo.trade.marketdata.MarketDataService marketDataService
+            com.algo.trade.marketdata.MarketDataService marketDataService,
+            com.algo.trade.execution.ExecutionEngine executionEngine
     ) {
         this.tradingProperties = tradingProperties;
         this.tradingStateService = tradingStateService;
@@ -79,6 +81,7 @@ public class TradingControlController {
         this.riskEngine = riskEngine;
         this.orderRepository = orderRepository;
         this.marketDataService = marketDataService;
+        this.executionEngine = executionEngine;
     }
 
     @GetMapping("/config")
@@ -291,6 +294,7 @@ public class TradingControlController {
     @PostMapping("/halt/resume")
     public Map<String, Object> resumeFromHalt() {
         tradingStateService.resumeFromHalt();
+        executionEngine.resetRejectionCounter();
         telegramAlertService.tradingStateChanged("Halt cleared — trading resumed", status());
         return status();
     }

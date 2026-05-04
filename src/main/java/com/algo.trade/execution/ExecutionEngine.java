@@ -66,12 +66,10 @@ public class ExecutionEngine {
     /**
      * Rejection circuit breaker — auto-halts entries after consecutive broker rejections.
      * Prevents infinite order placement when broker keeps rejecting (tick size, margin, rate limit).
-     * Resets on any successful order placement.
+     * Resets on any successful order placement. Halt persists until user resumes from UI.
      */
     private static final int MAX_CONSECUTIVE_REJECTIONS = 3;
-    private static final long REJECTION_HALT_DURATION_MS = 10 * 60 * 1000; // 10 minutes
     private final java.util.concurrent.atomic.AtomicInteger consecutiveRejections = new java.util.concurrent.atomic.AtomicInteger(0);
-    private volatile long rejectionHaltUntilMs = 0;
 
     private final TradingProperties properties;
     private final GlobalConfigService globalConfigService;
@@ -159,6 +157,15 @@ public class ExecutionEngine {
             log.warn("Entry execution rejected: optionPremium is zero or null for instrument={}",
                     decision.selectedInstrumentKey().orElse(""));
             return ExecutionResult.rejected(List.of("Option premium is zero or unavailable — cannot place order"));
+        }
+        // Rejection circuit breaker — soft halt is activated by trackBrokerRejection()
+        // and persists until user resumes from UI. No need for a separate check here —
+        // tradingStateService.running() + haltMode covers it. But we add an explicit
+        // early return with a clear message for diagnostics.
+        if (tradingStateService.haltMode() != com.algo.trade.risk.HaltMode.NONE) {
+            log.warn("Entry execution rejected: halt mode active ({})", tradingStateService.haltMode());
+            return ExecutionResult.rejected(List.of("Entry halted: " + tradingStateService.haltMode()
+                    + " — resume from UI to continue trading"));
         }
         StrategyDecisionEntity savedDecision = persistDecision(decision);
         if (!tradingStateService.running()) {
@@ -248,6 +255,7 @@ public class ExecutionEngine {
             // fills, cancels, or expires. This prevents duplicate entries from concurrent scans.
             // The OrderFillWatchdog or the auto-cancel timer will release it.
             if (order.status() == OrderStatus.OPEN || order.status() == OrderStatus.NEW) {
+                consecutiveRejections.set(0); // order accepted by broker — reset circuit breaker
                 log.info("Entry limit order placed — OrderFillWatchdog will track: clientOrderId={}, brokerOrderId={} (entryInFlight held)",
                         order.clientOrderId(), order.brokerOrderId().orElse(""));
                 List<String> reasons = List.of("Limit order placed — awaiting fill");
@@ -268,6 +276,7 @@ public class ExecutionEngine {
             }
 
             if (order.status() == OrderStatus.COMPLETE) {
+                consecutiveRejections.set(0); // order filled — reset circuit breaker
                 BigDecimal fillPrice = order.averageFillPrice().orElse(optionPremium);
                 String tradeId = "TRD-" + UUID.randomUUID();
                 TradeEntity tradeEntity = new TradeEntity(tradeId, order.instrumentKey(),
@@ -289,6 +298,7 @@ public class ExecutionEngine {
             }
             log.warn("Entry order not filled: clientOrderId={}, status={}, reason={}",
                     order.clientOrderId(), order.status(), order.rejectionReason().orElse("Entry order was not filled"));
+            trackBrokerRejection(order.rejectionReason().orElse("unknown"));
             List<String> reasons = List.of(order.rejectionReason().orElse("Entry order was not filled"));
             updateExecutionStage(savedDecision, "ORDER_NOT_FILLED", reasons.getFirst());
             executionOutcomeCsvRecorder.recordEntry(decision, optionPremium, lotSize, "ORDER_NOT_FILLED", false,
@@ -779,6 +789,7 @@ public class ExecutionEngine {
         String message = exceptionMessage(ex);
         log.warn("Entry order placement failed: clientOrderId={}, instrument={}, message={}",
                 clientOrderId, decision.selectedInstrumentKey().orElse(""), message, ex);
+        trackBrokerRejection(message);
         errorEventRepository.save(new ErrorEventEntity(Instant.now(clock), "ExecutionEngine",
                 message != null && message.length() > 4000 ? message.substring(0, 4000) : message));
         List<String> reasons = List.of(message);
@@ -1070,6 +1081,41 @@ public class ExecutionEngine {
                 ? java.math.RoundingMode.UP
                 : java.math.RoundingMode.DOWN;
         return price.divide(TICK_SIZE, 0, mode).multiply(TICK_SIZE).setScale(2, java.math.RoundingMode.HALF_UP);
+    }
+
+    /**
+     * Track broker rejection and trigger soft halt if too many consecutive rejections.
+     * After MAX_CONSECUTIVE_REJECTIONS (3), activates soft halt via TradingStateService.
+     * Halt persists until user resumes from UI. Sends Telegram alert when halt activates.
+     */
+    private void trackBrokerRejection(String reason) {
+        int count = consecutiveRejections.incrementAndGet();
+        log.warn("Broker rejection #{}: {}", count, reason);
+        if (count >= MAX_CONSECUTIVE_REJECTIONS && tradingStateService.haltMode() == com.algo.trade.risk.HaltMode.NONE) {
+            String haltReason = count + " consecutive broker rejections. Last: " + reason;
+            tradingStateService.softHalt(haltReason);
+            log.error("REJECTION CIRCUIT BREAKER: {} — soft halt activated. Resume from UI to continue.", haltReason);
+            telegramAlertService.systemAlert(String.format(
+                    "🛑 Entry HALTED: %d consecutive broker rejections — resume from UI to continue\nLast rejection: %s",
+                    count, reason));
+            if (errorEventService != null) {
+                errorEventService.critical("ExecutionEngine",
+                        "Rejection circuit breaker: " + haltReason + " — soft halt activated");
+            }
+        }
+    }
+
+    /** Get consecutive rejection count. For diagnostics. */
+    public int getConsecutiveRejections() {
+        return consecutiveRejections.get();
+    }
+
+    /** Reset rejection counter — called when user resumes from halt via UI. */
+    public void resetRejectionCounter() {
+        int prev = consecutiveRejections.getAndSet(0);
+        if (prev > 0) {
+            log.info("Rejection counter reset: {} → 0 (user resumed from halt)", prev);
+        }
     }
 
     private Instant todayStart() {
