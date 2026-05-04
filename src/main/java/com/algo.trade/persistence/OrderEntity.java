@@ -24,6 +24,7 @@ public class OrderEntity {
     private int requestedQuantity;
     private int filledQuantity;
     private BigDecimal averageFillPrice;
+    @jakarta.persistence.Column(length = 1000)
     private String rejectionReason;
     private Instant updatedAt;
     private Instant signalTimestamp;

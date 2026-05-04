@@ -768,7 +768,8 @@ public class ExecutionEngine {
         String message = exceptionMessage(ex);
         log.warn("Entry order placement failed: clientOrderId={}, instrument={}, message={}",
                 clientOrderId, decision.selectedInstrumentKey().orElse(""), message, ex);
-        errorEventRepository.save(new ErrorEventEntity(Instant.now(clock), "ExecutionEngine", message));
+        errorEventRepository.save(new ErrorEventEntity(Instant.now(clock), "ExecutionEngine",
+                message != null && message.length() > 4000 ? message.substring(0, 4000) : message));
         List<String> reasons = List.of(message);
         updateExecutionStage(savedDecision, "BROKER_ERROR", message);
         executionOutcomeCsvRecorder.recordEntry(decision, optionPremium, lotSize, "BROKER_ERROR", false,

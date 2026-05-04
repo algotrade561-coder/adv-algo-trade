@@ -239,6 +239,9 @@ export class ApiService {
   mlGenerateTrainingData(): Observable<any> { return this.http.post<any>(`${this.base}/ml/training-data`, {}); }
   mlVirtualTrades(): Observable<any> { return this.http.get<any>(`${this.base}/ml/virtual-trades`); }
   mlExitShadow(period = 'TODAY'): Observable<any> { return this.http.get<any>(`${this.base}/ml/exit-shadow?period=${period}`); }
+
+  // ── Auth ─────────────────────────────────────────────────────────────
+  checkAuth(): Observable<any> { return this.http.get<any>(`${this.base}/auth/user`); }
 }
 
 function clean<T extends Record<string, unknown>>(value: T): Partial<T> {

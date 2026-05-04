@@ -1,4 +1,4 @@
-import { Component, HostListener, Inject, OnDestroy, OnInit, ViewChild } from '@angular/core';
+import { Component, ChangeDetectorRef, HostListener, Inject, OnDestroy, OnInit, ViewChild } from '@angular/core';
 import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 import { catchError, forkJoin, interval, of, Subscription } from 'rxjs';
 import { MatButtonModule } from '@angular/material/button';
@@ -236,6 +236,12 @@ export class HealthDialogComponent {
     MatListModule
   ],
   template: `
+    @if (!authChecked) {
+      <div class="auth-loading">
+        <div class="auth-spinner"></div>
+        <p>Verifying authentication…</p>
+      </div>
+    } @else {
     <mat-sidenav-container class="shell">
       <mat-sidenav #sidenav [mode]="mobile ? 'over' : 'side'" [opened]="!mobile" class="nav"
                    (closedStart)="null">
@@ -283,6 +289,7 @@ export class HealthDialogComponent {
         <router-outlet></router-outlet>
       </mat-sidenav-content>
     </mat-sidenav-container>
+    }
   `,
   styles: [`
     .shell {
@@ -466,11 +473,32 @@ export class HealthDialogComponent {
       font-weight: 600;
     }
     .offline-bar mat-icon { font-size: 18px; width: 18px; height: 18px; flex-shrink: 0; }
+
+    .auth-loading {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      background: #0d1117;
+      color: #8b949e;
+      gap: 16px;
+    }
+    .auth-loading p { font-size: 14px; margin: 0; }
+    .auth-spinner {
+      width: 36px; height: 36px;
+      border: 3px solid #21262d;
+      border-top-color: #58a6ff;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
   `]
 })
 export class AppComponent implements OnInit, OnDestroy {
   @ViewChild('sidenav') sidenav!: MatSidenav;
   mobile = false;
+  authChecked = false;
 
   private static readonly MOBILE_BREAKPOINT = 768;
   private healthSub?: Subscription;
@@ -478,12 +506,32 @@ export class AppComponent implements OnInit, OnDestroy {
   constructor(
     private readonly api: ApiService,
     private readonly dialog: MatDialog,
+    private readonly cd: ChangeDetectorRef,
     readonly serverStatus: ServerStatusService
   ) {
     this.checkMobile();
   }
 
   ngOnInit(): void {
+    // Check auth status on startup — redirect to Google login if not authenticated
+    this.api.checkAuth().pipe(catchError(() => of({ authenticated: false }))).subscribe((auth: any) => {
+      if (!auth || !auth.authenticated) {
+        if (!sessionStorage.getItem('auth_redirecting')) {
+          sessionStorage.setItem('auth_redirecting', 'true');
+          window.location.href = '/advalgotrade/oauth2/authorization/google';
+        } else {
+          // Already tried redirecting — show app to avoid infinite loop
+          this.authChecked = true;
+          this.cd.detectChanges();
+        }
+        return;
+      }
+      sessionStorage.removeItem('auth_redirecting');
+      this.authChecked = true;
+      this.cd.detectChanges();
+      this.serverStatus.markOnline();
+    });
+
     this.healthSub = interval(15000).subscribe(() => {
       this.api.health().pipe(catchError(() => of(null))).subscribe(r => {
         if (r?.status) this.serverStatus.markOnline();

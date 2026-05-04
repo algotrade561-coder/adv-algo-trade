@@ -14,6 +14,7 @@ public class ErrorEventEntity {
     private Instant timestamp;
     private String component;
     private String severity;
+    @jakarta.persistence.Column(length = 4000)
     private String message;
 
     protected ErrorEventEntity() {

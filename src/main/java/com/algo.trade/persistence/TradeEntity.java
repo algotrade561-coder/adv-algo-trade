@@ -34,7 +34,9 @@ public class TradeEntity {
     private Instant entryTime;
     private Instant exitTime;
     private BigDecimal realizedPnl;
+    @jakarta.persistence.Column(length = 2000)
     private String entryReason;
+    @jakarta.persistence.Column(length = 1000)
     private String exitReason;
     /** Strategy type that generated this trade (e.g. DIRECTIONAL_BUY, ITM_CONVICTION). */
     private String strategyType;
@@ -48,6 +50,7 @@ public class TradeEntity {
     /** Cumulative P&L from partial exits already booked. */
     private BigDecimal bookedPnl;
     /** Comma-separated progressive exit layer names that have already fired (e.g. "PARTIAL_1,PARTIAL_2"). */
+    @jakarta.persistence.Column(length = 500)
     private String partialExitLayers;
     /** Trailing stop activation % applied at entry time — stored so exit monitors use consistent params after config changes. */
     private BigDecimal appliedTrailingStopActivationPercent;
@@ -69,7 +72,7 @@ public class TradeEntity {
         this.quantity = quantity;
         this.entryPrice = entryPrice;
         this.entryTime = entryTime;
-        this.entryReason = entryReason;
+        this.entryReason = entryReason != null && entryReason.length() > 2000 ? entryReason.substring(0, 2000) : entryReason;
         this.realizedPnl = BigDecimal.ZERO;
     }
 

@@ -43,13 +43,16 @@ public class ConfigSeedLoader {
     private final GlobalConfigRepository globalConfigRepository;
     private final StrategyConfigRepository strategyConfigRepository;
     private final UnderlyingConfigRepository underlyingConfigRepository;
+    private final com.algo.trade.auth.AppUserRepository appUserRepository;
 
     public ConfigSeedLoader(GlobalConfigRepository globalConfigRepository,
                             StrategyConfigRepository strategyConfigRepository,
-                            UnderlyingConfigRepository underlyingConfigRepository) {
+                            UnderlyingConfigRepository underlyingConfigRepository,
+                            com.algo.trade.auth.AppUserRepository appUserRepository) {
         this.globalConfigRepository = globalConfigRepository;
         this.strategyConfigRepository = strategyConfigRepository;
         this.underlyingConfigRepository = underlyingConfigRepository;
+        this.appUserRepository = appUserRepository;
     }
 
     @PostConstruct
@@ -66,6 +69,7 @@ public class ConfigSeedLoader {
             seedGlobalConfigIfEmpty(root);
             seedStrategyConfigsIfEmpty(root);
             seedUnderlyingConfigsIfEmpty(root);
+            seedAppUsersIfEmpty(root);
         } catch (Exception e) {
             log.warn("Config seed from {} failed: {} — falling back to Java defaults", SEED_FILE, e.getMessage());
         }
@@ -252,5 +256,26 @@ public class ConfigSeedLoader {
         Object val = map.get(key);
         if (val == null) return def != null ? new BigDecimal(def) : null;
         return new BigDecimal(val.toString());
+    }
+
+    @SuppressWarnings("unchecked")
+    private void seedAppUsersIfEmpty(Map<String, Object> root) {
+        List<Map<String, Object>> users = (List<Map<String, Object>>) root.get("appUsers");
+        if (users == null || users.isEmpty()) {
+            log.debug("seed-config.yml missing 'appUsers' section — no users seeded");
+            return;
+        }
+        for (Map<String, Object> u : users) {
+            String email = str(u, "email", null);
+            String role = str(u, "role", "USER");
+            if (email == null || email.isBlank()) continue;
+            String normalizedEmail = email.toLowerCase();
+            // Always ensure seed users exist (idempotent — skip if already present)
+            if (!appUserRepository.existsByEmail(normalizedEmail)) {
+                com.algo.trade.auth.AppUser user = new com.algo.trade.auth.AppUser(normalizedEmail, role);
+                appUserRepository.save(user);
+                log.info("AppUser seeded: email={} role={}", normalizedEmail, role);
+            }
+        }
     }
 }

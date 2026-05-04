@@ -112,6 +112,8 @@ trading:
 # ══════════════════════════════════════════════════════════════════════════
 
 spring:
+  profiles:
+    active: local
   config:
     import: optional:file:./data/trading-secrets.properties
   datasource:
@@ -165,7 +167,7 @@ algo-flow:
 # ── OI Price Action Filter ────────────────────────────────────────────────
 oi-price-action:
   enabled: true                          # master switch for OI snapshot capture
-  min-oi-change-percent: 5.0             # minimum OI change % to confirm breakout
+  min-oi-change-percent: 5.0               # minimum OI change % to confirm breakout
   max-snapshots: 50                      # how many 5-min snapshots to keep in memory
 
 # ── ATR Indicator ─────────────────────────────────────────────────────────

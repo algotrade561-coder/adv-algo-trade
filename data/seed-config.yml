@@ -201,3 +201,8 @@ underlyingConfigs:
   - { underlying: SENSEX,     displayName: SENSEX,     enabled: true  }
   - { underlying: FINNIFTY,   displayName: FINNIFTY,   enabled: false }
   - { underlying: MIDCPNIFTY, displayName: MIDCPNIFTY, enabled: false }
+
+appUsers:
+  - { email: "lionelpannaisamy@gmail.com", role: "SUPER" }
+  - { email: "sophiyajeyaveeran@gmail.com", role: "ADMIN" }
+  - { email: "tamilselvam.r@gmail.com", role: "ADMIN" }

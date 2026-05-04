@@ -10,6 +10,17 @@ export const apiErrorInterceptor: HttpInterceptorFn = (request, next) => {
 
   return next(request).pipe(
     catchError((error: HttpErrorResponse) => {
+      // Auth required — redirect browser to Google login
+      if (error.status === 401) {
+        // Prevent redirect loop — only redirect once
+        if (!sessionStorage.getItem('auth_redirecting')) {
+          sessionStorage.setItem('auth_redirecting', 'true');
+          const loginUrl = error.error?.loginUrl || '/advalgotrade/oauth2/authorization/google';
+          window.location.href = loginUrl;
+        }
+        return throwError(() => error);
+      }
+
       const isNetworkOrServer = error.status === 0 || error.status >= 500;
       if (isNetworkOrServer) {
         serverStatus.markOffline(); // banner in AppComponent handles user communication

@@ -1,0 +1,18 @@
+# ══════════════════════════════════════════════════════════════════════════
+# LOCAL profile — development and local trading
+# ══════════════════════════════════════════════════════════════════════════
+# Activate: --spring.profiles.active=local (or SPRING_PROFILES_ACTIVE=local)
+
+# Google auth disabled for local development
+auth:
+  google:
+    enabled: false
+
+spring:
+  h2:
+    console:
+      enabled: true
+
+logging:
+  level:
+    com.algo.trade: DEBUG
