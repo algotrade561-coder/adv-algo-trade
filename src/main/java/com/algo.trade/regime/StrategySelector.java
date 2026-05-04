@@ -36,6 +36,9 @@ public class StrategySelector {
     private final com.algo.trade.marketdata.LiveInstrumentCache liveInstrumentCache;
     private final com.algo.trade.marketdata.ExpiryCalendar expiryCalendar;
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.monitoring.SchedulerRegistry schedulerRegistry;
+
     /** Previous regime per index (e.g. "NIFTY" → IDEAL). */
     private final ConcurrentHashMap<String, MarketRegime> previousRegimes = new ConcurrentHashMap<>();
 
@@ -102,6 +105,7 @@ public class StrategySelector {
      */
     @Scheduled(fixedDelay = 30_000)
     public void checkRegimeChanges() {
+        if (schedulerRegistry != null) schedulerRegistry.recordRun("regimeSelector");
         LocalTime now = ZonedDateTime.now(IST).toLocalTime();
         if (now.isBefore(CHECK_START) || now.isAfter(CHECK_END)) {
             return;

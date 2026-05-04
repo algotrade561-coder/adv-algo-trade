@@ -312,9 +312,18 @@ public class ZerodhaBrokerClient implements BrokerClient {
                 if (attempt >= retries) {
                     throw (RestClientException) ex;
                 }
-                long sleepMs = backoffMs * (1L << attempt);
-                log.warn("Zerodha operation failed; retrying: operation={}, attempt={}, maxRetries={}, backoffMs={}, message={}",
-                        operationName, attempt + 1, retries, sleepMs, ex.getMessage());
+                // Longer backoff on 429 (rate limit) — Zerodha throttles at ~3 req/sec
+                long sleepMs;
+                String msg = ex.getMessage();
+                if (msg != null && (msg.contains("429") || msg.contains("Too Many"))) {
+                    sleepMs = Math.max(3000, backoffMs * (1L << (attempt + 2)));
+                    log.warn("Zerodha 429 rate limit hit; backing off: operation={}, attempt={}, backoffMs={}",
+                            operationName, attempt + 1, sleepMs);
+                } else {
+                    sleepMs = backoffMs * (1L << attempt);
+                    log.warn("Zerodha operation failed; retrying: operation={}, attempt={}, maxRetries={}, backoffMs={}, message={}",
+                            operationName, attempt + 1, retries, sleepMs, ex.getMessage());
+                }
                 sleep(sleepMs);
             }
         }

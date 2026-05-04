@@ -27,6 +27,9 @@ public class TokenExpiryMonitor {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.algo.trade.monitoring.ErrorEventService errorEventService;
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.monitoring.SchedulerRegistry schedulerRegistry;
+
     public TokenExpiryMonitor(KiteAccessTokenStore tokenStore,
                                KiteWebSocketClient webSocketClient,
                                TelegramAlertService telegramAlertService,
@@ -40,6 +43,7 @@ public class TokenExpiryMonitor {
     /** 8:00 AM — check token before market open. */
     @Scheduled(cron = "0 0 8 * * MON-FRI", zone = "Asia/Kolkata")
     public void checkTokenAtOpen() {
+        if (schedulerRegistry != null) schedulerRegistry.recordRun("tokenMonitor");
         if (!tokenStore.authenticated()) {
             String loginUrl = properties.broker().loginUrl()
                     + "?api_key=" + properties.broker().apiKey() + "&v=3";

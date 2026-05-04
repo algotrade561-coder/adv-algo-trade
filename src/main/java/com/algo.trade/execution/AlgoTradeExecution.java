@@ -487,7 +487,7 @@ public class AlgoTradeExecution {
             }
             case VOLATILITY_BREAKOUT -> {
                 evaluated[0] = true;
-                var result = volatilityBreakoutStrategy.evaluateWithDiagnostics(trendCandles, ivRank, config, underlying);
+                var result = volatilityBreakoutStrategy.evaluateWithDiagnostics(trendCandles, ivRank, config, underlying, marketTime);
                 diagHolder[0] = result.diagnostics();
                 yield result.signal();
             }
@@ -849,7 +849,11 @@ public class AlgoTradeExecution {
             return false;
         }
         Candle latest = candles.getLast();
-        Duration allowedAge = latest.timeframe().duration().plus(properties.safety().staleMarketDataThreshold());
+        // Allow the last closed candle to remain valid for the entire next period.
+        // Without this, a 5-min candle closing at 10:15 expires at 10:20:30 but the next
+        // candle doesn't close until 10:25 — creating a 4.5-minute dead window where
+        // all entries are blocked as "stale".
+        Duration allowedAge = latest.timeframe().duration().multipliedBy(2).plus(properties.safety().staleMarketDataThreshold());
         return latest.timestamp().plus(allowedAge).isAfter(Instant.now());
     }
 
@@ -874,7 +878,12 @@ public class AlgoTradeExecution {
         if (!live.isEmpty()) {
             return live;
         }
-        return candles(underlyingHistoricalKey(underlying), timeframe);
+        // REST fallback — seed into LiveCandleBuilder so diagnostics and other components see them
+        List<Candle> restCandles = candles(underlyingHistoricalKey(underlying), timeframe);
+        if (!restCandles.isEmpty()) {
+            candleBuilder.seedHistory(spotToken, timeframe, restCandles);
+        }
+        return restCandles;
     }
 
     private String underlyingHistoricalKey(UnderlyingSymbol underlying) {

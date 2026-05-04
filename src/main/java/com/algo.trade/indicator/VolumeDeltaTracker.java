@@ -37,6 +37,9 @@ public class VolumeDeltaTracker {
 
     private final LiveCandleBuilder liveCandleBuilder;
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.monitoring.SchedulerRegistry schedulerRegistry;
+
     /** IndexType → latest delta snapshot. */
     private final Map<IndexType, DeltaSnapshot> snapshots = new ConcurrentHashMap<>();
 
@@ -54,6 +57,7 @@ public class VolumeDeltaTracker {
 
     @Scheduled(fixedDelay = 30_000, initialDelay = 60_000)
     public void update() {
+        if (schedulerRegistry != null) schedulerRegistry.recordRun("volumeDelta");
         for (IndexType idx : IndexType.values()) {
             try {
                 List<Candle> candles = liveCandleBuilder.getHistory(idx.spotToken(), Timeframe.ONE_MINUTE);

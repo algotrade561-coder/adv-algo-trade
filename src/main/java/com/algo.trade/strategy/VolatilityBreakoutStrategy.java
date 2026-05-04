@@ -42,18 +42,26 @@ public class VolatilityBreakoutStrategy {
 
     public Optional<StrategyDecision> evaluate(List<Candle> candles15m, double ivRank,
                                                StrategyConfig config, UnderlyingSymbol underlying) {
-        return evaluateWithDiagnostics(candles15m, ivRank, config, underlying).signal();
+        return evaluateWithDiagnostics(candles15m, ivRank, config, underlying, null).signal();
     }
 
     public StrategyDiagnostics.WithSignal evaluateWithDiagnostics(List<Candle> candles15m, double ivRank,
                                                                    StrategyConfig config, UnderlyingSymbol underlying) {
+        return evaluateWithDiagnostics(candles15m, ivRank, config, underlying, null);
+    }
+
+    public StrategyDiagnostics.WithSignal evaluateWithDiagnostics(List<Candle> candles15m, double ivRank,
+                                                                   StrategyConfig config, UnderlyingSymbol underlying,
+                                                                   LocalTime marketTime) {
         if (candles15m.size() < 21) {
             return new StrategyDiagnostics.WithSignal(Optional.empty(),
                     new StrategyDiagnostics("insufficientCandles(" + candles15m.size() + "/21)",
                             null, null, null, null, null, null, null, null));
         }
 
-        LocalTime now = LocalTime.now(IST);
+        // Bug fix: use passed marketTime (consistent with all other strategies, correct for backtesting)
+        // Fall back to LocalTime.now() only when marketTime is not provided (legacy callers)
+        LocalTime now = marketTime != null ? marketTime : LocalTime.now(IST);
         LocalTime entryCutoff = globalConfigService != null
                 ? globalConfigService.getEntryCutoffTime() : LocalTime.of(15, 10);
         LocalTime entryStart = globalConfigService != null
@@ -64,8 +72,11 @@ public class VolatilityBreakoutStrategy {
                     new StrategyDiagnostics("timeWindow", null, null, null, null, null, null, null, null));
         }
 
-        if (ivRank > config.getMaxIvRankForBuying().doubleValue()) {
-            log.debug("[VolBreakout] IV rank {} too high (max {})", ivRank, config.getMaxIvRankForBuying());
+        // Bug fix: null guard — getMaxIvRankForBuying() can be null if not configured
+        double maxIvRank = config.getMaxIvRankForBuying() != null
+                ? config.getMaxIvRankForBuying().doubleValue() : 50.0;
+        if (ivRank > maxIvRank) {
+            log.debug("[VolBreakout] IV rank {} too high (max {})", ivRank, maxIvRank);
             return new StrategyDiagnostics.WithSignal(Optional.empty(),
                     new StrategyDiagnostics("ivRankTooHigh(" + String.format("%.0f", ivRank) + ")",
                             null, null, null, null, null, null, null, null));

@@ -149,12 +149,27 @@ public class SmartOrderRouter {
      * Apply a buffer to the limit price to improve fill probability.
      * BUY: price + buffer (willing to pay slightly more)
      * SELL: price - buffer (willing to accept slightly less)
+     * Result is rounded to the exchange tick size (₹0.05 for NSE/BSE options).
      */
     private BigDecimal applyBuffer(BigDecimal price, com.algo.trade.domain.OrderSide side) {
         if (price == null || price.signum() <= 0) return price;
         BigDecimal buffer = price.multiply(BigDecimal.valueOf(limitBufferPercent / 100), MC);
-        return side == com.algo.trade.domain.OrderSide.BUY
-                ? price.add(buffer).setScale(2, java.math.RoundingMode.UP)
-                : price.subtract(buffer).setScale(2, java.math.RoundingMode.DOWN);
+        BigDecimal raw = side == com.algo.trade.domain.OrderSide.BUY
+                ? price.add(buffer)
+                : price.subtract(buffer);
+        return roundToTickSize(raw, side);
+    }
+
+    /**
+     * Round price to the nearest valid tick size (₹0.05 for NSE/BSE F&O).
+     * BUY: round UP to nearest tick (willing to pay more for fill)
+     * SELL: round DOWN to nearest tick (willing to accept less for fill)
+     */
+    private static BigDecimal roundToTickSize(BigDecimal price, com.algo.trade.domain.OrderSide side) {
+        BigDecimal tickSize = new BigDecimal("0.05");
+        java.math.RoundingMode mode = side == com.algo.trade.domain.OrderSide.BUY
+                ? java.math.RoundingMode.UP
+                : java.math.RoundingMode.DOWN;
+        return price.divide(tickSize, 0, mode).multiply(tickSize).setScale(2, java.math.RoundingMode.HALF_UP);
     }
 }

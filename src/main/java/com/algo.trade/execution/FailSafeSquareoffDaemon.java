@@ -77,6 +77,7 @@ public class FailSafeSquareoffDaemon {
         // Note: FailSafe does NOT check schedulerRegistry.isEnabled() — it's a safety net that must always run
         LocalTime now = LocalTime.now(IST);
         if (now.isBefore(getFailSafeTime())) return;
+        if (schedulerRegistry != null) schedulerRegistry.recordRun("failSafe");
 
         if (!failSafeInProgress.compareAndSet(false, true)) {
             log.debug("[FailSafe] Previous check still running, skipping");
@@ -137,7 +138,6 @@ public class FailSafeSquareoffDaemon {
                     + " trades NOT closed:\n" + String.join("\n", failures));
             log.error("[FailSafe] Partial square-off failure: {} trades not closed: {}", failures.size(), failures);
         }
-        if (schedulerRegistry != null) schedulerRegistry.recordRun("failSafe");
         } finally {
             failSafeInProgress.set(false);
         }

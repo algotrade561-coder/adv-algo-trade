@@ -34,6 +34,9 @@ public class PerformanceMetricsService {
     private final TradeRepository tradeRepository;
     private final TelegramAlertService telegramAlertService;
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.monitoring.SchedulerRegistry schedulerRegistry;
+
     private final AtomicReference<PerformanceSnapshot> latestSnapshot = new AtomicReference<>(PerformanceSnapshot.EMPTY);
 
     /** Alert thresholds. */
@@ -95,6 +98,7 @@ public class PerformanceMetricsService {
 
     @Scheduled(fixedDelay = 15_000, initialDelay = 10_000)
     public void compute() {
+        if (schedulerRegistry != null) schedulerRegistry.recordRun("performanceMetrics");
         try {
             Instant todayStart = LocalDate.now(IST).atStartOfDay(IST).toInstant();
             Instant last7Start = LocalDate.now(IST).minusDays(6).atStartOfDay(IST).toInstant();

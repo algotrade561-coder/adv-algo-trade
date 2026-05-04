@@ -57,12 +57,17 @@ public class EventDrivenBuyStrategy {
             return Optional.empty();
         }
 
+        if (spotPrice == null || spotPrice.signum() <= 0) {
+            log.warn("[EventDriven] Skipping pre-event signal — spotPrice is null/zero");
+            return Optional.empty();
+        }
+
         log.info("[EventDriven] Pre-event signal: event={} ivRank={} spot={}", upcomingEvent.get(), ivRank, spotPrice);
 
         // Signal BUY_CE as proxy for straddle — both legs handled by execution
         return Optional.of(new StrategyDecision(
                 Instant.now(), underlying, SignalType.BUY_CE,
-                spotPrice != null ? spotPrice : BigDecimal.ZERO,
+                spotPrice,
                 Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
                 Optional.empty(), Optional.empty(), Optional.of(OptionType.CE),
                 true, Optional.empty(), true,

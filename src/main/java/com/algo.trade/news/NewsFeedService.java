@@ -43,8 +43,12 @@ public class NewsFeedService {
         this.classifier = classifier;
     }
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.monitoring.SchedulerRegistry schedulerRegistry;
+
     @Scheduled(fixedDelay = 300_000)
     public void scheduledFetch() {
+        if (schedulerRegistry != null) schedulerRegistry.recordRun("newsFeed");
         if (!isMarketHours()) return;
         fetchAllFeeds();
     }

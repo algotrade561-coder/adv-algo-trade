@@ -101,9 +101,13 @@ public class IVRankTracker {
         return getIVRank(indexType) <= maxRank;
     }
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.monitoring.SchedulerRegistry schedulerRegistry;
+
     /** Persist current IV to DB every hour during market hours so restarts recover at most 1 hour of data. */
     @Scheduled(cron = "0 0 10,11,12,13,14 * * MON-FRI", zone = "Asia/Kolkata")
     public void recordIntradaySnapshot() {
+        if (schedulerRegistry != null) schedulerRegistry.recordRun("ivRankTracker");
         persistCurrentIV(false);
     }
 

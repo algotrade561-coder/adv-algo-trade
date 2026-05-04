@@ -22,8 +22,14 @@ public class EmaIndicator {
         }
 
         BigDecimal multiplier = BigDecimal.valueOf(2).divide(BigDecimal.valueOf(period + 1L), MATH_CONTEXT);
-        BigDecimal ema = values.getFirst();
-        for (int i = 1; i < values.size(); i++) {
+        // Seed with SMA of the first `period` values — single-value seed causes persistent bias
+        int seedEnd = Math.min(period, values.size());
+        BigDecimal sum = BigDecimal.ZERO;
+        for (int i = 0; i < seedEnd; i++) {
+            sum = sum.add(values.get(i));
+        }
+        BigDecimal ema = sum.divide(BigDecimal.valueOf(seedEnd), MATH_CONTEXT);
+        for (int i = seedEnd; i < values.size(); i++) {
             ema = values.get(i).subtract(ema).multiply(multiplier, MATH_CONTEXT).add(ema);
         }
         return ema;

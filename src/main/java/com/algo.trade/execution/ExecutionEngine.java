@@ -51,6 +51,8 @@ public class ExecutionEngine {
 
     private static final MathContext MATH_CONTEXT = MathContext.DECIMAL64;
     private static final Logger log = LoggerFactory.getLogger(ExecutionEngine.class);
+    /** NSE/BSE F&O tick size — all option prices must be multiples of ₹0.05. */
+    private static final BigDecimal TICK_SIZE = new BigDecimal("0.05");
 
     /** Prevents two monitors from placing duplicate broker SELL orders for the same trade. */
     private final Set<String> closingInProgress = ConcurrentHashMap.newKeySet();
@@ -60,6 +62,16 @@ public class ExecutionEngine {
      * Value = number of pending LIMIT orders that haven't filled/cancelled yet.
      */
     private final java.util.concurrent.atomic.AtomicInteger entriesInFlight = new java.util.concurrent.atomic.AtomicInteger(0);
+
+    /**
+     * Rejection circuit breaker — auto-halts entries after consecutive broker rejections.
+     * Prevents infinite order placement when broker keeps rejecting (tick size, margin, rate limit).
+     * Resets on any successful order placement.
+     */
+    private static final int MAX_CONSECUTIVE_REJECTIONS = 3;
+    private static final long REJECTION_HALT_DURATION_MS = 10 * 60 * 1000; // 10 minutes
+    private final java.util.concurrent.atomic.AtomicInteger consecutiveRejections = new java.util.concurrent.atomic.AtomicInteger(0);
+    private volatile long rejectionHaltUntilMs = 0;
 
     private final TradingProperties properties;
     private final GlobalConfigService globalConfigService;
@@ -412,7 +424,7 @@ public class ExecutionEngine {
         }
         OrderRequest orderRequest = validLastPrice
                 ? new OrderRequest("EXIT-" + UUID.randomUUID(), trade.getInstrumentKey(),
-                        OrderSide.SELL, OrderType.LIMIT, ProductType.MIS, trade.getQuantity(), Optional.of(lastPrice),
+                        OrderSide.SELL, OrderType.LIMIT, ProductType.MIS, trade.getQuantity(), Optional.of(roundToTick(lastPrice, OrderSide.SELL)),
                         "exit")
                 : new OrderRequest("EXIT-MKT-" + UUID.randomUUID(), trade.getInstrumentKey(),
                         OrderSide.SELL, OrderType.MARKET, ProductType.MIS, trade.getQuantity(), Optional.empty(),
@@ -503,7 +515,7 @@ public class ExecutionEngine {
         }
 
         OrderRequest orderRequest = new OrderRequest("PARTIAL-" + UUID.randomUUID(), trade.getInstrumentKey(),
-                OrderSide.SELL, OrderType.LIMIT, ProductType.MIS, partialQuantity, Optional.of(lastPrice),
+                OrderSide.SELL, OrderType.LIMIT, ProductType.MIS, partialQuantity, Optional.of(roundToTick(lastPrice, OrderSide.SELL)),
                 "partial-exit");
         OrderResponse order;
         try {
@@ -739,16 +751,15 @@ public class ExecutionEngine {
     private boolean entryAllowed(int openTradeCount) {
         int maxOpen = globalConfigService.getMaxOpenTrades();
         int maxPending = globalConfigService.getMaxPendingOrders();
-        // openTradeCount already includes pending orders from DB.
-        // entriesInFlight covers the brief gap between broker order placement
-        // and the order being persisted to DB (typically < 1 second).
-        // We use max() instead of sum to avoid double-counting.
+        // Count open trades + ALL pending orders (OPEN/NEW in DB) + in-flight orders not yet in DB.
+        // This prevents multiple entries within a single scan cycle from exceeding maxOpenTrades.
         int pendingFromDb = orderRepository.findByStatusIn(
                 List.of(com.algo.trade.domain.OrderStatus.OPEN, com.algo.trade.domain.OrderStatus.NEW)).size();
         int effectiveInFlight = Math.max(0, entriesInFlight.get() - pendingFromDb);
 
-        // Check both: total open positions AND pending order count
-        if ((openTradeCount + effectiveInFlight) >= maxOpen) return false;
+        // Total positions = open trades + pending orders + in-flight (not yet in DB)
+        int totalPositions = openTradeCount + pendingFromDb + effectiveInFlight;
+        if (totalPositions >= maxOpen) return false;
         if (pendingFromDb >= maxPending) return false;
         return true;
     }
@@ -1046,6 +1057,19 @@ public class ExecutionEngine {
         return currentPrice.subtract(previousPrice).abs()
                 .multiply(BigDecimal.valueOf(100), MATH_CONTEXT)
                 .divide(previousPrice, MATH_CONTEXT);
+    }
+
+    /**
+     * Round price to the nearest valid tick size (₹0.05 for NSE/BSE F&O).
+     * BUY: round UP to nearest tick (willing to pay more for fill)
+     * SELL: round DOWN to nearest tick (willing to accept less for fill)
+     */
+    static BigDecimal roundToTick(BigDecimal price, OrderSide side) {
+        if (price == null || price.signum() <= 0) return price;
+        java.math.RoundingMode mode = side == OrderSide.BUY
+                ? java.math.RoundingMode.UP
+                : java.math.RoundingMode.DOWN;
+        return price.divide(TICK_SIZE, 0, mode).multiply(TICK_SIZE).setScale(2, java.math.RoundingMode.HALF_UP);
     }
 
     private Instant todayStart() {

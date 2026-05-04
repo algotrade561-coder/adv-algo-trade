@@ -98,7 +98,9 @@ public class GapAndGoStrategy {
         // ── Gate 3: Gap and body must agree on direction ──
         boolean gapUp = gapPct > 0;
         boolean bodyUp = bodyPct > 0;
-        if (hasGap && gapUp != bodyUp) {
+        // Bug fix: check direction even for sub-threshold gaps — a -0.10% gap is still gap-down.
+        // Original only checked when hasGap=true (>= 0.15%), allowing CE signals on small gap-down days.
+        if (gapPct != 0 && gapUp != bodyUp) {
             return noTrade("gapBodyConflict(gap=" + String.format("%.2f", gapPct)
                     + "% body=" + String.format("%.2f", bodyPct) + "%)");
         }

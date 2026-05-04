@@ -145,6 +145,7 @@ public class LivePositionExitMonitor {
     @org.springframework.scheduling.annotation.Scheduled(fixedDelay = 60_000, initialDelay = 20_000)
     public void scheduledBackupCheck() {
         if (!schedulerRegistry.isEnabled("exitBackup")) return;
+        schedulerRegistry.recordRun("exitBackup");
         if (!tradingStateService.isExitAllowed()) return;
         List<TradeEntity> openTrades = tradeRepository.findByStatus(TradeStatus.OPEN);
         if (openTrades.isEmpty()) return;
@@ -159,7 +160,6 @@ public class LivePositionExitMonitor {
                 errorEventService.critical("ExitMonitor-Backup", "Error evaluating trade " + trade.getTradeId() + ": " + e.getMessage(), e);
             }
         }
-        schedulerRegistry.recordRun("exitBackup");
     }
 
     private void evaluate(TradeEntity trade) {

@@ -91,9 +91,12 @@ public class ExpiryGammaStrategy {
         double prevMove = prevCandle.close().subtract(prevCandle.open()).doubleValue();
         boolean accelerating;
         if (bullish) {
-            accelerating = latestMove > 0 && latestMove >= prevMove * 0.7; // latest candle at least 70% as strong
+            // Bug fix: require prevMove > 0 so a tiny bullish candle after a bearish candle
+            // doesn't satisfy latestMove >= prevMove*0.7 (which is always true when prevMove < 0)
+            accelerating = latestMove > 0 && prevMove > 0 && latestMove >= prevMove * 0.7;
         } else {
-            accelerating = latestMove < 0 && latestMove <= prevMove * 0.7;
+            // Same fix for bearish: require prevMove < 0
+            accelerating = latestMove < 0 && prevMove < 0 && latestMove <= prevMove * 0.7;
         }
         if (!accelerating) {
             return noTrade("momentumDecelerating");

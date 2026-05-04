@@ -55,7 +55,8 @@ public class SecurityConfig {
             log.info("Google auth DISABLED — all endpoints open");
             http
                 .csrf(csrf -> csrf.disable())
-                .authorizeHttpRequests(auth -> auth.anyRequest().permitAll());
+                .authorizeHttpRequests(auth -> auth.anyRequest().permitAll())
+                .headers(headers -> headers.frameOptions(frame -> frame.sameOrigin()));
             return http.build();
         }
 

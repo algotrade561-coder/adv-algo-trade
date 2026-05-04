@@ -52,6 +52,8 @@ public class SystemDiagnosticsService {
     private final TradeRepository tradeRepository;
     private final OrderRepository orderRepository;
     private final ErrorEventRepository errorEventRepository;
+    private final com.algo.trade.marketdata.ExpiryCalendar expiryCalendar;
+    private final com.algo.trade.marketdata.InstrumentCache instrumentCache;
 
     // Counters
     private final AtomicLong restCallCount = new AtomicLong();
@@ -86,7 +88,9 @@ public class SystemDiagnosticsService {
                                      TradeRepository tradeRepository,
                                      OrderRepository orderRepository,
                                      ErrorEventRepository errorEventRepository,
-                                     com.algo.trade.notification.TelegramAlertService telegramAlertService) {
+                                     com.algo.trade.notification.TelegramAlertService telegramAlertService,
+                                     com.algo.trade.marketdata.ExpiryCalendar expiryCalendar,
+                                     com.algo.trade.marketdata.InstrumentCache instrumentCache) {
         this.webSocketClient = webSocketClient;
         this.tokenStore = tokenStore;
         this.liveInstrumentCache = liveInstrumentCache;
@@ -98,6 +102,8 @@ public class SystemDiagnosticsService {
         this.orderRepository = orderRepository;
         this.errorEventRepository = errorEventRepository;
         this.telegramAlertService = telegramAlertService;
+        this.expiryCalendar = expiryCalendar;
+        this.instrumentCache = instrumentCache;
     }
 
     @jakarta.annotation.PostConstruct
@@ -147,6 +153,7 @@ public class SystemDiagnosticsService {
         int subscribedTokenCount = webSocketClient.getSubscribedTokenCount();
         int wsSubscribeCount = webSocketClient.getSubscribeCount();
         int wsReconnectCount = webSocketClient.getReconnectCount();
+        int wsZombieReconnectCount = webSocketClient.getZombieReconnectCount();
         Instant lastTickTime = webSocketClient.getLastTickTime();
         Instant lastConnectTime = webSocketClient.getLastConnectTime();
         Instant lastSubscribeTime = webSocketClient.getLastSubscribeTime();
@@ -202,6 +209,7 @@ public class SystemDiagnosticsService {
         systemHealth.put("wsSubscribedTokens", subscribedTokenCount);
         systemHealth.put("wsSubscribeCount", wsSubscribeCount);
         systemHealth.put("wsReconnectCount", wsReconnectCount);
+        systemHealth.put("wsZombieReconnectCount", wsZombieReconnectCount);
         systemHealth.put("wsLastTickAge", tickAgeSec >= 0 ? tickAgeSec + "s" : "never");
         systemHealth.put("wsLastConnectAge", connectAgeSec >= 0 ? connectAgeSec + "s" : "never");
         systemHealth.put("wsLastSubscribeAge", subscribeAgeSec >= 0 ? subscribeAgeSec + "s" : "never");
@@ -252,7 +260,12 @@ public class SystemDiagnosticsService {
         for (IndexType idx : enabledIndices) {
             String key = idx.name().toLowerCase();
             try {
-                var chain = liveInstrumentCache.getStrikeChain(idx, java.time.LocalDate.now());
+                // Use instrument cache's nearest expiry (matches actual Zerodha contracts)
+                // Fall back to ExpiryCalendar's weekly expiry if instrument cache has no data
+                var underlying = com.algo.trade.domain.UnderlyingSymbol.valueOf(idx.name());
+                LocalDate expiry = instrumentCache.nearestExpiry(underlying, LocalDate.now())
+                        .orElseGet(() -> expiryCalendar.getCurrentWeeklyExpiry(idx));
+                var chain = liveInstrumentCache.getStrikeChain(idx, expiry);
                 dataHealth.put(key + "OptionChainSize", chain.size());
                 long optionsWithOI = chain.stream().filter(o -> o.getOpenInterest() > 0).count();
                 dataHealth.put(key + "OptionsWithLiveOI", optionsWithOI);
@@ -317,6 +330,7 @@ public class SystemDiagnosticsService {
         if (!brokerAuthenticated) alerts.add("🔴 Broker not authenticated — orders will fail");
         if (scanGapSeconds > 300) alerts.add("🔴 No scan in " + scanGapSeconds + "s — scanner stuck");
         if (wsReconnectCount > 5) alerts.add("🟡 WebSocket reconnected " + wsReconnectCount + "x today — unstable");
+        if (wsZombieReconnectCount > 0) alerts.add("🟡 WebSocket zombie recovered " + wsZombieReconnectCount + "x today");
         // Data alerts
         if (vix <= 0) alerts.add("🔴 VIX feed unavailable — entries blocked");
         for (IndexType idx : enabledIndices) {

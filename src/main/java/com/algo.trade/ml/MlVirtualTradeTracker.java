@@ -145,6 +145,7 @@ public class MlVirtualTradeTracker {
     @Scheduled(fixedDelay = 10_000)
     public void evaluateOpenTrades() {
         if (schedulerRegistry != null && !schedulerRegistry.isEnabled("mlVirtualTrades")) return;
+        if (schedulerRegistry != null) schedulerRegistry.recordRun("mlVirtualTrades");
         if (openTrades.isEmpty()) return;
 
         LocalTime now = LocalTime.now(IST);
@@ -157,7 +158,6 @@ public class MlVirtualTradeTracker {
                 log.debug("[ML-VirtualTrade] Error evaluating {}: {}", vt.virtualTradeId, e.getMessage());
             }
         }
-        if (schedulerRegistry != null) schedulerRegistry.recordRun("mlVirtualTrades");
     }
 
     private void evaluateTrade(VirtualTrade vt, LocalTime now) {

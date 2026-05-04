@@ -24,6 +24,9 @@ public class SafeWeekPredictor {
     private final IVRankTracker ivRankTracker;
     private final WeeklyExposureTracker weeklyExposure;
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.monitoring.SchedulerRegistry schedulerRegistry;
+
     private volatile int currentScore = 50;
     private volatile String currentRisk = "MODERATE";
 
@@ -37,6 +40,7 @@ public class SafeWeekPredictor {
     @Scheduled(fixedDelay = 60_000, initialDelay = 40_000)
     public void evaluate() {
         if (!isMarketHours()) return;
+        if (schedulerRegistry != null) schedulerRegistry.recordRun("safeWeekPredictor");
         int score = 50;
 
         double vix = marketGuard.getCurrentVix();

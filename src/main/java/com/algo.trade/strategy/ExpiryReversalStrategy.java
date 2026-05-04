@@ -155,7 +155,7 @@ public class ExpiryReversalStrategy {
         );
         return new StrategyDiagnostics.WithSignal(Optional.of(signal),
                 new StrategyDiagnostics(null, null, null, direction, LOOK_BACK_CANDLES,
-                        null, null, Math.abs(spikePct), spikePct > MIN_SPIKE_PERCENT));
+                        null, null, Math.abs(spikePct), Math.abs(spikePct) > MIN_SPIKE_PERCENT));
     }
 
     private static StrategyDiagnostics.WithSignal noTrade(String reason) {

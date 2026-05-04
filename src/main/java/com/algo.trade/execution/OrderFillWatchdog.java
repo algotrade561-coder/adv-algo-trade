@@ -28,6 +28,9 @@ public class OrderFillWatchdog {
     private final BrokerClient brokerClient;
     private final ExecutionEngine executionEngine;
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.monitoring.SchedulerRegistry schedulerRegistry;
+
     /** Prevents concurrent watchdog runs from creating duplicate trades. */
     private final java.util.concurrent.atomic.AtomicBoolean checkInProgress =
             new java.util.concurrent.atomic.AtomicBoolean(false);
@@ -48,6 +51,7 @@ public class OrderFillWatchdog {
             log.debug("OrderFillWatchdog: previous check still running, skipping");
             return;
         }
+        if (schedulerRegistry != null) schedulerRegistry.recordRun("orderFillWatchdog");
         try {
             List<OrderEntity> pending = orderRepository.findByStatusIn(
                     List.of(OrderStatus.OPEN, OrderStatus.NEW));

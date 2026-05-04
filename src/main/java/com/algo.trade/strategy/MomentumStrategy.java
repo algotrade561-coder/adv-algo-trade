@@ -42,8 +42,17 @@ public class MomentumStrategy {
         return evaluateWithDiagnostics(candles, marketTime, config, underlying).signal();
     }
 
+    // No trades in the noisy open (first 15 min) or illiquid close (last 30 min)
+    private static final LocalTime MARKET_OPEN_GUARD  = LocalTime.of(9, 30);
+    private static final LocalTime MARKET_CLOSE_GUARD = LocalTime.of(15, 0);
+
     public StrategyDiagnostics.WithSignal evaluateWithDiagnostics(List<Candle> candles, LocalTime marketTime,
                                                                     StrategyConfig config, UnderlyingSymbol underlying) {
+        // Bug fix: time filter was accepted but never applied
+        if (marketTime != null && (marketTime.isBefore(MARKET_OPEN_GUARD) || marketTime.isAfter(MARKET_CLOSE_GUARD))) {
+            return noTrade("outsideTradingWindow(" + marketTime + ")");
+        }
+
         if (candles.size() < Math.max(ROC_PERIOD * 2 + 1, EMA_PERIOD + 1)) {
             return noTrade("notEnoughCandles(" + candles.size() + ")");
         }
@@ -73,7 +82,11 @@ public class MomentumStrategy {
                 .multiply(BigDecimal.valueOf(100)).doubleValue();
 
         boolean bullish = roc > 0;
-        boolean accelerating = bullish ? (roc > prevRoc) : (roc < prevRoc);
+        // Bug fix: require prevRoc to be same-direction so reversals don't pass as "acceleration"
+        // e.g. prevRoc=+0.2, roc=-0.35 used to satisfy (roc < prevRoc) even though it's a reversal
+        boolean accelerating = bullish
+                ? (prevRoc >= 0 && roc > prevRoc)
+                : (prevRoc <= 0 && roc < prevRoc);
         if (!accelerating) {
             return noTrade("rocDecelerating(roc=" + String.format("%.2f", roc) + ",prev=" + String.format("%.2f", prevRoc) + ")");
         }
@@ -89,9 +102,11 @@ public class MomentumStrategy {
 
         // 4. Volume confirmation
         long latestVolume = candles.get(size - 1).volume();
-        double avgVolume = candles.subList(Math.max(0, size - 5), size).stream()
+        // Bug fix: use prior 5 candles (exclude current) so the average isn't self-contaminated
+        double avgVolume = candles.subList(Math.max(0, size - 6), size - 1).stream()
                 .mapToLong(Candle::volume).average().orElse(0);
-        if (avgVolume > 0 && latestVolume < avgVolume * MIN_VOLUME_RATIO) {
+        // Bug fix: zero-average means dead market — block rather than skip
+        if (avgVolume <= 0 || latestVolume < avgVolume * MIN_VOLUME_RATIO) {
             return noTrade("lowVolume(latest=" + latestVolume + ",avg=" + String.format("%.0f", avgVolume) + ")");
         }
 
@@ -141,8 +156,15 @@ public class MomentumStrategy {
     private double calculateEma(List<Candle> candles, int period) {
         if (candles.size() < period) return 0;
         double multiplier = 2.0 / (period + 1);
-        double ema = candles.get(candles.size() - period).close().doubleValue();
-        for (int i = candles.size() - period + 1; i < candles.size(); i++) {
+        // Bug fix: seed with SMA of first `period` candles, not a single price point
+        int startIdx = Math.max(0, candles.size() - period * 2);
+        double ema = 0;
+        int smaEnd = startIdx + period;
+        for (int i = startIdx; i < smaEnd && i < candles.size(); i++) {
+            ema += candles.get(i).close().doubleValue();
+        }
+        ema /= period;
+        for (int i = smaEnd; i < candles.size(); i++) {
             ema = (candles.get(i).close().doubleValue() - ema) * multiplier + ema;
         }
         return ema;

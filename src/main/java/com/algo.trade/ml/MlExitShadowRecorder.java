@@ -155,6 +155,7 @@ public class MlExitShadowRecorder {
     @Scheduled(fixedDelay = 300_000, initialDelay = 120_000)
     public void enrichOutcomes() {
         if (schedulerRegistry != null && !schedulerRegistry.isEnabled("mlExitEnrich")) return;
+        if (schedulerRegistry != null) schedulerRegistry.recordRun("mlExitEnrich");
         if (pendingOutcomes.isEmpty()) return;
 
         List<PendingExitRow> toProcess = new ArrayList<>();
@@ -183,7 +184,6 @@ public class MlExitShadowRecorder {
         if (enriched > 0) {
             log.info("ML exit shadow: enriched {} rows with outcomes", enriched);
         }
-        if (schedulerRegistry != null) schedulerRegistry.recordRun("mlExitEnrich");
     }
 
     /**

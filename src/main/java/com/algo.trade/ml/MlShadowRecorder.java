@@ -174,6 +174,7 @@ public class MlShadowRecorder {
     @Scheduled(fixedDelay = 300_000, initialDelay = 60_000)
     public void enrichOutcomes() {
         if (schedulerRegistry != null && !schedulerRegistry.isEnabled("mlOutcomeEnrich")) return;
+        if (schedulerRegistry != null) schedulerRegistry.recordRun("mlOutcomeEnrich");
         if (pendingOutcomes.isEmpty()) return;
 
         List<PendingRow> toProcess = new ArrayList<>();
@@ -203,7 +204,6 @@ public class MlShadowRecorder {
         if (enriched > 0) {
             log.info("ML shadow: enriched {} rows with trade outcomes", enriched);
         }
-        if (schedulerRegistry != null) schedulerRegistry.recordRun("mlOutcomeEnrich");
     }
 
     /**
