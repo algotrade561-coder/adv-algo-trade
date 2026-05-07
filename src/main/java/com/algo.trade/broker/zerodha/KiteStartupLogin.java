@@ -88,31 +88,37 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
      */
     @org.springframework.context.event.EventListener
     public void onCandleCloseAtmCheck(com.algo.trade.domain.CandleClosedEvent event) {
-        if (event.timeframe() != com.algo.trade.domain.Timeframe.ONE_MINUTE) return;
-        if (!webSocketConnected) return;
-        long now = System.currentTimeMillis();
-        if ((now - lastResubscribeTimeMs) < RESUBSCRIBE_DEBOUNCE_MS) return;
+        try {
+            if (event.timeframe() != com.algo.trade.domain.Timeframe.ONE_MINUTE) return;
+            // Use live connection state — webSocketConnected stays true after startup and
+            // doesn't reflect force-reconnect gaps, so check the actual socket state instead.
+            if (!webSocketClient.isConnected()) return;
+            long now = System.currentTimeMillis();
+            if ((now - lastResubscribeTimeMs) < RESUBSCRIBE_DEBOUNCE_MS) return;
 
-        // Quick check: has any underlying's ATM drifted beyond threshold?
-        boolean needsResub = false;
-        for (var underlying : tradingStateService.enabledUnderlyings()) {
-            var indexType = com.algo.trade.domain.IndexType.from(underlying);
-            double currentSpot = liveInstrumentCache.getFuturesPrice(indexType);
-            if (currentSpot <= 0) continue;
-            int currentAtm = indexType.roundToATM(currentSpot);
-            Integer prevAtm = lastSubscribedAtm.get(indexType);
-            if (prevAtm != null) {
-                int strikeDrift = Math.abs(currentAtm - prevAtm) / indexType.strikeInterval();
-                if (strikeDrift >= RESUBSCRIBE_STRIKE_THRESHOLD) {
-                    needsResub = true;
-                    break;
+            // Quick check: has any underlying's ATM drifted beyond threshold?
+            boolean needsResub = false;
+            for (var underlying : tradingStateService.enabledUnderlyings()) {
+                var indexType = com.algo.trade.domain.IndexType.from(underlying);
+                double currentSpot = liveInstrumentCache.getFuturesPrice(indexType);
+                if (currentSpot <= 0) continue;
+                int currentAtm = indexType.roundToATM(currentSpot);
+                Integer prevAtm = lastSubscribedAtm.get(indexType);
+                if (prevAtm != null) {
+                    int strikeDrift = Math.abs(currentAtm - prevAtm) / indexType.strikeInterval();
+                    if (strikeDrift >= RESUBSCRIBE_STRIKE_THRESHOLD) {
+                        needsResub = true;
+                        break;
+                    }
                 }
             }
-        }
-        if (needsResub) {
-            lastResubscribeTimeMs = now;
-            org.slf4j.LoggerFactory.getLogger(getClass()).info("[ATM-Drift] Immediate resubscription triggered by candle close");
-            resubscribeIfAtmMoved();
+            if (needsResub) {
+                lastResubscribeTimeMs = now;
+                log.info("[ATM-Drift] Immediate resubscription triggered by candle close");
+                resubscribeIfAtmMoved();
+            }
+        } catch (Exception e) {
+            log.warn("[ATM-Drift] onCandleCloseAtmCheck threw — resubscription skipped: {}", e.getMessage(), e);
         }
     }
 
@@ -148,7 +154,18 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
         log.info("Kite startup login started. Application startup will wait until the access token is captured.");
         KiteLoginResult result = kiteAuthService.login();
         if (result == null) {
-            throw new IllegalStateException("Kite startup login did not return a session");
+            // Auth timed out (common on EC2 where no browser opens automatically).
+            // Do NOT crash — stay alive so the operator can authenticate via the UI or
+            // by setting KITE_ACCESS_TOKEN and calling /auth/kite/session.
+            log.warn("[KiteStartup] Auth timed out or returned no session. "
+                    + "App running in auth-pending mode — scanner will not auto-start. "
+                    + "Authenticate via /advalgotrade/auth/kite or set KITE_ACCESS_TOKEN env var.");
+            if (errorEventService != null) {
+                errorEventService.high("KiteStartup",
+                        "Kite login timed out — app is running but scanner is not started. "
+                        + "Re-authenticate via the UI auth page.");
+            }
+            return;
         }
         log.info("Kite startup login completed: userId={}", result.userId());
         startScannerAfterLoginIfConfigured();

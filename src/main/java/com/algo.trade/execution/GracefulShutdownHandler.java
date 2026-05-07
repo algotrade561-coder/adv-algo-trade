@@ -52,6 +52,15 @@ public class GracefulShutdownHandler {
         log.warn("[Shutdown] Application shutting down — closing open positions");
         alertService.systemAlert("⚠️ Application shutting down — closing open positions");
 
+        // Disconnect WebSocket FIRST — stops incoming ticks from firing CandleClosedEvents
+        // against an EntityManagerFactory that is about to be torn down.
+        try {
+            webSocketClient.disconnect();
+            log.info("[Shutdown] WebSocket disconnected");
+        } catch (Exception e) {
+            log.debug("[Shutdown] WebSocket disconnect error: {}", e.getMessage());
+        }
+
         List<TradeEntity> openTrades = tradeRepository.findByStatus(TradeStatus.OPEN);
         if (!openTrades.isEmpty()) {
             log.warn("[Shutdown] {} open trades to close", openTrades.size());
@@ -61,11 +70,10 @@ public class GracefulShutdownHandler {
                     continue;
                 }
                 try {
-                    // Use live market price, not stale entry price
                     java.math.BigDecimal exitPrice = marketDataService.quote(trade.getInstrumentKey())
                             .map(q -> q.lastPrice())
                             .filter(p -> p != null && p.signum() > 0)
-                            .orElse(trade.getEntryPrice()); // fallback to entry price if no quote
+                            .orElse(trade.getEntryPrice());
                     executionEngine.closeTrade(trade.getTradeId(), exitPrice, "Graceful shutdown");
                     log.info("[Shutdown] Closed: tradeId={} exitPrice={}", trade.getTradeId(), exitPrice);
                 } catch (Exception e) {
@@ -73,13 +81,6 @@ public class GracefulShutdownHandler {
                     errorEventService.critical("GracefulShutdown", "Failed to close trade " + trade.getTradeId() + ": " + e.getMessage(), e);
                 }
             }
-        }
-
-        // Disconnect WebSocket
-        try {
-            webSocketClient.disconnect();
-        } catch (Exception e) {
-            log.debug("[Shutdown] WebSocket disconnect error: {}", e.getMessage());
         }
 
         log.info("[Shutdown] Graceful shutdown complete");

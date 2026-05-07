@@ -78,7 +78,12 @@ public class LiveCandleBuilder {
             // Period closed — publish event and start new candle
             Candle closed = open.toCandle(String.valueOf(token), tf);
             getHistory(key).add(closed);
-            eventPublisher.publishEvent(new CandleClosedEvent(closed, tf, token));
+            try {
+                eventPublisher.publishEvent(new CandleClosedEvent(closed, tf, token));
+            } catch (Exception e) {
+                log.error("CandleClosedEvent listener threw — scan may have been skipped: token={} tf={} error={}",
+                        token, tf, e.getMessage(), e);
+            }
             log.debug("Candle closed: token={} tf={} close={}", token, tf, closed.close());
             open = null;
         }
@@ -101,6 +106,17 @@ public class LiveCandleBuilder {
     /** Returns true if at least one tick has arrived for this token+timeframe (open candle exists). */
     public boolean hasOpenCandle(long instrumentToken, Timeframe tf) {
         return openCandles.containsKey(instrumentToken + ":" + tf.name());
+    }
+
+    /**
+     * Discard all in-progress open candles after a WebSocket reconnect.
+     * Partial candles built from ticks before the disconnect have incomplete OHLCV data.
+     * Fresh ticks will start clean new candles from the current bucket.
+     */
+    public void clearOpenCandles() {
+        int cleared = openCandles.size();
+        openCandles.clear();
+        log.info("Open candles cleared after WebSocket reconnect: {} discarded", cleared);
     }
 
     /** Seed history from REST historical candles fetched on startup. */

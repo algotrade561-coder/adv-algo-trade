@@ -60,7 +60,13 @@ public class SpreadPositionExitMonitor {
     @EventListener
     public void onCandleClose(CandleClosedEvent event) {
         if (!tradingStateService.isExitAllowed()) return;
-        List<PositionGroupEntity> openGroups = positionGroupRepository.findByOpenTrue();
+        List<PositionGroupEntity> openGroups;
+        try {
+            openGroups = positionGroupRepository.findByOpenTrue();
+        } catch (Exception e) {
+            log.warn("[SpreadExitMonitor] DB unavailable on candle close — skipping: {}", e.getMessage());
+            return;
+        }
         if (openGroups.isEmpty()) return;
 
         for (PositionGroupEntity entity : openGroups) {

@@ -287,12 +287,13 @@ public class KiteWebSocketClient {
     // ── Internal ──────────────────────────────────────────────────────────────
 
     private void doConnect() {
-        if (tokenStore.accessToken().isEmpty()) return;
-        // Get apiKey from KiteCredentialResolver via tokenStore context
-        // We use the stored access token directly
-        String accessToken = tokenStore.accessToken().orElseThrow();
-        // apiKey is embedded in the token store context — read from properties via tokenStore
-        // For simplicity, we extract it from the Authorization header pattern
+        // Single atomic read — prevents race between isEmpty() check and orElseThrow()
+        java.util.Optional<String> tokenOpt = tokenStore.accessToken();
+        if (tokenOpt.isEmpty()) {
+            log.warn("[WS] Cannot connect: no access token");
+            return;
+        }
+        String accessToken = tokenOpt.get();
         String url = "wss://ws.kite.trade?api_key=" + getApiKey() + "&access_token=" + accessToken;
         Request req = new Request.Builder().url(url).build();
         webSocket = httpClient.newWebSocket(req, new TickListener());
@@ -334,6 +335,8 @@ public class KiteWebSocketClient {
             connected = true;
             reconnectDelay.set(5);
             lastConnectTime = Instant.now();
+            lastTickTime = Instant.now();
+            candleBuilder.clearOpenCandles();
             log.info("[WS] Connected to Kite WebSocket");
             if (!subscribedTokens.isEmpty()) {
                 sendSubscribe(ws, subscribedTokens);

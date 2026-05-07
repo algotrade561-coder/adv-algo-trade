@@ -51,6 +51,15 @@ public class ZerodhaBrokerClient implements BrokerClient {
     private static final DateTimeFormatter KITE_TIMESTAMP_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ssZ");
     private static final Logger log = LoggerFactory.getLogger(ZerodhaBrokerClient.class);
 
+    /** Open circuit after this many consecutive 5xx responses across any API call. */
+    private static final int CIRCUIT_OPEN_THRESHOLD = 5;
+    /** How long to keep circuit open before allowing a probe attempt. */
+    private static final long CIRCUIT_OPEN_DURATION_MS = 5 * 60 * 1000L;
+
+    private final java.util.concurrent.atomic.AtomicInteger consecutive5xx =
+            new java.util.concurrent.atomic.AtomicInteger(0);
+    private volatile long circuitOpenedAtMs = 0;
+
     private final TradingProperties properties;
     private final RestClient restClient;
     private final ObjectMapper objectMapper;
@@ -300,29 +309,58 @@ public class ZerodhaBrokerClient implements BrokerClient {
     }
 
     private <T> T retryWithBackoff(String operationName, Callable<T> operation) {
+        // Circuit breaker: if Zerodha API has been returning sustained 5xx errors,
+        // stop hammering it and fail fast until the backoff window passes.
+        long now = System.currentTimeMillis();
+        if (consecutive5xx.get() >= CIRCUIT_OPEN_THRESHOLD) {
+            long elapsed = now - circuitOpenedAtMs;
+            if (elapsed < CIRCUIT_OPEN_DURATION_MS) {
+                throw new BrokerException("Zerodha API circuit open (5xx count=" + consecutive5xx.get()
+                        + ", opens in " + ((CIRCUIT_OPEN_DURATION_MS - elapsed) / 1000) + "s): " + operationName);
+            }
+            // Backoff window passed — allow one probe attempt; reset on success
+            log.info("[Circuit] Probe attempt after backoff: operation={}", operationName);
+        }
+
         int retries = properties.safety().brokerRetryCount();
         long backoffMs = properties.safety().brokerRetryBackoff().toMillis();
         for (int attempt = 0; attempt <= retries; attempt++) {
             try {
-                return operation.call();
+                T result = operation.call();
+                // Success — reset 5xx counter
+                if (consecutive5xx.get() > 0) {
+                    log.info("[Circuit] Zerodha API recovered after {} 5xx errors: operation={}", consecutive5xx.get(), operationName);
+                    consecutive5xx.set(0);
+                }
+                return result;
             } catch (Exception ex) {
                 if (!(ex instanceof RestClientException)) {
                     throw new BrokerException("Zerodha operation failed: " + operationName, ex);
                 }
+                String msg = ex.getMessage();
+                boolean is5xx = msg != null && (msg.contains("502") || msg.contains("503")
+                        || msg.contains("504") || msg.contains("500") || msg.contains("5 "));
+                if (is5xx) {
+                    int count = consecutive5xx.incrementAndGet();
+                    if (count >= CIRCUIT_OPEN_THRESHOLD) {
+                        circuitOpenedAtMs = System.currentTimeMillis();
+                        log.error("[Circuit] Zerodha API circuit OPENED after {} consecutive 5xx errors — "
+                                + "backing off for {}min: operation={} message={}",
+                                count, CIRCUIT_OPEN_DURATION_MS / 60000, operationName, msg);
+                    }
+                }
                 if (attempt >= retries) {
                     throw (RestClientException) ex;
                 }
-                // Longer backoff on 429 (rate limit) — Zerodha throttles at ~3 req/sec
                 long sleepMs;
-                String msg = ex.getMessage();
                 if (msg != null && (msg.contains("429") || msg.contains("Too Many"))) {
                     sleepMs = Math.max(3000, backoffMs * (1L << (attempt + 2)));
-                    log.warn("Zerodha 429 rate limit hit; backing off: operation={}, attempt={}, backoffMs={}",
+                    log.warn("Zerodha 429 rate limit; backing off: operation={}, attempt={}, backoffMs={}",
                             operationName, attempt + 1, sleepMs);
                 } else {
                     sleepMs = backoffMs * (1L << attempt);
                     log.warn("Zerodha operation failed; retrying: operation={}, attempt={}, maxRetries={}, backoffMs={}, message={}",
-                            operationName, attempt + 1, retries, sleepMs, ex.getMessage());
+                            operationName, attempt + 1, retries, sleepMs, msg);
                 }
                 sleep(sleepMs);
             }
