@@ -170,7 +170,14 @@ public class LivePositionExitMonitor {
             // causing OptimisticLockException on subsequent saves.
             TradeEntity t = tradeRepository.findById(trade.getTradeId()).orElse(null);
             if (t == null || t.getStatus() != TradeStatus.OPEN) return;
-            evaluateInternal(t);
+            try {
+                evaluateInternal(t);
+            } catch (org.springframework.orm.ObjectOptimisticLockingFailureException e) {
+                // Another thread (closeTrade, PositionSync) modified this trade concurrently.
+                // This is harmless — the next evaluation cycle will pick up the fresh state.
+                log.debug("[ExitMonitor] OptimisticLock on trade {} — concurrent modification, will retry next cycle",
+                        trade.getTradeId());
+            }
         }
     }
 

@@ -62,13 +62,7 @@ public class SecurityConfig {
 
         log.info("Google auth ENABLED — protecting all endpoints");
         http
-            .csrf(csrf -> csrf
-                // Disable CSRF for API endpoints (they use JSON, not forms)
-                .ignoringRequestMatchers("/auth/kite/**", "/api/**", "/global-config/**",
-                        "/trading/**", "/strategies/**", "/ml/**", "/analytics/**",
-                        "/diagnostics/**", "/monitoring/**", "/backtest/**",
-                        "/h2-console/**")
-            )
+            .csrf(csrf -> csrf.disable())
             .authorizeHttpRequests(auth -> auth
                 // Public: Kite OAuth callback (broker auth, not user auth)
                 .requestMatchers("/auth/kite/**").permitAll()
