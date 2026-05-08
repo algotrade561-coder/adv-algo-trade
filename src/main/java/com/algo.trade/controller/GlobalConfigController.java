@@ -99,15 +99,12 @@ public class GlobalConfigController {
         m.put("maxRiskPerTradePercent", c.getMaxRiskPerTradePercent());
         m.put("maxDailyLossPercent", c.getMaxDailyLossPercent());
         m.put("maxTradesPerDay", c.getMaxTradesPerDay());
-        m.put("maxOrdersPerDay", c.getMaxOrdersPerDay());
         m.put("maxConsecutiveLosses", c.getMaxConsecutiveLosses());
         m.put("maxOpenTrades", c.getMaxOpenTrades());
-        m.put("sameInstrumentReentryMinPriceMovePercent", c.getSameInstrumentReentryMinPriceMovePercent());
         m.put("cooldownMinutes", c.getCooldownMinutes());
         m.put("maxOpenPositionsPerStrategy", c.getMaxOpenPositionsPerStrategy());
         m.put("dailyProfitTarget", c.getDailyProfitTarget());
         m.put("maxLotsPerTrade", c.getMaxLotsPerTrade());
-        m.put("maxTradesPerHour", c.getMaxTradesPerHour());
         m.put("mlVirtualTradeThreshold", c.getMlVirtualTradeThreshold());
         // Execution tuning
         m.put("limitOrderCancelMinutes", c.getLimitOrderCancelMinutes());

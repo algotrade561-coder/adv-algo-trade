@@ -153,13 +153,9 @@ public class GlobalConfigService {
 
     public int getMaxTradesPerDay() { return cached.getMaxTradesPerDay(); }
 
-    public int getMaxOrdersPerDay() { return cached.getMaxOrdersPerDay(); }
-
     public int getMaxConsecutiveLosses() { return cached.getMaxConsecutiveLosses(); }
 
     public int getMaxOpenTrades() { return cached.getMaxOpenTrades(); }
-
-    public BigDecimal getSameInstrumentReentryMinPriceMovePercent() { return cached.getSameInstrumentReentryMinPriceMovePercent(); }
 
     public int getCooldownMinutes() { return cached.getCooldownMinutes(); }
 
@@ -168,8 +164,6 @@ public class GlobalConfigService {
     public BigDecimal getDailyProfitTarget() { return cached.getDailyProfitTarget(); }
 
     public int getMaxLotsPerTrade() { return cached.getMaxLotsPerTrade(); }
-
-    public int getMaxTradesPerHour() { return cached.getMaxTradesPerHour(); }
 
     public BigDecimal getMlVirtualTradeThreshold() { return cached.getMlVirtualTradeThreshold(); }
 
@@ -222,9 +216,6 @@ public class GlobalConfigService {
         }
         if (config.getMaxTradesPerDay() < 1) {
             throw new IllegalArgumentException("maxTradesPerDay must be >= 1");
-        }
-        if (config.getMaxOrdersPerDay() < 1) {
-            throw new IllegalArgumentException("maxOrdersPerDay must be >= 1");
         }
         if (config.getMaxLotsPerTrade() < 1) {
             throw new IllegalArgumentException("maxLotsPerTrade must be >= 1");

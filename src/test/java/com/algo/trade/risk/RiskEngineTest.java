@@ -41,7 +41,6 @@ class RiskEngineTest {
         when(globalConfigService.getMaxRiskPerTradePercent()).thenReturn(BigDecimal.valueOf(1.2));
         when(globalConfigService.getMaxDailyLossPercent()).thenReturn(BigDecimal.valueOf(3));
         when(globalConfigService.getDailyProfitTarget()).thenReturn(BigDecimal.ZERO);
-        when(globalConfigService.getMaxTradesPerHour()).thenReturn(0);
         tradingStateService = new TradingStateService(props, globalConfigService, mock(com.algo.trade.underlying.UnderlyingConfigService.class));
         riskEngine = new RiskEngine(globalConfigService, props, mockConfigService, tradingStateService, null);
     }
@@ -87,7 +86,6 @@ class RiskEngineTest {
         when(multiGlobalConfig.getMaxRiskPerTradePercent()).thenReturn(BigDecimal.valueOf(1.2));
         when(multiGlobalConfig.getMaxDailyLossPercent()).thenReturn(BigDecimal.valueOf(3));
         when(multiGlobalConfig.getDailyProfitTarget()).thenReturn(BigDecimal.ZERO);
-        when(multiGlobalConfig.getMaxTradesPerHour()).thenReturn(0);
         TradingStateService multiTradingState = new TradingStateService(multiTradeProps, multiGlobalConfig, mock(com.algo.trade.underlying.UnderlyingConfigService.class));
         multiTradingState.start();
         multiTradingState.approveToday();

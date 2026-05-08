@@ -59,17 +59,14 @@ class ExecutionEngineTest {
     @BeforeEach
     void setUp() {
         // Set up GlobalConfigService mock with default risk values
-        when(globalConfigService.getMaxOrdersPerDay()).thenReturn(6);
         when(globalConfigService.getMaxOpenTrades()).thenReturn(1);
         when(globalConfigService.getMaxTradesPerDay()).thenReturn(6);
         when(globalConfigService.getMaxConsecutiveLosses()).thenReturn(2);
         when(globalConfigService.getTotalCapital()).thenReturn(BigDecimal.valueOf(300_000));
         when(globalConfigService.getMaxRiskPerTradePercent()).thenReturn(BigDecimal.valueOf(1.2));
         when(globalConfigService.getMaxDailyLossPercent()).thenReturn(BigDecimal.valueOf(3));
-        when(globalConfigService.getSameInstrumentReentryMinPriceMovePercent()).thenReturn(BigDecimal.TEN);
         when(globalConfigService.getCooldownMinutes()).thenReturn(10);
         when(globalConfigService.getDailyProfitTarget()).thenReturn(BigDecimal.ZERO);
-        when(globalConfigService.getMaxTradesPerHour()).thenReturn(0);
         when(globalConfigService.getMaxPendingOrders()).thenReturn(3);
         when(globalConfigService.getLimitOrderCancelMinutes()).thenReturn(1);
 

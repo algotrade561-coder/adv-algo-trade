@@ -37,7 +37,6 @@ class RiskManagerDailyProfitTargetTest {
         when(globalConfigService.getMaxRiskPerTradePercent()).thenReturn(BigDecimal.valueOf(1.2));
         when(globalConfigService.getMaxDailyLossPercent()).thenReturn(BigDecimal.valueOf(3));
         when(globalConfigService.getMaxTradesPerDay()).thenReturn(6);
-        when(globalConfigService.getMaxOrdersPerDay()).thenReturn(6);
         when(globalConfigService.getMaxConsecutiveLosses()).thenReturn(2);
         when(globalConfigService.getMaxOpenTrades()).thenReturn(3);
         when(globalConfigService.getDailyProfitTarget()).thenReturn(dailyProfitTarget);

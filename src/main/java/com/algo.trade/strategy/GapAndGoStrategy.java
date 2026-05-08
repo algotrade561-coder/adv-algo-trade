@@ -1,6 +1,7 @@
 package com.algo.trade.strategy;
 
 import com.algo.trade.domain.*;
+import com.algo.trade.marketdata.LiveInstrumentCache;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -35,6 +36,12 @@ public class GapAndGoStrategy {
     private static final double MIN_GAP_PERCENT = 0.15;
     /** First candle volume must be at least this multiple of average volume. */
     private static final double MIN_VOLUME_RATIO = 1.3;
+
+    private final LiveInstrumentCache liveInstrumentCache;
+
+    public GapAndGoStrategy(LiveInstrumentCache liveInstrumentCache) {
+        this.liveInstrumentCache = liveInstrumentCache;
+    }
 
     public Optional<StrategyDecision> evaluate(List<Candle> candles5m, LocalTime marketTime,
                                                 StrategyConfig config, UnderlyingSymbol underlying) {
@@ -75,9 +82,15 @@ public class GapAndGoStrategy {
         }
 
         // ── Gate 1: Actual gap from previous close ──
-        BigDecimal prevClose = prevDayCandles.isEmpty()
-                ? first.open() // fallback if no prev day data
-                : prevDayCandles.getLast().close();
+        BigDecimal prevClose;
+        if (!prevDayCandles.isEmpty()) {
+            prevClose = prevDayCandles.getLast().close();
+        } else {
+            // Use stored previous day close from LiveInstrumentCache (seeded at startup)
+            IndexType idx = IndexType.fromName(underlying.name());
+            double storedClose = liveInstrumentCache.getPreviousDayClose(idx);
+            prevClose = storedClose > 0 ? BigDecimal.valueOf(storedClose) : first.open();
+        }
         double gapPct = 0;
         if (prevClose.signum() > 0) {
             gapPct = first.open().subtract(prevClose)

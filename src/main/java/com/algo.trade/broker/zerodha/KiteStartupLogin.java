@@ -193,6 +193,13 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
             if (errorEventService != null) errorEventService.medium("KiteStartup", "LiveInstrumentCache population failed: " + e.getMessage());
         }
 
+        // Fetch previous day's close for gap detection (GapAndGoStrategy)
+        try {
+            fetchPreviousDayClose();
+        } catch (Exception e) {
+            log.warn("Previous day close fetch failed: {}", e.getMessage());
+        }
+
         // Always connect WebSocket for real-time tick data (primary trigger)
         connectWebSocket();
 
@@ -340,6 +347,44 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
             }
         } catch (Exception e) {
             log.debug("Candle seed failed for {}: {}", instrumentKey, e.getMessage());
+        }
+    }
+
+    /**
+     * Fetches previous trading day's closing price for each configured index.
+     * Stores in LiveInstrumentCache for use by GapAndGoStrategy gap detection.
+     * Uses FIVE_MINUTE candles from yesterday and takes the last candle's close.
+     */
+    private void fetchPreviousDayClose() {
+        var ist = java.time.ZoneId.of("Asia/Kolkata");
+        java.time.LocalDate today = java.time.LocalDate.now(ist);
+        // Go back to find the previous trading day (skip weekends)
+        java.time.LocalDate prevDay = today.minusDays(1);
+        while (prevDay.getDayOfWeek() == java.time.DayOfWeek.SATURDAY
+                || prevDay.getDayOfWeek() == java.time.DayOfWeek.SUNDAY) {
+            prevDay = prevDay.minusDays(1);
+        }
+        java.time.Instant from = prevDay.atTime(9, 15).atZone(ist).toInstant();
+        java.time.Instant to = prevDay.atTime(15, 30).atZone(ist).toInstant();
+
+        for (com.algo.trade.domain.IndexType idx : com.algo.trade.domain.IndexType.values()) {
+            try {
+                com.algo.trade.domain.UnderlyingSymbol symbol = com.algo.trade.domain.UnderlyingSymbol.valueOf(idx.name());
+                String spotKey = properties.symbols().spotHistoricalKeys().get(symbol);
+                if (spotKey == null) continue;
+
+                var request = new com.algo.trade.domain.HistoricalDataRequest(
+                        spotKey, from, to, com.algo.trade.domain.Timeframe.FIVE_MINUTE, false);
+                var candles = marketDataService.historicalCandles(request);
+                if (!candles.isEmpty()) {
+                    double prevClose = candles.getLast().close().doubleValue();
+                    liveInstrumentCache.setPreviousDayClose(idx, prevClose);
+                } else {
+                    log.debug("No previous day candles for {}: key={}", idx, spotKey);
+                }
+            } catch (Exception e) {
+                log.warn("Failed to fetch previous day close for {}: {}", idx, e.getMessage());
+            }
         }
     }
 

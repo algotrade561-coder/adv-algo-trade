@@ -276,29 +276,22 @@ import { ApiService, GlobalConfigDto } from '../core/api.service';
               <input matInput type="number" min="1" [(ngModel)]="config.maxTradesPerDay">
             </mat-form-field>
             <mat-form-field appearance="outline">
-              <mat-label>Max Orders Per Day</mat-label>
-              <input matInput type="number" min="1" [(ngModel)]="config.maxOrdersPerDay">
-            </mat-form-field>
-            <mat-form-field appearance="outline">
               <mat-label>Max Consecutive Losses</mat-label>
               <input matInput type="number" min="0" [(ngModel)]="config.maxConsecutiveLosses">
             </mat-form-field>
             <mat-form-field appearance="outline">
-              <mat-label>Max Open Trades (Total)</mat-label>
+              <mat-label>Max Open Trades</mat-label>
               <input matInput type="number" min="1" [(ngModel)]="config.maxOpenTrades">
             </mat-form-field>
             <mat-form-field appearance="outline">
-              <mat-label>Max Open Positions Per Strategy</mat-label>
+              <mat-label>Max Indices Per Strategy</mat-label>
               <input matInput type="number" min="1" max="5" [(ngModel)]="config.maxOpenPositionsPerStrategy">
-              <mat-hint>Same strategy can only be active on this many indices simultaneously</mat-hint>
+              <mat-hint>How many indices one strategy can trade simultaneously</mat-hint>
             </mat-form-field>
             <mat-form-field appearance="outline">
-              <mat-label>Re-entry Min Price Move % (Same Contract)</mat-label>
-              <input matInput type="number" step="1" [(ngModel)]="config.sameInstrumentReentryMinPriceMovePercent">
-            </mat-form-field>
-            <mat-form-field appearance="outline">
-              <mat-label>Cooldown Minutes (Per Instrument)</mat-label>
+              <mat-label>Cooldown (min)</mat-label>
               <input matInput type="number" min="0" [(ngModel)]="config.cooldownMinutes">
+              <mat-hint>Per instrument after trade</mat-hint>
             </mat-form-field>
             <mat-form-field appearance="outline">
               <mat-label>Daily Profit Target (₹)</mat-label>
@@ -307,32 +300,22 @@ import { ApiService, GlobalConfigDto } from '../core/api.service';
             <mat-form-field appearance="outline">
               <mat-label>Max Lots Per Trade</mat-label>
               <input matInput type="number" min="1" [(ngModel)]="config.maxLotsPerTrade">
-              <mat-hint>Hard cap on lots per single order — safety limit</mat-hint>
+              <mat-hint>Safety cap per order</mat-hint>
             </mat-form-field>
             <mat-form-field appearance="outline">
-              <mat-label>Max Trades Per Hour</mat-label>
-              <input matInput type="number" min="0" [(ngModel)]="config.maxTradesPerHour">
-              <mat-hint>Hourly trade cap (0 = disabled). Prevents overtrading in volatile sessions.</mat-hint>
-            </mat-form-field>
-            <mat-form-field appearance="outline">
-              <mat-label>ML Virtual Trade Threshold</mat-label>
-              <input matInput type="number" step="1" min="0" max="100" [(ngModel)]="config.mlVirtualTradeThreshold">
-              <mat-hint>ML score threshold for virtual trades (independent of signal score). Lower = more virtual trades.</mat-hint>
-            </mat-form-field>
-            <mat-form-field appearance="outline">
-              <mat-label>Max Entries Per Scan (Total)</mat-label>
+              <mat-label>Max Entries Per Scan</mat-label>
               <input matInput type="number" min="1" max="10" [(ngModel)]="config.maxEntriesPerScan">
-              <mat-hint>Total entries across all underlyings per scan cycle. Overall ceiling.</mat-hint>
+              <mat-hint>Total per scan cycle</mat-hint>
             </mat-form-field>
             <mat-form-field appearance="outline">
-              <mat-label>Max Entries Per Scan Per Underlying</mat-label>
+              <mat-label>Max Entries Per Index</mat-label>
               <input matInput type="number" min="1" max="5" [(ngModel)]="config.maxEntriesPerScanPerUnderlying">
-              <mat-hint>How many strategies can enter the same index in one scan cycle. 1 = conservative, 2+ = allow stacking.</mat-hint>
+              <mat-hint>Per index per scan cycle</mat-hint>
             </mat-form-field>
             <mat-form-field appearance="outline">
               <mat-label>Max Pending Orders</mat-label>
               <input matInput type="number" min="1" max="10" [(ngModel)]="config.maxPendingOrders">
-              <mat-hint>Max simultaneous unfilled limit orders. Prevents order pile-up.</mat-hint>
+              <mat-hint>Unfilled limit orders cap</mat-hint>
             </mat-form-field>
           </div>
         }

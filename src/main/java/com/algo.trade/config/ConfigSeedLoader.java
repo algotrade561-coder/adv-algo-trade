@@ -137,10 +137,8 @@ public class ConfigSeedLoader {
         cfg.setMaxRiskPerTradePercent(decimal(map, "maxRiskPerTradePercent", "20"));
         cfg.setMaxDailyLossPercent(decimal(map, "maxDailyLossPercent", "60"));
         cfg.setMaxTradesPerDay(integer(map, "maxTradesPerDay", 10));
-        cfg.setMaxOrdersPerDay(integer(map, "maxOrdersPerDay", 10));
         cfg.setMaxConsecutiveLosses(integer(map, "maxConsecutiveLosses", 2));
         cfg.setMaxOpenTrades(integer(map, "maxOpenTrades", 1));
-        cfg.setSameInstrumentReentryMinPriceMovePercent(decimal(map, "sameInstrumentReentryMinPriceMovePercent", "3"));
         cfg.setCooldownMinutes(integer(map, "cooldownMinutes", 0));
         cfg.setMaxOpenPositionsPerStrategy(integer(map, "maxOpenPositionsPerStrategy", 1));
         cfg.setDailyProfitTarget(decimal(map, "dailyProfitTarget", "0"));

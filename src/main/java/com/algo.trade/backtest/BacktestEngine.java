@@ -788,8 +788,8 @@ public class BacktestEngine {
                 gc.getMaxHoldMinutes());
         var risk = new TradingProperties.Risk(
                 gc.getTotalCapital(), gc.getMaxRiskPerTradePercent(), gc.getMaxDailyLossPercent(),
-                gc.getMaxTradesPerDay(), gc.getMaxOrdersPerDay(), gc.getMaxConsecutiveLosses(),
-                gc.getMaxOpenTrades(), gc.getSameInstrumentReentryMinPriceMovePercent(),
+                gc.getMaxTradesPerDay(), properties.risk().maxOrdersPerDay(), gc.getMaxConsecutiveLosses(),
+                gc.getMaxOpenTrades(), properties.risk().sameInstrumentReentryMinPriceMovePercent(),
                 gc.getCooldownMinutes(), gc.getDailyProfitTarget());
         return new TradingProperties(
                 properties.mode(), properties.marketDataMode(), properties.executionMode(),

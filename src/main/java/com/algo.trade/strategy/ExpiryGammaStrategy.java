@@ -19,9 +19,9 @@ import java.util.Optional;
  *
  * Quality gates:
  *   1. Must be actual expiry day
- *   2. Momentum must be strong (0.50%+ over 3 candles, raised from 0.30%)
+ *   2. Momentum must be strong (0.20%+ over 3 candles)
  *   3. Volume must confirm the move (not a thin-market spike)
- *   4. Momentum must be accelerating (latest candle stronger than prior)
+ *   4. Latest candle must confirm the momentum direction
  *   5. Graduated confidence score
  */
 @Component
@@ -31,8 +31,8 @@ public class ExpiryGammaStrategy {
     private static final LocalTime GAMMA_START = LocalTime.of(13, 0);
     private static final LocalTime GAMMA_CUTOFF = LocalTime.of(14, 30);
     private static final int MOMENTUM_CANDLES = 3;
-    /** Minimum momentum % over MOMENTUM_CANDLES — raised from 0.30 to filter noise. */
-    private static final double MIN_MOMENTUM_PERCENT = 0.50;
+    /** Minimum momentum % over MOMENTUM_CANDLES — 0.20% ≈ 44 NIFTY points over 3 min, realistic on expiry afternoon. */
+    private static final double MIN_MOMENTUM_PERCENT = 0.20;
     /** Minimum volume on the latest candle to confirm the move is real. */
     private static final long MIN_VOLUME = 500;
 
@@ -84,30 +84,22 @@ public class ExpiryGammaStrategy {
             return noTrade("lowVolume(" + latestVolume + ")");
         }
 
-        // ── Gate: Momentum acceleration — latest candle move should be >= prior candle move ──
+        // ── Gate: Latest candle must confirm the momentum direction ──
+        // Requiring the prior candle to also be in the same direction (the old "acceleration" check)
+        // was too strict — expiry candles zigzag before the final move. We only need the
+        // most recent close to be going the right way.
         boolean bullish = momentumPct > 0;
-        Candle prevCandle = candles1m.get(size - 2);
         double latestMove = latest.close().subtract(latest.open()).doubleValue();
-        double prevMove = prevCandle.close().subtract(prevCandle.open()).doubleValue();
-        boolean accelerating;
-        if (bullish) {
-            // Bug fix: require prevMove > 0 so a tiny bullish candle after a bearish candle
-            // doesn't satisfy latestMove >= prevMove*0.7 (which is always true when prevMove < 0)
-            accelerating = latestMove > 0 && prevMove > 0 && latestMove >= prevMove * 0.7;
-        } else {
-            // Same fix for bearish: require prevMove < 0
-            accelerating = latestMove < 0 && prevMove < 0 && latestMove <= prevMove * 0.7;
-        }
+        boolean accelerating = bullish ? latestMove > 0 : latestMove < 0;
         if (!accelerating) {
-            return noTrade("momentumDecelerating");
+            return noTrade("latestCandleCounterDirection");
         }
 
         // ── Graduated confidence score ──
-        int score = 60;
+        int score = 65;  // base 60 + 5 for confirmed direction (always true at this point)
         if (Math.abs(momentumPct) > 0.80) score += 10;  // very strong momentum
         if (latestVolume > MIN_VOLUME * 3) score += 10;  // exceptional volume
         else if (latestVolume > MIN_VOLUME * 2) score += 5;
-        if (accelerating) score += 5;
         // Closer to 13:30-14:00 is the sweet spot for gamma
         if (marketTime.isAfter(LocalTime.of(13, 20)) && marketTime.isBefore(LocalTime.of(14, 10))) score += 5;
         score = Math.min(90, score);

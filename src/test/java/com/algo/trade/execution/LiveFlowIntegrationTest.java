@@ -62,11 +62,8 @@ class LiveFlowIntegrationTest {
         when(globalConfigService.getMaxTradesPerDay()).thenReturn(10);
         when(globalConfigService.getMaxConsecutiveLosses()).thenReturn(5);
         when(globalConfigService.getMaxDailyLossPercent()).thenReturn(BigDecimal.valueOf(3));
-        when(globalConfigService.getMaxOrdersPerDay()).thenReturn(20);
-        when(globalConfigService.getSameInstrumentReentryMinPriceMovePercent()).thenReturn(BigDecimal.ZERO);
         when(globalConfigService.getCooldownMinutes()).thenReturn(0);
         when(globalConfigService.getEnabledOptionTypes()).thenReturn(List.of(OptionType.CE, OptionType.PE));
-        when(globalConfigService.getMaxTradesPerHour()).thenReturn(0);
         when(globalConfigService.getDailyProfitTarget()).thenReturn(BigDecimal.ZERO);
         when(globalConfigService.getMaxPendingOrders()).thenReturn(3);
         when(globalConfigService.getLimitOrderCancelMinutes()).thenReturn(1);

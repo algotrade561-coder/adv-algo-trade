@@ -142,15 +142,6 @@ public class TradingControlController {
         String marketBlock = marketGuard.longPremiumBlockReason();
         if (marketBlock != null) blockingReasons.add(marketBlock);
 
-        // Layer 5 — Hourly trade cap
-        int maxTradesPerHour = globalConfigService.getMaxTradesPerHour();
-        if (maxTradesPerHour > 0) {
-            int tradesThisHour = tradingStateService.tradesInLastHour();
-            if (tradesThisHour >= maxTradesPerHour) {
-                blockingReasons.add("Max trades per hour reached (" + tradesThisHour + "/" + maxTradesPerHour + ")");
-            }
-        }
-
         // Layer 6 — Rolling win-rate auto-pause
         double rollingWinRate = tradingStateService.rollingWinRate();
         int rollingTotal = liveTradesToday; // approximate — uses today's trade count
@@ -169,18 +160,7 @@ public class TradingControlController {
             blockingReasons.add("After entry cutoff (" + entryCutoff + ")");
         }
 
-        // Layer 8 — Max orders per day
-        int buyOrdersToday = (int) orderRepository.findBySideAndUpdatedAtBetween(
-                com.algo.trade.domain.OrderSide.BUY.name(), todayStart, todayEnd).stream()
-                .filter(o -> o.getStatus() == com.algo.trade.domain.OrderStatus.COMPLETE
-                        || o.getStatus() == com.algo.trade.domain.OrderStatus.OPEN
-                        || o.getStatus() == com.algo.trade.domain.OrderStatus.NEW)
-                .count();
-        if (buyOrdersToday >= globalConfigService.getMaxOrdersPerDay()) {
-            blockingReasons.add("Max buy orders per day reached (" + buyOrdersToday + "/" + globalConfigService.getMaxOrdersPerDay() + ")");
-        }
-
-        // Layer 9 — Global exit override indicator (not a block, but useful context)
+        // Layer 8 — Global exit override indicator (not a block, but useful context)
         boolean globalExitOverride = globalConfigService.isGlobalExitOverride();
 
         Map<String, Object> result = new LinkedHashMap<>();
@@ -194,9 +174,7 @@ public class TradingControlController {
         result.put("consecutiveLosses", consecutiveLosses);
         result.put("dailyPnl", pnl.realizedPnl());
         result.put("tradesThisHour", tradingStateService.tradesInLastHour());
-        result.put("maxTradesPerHour", maxTradesPerHour);
         result.put("rollingWinRate", rollingWinRate);
-        result.put("buyOrdersToday", buyOrdersToday);
         result.put("entryWindowOpen", !marketTime.isBefore(entryStart) && !marketTime.isAfter(entryCutoff));
         result.put("globalExitOverride", globalExitOverride);
         // Paper P&L — today's closed + unrealized from open

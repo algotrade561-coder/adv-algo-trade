@@ -1000,13 +1000,7 @@ public class ExecutionEngine {
             return rejections;
         }
 
-        // 1. Max buy orders per day (only count active/filled, not cancelled/rejected)
-        int buyOrdersToday = buyOrdersToday();
-        if (buyOrdersToday >= globalConfigService.getMaxOrdersPerDay()) {
-            rejections.add("Max buy orders per day reached (" + buyOrdersToday + "/" + globalConfigService.getMaxOrdersPerDay() + ")");
-        }
-
-        // 2. Duplicate open order check — prevent placing another order for the same instrument
+        // 1. Duplicate open order check — prevent placing another order for the same instrument
         boolean existingOpenBuyOrder = !orderRepository.findByInstrumentKeyAndSideAndStatusIn(
                 instrumentKey,
                 OrderSide.BUY.name(),
@@ -1044,27 +1038,7 @@ public class ExecutionEngine {
                     + ", trades=" + openTradesForUnderlying + " pending=" + pendingOrdersForUnderlying + ")");
         }
 
-        // 5. Same instrument re-entry price move check (includes orders placed today, not just trades)
-        // Check trades
-        tradeRepository.findByInstrumentKeyAndEntryTimeBetween(instrumentKey, todayStart(), tomorrowStart()).stream()
-                .map(TradeEntity::getEntryPrice)
-                .filter(previousPrice -> previousPrice != null && previousPrice.signum() > 0 && optionPremium != null)
-                .filter(previousPrice -> priceMovePercent(previousPrice, optionPremium)
-                        .compareTo(globalConfigService.getSameInstrumentReentryMinPriceMovePercent()) < 0)
-                .findFirst()
-                .ifPresent(previousPrice -> rejections.add("Same instrument already traded today without required price move: "
-                        + instrumentKey));
-        // Also check recent orders (filled or pending) for the same instrument today
-        orderRepository.findByInstrumentKeyAndSideAndStatusIn(instrumentKey, OrderSide.BUY.name(),
-                        List.of(OrderStatus.COMPLETE, OrderStatus.OPEN, OrderStatus.NEW)).stream()
-                .filter(o -> o.getOrderPlacedAt() != null && o.getOrderPlacedAt().isAfter(todayStart()))
-                .filter(o -> o.getAverageFillPrice() != null && o.getAverageFillPrice().signum() > 0 && optionPremium != null)
-                .filter(o -> priceMovePercent(o.getAverageFillPrice(), optionPremium)
-                        .compareTo(globalConfigService.getSameInstrumentReentryMinPriceMovePercent()) < 0)
-                .findFirst()
-                .ifPresent(o -> rejections.add("Same instrument order placed today without required price move: " + instrumentKey));
-
-        // 6. Cooldown check — include both trades AND orders placed within cooldown window
+        // 5. Cooldown check — include both trades AND orders placed within cooldown window
         if (globalConfigService.getCooldownMinutes() > 0) {
             Instant cooldownStart = clock.instant().minus(Duration.ofMinutes(globalConfigService.getCooldownMinutes()));
             // Check trades
@@ -1084,20 +1058,7 @@ public class ExecutionEngine {
         return rejections;
     }
 
-    private int buyOrdersToday() {
-        return (int) orderRepository.findBySideAndUpdatedAtBetween(OrderSide.BUY.name(), todayStart(), tomorrowStart())
-                .stream()
-                .filter(o -> o.getStatus() == OrderStatus.COMPLETE
-                        || o.getStatus() == OrderStatus.OPEN
-                        || o.getStatus() == OrderStatus.NEW)
-                .count();
-    }
 
-    private BigDecimal priceMovePercent(BigDecimal previousPrice, BigDecimal currentPrice) {
-        return currentPrice.subtract(previousPrice).abs()
-                .multiply(BigDecimal.valueOf(100), MATH_CONTEXT)
-                .divide(previousPrice, MATH_CONTEXT);
-    }
 
     /**
      * Round price to the nearest valid tick size (₹0.05 for NSE/BSE F&O).

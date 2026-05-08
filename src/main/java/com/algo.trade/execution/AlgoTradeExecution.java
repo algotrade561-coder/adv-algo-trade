@@ -4,6 +4,7 @@ import com.algo.trade.config.GlobalConfigService;
 import com.algo.trade.config.TradingProperties;
 import com.algo.trade.broker.zerodha.KiteAccessTokenStore;
 import com.algo.trade.domain.*;
+import com.algo.trade.indicator.VwapIndicator;
 import com.algo.trade.marketdata.InstrumentCache;
 import com.algo.trade.marketdata.ExpiryCalendar;
 import com.algo.trade.marketdata.MarketDataService;
@@ -98,6 +99,7 @@ public class AlgoTradeExecution {
     private final StrategyExecutionPipeline executionPipeline;
     private final AlgoFlowOrchestrator algoFlowOrchestrator;
     private final ScanContextBuilder scanContextBuilder;
+    private final VwapIndicator vwapIndicator;
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.algo.trade.monitoring.ErrorEventService errorEventService;
@@ -150,7 +152,8 @@ public class AlgoTradeExecution {
             com.algo.trade.indicator.RealizedVolatilityCalculator realizedVolatilityCalculator,
             com.algo.trade.persistence.GreeksSampleRepository greeksSampleRepository,
             AlgoFlowOrchestrator algoFlowOrchestrator,
-            ScanContextBuilder scanContextBuilder
+            ScanContextBuilder scanContextBuilder,
+            VwapIndicator vwapIndicator
     ) {
         this.properties = properties;
         this.globalConfigService = globalConfigService;
@@ -191,6 +194,7 @@ public class AlgoTradeExecution {
         this.greeksSampleRepository = greeksSampleRepository;
         this.algoFlowOrchestrator = algoFlowOrchestrator;
         this.scanContextBuilder = scanContextBuilder;
+        this.vwapIndicator = vwapIndicator;
     }
 
     @jakarta.annotation.PostConstruct
@@ -306,6 +310,82 @@ public class AlgoTradeExecution {
         scanContextBuilder.ensureInstrumentsLoaded();
 
         // ═══════════════════════════════════════════════════════════════════════
+        // BEST-INDEX SELECTION — for each strategy, determine which index has
+        // the highest environment score. Only the winning index proceeds to
+        // strategy evaluation. This prevents the same strategy from spraying
+        // across multiple correlated indices in a single scan cycle.
+        // ═══════════════════════════════════════════════════════════════════════
+        int maxPerStrategy = globalConfigService.getMaxOpenPositionsPerStrategy();
+        // Map: StrategyType → best UnderlyingSymbol (highest environment score)
+        Map<StrategyType, UnderlyingSymbol> bestIndexPerStrategy = new EnumMap<>(StrategyType.class);
+        if (maxPerStrategy > 0) {
+            // Collect environment scores for each strategy × index combination
+            Map<StrategyType, Map<UnderlyingSymbol, Integer>> strategyIndexScores = new EnumMap<>(StrategyType.class);
+
+            for (UnderlyingSymbol underlying : enabledUnderlyings) {
+                List<StrategyConfig> configs = strategyConfigService.getEnabledFor(underlying);
+                // Include DIRECTIONAL_BUY if enabled
+                boolean hasDb = configs.stream().anyMatch(c -> c.getStrategyType() == StrategyType.DIRECTIONAL_BUY);
+                if (!hasDb) {
+                    StrategyConfig dbConfig = strategyConfigService.getDirectionalBuyConfig(underlying.name());
+                    if (dbConfig.isEnabled()) {
+                        configs = new ArrayList<>(configs);
+                        configs.add(dbConfig);
+                    }
+                }
+
+                for (StrategyConfig config : configs) {
+                    StrategyType type = config.getStrategyType();
+
+                    // Skip if strategy already has open positions at limit
+                    long openForThisStrategy = executionEngine.countOpenTradesForStrategy(type.name());
+                    if (openForThisStrategy >= maxPerStrategy) continue;
+
+                    // Quick environment score for this underlying (lightweight — no full strategy eval)
+                    var flowDecision = algoFlowOrchestrator.evaluateEntry(underlying, marketTime, type);
+                    if (!flowDecision.allowed()) continue;
+
+                    int envScore = flowDecision.environmentScore();
+                    // Treat -1 (computation failed) as 0
+                    if (envScore < 0) envScore = 0;
+
+                    // Compute lightweight signal quality proxy
+                    Timeframe proxyTimeframe = resolveTimeframe(config.getCandleTimeframe(), Timeframe.ONE_MINUTE);
+                    int signalProxy = computeSignalQualityProxy(underlying, proxyTimeframe);
+
+                    // Combined ranking: signal quality (60%) + environment (40%)
+                    int combinedScore = (int) Math.round(signalProxy * 0.6 + envScore * 0.4);
+
+                    strategyIndexScores
+                        .computeIfAbsent(type, k -> new EnumMap<>(UnderlyingSymbol.class))
+                        .put(underlying, combinedScore);
+
+                    log.debug("[BestIndex] Pre-eval: {} on {} → signal={}, env={}, combined={}",
+                        type, underlying, signalProxy, envScore, combinedScore);
+                }
+            }
+
+            // For each strategy, pick the index with highest environment score
+            for (var entry : strategyIndexScores.entrySet()) {
+                StrategyType type = entry.getKey();
+                Map<UnderlyingSymbol, Integer> scores = entry.getValue();
+                if (scores.isEmpty()) continue;
+
+                UnderlyingSymbol best = scores.entrySet().stream()
+                    .max(Map.Entry.comparingByValue())
+                    .map(Map.Entry::getKey)
+                    .orElse(null);
+                if (best != null) {
+                    bestIndexPerStrategy.put(type, best);
+                    log.debug("[BestIndex] {} → {} (combinedScore={}, candidates={})",
+                        type, best, scores.get(best), scores.keySet());
+                }
+            }
+
+            log.info("[BestIndex] Selection: {}", bestIndexPerStrategy);
+        }
+
+        // ═══════════════════════════════════════════════════════════════════════
         // UNIFIED STRATEGY LOOP — single entry point for ALL strategies
         // ═══════════════════════════════════════════════════════════════════════
         int totalEntries = 0;
@@ -381,9 +461,24 @@ public class AlgoTradeExecution {
                     continue;
                 }
 
-                // ── Gate: Max open positions per strategy type ──
-                int maxPerStrategy = globalConfigService.getMaxOpenPositionsPerStrategy();
-                if (maxPerStrategy > 0) {
+                // ── Gate: Best-index selection — only allow the winning index for this strategy ──
+                if (maxPerStrategy > 0 && !bestIndexPerStrategy.isEmpty()) {
+                    UnderlyingSymbol bestIndex = bestIndexPerStrategy.get(type);
+                    if (bestIndex != null && !bestIndex.equals(underlying)) {
+                        log.debug("{} skipped for {}: best index is {} (best-index selection)",
+                                type, underlying, bestIndex);
+                        continue;
+                    }
+                    // Also check if strategy already has open positions at limit
+                    long openForThisStrategy = executionEngine.countOpenTradesForStrategy(type.name());
+                    if (openForThisStrategy >= maxPerStrategy) {
+                        log.info("{} skipped for {}: already has {} open position(s) (max={})",
+                                type, underlying, openForThisStrategy, maxPerStrategy);
+                        continue;
+                    }
+                } else if (maxPerStrategy > 0) {
+                    // Fallback: bestIndexPerStrategy is empty (no candidates passed pre-eval)
+                    // Still enforce the max open positions per strategy limit
                     long openForThisStrategy = executionEngine.countOpenTradesForStrategy(type.name());
                     if (openForThisStrategy >= maxPerStrategy) {
                         log.info("{} skipped for {}: already has {} open position(s) (max={})",
@@ -996,6 +1091,53 @@ public class AlgoTradeExecution {
                     configured, config.getStrategyType());
             return triggerTimeframe == Timeframe.FIFTEEN_MINUTE;
         }
+    }
+
+    /**
+     * Lightweight signal quality proxy for best-index ranking.
+     * Uses underlying candle data to estimate signal strength without running full strategy evaluation.
+     * Scores movement intensity (not direction) to identify which index has the strongest actionable setup.
+     * Returns 0-100.
+     */
+    private int computeSignalQualityProxy(UnderlyingSymbol underlying, Timeframe timeframe) {
+        List<Candle> candles = underlyingLiveCandles(underlying, timeframe);
+        if (candles.size() < 5) return 50; // neutral if insufficient data
+
+        int score = 0;
+
+        // 1. Price vs VWAP (0-50 points)
+        // Either direction is fine — we want MOVEMENT, not direction
+        BigDecimal vwap = vwapIndicator.calculate(candles);
+        if (vwap.signum() > 0) {
+            BigDecimal lastClose = candles.getLast().close();
+            double distanceFromVwap = Math.abs(lastClose.subtract(vwap).doubleValue() / vwap.doubleValue() * 100);
+            // Further from VWAP = stronger trend = higher score
+            // 0% distance = 25 (neutral), 0.5%+ = 50 (strong)
+            score += (int) Math.min(50, 25 + distanceFromVwap * 50);
+        } else {
+            score += 25; // neutral
+        }
+
+        // 2. Recent candle momentum — last 3 candles direction consistency (0-30 points)
+        Candle last3 = candles.get(Math.max(0, candles.size() - 3));
+        Candle lastCandle = candles.getLast();
+        boolean sameDirection = lastCandle.close().compareTo(lastCandle.open()) == last3.close().compareTo(last3.open());
+        score += sameDirection ? 30 : 15;
+
+        // 3. Volume activity (0-20 points)
+        long latestVolume = candles.getLast().volume();
+        double avgVolume = candles.stream()
+                .skip(Math.max(0, candles.size() - 5))
+                .mapToLong(Candle::volume)
+                .average().orElse(0);
+        if (avgVolume > 0) {
+            double volumeRatio = latestVolume / avgVolume;
+            score += (int) Math.min(20, volumeRatio * 10); // 2x avg volume = 20 points
+        } else {
+            score += 10; // neutral
+        }
+
+        return Math.max(0, Math.min(100, score));
     }
 
     /**

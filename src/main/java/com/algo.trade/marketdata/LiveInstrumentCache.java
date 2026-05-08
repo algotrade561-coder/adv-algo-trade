@@ -39,6 +39,8 @@ public class LiveInstrumentCache {
     private final Map<String, OptionInstrument> byCompoundKey = new ConcurrentHashMap<>();
     // IndexType → current futures/spot price
     private final Map<IndexType, Double> futuresPriceCache = new ConcurrentHashMap<>();
+    // IndexType → previous day's closing price (seeded at startup from REST historical API)
+    private final Map<IndexType, Double> previousDayClose = new ConcurrentHashMap<>();
 
     public LiveInstrumentCache(GreeksCalculator greeksCalculator, IVRankTracker ivRankTracker,
                                ExpiryCalendar expiryCalendar) {
@@ -170,6 +172,19 @@ public class LiveInstrumentCache {
 
     public double getFuturesPrice(IndexType indexType) {
         return futuresPriceCache.getOrDefault(indexType, 0.0);
+    }
+
+    // ── Previous Day Close (for gap detection) ────────────────────────────────
+
+    /** Store previous day's closing price for an index. Called at startup from REST historical API. */
+    public void setPreviousDayClose(IndexType indexType, double close) {
+        previousDayClose.put(indexType, close);
+        log.info("Previous day close stored: {} = {}", indexType, close);
+    }
+
+    /** Get previous day's closing price for an index. Returns 0.0 if not available. */
+    public double getPreviousDayClose(IndexType indexType) {
+        return previousDayClose.getOrDefault(indexType, 0.0);
     }
 
     public boolean isReady() { return !byToken.isEmpty(); }

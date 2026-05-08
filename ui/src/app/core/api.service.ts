@@ -84,15 +84,12 @@ export interface GlobalConfigDto {
   maxRiskPerTradePercent: number;
   maxDailyLossPercent: number;
   maxTradesPerDay: number;
-  maxOrdersPerDay: number;
   maxConsecutiveLosses: number;
   maxOpenTrades: number;
-  sameInstrumentReentryMinPriceMovePercent: number;
   cooldownMinutes: number;
   maxOpenPositionsPerStrategy: number;
   dailyProfitTarget: number;
   maxLotsPerTrade: number;
-  maxTradesPerHour: number;
   mlVirtualTradeThreshold: number;
   // Execution tuning
   limitOrderCancelMinutes: number;

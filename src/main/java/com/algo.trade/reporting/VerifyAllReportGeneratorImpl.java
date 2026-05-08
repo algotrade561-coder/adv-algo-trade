@@ -665,10 +665,8 @@ public class VerifyAllReportGeneratorImpl implements VerifyAllReportGenerator {
             cfgItem(html, "Max Risk/Trade %", fmt(gc.getMaxRiskPerTradePercent()));
             cfgItem(html, "Max Daily Loss %", fmt(gc.getMaxDailyLossPercent()));
             cfgItem(html, "Max Trades/Day", String.valueOf(gc.getMaxTradesPerDay()));
-            cfgItem(html, "Max Orders/Day", String.valueOf(gc.getMaxOrdersPerDay()));
             cfgItem(html, "Max Consec Losses", String.valueOf(gc.getMaxConsecutiveLosses()));
             cfgItem(html, "Max Open Trades", String.valueOf(gc.getMaxOpenTrades()));
-            cfgItem(html, "Re-entry Min Price Move %", fmt(gc.getSameInstrumentReentryMinPriceMovePercent()));
             cfgItem(html, "Cooldown (min)", String.valueOf(gc.getCooldownMinutes()));
             cfgItem(html, "Daily Profit Target", fmt(gc.getDailyProfitTarget()));
             html.append("</div></div>");

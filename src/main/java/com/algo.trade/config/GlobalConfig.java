@@ -137,12 +137,8 @@ public class GlobalConfig {
     private BigDecimal maxDailyLossPercent = BigDecimal.valueOf(5);
 
     private int maxTradesPerDay = 4;
-    private int maxOrdersPerDay = 4;
     private int maxConsecutiveLosses = 2;
     private int maxOpenTrades = 1;
-
-    @Column(precision = 19, scale = 4)
-    private BigDecimal sameInstrumentReentryMinPriceMovePercent = BigDecimal.valueOf(3l);
 
     private int cooldownMinutes = 0;
 
@@ -155,9 +151,6 @@ public class GlobalConfig {
 
     /** Maximum lots per single trade — safety cap against stale premium quotes. Default 10. */
     private int maxLotsPerTrade = 10;
-
-    /** Maximum trades per hour — prevents overtrading in volatile sessions. 0 = disabled. */
-    private int maxTradesPerHour = 0;
 
     /** ML virtual trade threshold — independent of minSignalScorePercent.
      *  When ML scores above this and the system says SKIP, a virtual trade is opened. Default 45. */
@@ -253,10 +246,8 @@ public class GlobalConfig {
         this.maxRiskPerTradePercent = props.risk().maxRiskPerTradePercent();
         this.maxDailyLossPercent = props.risk().maxDailyLossPercent();
         this.maxTradesPerDay = props.risk().maxTradesPerDay();
-        this.maxOrdersPerDay = props.risk().maxOrdersPerDay();
         this.maxConsecutiveLosses = props.risk().maxConsecutiveLosses();
         this.maxOpenTrades = props.risk().maxOpenTrades();
-        this.sameInstrumentReentryMinPriceMovePercent = props.risk().sameInstrumentReentryMinPriceMovePercent();
         this.cooldownMinutes = props.risk().cooldownMinutes();
         this.dailyProfitTarget = props.risk().dailyProfitTarget();
     }
@@ -447,8 +438,6 @@ public class GlobalConfig {
     public int getMaxTradesPerDay() { return maxTradesPerDay; }
     public void setMaxTradesPerDay(int maxTradesPerDay) { this.maxTradesPerDay = maxTradesPerDay; }
 
-    public int getMaxOrdersPerDay() { return maxOrdersPerDay; }
-    public void setMaxOrdersPerDay(int maxOrdersPerDay) { this.maxOrdersPerDay = maxOrdersPerDay; }
 
     public int getMaxConsecutiveLosses() { return maxConsecutiveLosses; }
     public void setMaxConsecutiveLosses(int maxConsecutiveLosses) { this.maxConsecutiveLosses = maxConsecutiveLosses; }
@@ -456,8 +445,6 @@ public class GlobalConfig {
     public int getMaxOpenTrades() { return maxOpenTrades; }
     public void setMaxOpenTrades(int maxOpenTrades) { this.maxOpenTrades = maxOpenTrades; }
 
-    public BigDecimal getSameInstrumentReentryMinPriceMovePercent() { return sameInstrumentReentryMinPriceMovePercent; }
-    public void setSameInstrumentReentryMinPriceMovePercent(BigDecimal v) { this.sameInstrumentReentryMinPriceMovePercent = v; }
 
     public int getCooldownMinutes() { return cooldownMinutes; }
     public void setCooldownMinutes(int cooldownMinutes) { this.cooldownMinutes = cooldownMinutes; }
@@ -471,8 +458,6 @@ public class GlobalConfig {
     public int getMaxLotsPerTrade() { return maxLotsPerTrade; }
     public void setMaxLotsPerTrade(int maxLotsPerTrade) { this.maxLotsPerTrade = maxLotsPerTrade; }
 
-    public int getMaxTradesPerHour() { return maxTradesPerHour; }
-    public void setMaxTradesPerHour(int maxTradesPerHour) { this.maxTradesPerHour = maxTradesPerHour; }
 
     public BigDecimal getMlVirtualTradeThreshold() { return mlVirtualTradeThreshold; }
     public void setMlVirtualTradeThreshold(BigDecimal mlVirtualTradeThreshold) { this.mlVirtualTradeThreshold = mlVirtualTradeThreshold; }

@@ -38,7 +38,7 @@ public class OiShiftTrapStrategy {
     private static final double OI_IMBALANCE_RATIO = 2.5;
 
     /** Maximum distance from spot to trap strike as % of spot price. */
-    private static final double PROXIMITY_PERCENT = 0.35;
+    private static final double PROXIMITY_PERCENT = 0.50;
 
     /** Minimum absolute OI on the trapped side to be meaningful. */
     private static final long MIN_ABSOLUTE_OI = 50_000;
