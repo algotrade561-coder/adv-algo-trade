@@ -90,6 +90,8 @@ public class GlobalConfigService {
 
     public BigDecimal getMinSignalScorePercent() { return cached.getMinSignalScorePercent(); }
 
+    public int getMinEnvironmentScore() { return cached.getMinEnvironmentScore(); }
+
     public boolean isCeOiSupportRequired() { return cached.isCeOiSupportRequired(); }
 
     public boolean isPeOiSupportRequired() { return cached.isPeOiSupportRequired(); }
@@ -160,6 +162,8 @@ public class GlobalConfigService {
     public BigDecimal getSameInstrumentReentryMinPriceMovePercent() { return cached.getSameInstrumentReentryMinPriceMovePercent(); }
 
     public int getCooldownMinutes() { return cached.getCooldownMinutes(); }
+
+    public int getMaxOpenPositionsPerStrategy() { return cached.getMaxOpenPositionsPerStrategy(); }
 
     public BigDecimal getDailyProfitTarget() { return cached.getDailyProfitTarget(); }
 

@@ -35,13 +35,15 @@ public class MonitoringController {
     private final com.algo.trade.persistence.StrategyDecisionRepository decisionRepository;
     private final com.algo.trade.marketdata.PcrCalculator pcrCalculator;
     private final com.algo.trade.reporting.PerformanceMetricsService performanceMetricsService;
+    private final com.algo.trade.monitoring.PositionStrengthService positionStrengthService;
 
     public MonitoringController(ReportingService reportingService, MarketGuard marketGuard,
                                  LiveInstrumentCache liveInstrumentCache,
                                  com.algo.trade.marketdata.ExpiryCalendar expiryCalendar,
                                  com.algo.trade.persistence.StrategyDecisionRepository decisionRepository,
                                  com.algo.trade.marketdata.PcrCalculator pcrCalculator,
-                                 com.algo.trade.reporting.PerformanceMetricsService performanceMetricsService) {
+                                 com.algo.trade.reporting.PerformanceMetricsService performanceMetricsService,
+                                 com.algo.trade.monitoring.PositionStrengthService positionStrengthService) {
         this.reportingService = reportingService;
         this.marketGuard = marketGuard;
         this.liveInstrumentCache = liveInstrumentCache;
@@ -49,6 +51,7 @@ public class MonitoringController {
         this.decisionRepository = decisionRepository;
         this.pcrCalculator = pcrCalculator;
         this.performanceMetricsService = performanceMetricsService;
+        this.positionStrengthService = positionStrengthService;
     }
 
     @GetMapping("/market")
@@ -102,6 +105,14 @@ public class MonitoringController {
         List<Position> positions = reportingService.positions();
         log.info("Positions endpoint completed: count={}", positions.size());
         return positions;
+    }
+
+    @GetMapping("/positions/health")
+    public List<com.algo.trade.monitoring.PositionStrengthService.StrengthResult> positionHealth() {
+        log.info("Position health endpoint called");
+        List<com.algo.trade.monitoring.PositionStrengthService.StrengthResult> results = positionStrengthService.evaluateAll();
+        log.info("Position health endpoint completed: count={}", results.size());
+        return results;
     }
 
     @GetMapping("/orders")

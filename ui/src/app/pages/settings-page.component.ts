@@ -102,6 +102,10 @@ import { ApiService, GlobalConfigDto } from '../core/api.service';
               <mat-label>Min Signal Score %</mat-label>
               <input matInput type="number" step="1" [(ngModel)]="config.minSignalScorePercent">
             </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Min Environment Score (0–100)</mat-label>
+              <input matInput type="number" min="0" max="100" step="5" [(ngModel)]="config.minEnvironmentScore">
+            </mat-form-field>
             <div class="toggle-row">
               <span>CE OI Support Required</span>
               <mat-slide-toggle [(ngModel)]="config.ceOiSupportRequired" color="primary"></mat-slide-toggle>
@@ -280,15 +284,20 @@ import { ApiService, GlobalConfigDto } from '../core/api.service';
               <input matInput type="number" min="0" [(ngModel)]="config.maxConsecutiveLosses">
             </mat-form-field>
             <mat-form-field appearance="outline">
-              <mat-label>Max Open Trades</mat-label>
+              <mat-label>Max Open Trades (Total)</mat-label>
               <input matInput type="number" min="1" [(ngModel)]="config.maxOpenTrades">
             </mat-form-field>
             <mat-form-field appearance="outline">
-              <mat-label>Same Instrument Re-entry Min Price Move %</mat-label>
+              <mat-label>Max Open Positions Per Strategy</mat-label>
+              <input matInput type="number" min="1" max="5" [(ngModel)]="config.maxOpenPositionsPerStrategy">
+              <mat-hint>Same strategy can only be active on this many indices simultaneously</mat-hint>
+            </mat-form-field>
+            <mat-form-field appearance="outline">
+              <mat-label>Re-entry Min Price Move % (Same Contract)</mat-label>
               <input matInput type="number" step="1" [(ngModel)]="config.sameInstrumentReentryMinPriceMovePercent">
             </mat-form-field>
             <mat-form-field appearance="outline">
-              <mat-label>Cooldown Minutes</mat-label>
+              <mat-label>Cooldown Minutes (Per Instrument)</mat-label>
               <input matInput type="number" min="0" [(ngModel)]="config.cooldownMinutes">
             </mat-form-field>
             <mat-form-field appearance="outline">

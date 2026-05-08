@@ -142,6 +142,7 @@ public class ConfigSeedLoader {
         cfg.setMaxOpenTrades(integer(map, "maxOpenTrades", 1));
         cfg.setSameInstrumentReentryMinPriceMovePercent(decimal(map, "sameInstrumentReentryMinPriceMovePercent", "3"));
         cfg.setCooldownMinutes(integer(map, "cooldownMinutes", 0));
+        cfg.setMaxOpenPositionsPerStrategy(integer(map, "maxOpenPositionsPerStrategy", 1));
         cfg.setDailyProfitTarget(decimal(map, "dailyProfitTarget", "0"));
         cfg.setMaxLotsPerTrade(integer(map, "maxLotsPerTrade", 1));
         cfg.setMlVirtualTradeThreshold(decimal(map, "mlVirtualTradeThreshold", "45"));

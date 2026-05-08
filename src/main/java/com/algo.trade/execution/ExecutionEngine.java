@@ -142,6 +142,22 @@ public class ExecutionEngine {
      */
     @Transactional(timeout = 30) // 30-second timeout prevents indefinite lock holding during slow broker I/O
     public ExecutionResult executeEntry(StrategyDecision decision, BigDecimal optionPremium, int lotSize, StrategyConfig strategyConfig) {
+        return executeEntry(decision, optionPremium, lotSize, strategyConfig, null);
+    }
+
+    /**
+     * Environment metadata captured at entry time for post-trade analysis.
+     * Write-once: set on TradeEntity at creation, never modified after.
+     */
+    public record EnvironmentMetadata(int environmentScore, String environmentBreakdown, String sessionWindow) {}
+
+    /**
+     * Execute entry with optional per-strategy config and environment metadata.
+     * Environment metadata (score, breakdown, session) is persisted on the TradeEntity for post-trade analysis.
+     */
+    @Transactional(timeout = 30)
+    public ExecutionResult executeEntry(StrategyDecision decision, BigDecimal optionPremium, int lotSize,
+                                         StrategyConfig strategyConfig, EnvironmentMetadata envMetadata) {
         StrategyConfig effectiveConfig = strategyConfig != null ? strategyConfig : strategyConfigService.getDirectionalBuyConfig(decision.underlying().name());
         BigDecimal stopLossPercent = effectiveConfig.getStopLossPercent();
         log.info("Entry execution requested: signalType={}, underlying={}, instrument={}, optionType={}, premium={}, lotSize={}, running={}, killSwitch={}",
@@ -285,6 +301,11 @@ public class ExecutionEngine {
                 tradeEntity.setStrategyType(extractStrategyType(decision));
                 tradeEntity.setAppliedTrailingStopActivationPercent(effectiveConfig.getTrailingStopActivationPercent());
                 tradeEntity.setAppliedTrailingGapPercent(effectiveConfig.getTrailingGapPercent());
+                if (envMetadata != null) {
+                    tradeEntity.setEnvironmentScore(envMetadata.environmentScore());
+                    tradeEntity.setEnvironmentBreakdown(envMetadata.environmentBreakdown());
+                    tradeEntity.setEntrySessionWindow(envMetadata.sessionWindow());
+                }
                 tradeRepository.save(tradeEntity);
                 tradingStateService.recordTradeEntry();
                 log.info("Entry trade opened: tradeId={}, instrument={}, quantity={}, entryPrice={}",
@@ -833,6 +854,14 @@ public class ExecutionEngine {
     /** Effective open position count including pending orders — for external callers. */
     public int effectiveOpenTradeCount() {
         return openTradeCount();
+    }
+
+    /** Count open (non-paper) trades for a given strategy type — used by per-strategy position limit gate. */
+    public long countOpenTradesForStrategy(String strategyType) {
+        return tradeRepository.findByStatus(TradeStatus.OPEN).stream()
+                .filter(t -> !t.isPaperTrade())
+                .filter(t -> strategyType.equals(t.getStrategyType()))
+                .count();
     }
 
     /** Find open trades by instrument key — used by OrderFillWatchdog for exit order fills. */

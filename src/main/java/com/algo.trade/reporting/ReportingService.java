@@ -19,6 +19,7 @@ import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
@@ -101,15 +102,32 @@ public class ReportingService {
         java.time.LocalDate today = java.time.LocalDate.now(ZoneId.of("Asia/Kolkata"));
         Instant dayStart = today.atStartOfDay(ZoneId.of("Asia/Kolkata")).toInstant();
         Instant dayEnd = today.plusDays(1).atStartOfDay(ZoneId.of("Asia/Kolkata")).toInstant();
-        BigDecimal realized = tradeRepository.findByEntryTimeBetween(dayStart, dayEnd).stream()
-                .filter(t -> !t.isPaperTrade())
+
+        var todayTrades = tradeRepository.findByEntryTimeBetween(dayStart, dayEnd).stream()
+                .filter(t -> !t.isPaperTrade()).toList();
+
+        // Realized: only from CLOSED trades
+        BigDecimal closedRealized = todayTrades.stream()
+                .filter(t -> t.getStatus() == com.algo.trade.domain.TradeStatus.CLOSED)
                 .map(TradeEntity::getRealizedPnl)
+                .filter(Objects::nonNull)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
-        // Unrealized: only live positions (exclude paper)
+
+        // Booked from partial exits on OPEN trades (already realized but trade still open)
+        BigDecimal openBooked = todayTrades.stream()
+                .filter(t -> t.getStatus() == com.algo.trade.domain.TradeStatus.OPEN)
+                .map(TradeEntity::getBookedPnl)
+                .filter(Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        // Unrealized: only from OPEN positions (remaining quantity × price diff)
         BigDecimal unrealized = positions().stream()
                 .filter(p -> !isPaperPosition(p))
                 .map(Position::unrealizedPnl)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        // Total = closed realized + open booked + open unrealized
+        BigDecimal realized = closedRealized.add(openBooked);
         PnlSnapshot snapshot = new PnlSnapshot(Instant.now(), realized, unrealized, realized.add(unrealized));
         log.debug("Reporting PnL calculation completed: realized={}, unrealized={}, total={}",
                 snapshot.realizedPnl(), snapshot.unrealizedPnl(), snapshot.totalPnl());

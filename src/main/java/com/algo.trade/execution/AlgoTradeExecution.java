@@ -381,6 +381,17 @@ public class AlgoTradeExecution {
                     continue;
                 }
 
+                // ── Gate: Max open positions per strategy type ──
+                int maxPerStrategy = globalConfigService.getMaxOpenPositionsPerStrategy();
+                if (maxPerStrategy > 0) {
+                    long openForThisStrategy = executionEngine.countOpenTradesForStrategy(type.name());
+                    if (openForThisStrategy >= maxPerStrategy) {
+                        log.info("{} skipped for {}: already has {} open position(s) (max={})",
+                                type, underlying, openForThisStrategy, maxPerStrategy);
+                        continue;
+                    }
+                }
+
                 // ── Gate 4: Strategy-specific pre-checks ──
                 try {
                     int entries = evaluateStrategy(type, config, underlying, marketTime,

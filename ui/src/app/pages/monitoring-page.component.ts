@@ -1,6 +1,6 @@
 import { ChangeDetectorRef, Component, OnDestroy, OnInit } from '@angular/core';
 import { DecimalPipe } from '@angular/common';
-import { catchError, forkJoin, interval, of, timer } from 'rxjs';
+import { catchError, forkJoin, interval, of, Subscription, timer } from 'rxjs';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 import { MatTabsModule } from '@angular/material/tabs';
@@ -196,7 +196,7 @@ type ScorecardRow = { strategyType: string; totalEntries: number; filled: number
                 <div class="table-wrap">
                   <table class="mon-table">
                     <thead><tr>
-                      <th>Instrument</th><th>Status</th><th>Qty</th><th>Avg ₹</th><th>Last ₹</th><th>Day P&L</th>
+                      <th>Instrument</th><th>Status</th><th>Qty</th><th>Avg ₹</th><th>Last ₹</th><th>Day P&L</th><th>Strength</th><th>Rec.</th>
                     </tr></thead>
                     <tbody>
                       @for (r of positions; track r['instrumentKey']) {
@@ -214,6 +214,14 @@ type ScorecardRow = { strategyType: string; totalEntries: number; filled: number
                           <td class="mono">{{ fmtNum(r['lastPrice']) }}</td>
                           <td class="mono" [class.pos]="num(r['unrealizedPnl']) >= 0" [class.neg]="num(r['unrealizedPnl']) < 0">
                             {{ fmtNum(r['unrealizedPnl']) }}
+                          </td>
+                          <td>
+                            <span [class]="'strength-badge strength-' + getHealthClass(r)">
+                              {{ getStrengthScore(r) }}
+                            </span>
+                          </td>
+                          <td>
+                            <span [class]="'rec-badge rec-' + getRecClass(r)">{{ getRecommendation(r) }}</span>
                           </td>
                         </tr>
                       }
@@ -369,107 +377,6 @@ type ScorecardRow = { strategyType: string; totalEntries: number; filled: number
                   </table>
                 </div>
               }
-            }
-          </mat-tab>
-
-          <!-- Signals -->
-          <mat-tab>
-            <ng-template mat-tab-label>
-              <mat-icon>notifications</mat-icon> Signals
-              <span class="tab-count">{{ filteredSignals.length }}</span>
-            </ng-template>
-
-            <!-- Strategy filter -->
-            <div class="filter-row">
-              <span class="filter-label">Strategy</span>
-              <button class="filter-chip" [class.chip-active]="selectedStrategyTypes.size === 0" (click)="clearStrategyFilter()">All</button>
-              @for (s of modeStrategyTypeOptions; track s) {
-                <button class="filter-chip" [class.chip-active]="selectedStrategyTypes.has(s)" (click)="toggleStrategyType(s)">
-                  {{ fmtStrategy(s) }}
-                </button>
-              }
-            </div>
-
-            <!-- Underlying filter -->
-            <div class="filter-row">
-              <span class="filter-label">Index</span>
-              <button class="filter-chip" [class.chip-active]="selectedUnderlyings.size === 0" (click)="clearUnderlyingFilter()">All</button>
-              @for (u of underlyingOptions; track u) {
-                <button class="filter-chip" [class.chip-active]="selectedUnderlyings.has(u)" (click)="toggleUnderlying(u)">{{ u }}</button>
-              }
-            </div>
-
-            <!-- Signal type filter -->
-            <div class="filter-row">
-              <span class="filter-label">Signal</span>
-              @for (s of signalTypeOptions; track s) {
-                <button class="filter-chip" [class.chip-active]="selectedSignalTypes.has(s)" (click)="toggleSignalType(s)">{{ s }}</button>
-              }
-            </div>
-
-            @if (filteredSignals.length === 0) {
-              <div class="empty-state">
-                <mat-icon>inbox</mat-icon>
-                <span>{{ signals.length === 0
-                  ? 'No signals yet — scanner has not run or data failed to load'
-                  : 'No signals match the current filters' }}</span>
-              </div>
-            } @else {
-              <!-- Outcome summary strip -->
-              <div class="sig-summary-bar">
-                @if (signalSummary.filled > 0) {
-                  <span class="sum-chip sum-filled">Filled: {{ signalSummary.filled }}</span>
-                }
-                @if (signalSummary.inOrder > 0) {
-                  <span class="sum-chip sum-inorder">In Order: {{ signalSummary.inOrder }}</span>
-                }
-                @if (signalSummary.execRejected > 0) {
-                  <span class="sum-chip sum-rejected">Exec Rejected: {{ signalSummary.execRejected }}</span>
-                }
-                @if (signalSummary.notFilled > 0) {
-                  <span class="sum-chip sum-warn">Not Filled: {{ signalSummary.notFilled }}</span>
-                }
-                <span class="sum-chip sum-notrade">No-Trade: {{ signalSummary.noTrade }}</span>
-                <span class="sum-divider"></span>
-                <span class="sum-total">{{ filteredSignals.length }} signals</span>
-              </div>
-
-              <div class="table-wrap">
-                <table class="mon-table">
-                  <thead><tr>
-                    <th>Time</th><th>Strategy</th><th>Signal</th><th>Outcome</th><th>Underlying</th><th>Type</th>
-                    <th>Strike</th><th>Price</th><th>Score</th><th>Reason / Filter</th>
-                  </tr></thead>
-                  <tbody>
-                    @for (s of filteredSignals; track s['id']) {
-                      <tr [class]="'row-' + outcomeCls(s)">
-                        <td class="mono time-cell">{{ fmtTime(s['timestamp']) }}</td>
-                        <td>{{ fmtStrategy(s['strategyType']) }}</td>
-                        <td><span [class]="'sig-badge sig-' + sigCls(s['signalType'])">{{ s['signalType'] }}</span></td>
-                        <td><span [class]="'outcome-badge outcome-' + outcomeCls(s)">{{ outcomeLabel(s) }}</span></td>
-                        <td>{{ s['underlying'] ?? '-' }}</td>
-                        <td>
-                          @if (s['optionType']) {
-                            <span [class]="'type-badge ' + typeCls(s['optionType'])">{{ s['optionType'] }}</span>
-                          } @else { <span class="muted">-</span> }
-                        </td>
-                        <td class="mono">{{ s['selectedStrike'] ?? '-' }}</td>
-                        <td class="mono">
-                          @if (num(s['optionPrice']) > 0) {
-                            {{ fmtNum(s['optionPrice']) }}
-                          } @else if (num(s['underlyingPrice']) > 0) {
-                            <span class="spot-price" title="Underlying spot price">{{ fmtNum(s['underlyingPrice']) }}<sup>sp</sup></span>
-                          } @else { <span class="muted">-</span> }
-                        </td>
-                        <td class="mono">{{ fmtScore(s['confidenceScore']) }}</td>
-                        <td class="reason-cell" [title]="str(s['executionReason'] ?? s['firstFailedFilter'] ?? s['reasons'])">
-                          {{ truncate(s['executionReason'] ?? s['firstFailedFilter'] ?? s['reasons'], 50) }}
-                        </td>
-                      </tr>
-                    }
-                  </tbody>
-                </table>
-              </div>
             }
           </mat-tab>
 
@@ -738,6 +645,20 @@ type ScorecardRow = { strategyType: string; totalEntries: number; filled: number
     .row-closed-pos { opacity: 0.55; }
     .row-closed-pos:hover { opacity: 0.75 !important; }
 
+    /* Strength & Recommendation badges */
+    .strength-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 800; }
+    .strength-strong { background: rgba(82,196,120,.15); color: #52c478; }
+    .strength-hold   { background: rgba(97,168,255,.15); color: var(--accent); }
+    .strength-watch  { background: rgba(242,189,75,.15); color: var(--warn); }
+    .strength-weak   { background: rgba(255,113,106,.15); color: var(--bad); }
+    .strength-none   { background: rgba(255,255,255,.06); color: var(--muted); }
+    .rec-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 800; text-transform: uppercase; }
+    .rec-strong { background: rgba(82,196,120,.12); color: #52c478; }
+    .rec-hold   { background: rgba(97,168,255,.12); color: var(--accent); }
+    .rec-watch  { background: rgba(242,189,75,.12); color: var(--warn); }
+    .rec-weak   { background: rgba(255,113,106,.12); color: var(--bad); }
+    .rec-none   { background: rgba(255,255,255,.06); color: var(--muted); }
+
     /* Spot price indicator in signals table */
     .spot-price { color: var(--muted); }
     .spot-price sup { font-size: 8px; margin-left: 1px; opacity: 0.7; }
@@ -776,19 +697,9 @@ export class MonitoringPageComponent implements OnInit, OnDestroy {
 
   setMode(m: 'live' | 'paper'): void {
     this._activeMode = m;
-    this.selectedStrategyTypes.clear();
-    this.selectedUnderlyings.clear();
+    this.startHealthPolling();
     this.cd.detectChanges();
   }
-
-  signalTypeOptions: string[] = ['BUY_CE', 'BUY_PE', 'NO_TRADE'];
-  selectedSignalTypes = new Set<string>(this.signalTypeOptions);
-
-  strategyTypeOptions: string[] = [];
-  selectedStrategyTypes = new Set<string>();
-
-  underlyingOptions: string[] = ['NIFTY', 'BANKNIFTY', 'SENSEX'];
-  selectedUnderlyings = new Set<string>();
 
   positions: ApiRecord[] = [];
   orders: ApiRecord[] = [];
@@ -811,6 +722,8 @@ export class MonitoringPageComponent implements OnInit, OnDestroy {
 
   private jvmSub?: import('rxjs').Subscription;
   private mainDataSub?: import('rxjs').Subscription;
+  private healthPollSub: Subscription | null = null;
+  positionHealth: ApiRecord[] = [];
 
   dailyLossLimit = 0;
   dailyLossUsed = 0;
@@ -821,19 +734,6 @@ export class MonitoringPageComponent implements OnInit, OnDestroy {
 
   get hasPaperSignals(): boolean {
     return this.signals.some(s => s['paperTrade'] === true);
-  }
-
-  get modeStrategyTypeOptions(): string[] {
-    // Derive available strategy types from the signals visible in the current mode
-    if (!this.strategiesLoaded) return this.strategyTypeOptions;
-    const visibleTypes = new Set<string>();
-    for (const s of this.signals) {
-      const stratType = String(s['strategyType'] ?? '');
-      const isPaper   = s['paperTrade'] === true;
-      if (this.activeMode === 'paper' && isPaper) visibleTypes.add(stratType);
-      if (this.activeMode === 'live' && !isPaper) visibleTypes.add(stratType);
-    }
-    return Array.from(visibleTypes).sort();
   }
 
   get uptimeLabel(): string {
@@ -856,33 +756,19 @@ export class MonitoringPageComponent implements OnInit, OnDestroy {
   }
 
   get liveTrades(): ApiRecord[] {
-    return this.trades.filter(t => !String(t['tradeId'] ?? '').startsWith('PAPER-'));
+    return this.trades.filter(t => !String(t['tradeId'] ?? '').startsWith('PAPER-'))
+      .filter(t => this.isToday(String(t['entryTime'] ?? '')));
   }
   get paperTrades(): ApiRecord[] {
-    return this.trades.filter(t => String(t['tradeId'] ?? '').startsWith('PAPER-'));
+    return this.trades.filter(t => String(t['tradeId'] ?? '').startsWith('PAPER-'))
+      .filter(t => this.isToday(String(t['entryTime'] ?? '')));
   }
   get openPaperPositions(): ApiRecord[] {
     return this.paperTrades.filter(t => String(t['status'] ?? '').toUpperCase() === 'OPEN');
   }
   get liveOrders(): ApiRecord[] {
-    return this.orders.filter(o => !String(o['clientOrderId'] ?? '').startsWith('PAPER-'));
-  }
-
-  get filteredSignals(): ApiRecord[] {
-    return this.signals.filter(s => {
-      const sigType   = String(s['signalType']  ?? '');
-      const stratType = String(s['strategyType'] ?? '');
-      const isPaper   = s['paperTrade'] === true;
-
-      // Mode filter — use the signal's own paperTrade field
-      if (this.activeMode === 'paper' && !isPaper) return false;
-      if (this.activeMode === 'live'  &&  isPaper) return false;
-
-      const sigMatch        = this.selectedSignalTypes.has(sigType);
-      const stratMatch      = this.selectedStrategyTypes.size === 0 || this.selectedStrategyTypes.has(stratType);
-      const underlyingMatch = this.selectedUnderlyings.size === 0 || this.selectedUnderlyings.has(String(s['underlying'] ?? ''));
-      return sigMatch && stratMatch && underlyingMatch;
-    });
+    return this.orders.filter(o => !String(o['clientOrderId'] ?? '').startsWith('PAPER-'))
+      .filter(o => this.isToday(String(o['orderPlacedAt'] ?? o['updatedAt'] ?? '')));
   }
 
   constructor(private readonly api: ApiService, private readonly cd: ChangeDetectorRef) {}
@@ -901,6 +787,7 @@ export class MonitoringPageComponent implements OnInit, OnDestroy {
   ngOnDestroy(): void {
     this.jvmSub?.unsubscribe();
     this.mainDataSub?.unsubscribe();
+    this.healthPollSub?.unsubscribe();
   }
 
   private loadJvm(): void {
@@ -912,7 +799,55 @@ export class MonitoringPageComponent implements OnInit, OnDestroy {
   private loadPositions(): void {
     this.api.positions()
       .pipe(catchError(() => of([] as ApiRecord[])))
-      .subscribe(p => { this.positions = p; this.cd.detectChanges(); });
+      .subscribe(p => { this.positions = p; this.startHealthPolling(); this.cd.detectChanges(); });
+  }
+
+  private startHealthPolling(): void {
+    this.healthPollSub?.unsubscribe();
+    this.healthPollSub = null;
+    if (this.activeMode === 'live' && this.positions.length > 0) {
+      this.loadPositionHealth();
+      this.healthPollSub = interval(15000).subscribe(() => this.loadPositionHealth());
+    }
+  }
+
+  private loadPositionHealth(): void {
+    this.api.positionHealth()
+      .pipe(catchError(() => of([] as ApiRecord[])))
+      .subscribe(h => { this.positionHealth = h; this.cd.detectChanges(); });
+  }
+
+  getStrengthScore(position: ApiRecord): string {
+    const health = this.findHealth(position);
+    if (!health) return '-';
+    const score = Number(health['strengthScore']);
+    return score < 0 ? '-' : String(score);
+  }
+
+  getRecommendation(position: ApiRecord): string {
+    const health = this.findHealth(position);
+    if (!health) return '-';
+    return String(health['recommendation'] ?? '-');
+  }
+
+  getHealthClass(position: ApiRecord): string {
+    const health = this.findHealth(position);
+    if (!health) return 'none';
+    const rec = String(health['recommendation'] ?? '').toLowerCase();
+    if (rec === 'strong') return 'strong';
+    if (rec === 'hold') return 'hold';
+    if (rec === 'watch') return 'watch';
+    if (rec === 'weak') return 'weak';
+    return 'none';
+  }
+
+  getRecClass(position: ApiRecord): string {
+    return this.getHealthClass(position);
+  }
+
+  private findHealth(position: ApiRecord): ApiRecord | undefined {
+    const key = String(position['instrumentKey'] ?? '');
+    return this.positionHealth.find(h => String(h['instrumentKey'] ?? '') === key);
   }
 
   load(): void {
@@ -946,18 +881,8 @@ export class MonitoringPageComponent implements OnInit, OnDestroy {
       const realized = Number(r.pnl?.realizedPnl ?? 0);
       this.dailyLossUsed = realized < 0 ? Math.abs(realized) : 0;
 
-      // Derive signal type options from data
-      const sigTypes = new Set<string>(this.signalTypeOptions);
-      this.signals.forEach(s => { if (s['signalType']) sigTypes.add(String(s['signalType'])); });
-      this.signalTypeOptions = Array.from(sigTypes).sort();
-      sigTypes.forEach(t => this.selectedSignalTypes.add(t));
-
-      // Derive strategy type options from signal data
-      const stratTypes = new Set<string>();
-      this.signals.forEach(s => { if (s['strategyType']) stratTypes.add(String(s['strategyType'])); });
-      this.strategyTypeOptions = Array.from(stratTypes).sort();
-
       this.lastRefreshed = new Date();
+      this.startHealthPolling();
       this.cd.detectChanges();
     });
   }
@@ -968,25 +893,6 @@ export class MonitoringPageComponent implements OnInit, OnDestroy {
       .pipe(catchError(() => of([] as ScorecardRow[])))
       .subscribe(data => { this.scorecard = data; this.cd.detectChanges(); });
   }
-
-  toggleSignalType(st: string): void {
-    this.selectedSignalTypes.has(st) ? this.selectedSignalTypes.delete(st) : this.selectedSignalTypes.add(st);
-    this.cd.detectChanges();
-  }
-
-  toggleStrategyType(st: string): void {
-    this.selectedStrategyTypes.has(st) ? this.selectedStrategyTypes.delete(st) : this.selectedStrategyTypes.add(st);
-    this.cd.detectChanges();
-  }
-
-  clearStrategyFilter(): void { this.selectedStrategyTypes.clear(); this.cd.detectChanges(); }
-
-  toggleUnderlying(u: string): void {
-    this.selectedUnderlyings.has(u) ? this.selectedUnderlyings.delete(u) : this.selectedUnderlyings.add(u);
-    this.cd.detectChanges();
-  }
-
-  clearUnderlyingFilter(): void { this.selectedUnderlyings.clear(); this.cd.detectChanges(); }
 
   fmtStrategy(s: unknown): string {
     if (!s) return '-';
@@ -1007,65 +913,27 @@ export class MonitoringPageComponent implements OnInit, OnDestroy {
     return isNaN(n) ? '-' : n.toFixed(2);
   }
 
-  fmtScore(v: unknown): string {
-    const n = Number(v);
-    return isNaN(n) || n === 0 ? '-' : n.toFixed(1);
-  }
-
   num(v: unknown): number { return Number(v) || 0; }
 
   str(v: unknown): string { return v == null ? '' : String(v); }
+
+  private isToday(isoTimestamp: string): boolean {
+    if (!isoTimestamp) return false;
+    const date = new Date(isoTimestamp);
+    if (isNaN(date.getTime())) return false;
+    const istOffset = 5.5 * 60 * 60 * 1000;
+    const istDate = new Date(date.getTime() + istOffset);
+    const today = new Date(Date.now() + istOffset);
+    return istDate.toDateString() === today.toDateString();
+  }
 
   truncate(v: unknown, max = 45): string {
     const s = v == null ? '' : String(v);
     return s.length > max ? s.slice(0, max) + '…' : s;
   }
 
-  sigCls(type: unknown): string {
-    const t = String(type ?? '');
-    if (t === 'BUY_CE') return 'ce';
-    if (t === 'BUY_PE') return 'pe';
-    return 'no';
-  }
-
   typeCls(type: unknown): string {
     return String(type ?? '').toUpperCase() === 'CE' ? 'type-ce' : 'type-pe';
   }
 
-  outcomeCls(s: ApiRecord): string {
-    const stage = String(s['executionStage'] ?? '');
-    if (stage === 'ORDER_FILLED' || stage === 'PAPER_FILLED') return 'filled';
-    if (stage === 'ORDER_OPEN') return 'inorder';
-    if (stage === 'ORDER_NOT_FILLED' || stage === 'BROKER_ERROR') return 'warn';
-    if (stage.includes('REJECTED') || stage === 'TRADING_STOPPED') return 'rejected';
-    return 'scan';
-  }
-
-  outcomeLabel(s: ApiRecord): string {
-    const stage = String(s['executionStage'] ?? '');
-    switch (stage) {
-      case 'ORDER_FILLED':           return 'Filled';
-      case 'PAPER_FILLED':           return 'Paper Filled';
-      case 'ORDER_OPEN':             return 'In Order';
-      case 'ORDER_NOT_FILLED':       return 'Not Filled';
-      case 'RISK_REJECTED':          return 'Risk ✗';
-      case 'SIZING_REJECTED':        return 'Size ✗';
-      case 'PAPER_SIZING_REJECTED':  return 'Size ✗';
-      case 'ORDER_GUARD_REJECTED':   return 'Guard ✗';
-      case 'TRADING_STOPPED':        return 'Stopped';
-      case 'BROKER_ERROR':           return 'Broker ✗';
-      default:                       return stage || 'Scanner ✗';
-    }
-  }
-
-  get signalSummary(): { filled: number; inOrder: number; execRejected: number; notFilled: number; noTrade: number } {
-    const f = this.filteredSignals;
-    return {
-      filled:       f.filter(s => ['ORDER_FILLED','PAPER_FILLED'].includes(String(s['executionStage'] ?? ''))).length,
-      inOrder:      f.filter(s => String(s['executionStage'] ?? '') === 'ORDER_OPEN').length,
-      execRejected: f.filter(s => { const st = String(s['executionStage'] ?? ''); return st.includes('REJECTED') || st === 'TRADING_STOPPED'; }).length,
-      notFilled:    f.filter(s => ['ORDER_NOT_FILLED','BROKER_ERROR'].includes(String(s['executionStage'] ?? ''))).length,
-      noTrade:      f.filter(s => String(s['signalType'] ?? '') === 'NO_TRADE').length
-    };
-  }
 }

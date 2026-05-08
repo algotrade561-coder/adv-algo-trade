@@ -55,6 +55,7 @@ globalConfig:
   maxOpenTrades: 1
   sameInstrumentReentryMinPriceMovePercent: 3
   cooldownMinutes: 0
+  maxOpenPositionsPerStrategy: 1
   dailyProfitTarget: 0
   maxLotsPerTrade: 1
   mlVirtualTradeThreshold: 45

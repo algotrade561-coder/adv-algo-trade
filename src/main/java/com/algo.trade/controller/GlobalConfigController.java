@@ -69,6 +69,7 @@ public class GlobalConfigController {
         m.put("minLiquidityVolume", c.getMinLiquidityVolume());
         m.put("maxIvPercent", c.getMaxIvPercent());
         m.put("minSignalScorePercent", c.getMinSignalScorePercent());
+        m.put("minEnvironmentScore", c.getMinEnvironmentScore());
         m.put("ceOiSupportRequired", c.isCeOiSupportRequired());
         m.put("peOiSupportRequired", c.isPeOiSupportRequired());
         m.put("ceOiDivergenceFilterEnabled", c.isCeOiDivergenceFilterEnabled());
@@ -103,6 +104,7 @@ public class GlobalConfigController {
         m.put("maxOpenTrades", c.getMaxOpenTrades());
         m.put("sameInstrumentReentryMinPriceMovePercent", c.getSameInstrumentReentryMinPriceMovePercent());
         m.put("cooldownMinutes", c.getCooldownMinutes());
+        m.put("maxOpenPositionsPerStrategy", c.getMaxOpenPositionsPerStrategy());
         m.put("dailyProfitTarget", c.getDailyProfitTarget());
         m.put("maxLotsPerTrade", c.getMaxLotsPerTrade());
         m.put("maxTradesPerHour", c.getMaxTradesPerHour());

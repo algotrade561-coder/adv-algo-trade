@@ -34,6 +34,7 @@ public class ScanContextBuilder {
     private final InstrumentCache instrumentCache;
     private final MarketDataService marketDataService;
     private final LiveInstrumentCache liveInstrumentCache;
+    private final com.algo.trade.strategy.RegimeAwareStrikeSelector regimeAwareStrikeSelector;
 
     /** Previous scan quotes for OI change delta calculation. */
     private final Map<String, Quote> previousQuotes = new ConcurrentHashMap<>();
@@ -43,13 +44,15 @@ public class ScanContextBuilder {
                                StrategyConfigService strategyConfigService,
                                InstrumentCache instrumentCache,
                                MarketDataService marketDataService,
-                               LiveInstrumentCache liveInstrumentCache) {
+                               LiveInstrumentCache liveInstrumentCache,
+                               com.algo.trade.strategy.RegimeAwareStrikeSelector regimeAwareStrikeSelector) {
         this.properties = properties;
         this.globalConfigService = globalConfigService;
         this.strategyConfigService = strategyConfigService;
         this.instrumentCache = instrumentCache;
         this.marketDataService = marketDataService;
         this.liveInstrumentCache = liveInstrumentCache;
+        this.regimeAwareStrikeSelector = regimeAwareStrikeSelector;
     }
 
     // ── Result type ───────────────────────────────────────────────────────
@@ -69,6 +72,38 @@ public class ScanContextBuilder {
      * @return the scan context, or empty if data is unavailable
      */
     public Optional<ScanContext> build(UnderlyingSymbol underlying, String[] failReason) {
+        return build(underlying, failReason, null, null);
+    }
+
+    /**
+     * Build a full scan context with dynamic regime-aware strike selection.
+     *
+     * <p>When regime and session are provided, the {@link com.algo.trade.strategy.RegimeAwareStrikeSelector}
+     * computes a dynamic strike offset. If the offset is -1 (block sentinel), the method returns
+     * {@code Optional.empty()} with failReason "regimeBlocked". Otherwise, the offset is used to
+     * select options at that distance from ATM.
+     *
+     * @param underlying the underlying symbol
+     * @param failReason single-element array — set to the failure reason if context cannot be built
+     * @param regime current market regime (nullable — if null, uses default ATM selection)
+     * @param session current session window (nullable — if null, uses default ATM selection)
+     * @return the scan context, or empty if data is unavailable or regime blocks entry
+     */
+    public Optional<ScanContext> build(UnderlyingSymbol underlying, String[] failReason,
+                                        com.algo.trade.regime.RegimeFilter.MarketRegime regime,
+                                        com.algo.trade.strategy.AlgoFlowOrchestrator.SessionWindow session) {
+        // Compute dynamic strike offset if regime and session are available
+        int dynamicOffset = 0; // default: ATM
+        if (regime != null && session != null) {
+            dynamicOffset = regimeAwareStrikeSelector.computeStrikeOffset(regime, session);
+            if (dynamicOffset < 0) {
+                failReason[0] = "regimeBlocked";
+                log.info("ScanContext blocked by regime strike selector: underlying={}, regime={}, session={}",
+                        underlying, regime, session);
+                return Optional.empty();
+            }
+        }
+
         Optional<Quote> spotQuote = spotQuote(underlying);
         if (spotQuote.isEmpty()) {
             failReason[0] = "noSpotQuote";
@@ -105,7 +140,8 @@ public class ScanContextBuilder {
             return Optional.empty();
         }
 
-        Map<OptionType, Instrument> selectedOptions = selectedOptions(underlying, options, underlyingPrice, optionQuotes);
+        Map<OptionType, Instrument> selectedOptions = selectedOptionsWithOffset(underlying, options,
+                underlyingPrice, optionQuotes, dynamicOffset);
         if (selectedOptions.isEmpty()) {
             BigDecimal maxPrem = maxTradablePremium(underlying, options.stream().findFirst()
                     .map(Instrument::lotSize).orElse(0));
@@ -118,8 +154,8 @@ public class ScanContextBuilder {
         Map<String, Quote> allQuotes = new LinkedHashMap<>(optionQuotes);
         allQuotes.put(spotQuote.get().instrumentKey(), spotQuote.get());
 
-        log.info("ScanContext built: underlying={}, spot={}, expiry={}, strikes={}, levels={}, options={}",
-                underlying, underlyingPrice, expiry.get(), selectedStrikes.size(), levels.size(), selectedOptions.size());
+        log.info("ScanContext built: underlying={}, spot={}, expiry={}, strikes={}, levels={}, options={}, dynamicOffset={}",
+                underlying, underlyingPrice, expiry.get(), selectedStrikes.size(), levels.size(), selectedOptions.size(), dynamicOffset);
         return Optional.of(new ScanContext(spotQuote.get(), snapshot, selectedOptions, allQuotes));
     }
 
@@ -204,12 +240,23 @@ public class ScanContextBuilder {
 
     private Map<OptionType, Instrument> selectedOptions(UnderlyingSymbol underlying, List<Instrument> options,
                                                         BigDecimal underlyingPrice, Map<String, Quote> quotes) {
+        return selectedOptionsWithOffset(underlying, options, underlyingPrice, quotes, 0);
+    }
+
+    /**
+     * Select affordable options with a dynamic strike offset from ATM.
+     *
+     * @param dynamicOffset 0=ATM, +1=1 OTM, +2=2 OTM. Shifts the starting candidate strike.
+     */
+    private Map<OptionType, Instrument> selectedOptionsWithOffset(UnderlyingSymbol underlying, List<Instrument> options,
+                                                                   BigDecimal underlyingPrice, Map<String, Quote> quotes,
+                                                                   int dynamicOffset) {
         List<BigDecimal> strikes = options.stream()
                 .flatMap(i -> i.strike().stream()).distinct().sorted().toList();
         if (strikes.isEmpty()) return Map.of();
         Map<OptionType, Instrument> selected = new EnumMap<>(OptionType.class);
-        selected.put(OptionType.CE, selectedAffordableOption(underlying, options, strikes, underlyingPrice, OptionType.CE, quotes).orElse(null));
-        selected.put(OptionType.PE, selectedAffordableOption(underlying, options, strikes, underlyingPrice, OptionType.PE, quotes).orElse(null));
+        selected.put(OptionType.CE, selectedAffordableOption(underlying, options, strikes, underlyingPrice, OptionType.CE, quotes, dynamicOffset).orElse(null));
+        selected.put(OptionType.PE, selectedAffordableOption(underlying, options, strikes, underlyingPrice, OptionType.PE, quotes, dynamicOffset).orElse(null));
         selected.values().removeIf(Objects::isNull);
         return Map.copyOf(selected);
     }
@@ -217,6 +264,13 @@ public class ScanContextBuilder {
     private Optional<Instrument> selectedAffordableOption(UnderlyingSymbol underlying, List<Instrument> options,
                                                           List<BigDecimal> strikes, BigDecimal underlyingPrice,
                                                           OptionType optionType, Map<String, Quote> quotes) {
+        return selectedAffordableOption(underlying, options, strikes, underlyingPrice, optionType, quotes, 0);
+    }
+
+    private Optional<Instrument> selectedAffordableOption(UnderlyingSymbol underlying, List<Instrument> options,
+                                                          List<BigDecimal> strikes, BigDecimal underlyingPrice,
+                                                          OptionType optionType, Map<String, Quote> quotes,
+                                                          int dynamicOffset) {
         BigDecimal atm = nearestStrike(strikes, underlyingPrice);
         int atmIndex = indexOfStrike(strikes, atm);
         int nearby = properties.strike().nearbyStrikes();
@@ -227,6 +281,11 @@ public class ScanContextBuilder {
         List<BigDecimal> candidates = optionType == OptionType.CE
                 ? nearbyStrikes.stream().filter(s -> s.compareTo(atm) >= 0).sorted().toList()
                 : nearbyStrikes.stream().filter(s -> s.compareTo(atm) <= 0).sorted(Comparator.reverseOrder()).toList();
+
+        // Apply dynamic offset: skip the first N candidates to start further OTM
+        if (dynamicOffset > 0 && candidates.size() > dynamicOffset) {
+            candidates = candidates.subList(dynamicOffset, candidates.size());
+        }
 
         for (BigDecimal strike : candidates) {
             Optional<Instrument> instrument = findOption(options, strike, optionType);

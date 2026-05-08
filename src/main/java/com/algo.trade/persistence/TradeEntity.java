@@ -59,6 +59,14 @@ public class TradeEntity {
     /** Current trailing stop price — persisted so it survives restarts. Null until trailing stop activates. */
     private BigDecimal trailingStopPrice;
 
+    /** Market environment score (0-100) at entry time, or -1 if computation failed. Write-once. */
+    private Integer environmentScore;
+    /** JSON breakdown of environment sub-scores at entry time. Write-once. */
+    @jakarta.persistence.Column(length = 500)
+    private String environmentBreakdown;
+    /** Session window name at entry time (e.g. MORNING_MOMENTUM). Write-once. */
+    private String entrySessionWindow;
+
     protected TradeEntity() {
     }
 
@@ -131,4 +139,11 @@ public class TradeEntity {
     public void setAppliedTrailingGapPercent(BigDecimal v) { this.appliedTrailingGapPercent = v; }
     public BigDecimal getTrailingStopPrice() { return trailingStopPrice; }
     public void setTrailingStopPrice(BigDecimal v) { this.trailingStopPrice = v; }
+
+    public Integer getEnvironmentScore() { return environmentScore; }
+    public void setEnvironmentScore(Integer v) { this.environmentScore = v; }
+    public String getEnvironmentBreakdown() { return environmentBreakdown; }
+    public void setEnvironmentBreakdown(String v) { this.environmentBreakdown = v; }
+    public String getEntrySessionWindow() { return entrySessionWindow; }
+    public void setEntrySessionWindow(String v) { this.entrySessionWindow = v; }
 }

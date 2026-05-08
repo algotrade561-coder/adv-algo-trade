@@ -52,6 +52,7 @@ export interface GlobalConfigDto {
   minLiquidityVolume: number;
   maxIvPercent: number;
   minSignalScorePercent: number;
+  minEnvironmentScore: number;
   ceOiSupportRequired: boolean;
   peOiSupportRequired: boolean;
   ceOiDivergenceFilterEnabled: boolean;
@@ -88,6 +89,7 @@ export interface GlobalConfigDto {
   maxOpenTrades: number;
   sameInstrumentReentryMinPriceMovePercent: number;
   cooldownMinutes: number;
+  maxOpenPositionsPerStrategy: number;
   dailyProfitTarget: number;
   maxLotsPerTrade: number;
   maxTradesPerHour: number;
@@ -139,6 +141,7 @@ export class ApiService {
     return this.http.post<RuntimeStatus>(`${this.base}/scan/underlyings/${underlying}`, { enabled });
   }
   positions(): Observable<ApiRecord[]> { return this.http.get<ApiRecord[]>(`${this.base}/positions`); }
+  positionHealth(): Observable<ApiRecord[]> { return this.http.get<ApiRecord[]>(`${this.base}/positions/health`); }
   orders(): Observable<ApiRecord[]> { return this.http.get<ApiRecord[]>(`${this.base}/orders`); }
   trades(): Observable<ApiRecord[]> { return this.http.get<ApiRecord[]>(`${this.base}/trades`); }
   pnl(): Observable<PnlSnapshot> { return this.http.get<PnlSnapshot>(`${this.base}/pnl`); }

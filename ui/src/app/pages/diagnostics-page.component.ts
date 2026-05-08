@@ -21,7 +21,7 @@ import { interval, Subscription, catchError, of } from 'rxjs';
       <div class="hdr">
         <div>
           <h1 class="title">System Diagnostics</h1>
-          <p class="subtitle">Real-time system health, order audit trail, and failure analysis</p>
+          <p class="subtitle">Real-time system health, scheduled tasks, and failure analysis</p>
         </div>
         <button mat-flat-button color="primary" (click)="load()">
           <mat-icon>refresh</mat-icon> Refresh
@@ -180,70 +180,6 @@ import { interval, Subscription, catchError, of } from 'rxjs';
         </table>
       } @else {
         <div class="no-data">No scheduled tasks registered</div>
-      }
-
-      <!-- ── Order Audit Trail ── -->
-      <h2 class="sec-title"><mat-icon class="sec-icon">search</mat-icon> Order Audit Trail</h2>
-      <div class="search-row">
-        <mat-form-field appearance="outline" class="search-field">
-          <mat-label>Trade ID</mat-label>
-          <input matInput [(ngModel)]="searchTradeId" [matAutocomplete]="tradeIdAuto"
-                 (input)="cd.detectChanges()" (focus)="cd.detectChanges()" placeholder="TRD-xxx">
-          <mat-autocomplete #tradeIdAuto="matAutocomplete" autoActiveFirstOption>
-            @for (id of filteredTradeIds(); track id) {
-              <mat-option [value]="id">{{ id }}</mat-option>
-            }
-          </mat-autocomplete>
-        </mat-form-field>
-        <button mat-flat-button color="primary" (click)="searchAudit()" [disabled]="!searchTradeId">
-          <mat-icon>search</mat-icon> Trace
-        </button>
-        <mat-form-field appearance="outline" class="search-field">
-          <mat-label>Instrument Key</mat-label>
-          <input matInput [(ngModel)]="searchInstrument" [matAutocomplete]="instrAuto"
-                 (input)="cd.detectChanges()" (focus)="cd.detectChanges()" placeholder="NFO:NIFTY...">
-          <mat-autocomplete #instrAuto="matAutocomplete" autoActiveFirstOption>
-            @for (k of filteredInstruments(); track k) {
-              <mat-option [value]="k">{{ k }}</mat-option>
-            }
-          </mat-autocomplete>
-        </mat-form-field>
-        <button mat-flat-button (click)="searchByInstrument()" [disabled]="!searchInstrument">
-          <mat-icon>search</mat-icon> Search
-        </button>
-      </div>
-
-      @if (auditResult) {
-        <div class="audit-section">
-          @if (auditResult.lifecycle?.length) {
-            <h3>Order Lifecycle</h3>
-            <table class="audit-table">
-              <thead><tr><th>Stage</th><th>Time</th><th>Detail</th><th>Status</th></tr></thead>
-              <tbody>
-                @for (step of auditResult.lifecycle; track step.stage) {
-                  <tr [class.row-ok]="step.status === 'OPEN' || step.status === 'COMPLETE' || step.status === 'ORDER_FILLED'"
-                      [class.row-bad]="step.status === 'REJECTED' || step.status === 'CANCELLED'">
-                    <td><strong>{{ step.stage }}</strong></td>
-                    <td class="mono">{{ formatTime(step.time) }}</td>
-                    <td>{{ step.detail }}</td>
-                    <td><span class="badge" [class.badge-ok]="isGoodStatus(step.status)" [class.badge-bad]="isBadStatus(step.status)">{{ step.status }}</span></td>
-                  </tr>
-                }
-              </tbody>
-            </table>
-          }
-          @if (auditResult.trade) {
-            <h3>Trade Details</h3>
-            <pre class="json-block">{{ auditResult.trade | json }}</pre>
-          }
-          @if (auditResult.orders?.length) {
-            <h3>Orders ({{ auditResult.orders.length }})</h3>
-            <pre class="json-block">{{ auditResult.orders | json }}</pre>
-          }
-          @if (auditResult.error) {
-            <div class="error-msg">{{ auditResult.error }}</div>
-          }
-        </div>
       }
 
       <!-- ── Recent Errors (from ErrorEventService) ── -->

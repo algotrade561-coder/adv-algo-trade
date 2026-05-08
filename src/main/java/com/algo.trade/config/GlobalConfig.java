@@ -66,6 +66,10 @@ public class GlobalConfig {
     @Column(precision = 19, scale = 4)
     private BigDecimal minSignalScorePercent = BigDecimal.valueOf(70);
 
+    /** Minimum environment score (0-100) for the regime+session entry gate. Default 55. */
+    @Column(columnDefinition = "INT DEFAULT 55")
+    private Integer minEnvironmentScore = 55;
+
     private boolean ceOiSupportRequired = false;
     private boolean peOiSupportRequired = false;
     private boolean ceOiDivergenceFilterEnabled = true;
@@ -141,6 +145,10 @@ public class GlobalConfig {
     private BigDecimal sameInstrumentReentryMinPriceMovePercent = BigDecimal.valueOf(3l);
 
     private int cooldownMinutes = 0;
+
+    /** Max open positions per strategy type across all indices. Default 1 = same strategy can only be active on one index at a time. */
+    @Column(columnDefinition = "INT DEFAULT 1")
+    private Integer maxOpenPositionsPerStrategy = 1;
 
     @Column(precision = 19, scale = 4)
     private BigDecimal dailyProfitTarget = BigDecimal.ZERO;
@@ -337,6 +345,9 @@ public class GlobalConfig {
     public BigDecimal getMinSignalScorePercent() { return minSignalScorePercent; }
     public void setMinSignalScorePercent(BigDecimal minSignalScorePercent) { this.minSignalScorePercent = minSignalScorePercent; }
 
+    public int getMinEnvironmentScore() { return minEnvironmentScore != null ? minEnvironmentScore : 55; }
+    public void setMinEnvironmentScore(Integer minEnvironmentScore) { this.minEnvironmentScore = minEnvironmentScore; }
+
     public boolean isCeOiSupportRequired() { return ceOiSupportRequired; }
     public void setCeOiSupportRequired(boolean ceOiSupportRequired) { this.ceOiSupportRequired = ceOiSupportRequired; }
 
@@ -450,6 +461,9 @@ public class GlobalConfig {
 
     public int getCooldownMinutes() { return cooldownMinutes; }
     public void setCooldownMinutes(int cooldownMinutes) { this.cooldownMinutes = cooldownMinutes; }
+
+    public int getMaxOpenPositionsPerStrategy() { return maxOpenPositionsPerStrategy != null ? maxOpenPositionsPerStrategy : 1; }
+    public void setMaxOpenPositionsPerStrategy(Integer v) { this.maxOpenPositionsPerStrategy = v; }
 
     public BigDecimal getDailyProfitTarget() { return dailyProfitTarget; }
     public void setDailyProfitTarget(BigDecimal dailyProfitTarget) { this.dailyProfitTarget = dailyProfitTarget; }

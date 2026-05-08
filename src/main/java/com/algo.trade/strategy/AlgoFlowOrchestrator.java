@@ -8,16 +8,21 @@ import com.algo.trade.marketdata.ExpiryCalendar;
 import com.algo.trade.marketdata.LiveCandleBuilder;
 import com.algo.trade.marketdata.PcrCalculator;
 import com.algo.trade.news.NewsFeedService;
+import com.algo.trade.notification.TelegramAlertService;
+import com.algo.trade.regime.RegimeFilter;
 import com.algo.trade.risk.MarketGuard;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
+import java.time.Instant;
 import java.time.LocalTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Algo Flow Orchestrator — unified pre-trade filter pipeline.
@@ -51,6 +56,9 @@ public class AlgoFlowOrchestrator {
     private final com.algo.trade.indicator.VolumeDeltaTracker volumeDeltaTracker;
     private final com.algo.trade.indicator.RangeBoundDetector rangeBoundDetector;
     private final com.algo.trade.indicator.OIPriceActionFilter oiPriceActionFilter;
+    private final RegimeFilter regimeFilter;
+    private final MarketEnvironmentScorer environmentScorer;
+    private final TelegramAlertService telegramAlertService;
 
     // ── Per-filter enable/disable flags ───────────────────────────────────
 
@@ -71,6 +79,18 @@ public class AlgoFlowOrchestrator {
 
     @Value("${algo-flow.oi-price-action-filter-enabled:true}")
     private boolean oiPriceActionFilterEnabled;
+
+    // ── Regime + Session Gate flags ───────────────────────────────────────
+
+    @Value("${algo-flow.regime-session-gate-enabled:true}")
+    private boolean regimeSessionGateEnabled;
+
+    @Value("${algo-flow.regime-session-gate-log-only:false}")
+    private boolean regimeSessionGateLogOnly;
+
+    /** Throttle map: "underlying|strategyType" → last notification timestamp */
+    private final Map<String, Instant> regimeGateNotificationThrottle = new ConcurrentHashMap<>();
+    private static final long THROTTLE_MINUTES = 5;
 
     // ── VIX regime thresholds ─────────────────────────────────────────────
 
@@ -120,7 +140,10 @@ public class AlgoFlowOrchestrator {
                                  LiveCandleBuilder liveCandleBuilder,
                                  com.algo.trade.indicator.VolumeDeltaTracker volumeDeltaTracker,
                                  com.algo.trade.indicator.RangeBoundDetector rangeBoundDetector,
-                                 com.algo.trade.indicator.OIPriceActionFilter oiPriceActionFilter) {
+                                 com.algo.trade.indicator.OIPriceActionFilter oiPriceActionFilter,
+                                 RegimeFilter regimeFilter,
+                                 MarketEnvironmentScorer environmentScorer,
+                                 TelegramAlertService telegramAlertService) {
         this.marketGuard = marketGuard;
         this.globalConfigService = globalConfigService;
         this.newsFeedService = newsFeedService;
@@ -131,6 +154,9 @@ public class AlgoFlowOrchestrator {
         this.volumeDeltaTracker = volumeDeltaTracker;
         this.rangeBoundDetector = rangeBoundDetector;
         this.oiPriceActionFilter = oiPriceActionFilter;
+        this.regimeFilter = regimeFilter;
+        this.environmentScorer = environmentScorer;
+        this.telegramAlertService = telegramAlertService;
     }
 
     // ── Result type ───────────────────────────────────────────────────────
@@ -142,15 +168,28 @@ public class AlgoFlowOrchestrator {
             List<String> failedFilters,
             String blockReason,
             VixRegime vixRegime,
-            SessionWindow sessionWindow
+            SessionWindow sessionWindow,
+            int environmentScore,
+            String environmentBreakdown
     ) {
         public static EntryDecision blocked(String reason, List<String> passed, List<String> failed) {
-            return new EntryDecision(false, null, List.copyOf(passed), List.copyOf(failed), reason, null, null);
+            return new EntryDecision(false, null, List.copyOf(passed), List.copyOf(failed), reason, null, null, -1, null);
+        }
+
+        public static EntryDecision blocked(String reason, List<String> passed, List<String> failed,
+                                             int envScore, String envBreakdown) {
+            return new EntryDecision(false, null, List.copyOf(passed), List.copyOf(failed), reason, null, null, envScore, envBreakdown);
         }
 
         public static EntryDecision approved(String trailMode, List<String> passed,
                                               VixRegime vixRegime, SessionWindow sessionWindow) {
-            return new EntryDecision(true, trailMode, List.copyOf(passed), List.of(), null, vixRegime, sessionWindow);
+            return new EntryDecision(true, trailMode, List.copyOf(passed), List.of(), null, vixRegime, sessionWindow, -1, null);
+        }
+
+        public static EntryDecision approved(String trailMode, List<String> passed,
+                                              VixRegime vixRegime, SessionWindow sessionWindow,
+                                              int envScore, String envBreakdown) {
+            return new EntryDecision(true, trailMode, List.copyOf(passed), List.of(), null, vixRegime, sessionWindow, envScore, envBreakdown);
         }
     }
 
@@ -352,16 +391,78 @@ public class AlgoFlowOrchestrator {
         }
 
         // ═══════════════════════════════════════════════════════════════════
+        // PHASE 2B: REGIME + SESSION ENTRY GATE
+        // ═══════════════════════════════════════════════════════════════════
+
+        // Compute current regime using RegimeFilter
+        double currentVix = marketGuard.getCurrentVix();
+        double ivRank = ivRankTracker.getIVRank(IndexType.from(underlying));
+        double pcr = pcrCalculator.getPcr();
+        int regimeScore = regimeFilter.computeScore(currentVix, ivRank, pcr, 0, 5.0);
+        RegimeFilter.MarketRegime regime = regimeFilter.classify(regimeScore);
+
+        // Environment score computation (use neutral "CE" since option type is not yet known)
+        int envScore = -1;
+        String envBreakdown = null;
+        try {
+            // Use neutral PCR approach: "CE" as default since direction is unknown at this stage
+            MarketEnvironmentScorer.EnvironmentScore envResult = environmentScorer.compute(
+                    regimeScore, pcr, "CE", ivRank, 0.0, sessionWindow);
+            envScore = envResult.totalScore();
+            envBreakdown = envResult.breakdown();
+            passed.add("ENV_SCORE:" + envScore + "(breakdown=" + envBreakdown + ")");
+        } catch (Exception ex) {
+            log.error("[AlgoFlow] Environment score computation failed for {} on {}: {}",
+                    strategyType, underlying, ex.getMessage());
+            envScore = -1;
+            envBreakdown = "COMPUTATION_FAILED";
+            passed.add("ENV_SCORE:COMPUTATION_FAILED");
+        }
+
+        // Regime + Session Gate evaluation
+        if (regimeSessionGateEnabled) {
+            if (isRegimeSessionBlocked(regime, sessionWindow)) {
+                if (!regimeSessionGateLogOnly) {
+                    // Hard block
+                    failed.add("REGIME_SESSION_GATE:BLOCKED(regime=" + regime + ",session=" + sessionWindow + ")");
+                    sendRegimeGateNotification(strategyType, underlying, regime, regimeScore,
+                            sessionWindow, envScore, false);
+                    return EntryDecision.blocked(
+                            "Regime+Session gate blocked: " + regime + " + " + sessionWindow,
+                            passed, failed, envScore, envBreakdown);
+                } else {
+                    // Log-only mode: allow entry but notify
+                    passed.add("REGIME_SESSION_GATE:[LOG-ONLY] would block (regime=" + regime + ",session=" + sessionWindow + ")");
+                    sendRegimeGateNotification(strategyType, underlying, regime, regimeScore,
+                            sessionWindow, envScore, true);
+                }
+            } else {
+                passed.add("REGIME_SESSION_GATE:PASSED");
+            }
+        } else {
+            passed.add("REGIME_SESSION_GATE:DISABLED");
+        }
+
+        // Environment score gating (threshold check)
+        int minEnvScore = globalConfigService.getMinEnvironmentScore();
+        if (envScore >= 0 && envScore < minEnvScore) {
+            failed.add("ENV_SCORE_GATE:BELOW_THRESHOLD(score=" + envScore + ",threshold=" + minEnvScore + ")");
+            return EntryDecision.blocked(
+                    "Environment score " + envScore + " below threshold " + minEnvScore,
+                    passed, failed, envScore, envBreakdown);
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
         // DETERMINE TRAILING STOP MODE
         // ═══════════════════════════════════════════════════════════════════
 
         String trailingStopMode = determineTrailingStopMode(vixRegime, sessionWindow, underlying);
 
-        log.info("[AlgoFlow] {} on {} — ALLOWED | regime={} session={} trail={} | passed={} failed={}",
-                strategyType, underlying, vixRegime, sessionWindow, trailingStopMode,
+        log.info("[AlgoFlow] {} on {} — ALLOWED | regime={} session={} trail={} envScore={} | passed={} failed={}",
+                strategyType, underlying, vixRegime, sessionWindow, trailingStopMode, envScore,
                 passed.size(), failed.size());
 
-        return EntryDecision.approved(trailingStopMode, passed, vixRegime, sessionWindow);
+        return EntryDecision.approved(trailingStopMode, passed, vixRegime, sessionWindow, envScore, envBreakdown);
     }
 
     // ── VIX Regime Classification ─────────────────────────────────────────
@@ -453,5 +554,54 @@ public class AlgoFlowOrchestrator {
         }
         // Default: ATR-based
         return "ATR";
+    }
+
+    // ── Regime + Session Gate Logic ───────────────────────────────────────
+
+    /**
+     * Determine if the given regime + session combination should block entry.
+     *
+     * <p>Blocking rules:
+     * <ul>
+     *   <li>DANGER → always blocked</li>
+     *   <li>RISKY + MIDDAY_CHOP → blocked</li>
+     *   <li>RISKY + AFTERNOON → blocked</li>
+     *   <li>Everything else → not blocked</li>
+     * </ul>
+     */
+    boolean isRegimeSessionBlocked(RegimeFilter.MarketRegime regime, SessionWindow session) {
+        if (regime == RegimeFilter.MarketRegime.DANGER) return true;
+        if (regime == RegimeFilter.MarketRegime.RISKY) {
+            return session == SessionWindow.MIDDAY_CHOP || session == SessionWindow.AFTERNOON;
+        }
+        return false;
+    }
+
+    /**
+     * Send a throttled Telegram notification when the regime+session gate blocks an entry.
+     * Throttle: skip if same underlying|strategyType key was notified within 5 minutes.
+     */
+    private void sendRegimeGateNotification(StrategyType strategyType, UnderlyingSymbol underlying,
+                                             RegimeFilter.MarketRegime regime, int regimeScore,
+                                             SessionWindow sessionWindow, int envScore,
+                                             boolean logOnly) {
+        String throttleKey = underlying.name() + "|" + strategyType.name();
+        Instant now = Instant.now();
+        Instant lastNotified = regimeGateNotificationThrottle.get(throttleKey);
+        if (lastNotified != null && lastNotified.plusSeconds(THROTTLE_MINUTES * 60).isAfter(now)) {
+            log.debug("[AlgoFlow] Regime gate notification throttled for key={}", throttleKey);
+            return;
+        }
+        regimeGateNotificationThrottle.put(throttleKey, now);
+
+        String prefix = logOnly ? "[LOG-ONLY] 🚫" : "🚫";
+        String message = prefix + " Entry Blocked — Regime+Session Gate"
+                + System.lineSeparator() + "Strategy: " + strategyType.displayName()
+                + System.lineSeparator() + "Underlying: " + underlying.name()
+                + System.lineSeparator() + "Regime: " + regime + " (score: " + regimeScore + ")"
+                + System.lineSeparator() + "Session: " + sessionWindow
+                + System.lineSeparator() + "Environment Score: " + envScore + "/" + globalConfigService.getMinEnvironmentScore();
+
+        telegramAlertService.systemAlert(message);
     }
 }
