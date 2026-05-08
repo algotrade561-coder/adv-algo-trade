@@ -662,8 +662,13 @@ public class ExecutionEngine {
         String optionType = instrumentKey.toUpperCase().contains("PE") ? "PE" : "CE";
 
         String entryReason = "Limit order filled (watchdog) [" + (orderEntity.getStrategyType() != null ? orderEntity.getStrategyType() : "UNKNOWN") + "]: " + orderEntity.getClientOrderId();
+        // Use current time as entry time for orphaned orders discovered after restart.
+        // The original fill time (orderEntity.getUpdatedAt()) may be minutes/hours old,
+        // which would immediately trigger maxHoldTime exit. Using Instant.now() gives
+        // the trade a fresh hold timer from the moment the system becomes aware of it.
+        Instant entryTime = Instant.now(clock);
         TradeEntity trade = new TradeEntity(tradeId, instrumentKey, underlying, optionType,
-                TradeStatus.OPEN, filledQty, fillPrice, orderEntity.getUpdatedAt(), entryReason);
+                TradeStatus.OPEN, filledQty, fillPrice, entryTime, entryReason);
         // Use strategy type stored on the order entity at placement time
         if (orderEntity.getStrategyType() != null && !orderEntity.getStrategyType().isBlank()) {
             trade.setStrategyType(orderEntity.getStrategyType());

@@ -94,7 +94,9 @@ public class PositionStrengthService {
         }
 
         // Try to find the option instrument by symbol
-        Optional<OptionInstrument> optOpt = liveInstrumentCache.getBySymbol(instrumentKey);
+        // instrumentKey format is "NFO:SYMBOL" — strip exchange prefix for cache lookup
+        String symbol = instrumentKey.contains(":") ? instrumentKey.split(":", 2)[1] : instrumentKey;
+        Optional<OptionInstrument> optOpt = liveInstrumentCache.getBySymbol(symbol);
         if (optOpt.isEmpty()) {
             return buildNoDataResult(trade, "NO_DATA");
         }
