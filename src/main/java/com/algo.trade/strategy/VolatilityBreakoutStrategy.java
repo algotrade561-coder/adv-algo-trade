@@ -53,9 +53,9 @@ public class VolatilityBreakoutStrategy {
     public StrategyDiagnostics.WithSignal evaluateWithDiagnostics(List<Candle> candles15m, double ivRank,
                                                                    StrategyConfig config, UnderlyingSymbol underlying,
                                                                    LocalTime marketTime) {
-        if (candles15m.size() < 21) {
+        if (candles15m.size() < 14) {
             return new StrategyDiagnostics.WithSignal(Optional.empty(),
-                    new StrategyDiagnostics("insufficientCandles(" + candles15m.size() + "/21)",
+                    new StrategyDiagnostics("insufficientCandles(" + candles15m.size() + "/14)",
                             null, null, null, null, null, null, null, null));
         }
 
@@ -82,7 +82,8 @@ public class VolatilityBreakoutStrategy {
                             null, null, null, null, null, null, null, null));
         }
 
-        double[] bb = bollingerBands(candles15m, 20, 2.0);
+        int bbPeriod = Math.min(20, candles15m.size());
+        double[] bb = bollingerBands(candles15m, bbPeriod, 2.0);
         double upper = bb[0], middle = bb[1], lower = bb[2];
         double bandwidth = middle > 0 ? (upper - lower) / middle * 100 : 99;
         boolean squeeze = bandwidth < SQUEEZE_THRESHOLD;

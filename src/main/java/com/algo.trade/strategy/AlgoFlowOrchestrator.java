@@ -59,6 +59,7 @@ public class AlgoFlowOrchestrator {
     private final RegimeFilter regimeFilter;
     private final MarketEnvironmentScorer environmentScorer;
     private final TelegramAlertService telegramAlertService;
+    private final com.algo.trade.underlying.UnderlyingConfigService underlyingConfigService;
 
     // ── Per-filter enable/disable flags ───────────────────────────────────
 
@@ -143,7 +144,8 @@ public class AlgoFlowOrchestrator {
                                  com.algo.trade.indicator.OIPriceActionFilter oiPriceActionFilter,
                                  RegimeFilter regimeFilter,
                                  MarketEnvironmentScorer environmentScorer,
-                                 TelegramAlertService telegramAlertService) {
+                                 TelegramAlertService telegramAlertService,
+                                 com.algo.trade.underlying.UnderlyingConfigService underlyingConfigService) {
         this.marketGuard = marketGuard;
         this.globalConfigService = globalConfigService;
         this.newsFeedService = newsFeedService;
@@ -157,6 +159,7 @@ public class AlgoFlowOrchestrator {
         this.regimeFilter = regimeFilter;
         this.environmentScorer = environmentScorer;
         this.telegramAlertService = telegramAlertService;
+        this.underlyingConfigService = underlyingConfigService;
     }
 
     // ── Result type ───────────────────────────────────────────────────────
@@ -340,6 +343,49 @@ public class AlgoFlowOrchestrator {
             passed.add("VOLUME:DISABLED");
         }
 
+        // 2a-extra. DTE Gate — block directional buying when too far from expiry (per-underlying config)
+        {
+            IndexType idx = IndexType.from(underlying);
+            int maxDte = underlyingConfigService.getMaxDteForBuying(underlying);
+            long currentDte = expiryCalendar.daysToExpiry(idx);
+            if (currentDte > maxDte
+                    && (strategyType == StrategyType.DIRECTIONAL_BUY
+                        || strategyType == StrategyType.SCALPING
+                        || strategyType == StrategyType.MOMENTUM
+                        || strategyType == StrategyType.GAP_AND_GO)) {
+                failed.add("DTE_GATE:TOO_FAR(" + currentDte + "d>" + maxDte + "d)");
+                return EntryDecision.blocked(
+                        underlying + " " + currentDte + " DTE too far for " + strategyType.displayName()
+                                + " (max " + maxDte + "d) — wait for closer expiry",
+                        passed, failed);
+            }
+            passed.add("DTE_GATE:OK(" + currentDte + "d<=" + maxDte + "d)");
+        }
+
+        // 2a-extra. Per-underlying max entry premium cap
+        {
+            java.math.BigDecimal maxPremium = underlyingConfigService.getMaxEntryPremium(underlying);
+            if (maxPremium.signum() > 0) {
+                passed.add("PREMIUM_CAP:CONFIGURED(max=" + maxPremium + ")");
+                // Note: actual premium check happens at execution time in ExecutionEngine
+                // This just records that a cap exists for audit trail
+            }
+        }
+
+        // 2a-extra. Per-underlying entry cutoff time override
+        {
+            java.time.LocalTime underlyingCutoff = underlyingConfigService.getEntryCutoffTime(underlying);
+            if (underlyingCutoff != null && marketTime.isAfter(underlyingCutoff)) {
+                failed.add("UNDERLYING_CUTOFF:" + underlying + "(time=" + marketTime + ",cutoff=" + underlyingCutoff + ")");
+                return EntryDecision.blocked(
+                        underlying + " entry cutoff reached (" + underlyingCutoff + ") — no new entries",
+                        passed, failed);
+            }
+            if (underlyingCutoff != null) {
+                passed.add("UNDERLYING_CUTOFF:OK(cutoff=" + underlyingCutoff + ")");
+            }
+        }
+
         // 2b. PCR Sentiment
         if (pcrFilterEnabled) {
             double pcr = pcrCalculator.getPcr();
@@ -499,8 +545,11 @@ public class AlgoFlowOrchestrator {
 
         LocalTime mmStart = LocalTime.parse(morningMomentumStart);
         LocalTime mmEnd = LocalTime.parse(morningMomentumEnd);
-        LocalTime mcStart = LocalTime.parse(middayChopStart);
-        LocalTime mcEnd = LocalTime.parse(middayChopEnd);
+        // Per-underlying midday chop override (e.g., BANKNIFTY 11:00-13:30)
+        LocalTime mcStart = underlyingConfigService.getMiddayChopStart(underlying);
+        if (mcStart == null) mcStart = LocalTime.parse(middayChopStart);
+        LocalTime mcEnd = underlyingConfigService.getMiddayChopEnd(underlying);
+        if (mcEnd == null) mcEnd = LocalTime.parse(middayChopEnd);
         LocalTime pcCutoff = LocalTime.parse(preCloseCutoff);
 
         if (!time.isBefore(mmStart) && !time.isAfter(mmEnd)) {

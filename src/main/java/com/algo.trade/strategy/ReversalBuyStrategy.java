@@ -42,7 +42,9 @@ public class ReversalBuyStrategy {
         }
 
         double maxIv = config.getMaxIvRankForBuying() != null
-                ? config.getMaxIvRankForBuying().doubleValue() : 50.0;
+                ? config.getMaxIvRankForBuying().doubleValue() : 80.0;
+        // REVERSAL_BUY is mean-reversion (RSI extreme) — paying premium is acceptable, use higher threshold
+        maxIv = Math.max(maxIv, 80.0);
         if (ivRank > maxIv) {
             return noTrade("ivRankTooHigh(" + String.format("%.1f", ivRank) + ">" + maxIv + ")");
         }

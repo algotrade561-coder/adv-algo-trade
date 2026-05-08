@@ -47,6 +47,7 @@ public class StrategyExecutionPipeline {
     private final EmaIndicator emaIndicator;
     private final InstrumentCache instrumentCache;
     private final TradingProperties properties;
+    private final com.algo.trade.underlying.UnderlyingConfigService underlyingConfigService;
 
     public StrategyExecutionPipeline(
             GlobalConfigService globalConfigService,
@@ -60,7 +61,8 @@ public class StrategyExecutionPipeline {
             AtrIndicator atrIndicator,
             EmaIndicator emaIndicator,
             InstrumentCache instrumentCache,
-            TradingProperties properties
+            TradingProperties properties,
+            com.algo.trade.underlying.UnderlyingConfigService underlyingConfigService
     ) {
         this.globalConfigService = globalConfigService;
         this.executionEngine = executionEngine;
@@ -74,6 +76,7 @@ public class StrategyExecutionPipeline {
         this.emaIndicator = emaIndicator;
         this.instrumentCache = instrumentCache;
         this.properties = properties;
+        this.underlyingConfigService = underlyingConfigService;
     }
 
     // ── ML shadow recording ────────────────────────────────────────────────────
@@ -406,7 +409,8 @@ public class StrategyExecutionPipeline {
         try {
             OptionType optionType = decision.optionType().orElse(OptionType.CE);
             Optional<LocalDate> expiry = instrumentCache.nearestExpiry(
-                    ctx.underlying(), LocalDate.now(properties.timezone()), properties.symbols().defaultExpiry());
+                    ctx.underlying(), LocalDate.now(properties.timezone()),
+                    underlyingConfigService.getExpiryPreference(ctx.underlying()));
             if (expiry.isEmpty()) return decision;
 
             List<Instrument> options = instrumentCache.all().stream()
@@ -457,7 +461,8 @@ public class StrategyExecutionPipeline {
     ) {
         try {
             Optional<LocalDate> expiry = instrumentCache.nearestExpiry(
-                    underlying, LocalDate.now(properties.timezone()), properties.symbols().defaultExpiry());
+                    underlying, LocalDate.now(properties.timezone()),
+                    underlyingConfigService.getExpiryPreference(underlying));
             if (expiry.isEmpty()) return Optional.empty();
             return instrumentCache.all().stream()
                     .filter(Instrument::tradable)

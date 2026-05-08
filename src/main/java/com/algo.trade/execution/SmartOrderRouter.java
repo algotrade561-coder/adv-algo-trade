@@ -83,7 +83,7 @@ public class SmartOrderRouter {
         BigDecimal bid = quote.bid().orElse(BigDecimal.ZERO);
         BigDecimal ask = quote.ask().orElse(BigDecimal.ZERO);
         BigDecimal lastPrice = quote.lastPrice();
-        long volume = quote.openInterest(); // Use OI as proxy if volume not available
+        long volume = quote.volume();
 
         // Calculate spread
         double spreadPct = 0;

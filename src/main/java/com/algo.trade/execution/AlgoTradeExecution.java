@@ -435,6 +435,14 @@ public class AlgoTradeExecution {
                     continue;
                 }
 
+                // ── Gate 1b: Skip expiry strategies on non-expiry days ──
+                if (type == StrategyType.EXPIRY_GAMMA && !expiryCalendar.isExpiryDay(idx)) {
+                    continue;
+                }
+                if (type == StrategyType.EXPIRY_REVERSAL && expiryCalendar.daysToExpiry(idx) > 1) {
+                    continue;
+                }
+
                 // ── Gate 2: Timeframe match ──
                 if (!matchesConfiguredTimeframe(config, triggerTimeframe)
                         && type != StrategyType.DIRECTIONAL_BUY) {
@@ -462,7 +470,10 @@ public class AlgoTradeExecution {
                 }
 
                 // ── Gate: Best-index selection — only allow the winning index for this strategy ──
-                if (maxPerStrategy > 0 && !bestIndexPerStrategy.isEmpty()) {
+                // Exception: VOLATILITY_BREAKOUT evaluates on ALL enabled underlyings because
+                // it depends on 15-min candle history availability which varies per index.
+                if (maxPerStrategy > 0 && !bestIndexPerStrategy.isEmpty()
+                        && type != StrategyType.VOLATILITY_BREAKOUT) {
                     UnderlyingSymbol bestIndex = bestIndexPerStrategy.get(type);
                     if (bestIndex != null && !bestIndex.equals(underlying)) {
                         log.debug("{} skipped for {}: best index is {} (best-index selection)",

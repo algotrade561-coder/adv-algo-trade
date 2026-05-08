@@ -28,10 +28,10 @@ globalConfig:
   ceBreakoutConfirmationCandles: 1
   peBreakoutConfirmationCandles: 2
   entryStartTime: "09:16"
-  entryCutoffTime: "15:10"
+  entryCutoffTime: "14:50"
   allowFirstMinutesEntry: false
   noEntryFirstMinutes: 10
-  rsiFilterEnabled: false
+  rsiFilterEnabled: true
   rsiPeriod: 14
   rsiCeBuyThreshold: 55
   rsiPeSellThreshold: 45
@@ -48,23 +48,23 @@ globalConfig:
   # Risk
   totalCapital: 80000
   maxRiskPerTradePercent: 20
-  maxDailyLossPercent: 60
+  maxDailyLossPercent: 15
   maxTradesPerDay: 10
   maxConsecutiveLosses: 2
   maxOpenTrades: 2
   maxOpenPositionsPerStrategy: 1
-  cooldownMinutes: 5
+  cooldownMinutes: 15
   dailyProfitTarget: 0
   maxLotsPerTrade: 1
   minEnvironmentScore: 55
   # Execution tuning
-  limitOrderCancelMinutes: 1
+  limitOrderCancelMinutes: 2
   failSafeSquareoffTime: "15:20"
   maxPendingOrders: 3
   ivCollapseExitThresholdPercent: 15
   ivCollapseMaxProfitPercent: 15
   maxEntriesPerScanPerUnderlying: 1
-  maxEntriesPerScan: 2
+  maxEntriesPerScan: 1
 
 strategyConfigs:
   # ── BEAR_PUT_SPREAD ────────────────────────────────────────────────────────
@@ -223,11 +223,11 @@ strategyConfigs:
   - { strategyType: VOLATILITY_BREAKOUT, underlying: SENSEX,     enabled: true,  paperTrading: false, stopLossPercent: 30, targetPercent: 60,  maxHoldMinutes: 60, squareoffHour: 15, squareoffMinute: 0,  maxIvRankForBuying: 25, scanTimeframe: FIFTEEN_MINUTE, candleTimeframe: FIVE_MINUTE, trendTimeframe: FIFTEEN_MINUTE, trailingStopActivationPercent: 30, trailingGapPercent: 15, minCombinedPremium: 50,  lots: 1, otmStrikes: 2, spreadStrikes: 2 }
 
 underlyingConfigs:
-  - { underlying: NIFTY,      displayName: NIFTY,      enabled: true  }
-  - { underlying: BANKNIFTY,  displayName: BANKNIFTY,  enabled: true  }
-  - { underlying: SENSEX,     displayName: SENSEX,     enabled: true  }
-  - { underlying: FINNIFTY,   displayName: FINNIFTY,   enabled: false }
-  - { underlying: MIDCPNIFTY, displayName: MIDCPNIFTY, enabled: false }
+  - { underlying: NIFTY,      displayName: NIFTY,      enabled: true,  hasWeeklyExpiry: true,  expiryPreference: NEAREST, maxDteForBuying: 5,  breakoutBufferPercent: 0,    minBreakoutPoints: 20, volumeSpikeMode: NORMAL,   normalizeScoreForNoVolume: false, maxEntryPremium: 300 }
+  - { underlying: BANKNIFTY,  displayName: BANKNIFTY,  enabled: true,  hasWeeklyExpiry: false, expiryPreference: NEAREST_MONTHLY, maxDteForBuying: 7,  breakoutBufferPercent: 0.15, minBreakoutPoints: 80, volumeSpikeMode: OI_PROXY, normalizeScoreForNoVolume: true, middayChopStart: "11:00", middayChopEnd: "13:30", maxEntryPremium: 400 }
+  - { underlying: SENSEX,     displayName: SENSEX,     enabled: true,  hasWeeklyExpiry: true,  expiryPreference: NEAREST, maxDteForBuying: 5,  breakoutBufferPercent: 0.08, minBreakoutPoints: 0,  volumeSpikeMode: NORMAL,   normalizeScoreForNoVolume: false, maxEntryPremium: 350 }
+  - { underlying: FINNIFTY,   displayName: FINNIFTY,   enabled: false, hasWeeklyExpiry: false, expiryPreference: NEAREST_MONTHLY, maxDteForBuying: 7, breakoutBufferPercent: 0.10, minBreakoutPoints: 40, volumeSpikeMode: OI_PROXY, normalizeScoreForNoVolume: true, maxEntryPremium: 200 }
+  - { underlying: MIDCPNIFTY, displayName: MIDCPNIFTY, enabled: false, hasWeeklyExpiry: false, expiryPreference: NEAREST_MONTHLY, maxDteForBuying: 7, breakoutBufferPercent: 0.08, minBreakoutPoints: 20, volumeSpikeMode: OI_PROXY, normalizeScoreForNoVolume: true, maxEntryPremium: 150 }
 
 appUsers:
   - { email: "lionelpannaisamy@gmail.com", role: "SUPER" }

@@ -44,6 +44,7 @@ public class RuleBasedOptionsStrategy {
     private final OptionChainAnalyzer optionChainAnalyzer;
     private final StrategySignalCsvRecorder signalCsvRecorder;
     private final RsiIndicator rsiIndicator;
+    private final com.algo.trade.underlying.UnderlyingConfigService underlyingConfigService;
 
     public RuleBasedOptionsStrategy(
             TradingProperties properties,
@@ -55,7 +56,8 @@ public class RuleBasedOptionsStrategy {
             VolatilityFilter volatilityFilter,
             OiChangeTracker oiChangeTracker,
             OptionChainAnalyzer optionChainAnalyzer,
-            StrategySignalCsvRecorder signalCsvRecorder
+            StrategySignalCsvRecorder signalCsvRecorder,
+            com.algo.trade.underlying.UnderlyingConfigService underlyingConfigService
     ) {
         this.properties = properties;
         this.globalConfigService = globalConfigService;
@@ -68,6 +70,7 @@ public class RuleBasedOptionsStrategy {
         this.optionChainAnalyzer = optionChainAnalyzer;
         this.signalCsvRecorder = signalCsvRecorder;
         this.rsiIndicator = new RsiIndicator();
+        this.underlyingConfigService = underlyingConfigService;
     }
 
     /** Backtest/test constructor — no GlobalConfigService, falls back to YAML properties. */
@@ -81,7 +84,7 @@ public class RuleBasedOptionsStrategy {
             OptionChainAnalyzer optionChainAnalyzer
     ) {
         this(properties, null, vwapIndicator, new EmaIndicator(), volumeSpikeDetector, breakoutDetector, volatilityFilter, oiChangeTracker,
-                optionChainAnalyzer, null);
+                optionChainAnalyzer, null, null);
     }
 
     /** Backtest constructor with EmaIndicator and optional signalCsvRecorder — no GlobalConfigService. */
@@ -97,7 +100,7 @@ public class RuleBasedOptionsStrategy {
             StrategySignalCsvRecorder signalCsvRecorder
     ) {
         this(properties, null, vwapIndicator, emaIndicator, volumeSpikeDetector, breakoutDetector, volatilityFilter, oiChangeTracker,
-                optionChainAnalyzer, signalCsvRecorder);
+                optionChainAnalyzer, signalCsvRecorder, null);
     }
 
     // ── Config accessors: prefer GlobalConfigService (DB), fallback to YAML ───
@@ -213,9 +216,7 @@ public class RuleBasedOptionsStrategy {
                 || vwapConditionPassed(request.optionType(), underlyingPrice, trendReference);
         boolean breakoutPassed = breakoutPassed(request, chain);
         boolean breakoutConfirmed = breakoutConfirmed(request, chain);
-        boolean volumeSpike = volumeSpikeDetector.hasSpike(request.selectedOptionCandles(),
-                cfgVolumeLookback(),
-                cfgVolumeSpikeMultiplier());
+        boolean volumeSpike = evaluateVolumeSpike(request);
         OiEvaluation oiEvaluation = oiEvaluation(request, chain);
         boolean oiPassed = oiEvaluation.passed();
         boolean ivPassed = volatilityFilter.isAcceptable(request.selectedOptionQuote().impliedVolatility(),
@@ -232,7 +233,8 @@ public class RuleBasedOptionsStrategy {
 
         BigDecimal confidenceScore = confidenceScore(vwapPassed, breakoutPassed, volumeSpike, oiPassed,
                 ivPassed, liquidityPassed, rsiPassed,
-                oiEvaluation.priceOiBuildUp(), oiEvaluation.chainBuildUp(), oiEvaluation.imbalanceSupports());
+                oiEvaluation.priceOiBuildUp(), oiEvaluation.chainBuildUp(), oiEvaluation.imbalanceSupports(),
+                request.underlying());
 
         List<String> reasons = new ArrayList<>();
         addReason(reasons, vwapPassed, "Trend condition passed", "Trend condition failed");
@@ -261,6 +263,8 @@ public class RuleBasedOptionsStrategy {
                 "Side-specific entry filter failed");
 
         boolean entry = timePassed && ivPassed && liquidityPassed && rsiPassed
+                && resistanceHeadroomPassed
+                && breakoutConfirmed
                 && confidenceScore.compareTo(cfgMinSignalScorePercent()) >= 0
                 && sideFilterPassed;
         SignalType signalType = entry
@@ -287,19 +291,76 @@ public class RuleBasedOptionsStrategy {
     private boolean breakoutPassed(StrategyEvaluationRequest request, OptionChainAnalysis chain) {
         List<Candle> candles = request.underlyingCandles();
         BigDecimal price = candles.getLast().close();
-        BigDecimal buffer = cfgBreakoutBufferPercent();
+        // Per-underlying breakout buffer override (e.g., BANKNIFTY 0.15% vs global 0.05%)
+        BigDecimal buffer = effectiveBreakoutBuffer(request.underlying());
+        boolean breakout;
         if (request.optionType() == OptionType.CE) {
             boolean resistanceBreak = chain.resistanceStrike()
                     .map(resistance -> price.compareTo(applyPositiveBuffer(resistance, buffer)) > 0)
                     .orElse(false);
-            return resistanceBreak || breakoutDetector.breaksAboveSwingHigh(candles,
+            breakout = resistanceBreak || breakoutDetector.breaksAboveSwingHigh(candles,
+                    cfgBreakoutLookback(), buffer);
+        } else {
+            boolean supportBreak = chain.supportStrike()
+                    .map(support -> price.compareTo(applyNegativeBuffer(support, buffer)) < 0)
+                    .orElse(false);
+            breakout = supportBreak || breakoutDetector.breaksBelowSwingLow(candles,
                     cfgBreakoutLookback(), buffer);
         }
-        boolean supportBreak = chain.supportStrike()
-                .map(support -> price.compareTo(applyNegativeBuffer(support, buffer)) < 0)
-                .orElse(false);
-        return supportBreak || breakoutDetector.breaksBelowSwingLow(candles,
-                cfgBreakoutLookback(), buffer);
+
+        // Per-underlying minimum breakout points check (e.g., BANKNIFTY needs 80+ pts move)
+        if (breakout && underlyingConfigService != null) {
+            BigDecimal minPoints = underlyingConfigService.getOrDefault(request.underlying()).getMinBreakoutPoints();
+            if (minPoints != null && minPoints.signum() > 0) {
+                BigDecimal swingRef = request.optionType() == OptionType.CE
+                        ? breakoutDetector.swingHigh(candles.subList(0, candles.size() - 1), cfgBreakoutLookback())
+                        : breakoutDetector.swingLow(candles.subList(0, candles.size() - 1), cfgBreakoutLookback());
+                BigDecimal movePoints = price.subtract(swingRef).abs();
+                if (movePoints.compareTo(minPoints) < 0) {
+                    log.debug("Breakout rejected: move {} pts < min {} pts for {}",
+                            movePoints, minPoints, request.underlying());
+                    return false;
+                }
+            }
+        }
+        return breakout;
+    }
+
+    /** Get effective breakout buffer: per-underlying override if set, otherwise global config. */
+    private BigDecimal effectiveBreakoutBuffer(com.algo.trade.domain.UnderlyingSymbol underlying) {
+        if (underlyingConfigService != null) {
+            return underlyingConfigService.getEffectiveBreakoutBuffer(underlying, cfgBreakoutBufferPercent());
+        }
+        return cfgBreakoutBufferPercent();
+    }
+
+    /**
+     * Evaluate volume spike based on per-underlying volumeSpikeMode.
+     * NORMAL: standard option candle volume spike detection.
+     * OI_PROXY: use OI change as proxy when underlying spot has no volume (BANKNIFTY/FINNIFTY).
+     * DISABLED: always returns true (skip volume check).
+     */
+    private boolean evaluateVolumeSpike(StrategyEvaluationRequest request) {
+        String mode = underlyingConfigService != null
+                ? underlyingConfigService.getVolumeSpikeMode(request.underlying())
+                : "NORMAL";
+        return switch (mode) {
+            case "DISABLED" -> true;
+            case "OI_PROXY" -> {
+                // Use OI change on the selected option as a volume proxy
+                if (request.previousSelectedOptionQuote().isPresent()) {
+                    long currentOi = request.selectedOptionQuote().openInterest();
+                    long previousOi = request.previousSelectedOptionQuote().get().openInterest();
+                    long oiChange = Math.abs(currentOi - previousOi);
+                    yield oiChange > cfgOiDivergenceMinChange() / 2; // 50% of OI divergence threshold
+                }
+                // Fallback: try standard volume spike on option candles
+                yield volumeSpikeDetector.hasSpike(request.selectedOptionCandles(),
+                        cfgVolumeLookback(), cfgVolumeSpikeMultiplier());
+            }
+            default -> volumeSpikeDetector.hasSpike(request.selectedOptionCandles(),
+                    cfgVolumeLookback(), cfgVolumeSpikeMultiplier());
+        };
     }
 
     private OiEvaluation oiEvaluation(StrategyEvaluationRequest request, OptionChainAnalysis chain) {
@@ -501,19 +562,34 @@ public class RuleBasedOptionsStrategy {
             boolean rsiPassed,
             boolean priceOiBuildUp,
             boolean chainBuildUp,
-            boolean imbalanceSupports
+            boolean imbalanceSupports,
+            com.algo.trade.domain.UnderlyingSymbol underlying
     ) {
+        boolean normalizeForNoVolume = underlyingConfigService != null
+                && underlyingConfigService.isNormalizeScoreForNoVolume(underlying);
+
         int score = 0;
+        int maxScore = 100;
         score += vwapPassed ? 15 : 0;
         score += breakoutPassed ? 25 : 0;
-        score += volumeSpike ? 20 : 0;
-        // Graduated OI scoring: 9 + 8 + 8 = 25 max (same ceiling, graduated floor)
+        if (normalizeForNoVolume && !volumeSpike) {
+            // Volume spike uses OI proxy but still failed — exclude from denominator
+            maxScore -= 20;
+        } else {
+            score += volumeSpike ? 20 : 0;
+        }
+        // Graduated OI scoring: 9 + 8 + 8 = 25 max
         score += priceOiBuildUp ? 9 : 0;
         score += chainBuildUp ? 8 : 0;
         score += imbalanceSupports ? 8 : 0;
         score += liquidityPassed ? 10 : 0;
         score += ivPassed ? 5 : 0;
         score += cfgRsiFilterEnabled() && rsiPassed ? 10 : 0;
+
+        // Normalize to 100 scale if volume weight was excluded
+        if (normalizeForNoVolume && maxScore < 100 && maxScore > 0) {
+            return BigDecimal.valueOf((long) score * 100 / maxScore);
+        }
         return BigDecimal.valueOf(score);
     }
 

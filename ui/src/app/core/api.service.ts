@@ -36,6 +36,23 @@ export interface StrategyDto {
   squareoffHour: number; squareoffMinute: number;
 }
 
+export interface UnderlyingConfigDto {
+  underlying: string;
+  enabled: boolean;
+  displayName: string;
+  hasWeeklyExpiry: boolean;
+  expiryPreference: string;
+  maxDteForBuying: number;
+  breakoutBufferPercent: number;
+  minBreakoutPoints: number;
+  volumeSpikeMode: string;
+  entryCutoffTime: string | null;
+  middayChopStart: string | null;
+  middayChopEnd: string | null;
+  normalizeScoreForNoVolume: boolean;
+  maxEntryPremium: number;
+}
+
 export interface GlobalConfigDto {
   // Entry
   timeframe: string;
@@ -220,6 +237,11 @@ export class ApiService {
   getGlobalConfig(): Observable<GlobalConfigDto> { return this.http.get<GlobalConfigDto>(`${this.base}/global-config`); }
   updateGlobalConfig(config: GlobalConfigDto): Observable<GlobalConfigDto> { return this.http.put<GlobalConfigDto>(`${this.base}/global-config`, config); }
   resetGlobalConfig(): Observable<GlobalConfigDto> { return this.http.post<GlobalConfigDto>(`${this.base}/global-config/reset`, {}); }
+
+  // ── Underlying config ───────────────────────────────────────────────────
+  getUnderlyingConfigs(): Observable<UnderlyingConfigDto[]> { return this.http.get<UnderlyingConfigDto[]>(`${this.base}/underlying-config`); }
+  getUnderlyingConfig(underlying: string): Observable<UnderlyingConfigDto> { return this.http.get<UnderlyingConfigDto>(`${this.base}/underlying-config/${underlying}`); }
+  updateUnderlyingConfig(underlying: string, config: UnderlyingConfigDto): Observable<UnderlyingConfigDto> { return this.http.put<UnderlyingConfigDto>(`${this.base}/underlying-config/${underlying}`, config); }
 
   // ── AI Insights ───────────────────────────────────────────────────────
   getAiRecommendations(period = 'today'): Observable<import('../pages/ai-insights-page.component').AiRecommendationDto[]> {

@@ -43,6 +43,10 @@ public class GlobalConfigService {
             cached = repository.save(seeded);
             log.info("GlobalConfig seeded from TradingProperties (YAML defaults)");
         }
+        log.info("[Config] Effective runtime config: cooldown={}min, maxOpenTrades={}, maxTradesPerDay={}, entryCutoff={}, forcedExit={}, maxDailyLoss={}%, envScore={}",
+            cached.getCooldownMinutes(), cached.getMaxOpenTrades(), cached.getMaxTradesPerDay(),
+            cached.getEntryCutoffTimeAsLocalTime(), cached.getForcedExitTimeAsLocalTime(),
+            cached.getMaxDailyLossPercent(), cached.getMinEnvironmentScore());
     }
 
     // ── Full entity accessor ──────────────────────────────────

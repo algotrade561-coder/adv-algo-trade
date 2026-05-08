@@ -324,14 +324,17 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
         long vixToken = 264969L;
         seedTokenCandles(vixToken, "NSE:" + vixToken, com.algo.trade.domain.Timeframe.FIFTEEN_MINUTE);
 
-        // Seed 5-minute candles for underlying spot indices — required by ScalpingStrategy (EMA 9/21 needs 22 candles).
-        // Without this, SCALPING cannot fire for 110 minutes after every restart.
-        // Uses numeric token format which Zerodha historical API requires; BSE for SENSEX, NSE for all others.
+        // Seed 5-minute AND 15-minute candles for underlying spot indices.
+        // 5-min: required by ScalpingStrategy (EMA 9/21 needs 22 candles).
+        // 15-min: required by VolatilityBreakoutStrategy (Bollinger 20-period needs 21 candles).
+        // Without 15-min seeding, VB cannot fire for 5+ hours after every restart.
         for (com.algo.trade.domain.IndexType idx : com.algo.trade.domain.IndexType.values()) {
             long token = idx.spotToken();
             String exchange = idx.isBSE() ? "BSE" : "NSE";
             String instrumentKey = exchange + ":" + token;
             seedTokenCandles(token, instrumentKey, com.algo.trade.domain.Timeframe.FIVE_MINUTE);
+            try { Thread.sleep(500); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
+            seedTokenCandles(token, instrumentKey, com.algo.trade.domain.Timeframe.FIFTEEN_MINUTE);
             try { Thread.sleep(500); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
         }
 

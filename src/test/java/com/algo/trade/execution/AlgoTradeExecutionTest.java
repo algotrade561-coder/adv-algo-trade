@@ -32,7 +32,8 @@ class AlgoTradeExecutionTest {
 
         var builder = new ScanContextBuilder(properties, globalConfigService, strategyConfigService,
                 instrumentCache, marketDataService, liveInstrumentCache,
-                new com.algo.trade.strategy.RegimeAwareStrikeSelector());
+                new com.algo.trade.strategy.RegimeAwareStrikeSelector(),
+                mock(com.algo.trade.underlying.UnderlyingConfigService.class));
 
         assertThat(builder.maxTradablePremium(com.algo.trade.domain.UnderlyingSymbol.NIFTY, 75)).isEqualByComparingTo("400");
         assertThat(builder.maxTradablePremium(com.algo.trade.domain.UnderlyingSymbol.NIFTY, 65)).isEqualByComparingTo("461.5384615384615");

@@ -61,9 +61,10 @@ public class StrategyConfiguration {
             VolatilityFilter volatilityFilter,
             OiChangeTracker oiChangeTracker,
             OptionChainAnalyzer optionChainAnalyzer,
-            StrategySignalCsvRecorder signalCsvRecorder
+            StrategySignalCsvRecorder signalCsvRecorder,
+            com.algo.trade.underlying.UnderlyingConfigService underlyingConfigService
     ) {
         return new RuleBasedOptionsStrategy(properties, globalConfigService, vwapIndicator, emaIndicator, volumeSpikeDetector, breakoutDetector,
-                volatilityFilter, oiChangeTracker, optionChainAnalyzer, signalCsvRecorder);
+                volatilityFilter, oiChangeTracker, optionChainAnalyzer, signalCsvRecorder, underlyingConfigService);
     }
 }

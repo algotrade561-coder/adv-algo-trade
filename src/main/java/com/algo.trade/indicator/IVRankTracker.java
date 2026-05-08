@@ -68,10 +68,10 @@ public class IVRankTracker {
         while (deque.size() > MAX_SAMPLES) deque.pollFirst();
     }
 
-    /** IV Rank 0–100. Returns 50 (neutral) if < 5 samples. */
+    /** IV Rank 0–100. Returns 50 (neutral) if < 20 samples (insufficient history). */
     public double getIVRank(IndexType indexType) {
         List<IVSample> samples = getSamples(indexType);
-        if (samples.size() < 5) return 50.0;
+        if (samples.size() < 20) return 50.0;
         double current = samples.getLast().iv();
         double low  = samples.stream().mapToDouble(IVSample::iv).min().orElse(current);
         double high = samples.stream().mapToDouble(IVSample::iv).max().orElse(current);
@@ -82,7 +82,7 @@ public class IVRankTracker {
     /** IV Percentile — % of days IV was below current. */
     public double getIVPercentile(IndexType indexType) {
         List<IVSample> samples = getSamples(indexType);
-        if (samples.size() < 5) return 50.0;
+        if (samples.size() < 20) return 50.0;
         double current = samples.getLast().iv();
         long below = samples.stream().filter(s -> s.iv() < current).count();
         return ((double) below / samples.size()) * 100.0;

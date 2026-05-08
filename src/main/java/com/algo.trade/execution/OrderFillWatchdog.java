@@ -137,6 +137,12 @@ public class OrderFillWatchdog {
     }
 
     private void checkOrder(OrderEntity order) {
+        // Guard: skip if trade was already created from this order
+        if (order.isTradeMaterialized()) {
+            log.debug("OrderFillWatchdog skipping already-materialized order: {}", order.getClientOrderId());
+            return;
+        }
+
         String brokerOrderId = order.getBrokerOrderId();
         if (brokerOrderId == null || brokerOrderId.isBlank()) {
             log.debug("OrderFillWatchdog skipping order without broker ID: {}", order.getClientOrderId());

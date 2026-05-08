@@ -223,7 +223,20 @@ public class ConfigSeedLoader {
             UnderlyingSymbol symbol = UnderlyingSymbol.valueOf(symStr);
             boolean enabled = bool(map, "enabled", false);
             String displayName = str(map, "displayName", symbol.name());
-            configs.add(new UnderlyingConfig(symbol, enabled, displayName));
+            UnderlyingConfig cfg = new UnderlyingConfig(symbol, enabled, displayName);
+            // New index-level fields
+            cfg.setHasWeeklyExpiry(bool(map, "hasWeeklyExpiry", true));
+            cfg.setExpiryPreference(str(map, "expiryPreference", "NEAREST"));
+            cfg.setMaxDteForBuying(integer(map, "maxDteForBuying", 7));
+            cfg.setBreakoutBufferPercent(decimal(map, "breakoutBufferPercent", "0"));
+            cfg.setMinBreakoutPoints(decimal(map, "minBreakoutPoints", "0"));
+            cfg.setVolumeSpikeMode(str(map, "volumeSpikeMode", "NORMAL"));
+            cfg.setEntryCutoffTime(str(map, "entryCutoffTime", null));
+            cfg.setMiddayChopStart(str(map, "middayChopStart", null));
+            cfg.setMiddayChopEnd(str(map, "middayChopEnd", null));
+            cfg.setNormalizeScoreForNoVolume(bool(map, "normalizeScoreForNoVolume", false));
+            cfg.setMaxEntryPremium(decimal(map, "maxEntryPremium", "0"));
+            configs.add(cfg);
         }
         underlyingConfigRepository.saveAll(configs);
         log.info("UnderlyingConfigs seeded from seed file: {} rows", configs.size());

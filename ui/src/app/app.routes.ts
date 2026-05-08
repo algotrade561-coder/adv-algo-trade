@@ -8,6 +8,7 @@ import { EntrySignalsPageComponent } from './pages/entry-signals-page.component'
 import { RejectedSignalsPageComponent } from './pages/rejected-signals-page.component';
 import { StrategiesPageComponent } from './pages/strategies-page.component';
 import { SettingsPageComponent } from './pages/settings-page.component';
+import { UnderlyingConfigPageComponent } from './pages/underlying-config-page.component';
 import { AiInsightsPageComponent } from './pages/ai-insights-page.component';
 import { MlScorecardPageComponent } from './pages/ml-scorecard-page.component';
 import { DiagnosticsPageComponent } from './pages/diagnostics-page.component';
@@ -17,6 +18,7 @@ export const routes: Routes = [
   { path: 'dashboard', component: DashboardPageComponent },
   { path: 'strategies', component: StrategiesPageComponent },
   { path: 'settings', component: SettingsPageComponent },
+  { path: 'index-config', component: UnderlyingConfigPageComponent },
   { path: 'execution', component: ExecutionPageComponent },
   { path: 'monitoring', component: MonitoringPageComponent },
   { path: 'entry-signals', component: EntrySignalsPageComponent },

@@ -25,7 +25,7 @@ public class ScalpingStrategy implements StrategyEvaluator {
 
     private static final Logger log = LoggerFactory.getLogger(ScalpingStrategy.class);
     private static final LocalTime CUTOFF = LocalTime.of(14, 0);
-    private static final int MIN_CANDLES = 22;
+    private static final int MIN_CANDLES = 14;
     private static final int CONFIRM_CANDLES = 2;
 
     private final EmaIndicator emaIndicator;

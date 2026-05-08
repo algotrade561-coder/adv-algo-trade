@@ -88,6 +88,9 @@ public class ExecutionEngine {
     private final SmartOrderRouter smartOrderRouter;
     private final Clock clock;
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.underlying.UnderlyingConfigService underlyingConfigService;
+
     @Autowired(required = false)
     private com.algo.trade.monitoring.ErrorEventService errorEventService;
 
@@ -685,6 +688,9 @@ public class ExecutionEngine {
         }
         tradeRepository.save(trade);
 
+        // Mark order as materialized to prevent duplicate trade creation
+        orderEntity.setTradeMaterialized(true);
+
         // Update order entity with final status
         orderEntity.setStatus(OrderStatus.COMPLETE);
         orderEntity.setFilledQuantity(filledQty);
@@ -914,12 +920,17 @@ public class ExecutionEngine {
     /** Extract strategy type name from a StrategyDecision's reasons list. */
     private String extractStrategyType(StrategyDecision decision) {
         for (String reason : decision.reasons()) {
+            // Skip common phrases that contain strategy names as substrings
+            // "RSI momentum gate" contains "MOMENTUM" but isn't a MOMENTUM strategy signal
+            if (reason.toLowerCase().contains("rsi momentum")) continue;
+            if (reason.toLowerCase().contains("breakout condition")) continue;
+            if (reason.toLowerCase().contains("breakout confirmation")) continue;
+
             String upper = reason.toUpperCase().replace(" ", "_").replace("-", "_").replace("&", "AND");
-            // Check longest names first to avoid partial matches (e.g., "ITM" matching before "ITM_CONVICTION")
+            // Check longest names first to avoid partial matches
             for (com.algo.trade.strategy.StrategyType type : com.algo.trade.strategy.StrategyType.values()) {
                 if (upper.contains(type.name())) return type.name();
             }
-            // Special cases where reason text doesn't match enum name exactly
             if (upper.contains("ITM") && upper.contains("CONVICTION")) return "ITM_CONVICTION";
             if (upper.contains("GAP") && upper.contains("GO")) return "GAP_AND_GO";
         }
@@ -1043,7 +1054,43 @@ public class ExecutionEngine {
                     + ", trades=" + openTradesForUnderlying + " pending=" + pendingOrdersForUnderlying + ")");
         }
 
-        // 5. Cooldown check — include both trades AND orders placed within cooldown window
+        // 5. Per-underlying max entry premium cap — applies to ALL option buying strategies
+        if (underlyingConfigService != null && optionPremium != null && optionPremium.signum() > 0) {
+            java.math.BigDecimal maxPremium = underlyingConfigService.getMaxEntryPremium(decision.underlying());
+            if (maxPremium.signum() > 0 && optionPremium.compareTo(maxPremium) > 0) {
+                rejections.add("Premium ₹" + optionPremium.setScale(0, java.math.RoundingMode.HALF_UP)
+                        + " exceeds max ₹" + maxPremium.setScale(0, java.math.RoundingMode.HALF_UP)
+                        + " for " + decision.underlying()
+                        + " — option too expensive for directional buy");
+            }
+        }
+
+        // 5b. Direction flip cooldown — block CE↔PE flip on same underlying within cooldown window
+        int directionFlipCooldown = 60; // minutes — TODO: make configurable via GlobalConfig
+        if (decision.optionType().isPresent()) {
+            String oppositeType = decision.optionType().get() == com.algo.trade.domain.OptionType.CE ? "PE" : "CE";
+            Instant flipWindow = clock.instant().minus(Duration.ofMinutes(directionFlipCooldown));
+            boolean recentOppositeEntry = tradeRepository.findByStatus(TradeStatus.OPEN).stream()
+                    .filter(t -> !t.isPaperTrade())
+                    .filter(t -> decision.underlying().name().equals(t.getUnderlying()))
+                    .filter(t -> oppositeType.equals(t.getOptionType()))
+                    .filter(t -> t.getEntryTime() != null && t.getEntryTime().isAfter(flipWindow))
+                    .findAny().isPresent();
+            // Also check recently closed trades (within the flip window)
+            if (!recentOppositeEntry) {
+                recentOppositeEntry = tradeRepository.findByEntryTimeBetween(flipWindow, clock.instant()).stream()
+                        .filter(t -> !t.isPaperTrade())
+                        .filter(t -> decision.underlying().name().equals(t.getUnderlying()))
+                        .filter(t -> oppositeType.equals(t.getOptionType()))
+                        .findAny().isPresent();
+            }
+            if (recentOppositeEntry) {
+                rejections.add("Direction flip cooldown: " + decision.optionType().get()
+                        + " blocked — opposite " + oppositeType + " trade within last " + directionFlipCooldown + " min for " + decision.underlying());
+            }
+        }
+
+        // 6. Cooldown check — include both trades AND orders placed within cooldown window
         if (globalConfigService.getCooldownMinutes() > 0) {
             Instant cooldownStart = clock.instant().minus(Duration.ofMinutes(globalConfigService.getCooldownMinutes()));
             // Check trades

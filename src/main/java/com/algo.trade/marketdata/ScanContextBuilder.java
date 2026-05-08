@@ -35,6 +35,7 @@ public class ScanContextBuilder {
     private final MarketDataService marketDataService;
     private final LiveInstrumentCache liveInstrumentCache;
     private final com.algo.trade.strategy.RegimeAwareStrikeSelector regimeAwareStrikeSelector;
+    private final com.algo.trade.underlying.UnderlyingConfigService underlyingConfigService;
 
     /** Previous scan quotes for OI change delta calculation. */
     private final Map<String, Quote> previousQuotes = new ConcurrentHashMap<>();
@@ -45,7 +46,8 @@ public class ScanContextBuilder {
                                InstrumentCache instrumentCache,
                                MarketDataService marketDataService,
                                LiveInstrumentCache liveInstrumentCache,
-                               com.algo.trade.strategy.RegimeAwareStrikeSelector regimeAwareStrikeSelector) {
+                               com.algo.trade.strategy.RegimeAwareStrikeSelector regimeAwareStrikeSelector,
+                               com.algo.trade.underlying.UnderlyingConfigService underlyingConfigService) {
         this.properties = properties;
         this.globalConfigService = globalConfigService;
         this.strategyConfigService = strategyConfigService;
@@ -53,6 +55,7 @@ public class ScanContextBuilder {
         this.marketDataService = marketDataService;
         this.liveInstrumentCache = liveInstrumentCache;
         this.regimeAwareStrikeSelector = regimeAwareStrikeSelector;
+        this.underlyingConfigService = underlyingConfigService;
     }
 
     // ── Result type ───────────────────────────────────────────────────────
@@ -112,7 +115,8 @@ public class ScanContextBuilder {
         }
 
         Optional<LocalDate> expiry = instrumentCache.nearestExpiry(
-                underlying, LocalDate.now(properties.timezone()), properties.symbols().defaultExpiry());
+                underlying, LocalDate.now(properties.timezone()),
+                underlyingConfigService.getExpiryPreference(underlying));
         if (expiry.isEmpty()) {
             failReason[0] = "noExpiry";
             log.warn("ScanContext skipped: no expiry found, underlying={}", underlying);
@@ -176,7 +180,8 @@ public class ScanContextBuilder {
     public Optional<Instrument> resolveAtmInstrument(UnderlyingSymbol underlying, OptionType optionType, BigDecimal spotPrice) {
         try {
             Optional<LocalDate> expiry = instrumentCache.nearestExpiry(
-                    underlying, LocalDate.now(properties.timezone()), properties.symbols().defaultExpiry());
+                    underlying, LocalDate.now(properties.timezone()),
+                    underlyingConfigService.getExpiryPreference(underlying));
             if (expiry.isEmpty()) return Optional.empty();
             return instrumentCache.all().stream()
                     .filter(Instrument::tradable)
@@ -291,9 +296,22 @@ public class ScanContextBuilder {
             Optional<Instrument> instrument = findOption(options, strike, optionType);
             if (instrument.isEmpty()) continue;
             BigDecimal maxPremium = maxTradablePremium(underlying, instrument.get().lotSize());
+            // Also apply per-underlying premium cap from UnderlyingConfig
+            BigDecimal underlyingCap = underlyingConfigService.getMaxEntryPremium(underlying);
+            if (underlyingCap.signum() > 0) {
+                maxPremium = maxPremium.min(underlyingCap);
+            }
             Quote quote = quotes.get(instrument.get().instrumentKey());
             if (quote == null || quote.lastPrice() == null || quote.lastPrice().signum() <= 0) continue;
             if (quote.lastPrice().compareTo(maxPremium) <= 0) return instrument;
+            // If the first valid candidate (nearest to ATM) exceeds the premium cap,
+            // don't hunt for far OTM — those are low-quality trades. Skip this underlying.
+            if (underlyingCap.signum() > 0 && quote.lastPrice().compareTo(underlyingCap) > 0) {
+                log.info("ScanContext: {} {} ATM premium ₹{} exceeds cap ₹{} — skipping underlying (no OTM hunting)",
+                        underlying, optionType, quote.lastPrice().setScale(0, java.math.RoundingMode.HALF_UP),
+                        underlyingCap.setScale(0, java.math.RoundingMode.HALF_UP));
+                return Optional.empty();
+            }
         }
         return Optional.empty();
     }

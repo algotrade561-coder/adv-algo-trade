@@ -49,6 +49,14 @@ public class OiShiftTrapStrategy {
     /** Minimum underlying volume in the last candle to confirm market activity. */
     private static final long MIN_UNDERLYING_VOLUME = 1_000;
 
+    private final com.algo.trade.underlying.UnderlyingConfigService underlyingConfigService;
+
+    public OiShiftTrapStrategy(
+            @org.springframework.beans.factory.annotation.Autowired(required = false)
+            com.algo.trade.underlying.UnderlyingConfigService underlyingConfigService) {
+        this.underlyingConfigService = underlyingConfigService;
+    }
+
     public Optional<StrategyDecision> evaluate(OptionChainSnapshot snapshot, BigDecimal spotPrice,
                                                 StrategyConfig config, UnderlyingSymbol underlying,
                                                 List<Candle> underlyingCandles) {
@@ -60,13 +68,18 @@ public class OiShiftTrapStrategy {
         }
 
         // Volume confirmation: underlying must be active
+        // Skip volume gate when volumeSpikeMode=OI_PROXY (index spots like BANKNIFTY have no volume)
         if (underlyingCandles == null || underlyingCandles.isEmpty()) {
             return Optional.empty();
         }
-        long latestVolume = underlyingCandles.getLast().volume();
-        if (latestVolume < MIN_UNDERLYING_VOLUME) {
-            log.debug("[OiShiftTrap] Skipped: low underlying volume {} < {}", latestVolume, MIN_UNDERLYING_VOLUME);
-            return Optional.empty();
+        String volumeMode = underlyingConfigService != null
+                ? underlyingConfigService.getVolumeSpikeMode(underlying) : "NORMAL";
+        if (!"OI_PROXY".equals(volumeMode) && !"DISABLED".equals(volumeMode)) {
+            long latestVolume = underlyingCandles.getLast().volume();
+            if (latestVolume < MIN_UNDERLYING_VOLUME) {
+                log.debug("[OiShiftTrap] Skipped: low underlying volume {} < {}", latestVolume, MIN_UNDERLYING_VOLUME);
+                return Optional.empty();
+            }
         }
 
         // Trend direction from last 3 candles: +1 bullish, -1 bearish, 0 flat

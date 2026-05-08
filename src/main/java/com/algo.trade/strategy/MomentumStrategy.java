@@ -37,6 +37,14 @@ public class MomentumStrategy {
     private static final double MIN_VOLUME_RATIO = 1.2;
     private static final int ATR_PERIOD = 14;
 
+    private final com.algo.trade.underlying.UnderlyingConfigService underlyingConfigService;
+
+    public MomentumStrategy(
+            @org.springframework.beans.factory.annotation.Autowired(required = false)
+            com.algo.trade.underlying.UnderlyingConfigService underlyingConfigService) {
+        this.underlyingConfigService = underlyingConfigService;
+    }
+
     public Optional<StrategyDecision> evaluate(List<Candle> candles, LocalTime marketTime,
                                                 StrategyConfig config, UnderlyingSymbol underlying) {
         return evaluateWithDiagnostics(candles, marketTime, config, underlying).signal();
@@ -116,9 +124,16 @@ public class MomentumStrategy {
         // Bug fix: use prior 5 candles (exclude current) so the average isn't self-contaminated
         double avgVolume = candles.subList(Math.max(0, size - 6), size - 1).stream()
                 .mapToLong(Candle::volume).average().orElse(0);
-        // Bug fix: zero-average means dead market — block rather than skip
-        if (avgVolume <= 0 || latestVolume < avgVolume * MIN_VOLUME_RATIO) {
-            return noTrade("lowVolume(latest=" + latestVolume + ",avg=" + String.format("%.0f", avgVolume) + ")");
+        // Skip volume check when volumeSpikeMode=OI_PROXY (index spots like BANKNIFTY have no volume)
+        String volumeMode = underlyingConfigService != null
+                ? underlyingConfigService.getVolumeSpikeMode(underlying) : "NORMAL";
+        if ("OI_PROXY".equals(volumeMode) || "DISABLED".equals(volumeMode)) {
+            // Index spot has no volume — skip volume gate, rely on other confirmations
+        } else {
+            // Bug fix: zero-average means dead market — block rather than skip
+            if (avgVolume <= 0 || latestVolume < avgVolume * MIN_VOLUME_RATIO) {
+                return noTrade("lowVolume(latest=" + latestVolume + ",avg=" + String.format("%.0f", avgVolume) + ")");
+            }
         }
 
         // 5. ATR minimum (market must be moving)

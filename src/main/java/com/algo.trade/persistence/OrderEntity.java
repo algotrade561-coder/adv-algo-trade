@@ -31,6 +31,7 @@ public class OrderEntity {
     private Instant orderPlacedAt;
     private java.math.BigDecimal slippage;
     private String strategyType;
+    private boolean tradeMaterialized = false;
 
     protected OrderEntity() {
     }
@@ -86,4 +87,7 @@ public class OrderEntity {
         if (orderPlacedAt == null || updatedAt == null || status != OrderStatus.COMPLETE) return null;
         return java.time.Duration.between(orderPlacedAt, updatedAt).toMillis();
     }
+
+    public boolean isTradeMaterialized() { return tradeMaterialized; }
+    public void setTradeMaterialized(boolean v) { this.tradeMaterialized = v; }
 }
