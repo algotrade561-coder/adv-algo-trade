@@ -29,7 +29,7 @@ public class GapAndGoStrategy {
 
     private static final Logger log = LoggerFactory.getLogger(GapAndGoStrategy.class);
     private static final ZoneId IST = ZoneId.of("Asia/Kolkata");
-    private static final LocalTime ENTRY_START = LocalTime.of(9, 16);
+    private static final LocalTime ENTRY_START = LocalTime.of(9, 20);
     private static final LocalTime ENTRY_CUTOFF = LocalTime.of(9, 45);
     private static final double MIN_BODY_PERCENT = 0.40;
     /** Minimum gap from previous close to today's open as % of previous close. */

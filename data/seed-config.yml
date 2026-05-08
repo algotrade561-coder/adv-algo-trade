@@ -27,7 +27,7 @@ globalConfig:
   oiDivergenceMinChange: 100000
   ceBreakoutConfirmationCandles: 1
   peBreakoutConfirmationCandles: 2
-  entryStartTime: "09:25"
+  entryStartTime: "09:16"
   entryCutoffTime: "15:10"
   allowFirstMinutesEntry: false
   noEntryFirstMinutes: 10
