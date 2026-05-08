@@ -44,11 +44,11 @@ trading:
       FINNIFTY: "NSE:NIFTY FIN SERVICE"
       MIDCPNIFTY: "NSE:NIFTY MID SELECT"
     spot-historical-keys:
-      NIFTY: "NSE:NIFTY 50"
-      BANKNIFTY: "NSE:NIFTY BANK"
-      SENSEX: "BSE:SENSEX"
-      FINNIFTY: "NSE:NIFTY FIN SERVICE"
-      MIDCPNIFTY: "NSE:NIFTY MID SELECT"
+      NIFTY: "NSE:256265"
+      BANKNIFTY: "NSE:260105"
+      SENSEX: "BSE:265"
+      FINNIFTY: "NSE:257801"
+      MIDCPNIFTY: "NSE:288009"
 
   # ── Strike Selection ────────────────────────────────────────────────────
   strike:
@@ -167,7 +167,7 @@ algo-flow:
 # ── OI Price Action Filter ────────────────────────────────────────────────
 oi-price-action:
   enabled: true                          # master switch for OI snapshot capture
-  min-oi-change-percent: 5.0               # minimum OI change % to confirm breakout
+  min-oi-change-percent: 2.5               # minimum OI change % to confirm breakout
   max-snapshots: 50                      # how many 5-min snapshots to keep in memory
 
 # ── ATR Indicator ─────────────────────────────────────────────────────────

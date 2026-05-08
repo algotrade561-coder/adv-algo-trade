@@ -308,19 +308,32 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
     }
 
     /**
-     * Seeds candle history from REST historical API for subscribed option tokens and VIX.
+     * Seeds candle history from REST historical API for subscribed option tokens, VIX, and underlying indices.
      * Called only during market hours on startup to recover in-memory state after a mid-session restart.
-     * Seeds 1-minute candles for options (used by DIRECTIONAL_BUY volume analysis)
-     * and 15-minute candles for VIX (used by detectVixTrend).
+     * Seeds:
+     *   - 5-minute candles for underlying spot indices (required by ScalpingStrategy EMA 9/21 warm-up)
+     *   - 1-minute candles for options (used by DIRECTIONAL_BUY volume analysis)
+     *   - 15-minute candles for VIX (used by detectVixTrend)
      * Limits to 40 option tokens max and throttles at ~2 REST calls/second to respect Zerodha rate limits.
      */
     private void seedCandleHistory(java.util.List<Long> optionTokens) {
-        log.info("Market-hours restart detected — seeding candle history from REST for {} option tokens + VIX",
+        log.info("Market-hours restart detected — seeding candle history from REST for {} option tokens + underlyings + VIX",
                 Math.min(optionTokens.size(), 40));
 
         // Seed VIX 15-minute candles for detectVixTrend()
         long vixToken = 264969L;
         seedTokenCandles(vixToken, "NSE:" + vixToken, com.algo.trade.domain.Timeframe.FIFTEEN_MINUTE);
+
+        // Seed 5-minute candles for underlying spot indices — required by ScalpingStrategy (EMA 9/21 needs 22 candles).
+        // Without this, SCALPING cannot fire for 110 minutes after every restart.
+        // Uses numeric token format which Zerodha historical API requires; BSE for SENSEX, NSE for all others.
+        for (com.algo.trade.domain.IndexType idx : com.algo.trade.domain.IndexType.values()) {
+            long token = idx.spotToken();
+            String exchange = idx.isBSE() ? "BSE" : "NSE";
+            String instrumentKey = exchange + ":" + token;
+            seedTokenCandles(token, instrumentKey, com.algo.trade.domain.Timeframe.FIVE_MINUTE);
+            try { Thread.sleep(500); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
+        }
 
         // Seed 1-minute candles for up to 40 option tokens (ATM-nearest first)
         int seeded = 0;
@@ -333,7 +346,8 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
             seeded++;
             try { Thread.sleep(500); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
         }
-        log.info("Candle history seeding complete: seeded {} option tokens + VIX", seeded);
+        log.info("Candle history seeding complete: seeded {} option tokens + {} underlying 5m + VIX",
+                seeded, com.algo.trade.domain.IndexType.values().length);
     }
 
     private void seedTokenCandles(long token, String instrumentKey, com.algo.trade.domain.Timeframe tf) {

@@ -231,7 +231,8 @@ public class RuleBasedOptionsStrategy {
         Double atrValue = computeAtr(request.underlyingCandles());
 
         BigDecimal confidenceScore = confidenceScore(vwapPassed, breakoutPassed, volumeSpike, oiPassed,
-                ivPassed, liquidityPassed, rsiPassed);
+                ivPassed, liquidityPassed, rsiPassed,
+                oiEvaluation.priceOiBuildUp(), oiEvaluation.chainBuildUp(), oiEvaluation.imbalanceSupports());
 
         List<String> reasons = new ArrayList<>();
         addReason(reasons, vwapPassed, "Trend condition passed", "Trend condition failed");
@@ -374,10 +375,12 @@ public class RuleBasedOptionsStrategy {
             boolean oiDivergenceRejected,
             boolean resistanceHeadroomPassed
     ) {
-        boolean oiRequirementPassed = !oiSupportRequired(optionType) || oiPassed;
-        return vwapPassed && breakoutPassed && breakoutConfirmed && volumeSpike && oiRequirementPassed
-                && !oiDivergenceRejected
-                && resistanceHeadroomPassed;
+        // Hard blocks: only reject on clear contradictions
+        // 1. VWAP must confirm direction (price on right side)
+        // 2. OI divergence must not be extreme (smart money opposing)
+        // Everything else (breakout, volume, OI support) is already captured in the confidence score.
+        // If the score passes the threshold without these, the other signals are strong enough.
+        return vwapPassed && !oiDivergenceRejected;
     }
 
     private boolean oiSupportRequired(OptionType optionType) {
@@ -495,13 +498,19 @@ public class RuleBasedOptionsStrategy {
             boolean oiPassed,
             boolean ivPassed,
             boolean liquidityPassed,
-            boolean rsiPassed
+            boolean rsiPassed,
+            boolean priceOiBuildUp,
+            boolean chainBuildUp,
+            boolean imbalanceSupports
     ) {
         int score = 0;
         score += vwapPassed ? 15 : 0;
         score += breakoutPassed ? 25 : 0;
         score += volumeSpike ? 20 : 0;
-        score += oiPassed ? 25 : 0;
+        // Graduated OI scoring: 9 + 8 + 8 = 25 max (same ceiling, graduated floor)
+        score += priceOiBuildUp ? 9 : 0;
+        score += chainBuildUp ? 8 : 0;
+        score += imbalanceSupports ? 8 : 0;
         score += liquidityPassed ? 10 : 0;
         score += ivPassed ? 5 : 0;
         score += cfgRsiFilterEnabled() && rsiPassed ? 10 : 0;

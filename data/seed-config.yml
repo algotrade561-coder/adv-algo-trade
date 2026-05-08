@@ -18,7 +18,7 @@ globalConfig:
   bearishImbalanceThreshold: 0.8
   minLiquidityVolume: 5000
   maxIvPercent: 80
-  minSignalScorePercent: 70
+  minSignalScorePercent: 55
   ceOiSupportRequired: false
   peOiSupportRequired: false
   ceOiDivergenceFilterEnabled: true
@@ -43,7 +43,7 @@ globalConfig:
   forcedExitTime: "15:15"
   partialProfitBookingEnabled: false
   maxHoldMinutes: 0
-  vwapExitEnabled: false
+  vwapExitEnabled: true
   globalExitOverride: false
   # Risk
   totalCapital: 80000
@@ -51,7 +51,7 @@ globalConfig:
   maxDailyLossPercent: 60
   maxTradesPerDay: 10
   maxConsecutiveLosses: 2
-  maxOpenTrades: 1
+  maxOpenTrades: 2
   maxOpenPositionsPerStrategy: 1
   cooldownMinutes: 5
   dailyProfitTarget: 0
@@ -64,7 +64,7 @@ globalConfig:
   ivCollapseExitThresholdPercent: 15
   ivCollapseMaxProfitPercent: 15
   maxEntriesPerScanPerUnderlying: 1
-  maxEntriesPerScan: 3
+  maxEntriesPerScan: 2
 
 strategyConfigs:
   # ── BEAR_PUT_SPREAD ────────────────────────────────────────────────────────
@@ -99,11 +99,11 @@ strategyConfigs:
   - { strategyType: DIAGONAL_SPREAD, underlying: SENSEX,     enabled: false, paperTrading: false, stopLossPercent: 50, targetPercent: 40,  maxHoldMinutes: 45, squareoffHour: 15, squareoffMinute: 15, maxIvRankForBuying: 40, scanTimeframe: FIFTEEN_MINUTE, candleTimeframe: FIVE_MINUTE, trendTimeframe: FIFTEEN_MINUTE, trailingStopActivationPercent: 10, trailingGapPercent: 5,  minCombinedPremium: 80,  lots: 1, otmStrikes: 2, spreadStrikes: 2 }
   # ── DIRECTIONAL_BUY ────────────────────────────────────────────────────────
   # target: 60→50 (60% needed 0.6%+ NIFTY move in 20 min; 50% is more consistently achievable)
-  - { strategyType: DIRECTIONAL_BUY, underlying: BANKNIFTY,  enabled: true,  paperTrading: false, stopLossPercent: 30, targetPercent: 50,  maxHoldMinutes: 20, squareoffHour: 15, squareoffMinute: 0,  maxIvRankForBuying: 40, scanTimeframe: ONE_MINUTE,     candleTimeframe: ONE_MINUTE,  trendTimeframe: FIVE_MINUTE,     trailingStopActivationPercent: 25, trailingGapPercent: 12, minCombinedPremium: 60,  lots: 1, otmStrikes: 2, spreadStrikes: 2 }
-  - { strategyType: DIRECTIONAL_BUY, underlying: FINNIFTY,   enabled: true, paperTrading: false,  stopLossPercent: 30, targetPercent: 50,  maxHoldMinutes: 20, squareoffHour: 15, squareoffMinute: 0,  maxIvRankForBuying: 40, scanTimeframe: ONE_MINUTE,     candleTimeframe: ONE_MINUTE,  trendTimeframe: FIVE_MINUTE,     trailingStopActivationPercent: 25, trailingGapPercent: 12, minCombinedPremium: 60,  lots: 1, otmStrikes: 2, spreadStrikes: 2 }
-  - { strategyType: DIRECTIONAL_BUY, underlying: MIDCPNIFTY, enabled: false, paperTrading: false,  stopLossPercent: 30, targetPercent: 50,  maxHoldMinutes: 20, squareoffHour: 15, squareoffMinute: 0,  maxIvRankForBuying: 40, scanTimeframe: ONE_MINUTE,     candleTimeframe: ONE_MINUTE,  trendTimeframe: FIVE_MINUTE,     trailingStopActivationPercent: 25, trailingGapPercent: 12, minCombinedPremium: 60,  lots: 1, otmStrikes: 2, spreadStrikes: 2 }
-  - { strategyType: DIRECTIONAL_BUY, underlying: NIFTY,      enabled: true,  paperTrading: false, stopLossPercent: 30, targetPercent: 50,  maxHoldMinutes: 20, squareoffHour: 15, squareoffMinute: 0,  maxIvRankForBuying: 40, scanTimeframe: ONE_MINUTE,     candleTimeframe: ONE_MINUTE,  trendTimeframe: FIVE_MINUTE,     trailingStopActivationPercent: 25, trailingGapPercent: 12, minCombinedPremium: 60,  lots: 1, otmStrikes: 2, spreadStrikes: 2 }
-  - { strategyType: DIRECTIONAL_BUY, underlying: SENSEX,     enabled: true,  paperTrading: false, stopLossPercent: 30, targetPercent: 50,  maxHoldMinutes: 20, squareoffHour: 15, squareoffMinute: 0,  maxIvRankForBuying: 40, scanTimeframe: ONE_MINUTE,     candleTimeframe: ONE_MINUTE,  trendTimeframe: FIVE_MINUTE,     trailingStopActivationPercent: 25, trailingGapPercent: 12, minCombinedPremium: 60,  lots: 1, otmStrikes: 2, spreadStrikes: 2 }
+  - { strategyType: DIRECTIONAL_BUY, underlying: BANKNIFTY,  enabled: true,  paperTrading: false, stopLossPercent: 30, targetPercent: 50,  maxHoldMinutes: 35, squareoffHour: 15, squareoffMinute: 0,  maxIvRankForBuying: 40, scanTimeframe: ONE_MINUTE,     candleTimeframe: ONE_MINUTE,  trendTimeframe: FIVE_MINUTE,     trailingStopActivationPercent: 25, trailingGapPercent: 12, minCombinedPremium: 60,  lots: 1, otmStrikes: 2, spreadStrikes: 2 }
+  - { strategyType: DIRECTIONAL_BUY, underlying: FINNIFTY,   enabled: true, paperTrading: false,  stopLossPercent: 30, targetPercent: 50,  maxHoldMinutes: 35, squareoffHour: 15, squareoffMinute: 0,  maxIvRankForBuying: 40, scanTimeframe: ONE_MINUTE,     candleTimeframe: ONE_MINUTE,  trendTimeframe: FIVE_MINUTE,     trailingStopActivationPercent: 25, trailingGapPercent: 12, minCombinedPremium: 60,  lots: 1, otmStrikes: 2, spreadStrikes: 2 }
+  - { strategyType: DIRECTIONAL_BUY, underlying: MIDCPNIFTY, enabled: false, paperTrading: false,  stopLossPercent: 30, targetPercent: 50,  maxHoldMinutes: 35, squareoffHour: 15, squareoffMinute: 0,  maxIvRankForBuying: 40, scanTimeframe: ONE_MINUTE,     candleTimeframe: ONE_MINUTE,  trendTimeframe: FIVE_MINUTE,     trailingStopActivationPercent: 25, trailingGapPercent: 12, minCombinedPremium: 60,  lots: 1, otmStrikes: 2, spreadStrikes: 2 }
+  - { strategyType: DIRECTIONAL_BUY, underlying: NIFTY,      enabled: true,  paperTrading: false, stopLossPercent: 30, targetPercent: 50,  maxHoldMinutes: 35, squareoffHour: 15, squareoffMinute: 0,  maxIvRankForBuying: 40, scanTimeframe: ONE_MINUTE,     candleTimeframe: ONE_MINUTE,  trendTimeframe: FIVE_MINUTE,     trailingStopActivationPercent: 25, trailingGapPercent: 12, minCombinedPremium: 60,  lots: 1, otmStrikes: 2, spreadStrikes: 2 }
+  - { strategyType: DIRECTIONAL_BUY, underlying: SENSEX,     enabled: true,  paperTrading: false, stopLossPercent: 30, targetPercent: 50,  maxHoldMinutes: 35, squareoffHour: 15, squareoffMinute: 0,  maxIvRankForBuying: 40, scanTimeframe: ONE_MINUTE,     candleTimeframe: ONE_MINUTE,  trendTimeframe: FIVE_MINUTE,     trailingStopActivationPercent: 25, trailingGapPercent: 12, minCombinedPremium: 60,  lots: 1, otmStrikes: 2, spreadStrikes: 2 }
   # ── EVENT_DRIVEN_BUY ───────────────────────────────────────────────────────
   # target: 80→100 (pre-event straddles on RBI/budget days can 3x; 80% was too conservative)
   - { strategyType: EVENT_DRIVEN_BUY, underlying: BANKNIFTY,  enabled: true,  paperTrading: false, stopLossPercent: 35, targetPercent: 100, maxHoldMinutes: 0,  squareoffHour: 15, squareoffMinute: 15, maxIvRankForBuying: 40, scanTimeframe: FIFTEEN_MINUTE, candleTimeframe: FIVE_MINUTE, trendTimeframe: FIFTEEN_MINUTE, trailingStopActivationPercent: 10, trailingGapPercent: 5,  minCombinedPremium: 80,  lots: 1, otmStrikes: 2, spreadStrikes: 2 }

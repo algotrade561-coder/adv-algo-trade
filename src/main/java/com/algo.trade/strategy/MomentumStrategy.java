@@ -32,7 +32,7 @@ public class MomentumStrategy {
 
     private static final Logger log = LoggerFactory.getLogger(MomentumStrategy.class);
     private static final int ROC_PERIOD = 5;
-    private static final double MIN_ROC_PERCENT = 0.30;
+    private static final double MIN_ROC_PERCENT = 0.45;
     private static final int EMA_PERIOD = 21;
     private static final double MIN_VOLUME_RATIO = 1.2;
     private static final int ATR_PERIOD = 14;
@@ -98,6 +98,17 @@ public class MomentumStrategy {
                 : current.doubleValue() < ema;
         if (!trendAligned) {
             return noTrade("trendMisaligned(price=" + current + ",ema21=" + String.format("%.2f", ema) + ")");
+        }
+
+        // 3b. VWAP alignment — price must be on the right side of VWAP for the direction
+        double vwap = calculateVwap(candles);
+        if (vwap > 0) {
+            boolean vwapAligned = bullish
+                    ? current.doubleValue() > vwap
+                    : current.doubleValue() < vwap;
+            if (!vwapAligned) {
+                return noTrade("vwapMisaligned(price=" + current + ",vwap=" + String.format("%.2f", vwap) + ")");
+            }
         }
 
         // 4. Volume confirmation
@@ -182,6 +193,20 @@ public class MomentumStrategy {
             sum += tr;
         }
         return sum / period;
+    }
+
+    /** Simple VWAP: sum(close × volume) / sum(volume) over available candles. */
+    private double calculateVwap(List<Candle> candles) {
+        double sumPV = 0;
+        long sumV = 0;
+        for (Candle c : candles) {
+            long vol = c.volume();
+            if (vol <= 0) continue;
+            double typicalPrice = (c.high().doubleValue() + c.low().doubleValue() + c.close().doubleValue()) / 3.0;
+            sumPV += typicalPrice * vol;
+            sumV += vol;
+        }
+        return sumV > 0 ? sumPV / sumV : 0;
     }
 
     private static StrategyDiagnostics.WithSignal noTrade(String reason) {

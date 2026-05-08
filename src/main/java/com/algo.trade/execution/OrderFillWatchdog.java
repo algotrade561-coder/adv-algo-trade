@@ -154,8 +154,7 @@ public class OrderFillWatchdog {
                 } catch (Exception ex) {
                     log.warn("OrderFillWatchdog: cancel failed for {}: {}", brokerOrderId, ex.getMessage());
                 }
-                order.setStatus(OrderStatus.CANCELLED);
-                orderRepository.save(order);
+                saveOrderWithRetry(order, OrderStatus.CANCELLED);
                 // Release entry gate — the order is dead, allow new entries
                 executionEngine.releaseEntryInFlightGate();
                 return;
@@ -179,7 +178,7 @@ public class OrderFillWatchdog {
             order.setFilledQuantity(latest.filledQuantity());
             order.setAverageFillPrice(latest.averageFillPrice().orElse(null));
             order.setUpdatedAt(latest.updatedAt());
-            orderRepository.save(order);
+            saveOrderWithRetry(order, null);
 
             // Only create TradeEntity for BUY (entry) orders.
             // SELL (exit) orders need to close the existing trade instead.
@@ -207,12 +206,42 @@ public class OrderFillWatchdog {
         } else if (latest.status() == OrderStatus.REJECTED || latest.status() == OrderStatus.CANCELLED) {
             log.info("OrderFillWatchdog: order terminal — clientOrderId={}, status={}, reason={}",
                     order.getClientOrderId(), latest.status(), latest.rejectionReason().orElse(""));
-            order.setStatus(latest.status());
             order.setUpdatedAt(latest.updatedAt());
-            orderRepository.save(order);
+            saveOrderWithRetry(order, latest.status());
             // Release entry gate — the order is dead, allow new entries
             executionEngine.releaseEntryInFlightGate();
         }
+    }
+
+    /**
+     * Save order with optimistic lock retry. Re-fetches from DB on conflict
+     * (when WebSocket order_update thread modified the same row concurrently).
+     */
+    private void saveOrderWithRetry(OrderEntity order, OrderStatus statusOverride) {
+        for (int attempt = 0; attempt < 3; attempt++) {
+            try {
+                if (statusOverride != null) order.setStatus(statusOverride);
+                orderRepository.save(order);
+                return;
+            } catch (org.springframework.orm.ObjectOptimisticLockingFailureException ex) {
+                log.debug("OrderFillWatchdog: optimistic lock conflict on {} — retrying (attempt {})",
+                        order.getClientOrderId(), attempt + 1);
+                // Re-fetch fresh version from DB
+                OrderEntity fresh = orderRepository.findById(order.getClientOrderId()).orElse(null);
+                if (fresh == null) {
+                    log.warn("OrderFillWatchdog: order {} disappeared from DB after lock conflict", order.getClientOrderId());
+                    return;
+                }
+                // If the fresh version already has the target status, another thread handled it
+                if (statusOverride != null && fresh.getStatus() == statusOverride) {
+                    log.debug("OrderFillWatchdog: order {} already at status {} — skipping", order.getClientOrderId(), statusOverride);
+                    return;
+                }
+                // Apply our updates to the fresh entity and retry
+                order = fresh;
+            }
+        }
+        log.warn("OrderFillWatchdog: failed to save order {} after 3 retries", order.getClientOrderId());
     }
 
     /**
