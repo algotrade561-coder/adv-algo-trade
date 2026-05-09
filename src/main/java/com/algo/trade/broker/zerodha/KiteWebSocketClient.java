@@ -60,6 +60,9 @@ public class KiteWebSocketClient {
     private final KiteCredentialResolver credentialResolver;
     private final com.algo.trade.risk.MarketGuard marketGuard;
     private final com.algo.trade.notification.TelegramAlertService telegramAlertService;
+    
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.commodity.OilPriceTracker oilPriceTracker;
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.algo.trade.monitoring.ErrorEventService errorEventService;
@@ -488,6 +491,13 @@ public class KiteWebSocketClient {
                 marketGuard.updateVix(ltp);
                 candleBuilder.onTick(token, ltp, 0, 0, now);
                 //log.debug("[WS] VIX tick: {}", ltp);
+                return;
+            }
+            
+            // Route MCX Crude Oil to OilPriceTracker
+            if (oilPriceTracker != null && token == oilPriceTracker.getInstrumentToken()) {
+                oilPriceTracker.updatePrice(ltp);
+                log.debug("[WS] MCX Crude Oil tick: ₹{} (${:.2f})", ltp, ltp / 83.5);
                 return;
             }
 

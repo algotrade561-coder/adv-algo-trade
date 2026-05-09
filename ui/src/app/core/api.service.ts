@@ -12,6 +12,7 @@ import {
   KiteSessionResponse,
   MarketDataMode,
   MarketSnapshot,
+  OilPriceSnapshot,
   PagedResponse,
   PnlSnapshot,
   ReportArchiveResult,
@@ -160,6 +161,7 @@ export class ApiService {
   trades(): Observable<ApiRecord[]> { return this.http.get<ApiRecord[]>(`${this.base}/trades`); }
   pnl(): Observable<PnlSnapshot> { return this.http.get<PnlSnapshot>(`${this.base}/pnl`); }
   market(): Observable<MarketSnapshot> { return this.http.get<MarketSnapshot>(`${this.base}/market`); }
+  oilPrice(): Observable<OilPriceSnapshot> { return this.http.get<OilPriceSnapshot>(`${this.base}/api/oil-price/snapshot`); }
   performance(): Observable<any> { return this.http.get<any>(`${this.base}/performance`); }
   oiHeatmap(index: string, strikes = 15): Observable<any> { return this.http.get<any>(`${this.base}/analytics/heatmap/oi/${index}?strikes=${strikes}`); }
   greeksDashboard(): Observable<any> { return this.http.get<any>(`${this.base}/analytics/greeks`); }

@@ -277,3 +277,15 @@ export interface SignalFilters {
   optionType?: string;
   mode?: string;
 }
+
+export interface OilPriceSnapshot {
+  priceINR: number;
+  priceUSD: number;
+  dailyChangeINR: number;
+  dailyChangePct: number;
+  regime: 'LOW' | 'NORMAL' | 'HIGH' | 'CRISIS';
+  momentum: 'FALLING' | 'STABLE' | 'RISING' | 'SPIKING';
+  tradingSymbol: string;
+  contractExpiry: string;
+  lastUpdate: string;
+}

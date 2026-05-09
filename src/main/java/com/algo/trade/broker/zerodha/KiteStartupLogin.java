@@ -38,6 +38,9 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
     private final com.algo.trade.persistence.TradeRepository tradeRepository;
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.commodity.McxCrudeOilService mcxCrudeOilService;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.algo.trade.monitoring.ErrorEventService errorEventService;
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -224,8 +227,16 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
             for (var idx : com.algo.trade.domain.IndexType.values()) {
                 tokens.add(idx.spotToken());
             }
+            // Add MCX Crude Oil token if available
+            if (mcxCrudeOilService != null && mcxCrudeOilService.isAvailable()) {
+                long oilToken = mcxCrudeOilService.getCrudeOilToken();
+                if (oilToken > 0) {
+                    tokens.add(oilToken);
+                    log.info("Added MCX Crude Oil token {} to WebSocket subscription", oilToken);
+                }
+            }
             webSocketClient.subscribe(tokens);
-            log.info("WebSocket subscribed to {} index + VIX tokens on startup", tokens.size());
+            log.info("WebSocket subscribed to {} index + VIX + commodity tokens on startup", tokens.size());
 
             // Populate LiveInstrumentCache from instrument master
             // then subscribe option tokens after a short delay to allow spot price to arrive

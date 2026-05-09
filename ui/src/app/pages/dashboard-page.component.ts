@@ -4,7 +4,7 @@ import { catchError, forkJoin, of, interval, Subscription } from 'rxjs';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 import { ApiService } from '../core/api.service';
-import { MarketSnapshot, PnlSnapshot, RuntimeStatus, StrategyDecision, TradingStatus } from '../core/models';
+import { MarketSnapshot, OilPriceSnapshot, PnlSnapshot, RuntimeStatus, StrategyDecision, TradingStatus } from '../core/models';
 
 @Component({
   selector: 'app-dashboard-page',
@@ -115,6 +115,40 @@ import { MarketSnapshot, PnlSnapshot, RuntimeStatus, StrategyDecision, TradingSt
               @else if (market?.pcrBias === 'NEUTRAL') { Balanced OI — no strong bias }
               @else if (market?.pcrBias === 'BEARISH') { Heavy call writing — supports PE buying }
               @else { Waiting for option chain data }
+            </div>
+          </div>
+
+          <div class="mcard oil-card"
+            [class.mc-ok]="oilPrice?.regime === 'LOW' || oilPrice?.regime === 'NORMAL'"
+            [class.mc-warn]="oilPrice?.regime === 'HIGH'"
+            [class.mc-bad]="oilPrice?.regime === 'CRISIS'"
+            [class.mc-muted]="!oilPrice">
+            <div class="mc-top">
+              <span class="mc-label">MCX Crude Oil</span>
+              <span class="mc-badge"
+                [class.badge-ok]="oilPrice?.regime === 'LOW' || oilPrice?.regime === 'NORMAL'"
+                [class.badge-warn]="oilPrice?.regime === 'HIGH'"
+                [class.badge-bad]="oilPrice?.regime === 'CRISIS'"
+                [class.badge-muted]="!oilPrice">
+                {{ oilPrice?.regime ?? '—' }}
+              </span>
+            </div>
+            <div class="mc-value">
+              @if (oilPrice) {
+                &#36;{{ oilPrice.priceUSD | number:'1.2-2' }}
+                <span class="oil-change" [class.pos]="oilPrice.dailyChangePct >= 0" [class.neg]="oilPrice.dailyChangePct < 0">
+                  {{ oilPrice.dailyChangePct >= 0 ? '+' : '' }}{{ oilPrice.dailyChangePct | number:'1.2-2' }}%
+                </span>
+              } @else {
+                —
+              }
+            </div>
+            <div class="mc-desc">
+              @if (oilPrice?.regime === 'LOW') { Low oil — risk-on sentiment }
+              @else if (oilPrice?.regime === 'NORMAL') { Normal range — neutral impact }
+              @else if (oilPrice?.regime === 'HIGH') { Elevated — watch for risk-off }
+              @else if (oilPrice?.regime === 'CRISIS') { Crisis level — risk-off mode }
+              @else { Waiting for MCX data }
             </div>
           </div>
 
@@ -296,6 +330,10 @@ import { MarketSnapshot, PnlSnapshot, RuntimeStatus, StrategyDecision, TradingSt
     .badge-bad   { background: rgba(255,113,106,.15); color: var(--bad); }
     .badge-muted { background: rgba(255,255,255,.05); color: var(--muted); }
 
+    /* Oil price card */
+    .oil-card { border-color: rgba(242,189,75,.35); background: rgba(242,189,75,.04); }
+    .oil-change { font-size: 16px; font-weight: 600; margin-left: 8px; }
+
     /* Entry status */
     .entry-status { border-radius: 10px; padding: 12px 16px; margin-bottom: 16px; border: 1px solid var(--line); }
     .grid.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; }
@@ -331,6 +369,7 @@ export class DashboardPageComponent implements OnInit, OnDestroy {
   tradingStatus?: TradingStatus;
   perf?: any;
   latestSignal?: StrategyDecision | null;
+  oilPrice?: OilPriceSnapshot;
   loading = false;
   loadError = '';
   lastUpdatedAt = '';
@@ -383,11 +422,13 @@ export class DashboardPageComponent implements OnInit, OnDestroy {
     forkJoin({
       market: this.api.market().pipe(catchError(() => of(null as MarketSnapshot | null))),
       status: this.api.tradingStatus().pipe(catchError(() => of(null as TradingStatus | null))),
-      perf: this.api.performance().pipe(catchError(() => of(null)))
-    }).subscribe(({ market, status, perf }) => {
+      perf: this.api.performance().pipe(catchError(() => of(null))),
+      oil: this.api.oilPrice().pipe(catchError(() => of(null as OilPriceSnapshot | null)))
+    }).subscribe(({ market, status, perf, oil }) => {
       if (market) this.market = market;
       if (perf) this.perf = perf;
       if (status) this.tradingStatus = status;
+      if (oil) this.oilPrice = oil;
       this.lastUpdatedAt = new Date().toLocaleTimeString();
       this.cd.detectChanges();
     });
