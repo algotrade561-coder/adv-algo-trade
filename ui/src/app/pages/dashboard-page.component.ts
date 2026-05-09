@@ -167,7 +167,7 @@ import { MarketSnapshot, PnlSnapshot, RuntimeStatus, StrategyDecision, TradingSt
 
         </div>
 
-        <!-- ── PnL Row ───────────────────────────────────────────────── -->
+        <!-- ── Entry Status ──────────────────────────────────────────── -->
         @if (tradingStatus) {
           <div class="entry-status" [class.es-ok]="tradingStatus.entryAllowed" [class.es-bad]="!tradingStatus.entryAllowed">
             <div class="es-header">
@@ -195,25 +195,6 @@ import { MarketSnapshot, PnlSnapshot, RuntimeStatus, StrategyDecision, TradingSt
             }
           </div>
         }
-
-        <div class="pnl-row">
-          <div class="pnl-card">
-            <mat-icon class="pi">account_balance_wallet</mat-icon>
-            <div><span class="pl">Live Realized PnL</span><span class="pv" [class.pos]="(pnl?.realizedPnl ?? 0) >= 0" [class.neg]="(pnl?.realizedPnl ?? 0) < 0">₹{{ (pnl?.realizedPnl ?? 0) | number:'1.2-2' }}</span></div>
-          </div>
-          <div class="pnl-card">
-            <mat-icon class="pi">trending_up</mat-icon>
-            <div><span class="pl">Live Unrealized PnL</span><span class="pv" [class.pos]="(pnl?.unrealizedPnl ?? 0) >= 0" [class.neg]="(pnl?.unrealizedPnl ?? 0) < 0">₹{{ (pnl?.unrealizedPnl ?? 0) | number:'1.2-2' }}</span></div>
-          </div>
-          <div class="pnl-card pnl-total">
-            <mat-icon class="pi pi-accent">assessment</mat-icon>
-            <div><span class="pl">Live Total PnL</span><span class="pv pv-big" [class.pos]="(pnl?.totalPnl ?? 0) >= 0" [class.neg]="(pnl?.totalPnl ?? 0) < 0">₹{{ (pnl?.totalPnl ?? 0) | number:'1.2-2' }}</span></div>
-          </div>
-          <div class="pnl-card pnl-paper">
-            <mat-icon class="pi pi-paper">description</mat-icon>
-            <div><span class="pl">Paper PnL</span><span class="pv" [class.pos]="(tradingStatus?.paperPnl ?? 0) >= 0" [class.neg]="(tradingStatus?.paperPnl ?? 0) < 0">₹{{ (tradingStatus?.paperPnl ?? 0) | number:'1.2-2' }}</span></div>
-          </div>
-        </div>
 
         <!-- ── Runtime & Signal ───────────────────────────────────────── -->
         <div class="grid two">
@@ -315,22 +296,8 @@ import { MarketSnapshot, PnlSnapshot, RuntimeStatus, StrategyDecision, TradingSt
     .badge-bad   { background: rgba(255,113,106,.15); color: var(--bad); }
     .badge-muted { background: rgba(255,255,255,.05); color: var(--muted); }
 
-    /* PnL */
-    .pnl-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 20px; }
-    .pnl-card { display: flex; align-items: center; gap: 14px; padding: 18px 20px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel); }
-    .pnl-total { border-color: rgba(97,168,255,.3); background: rgba(97,168,255,.04); }
-    .pnl-paper { border-color: rgba(168,130,255,.3); background: rgba(168,130,255,.04); }
-    .pi { font-size: 24px; width: 24px; height: 24px; color: var(--muted); }
-    .pi-accent { color: var(--accent); }
-    .pi-paper { color: #a882ff; }
-    .pl { display: block; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
-    .pv { display: block; font-size: 20px; font-weight: 700; color: var(--ink); margin-top: 2px; }
-    .pv-big { font-size: 24px; }
-    .pos  { color: var(--ok)   !important; }
-    .neg  { color: var(--bad)  !important; }
-    .warn { color: var(--warn) !important; }
-
-    /* Panels */
+    /* Entry status */
+    .entry-status { border-radius: 10px; padding: 12px 16px; margin-bottom: 16px; border: 1px solid var(--line); }
     .grid.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; }
     .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 20px; }
     .panel h2 { font-size: 14px; font-weight: 700; color: var(--ink); margin: 0 0 14px; display: flex; align-items: center; gap: 6px; }

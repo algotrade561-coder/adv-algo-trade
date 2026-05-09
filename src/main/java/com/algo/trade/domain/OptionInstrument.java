@@ -30,6 +30,11 @@ public class OptionInstrument {
     private volatile double bestAsk;
     private volatile long bestBidQty;
     private volatile long bestAskQty;
+    
+    // 5-minute high/low tracking (for chain snapshots)
+    private volatile double high5m;
+    private volatile double low5m;
+    private volatile long last5mResetMs;
 
     // Greeks — computed from Black-Scholes
     private volatile double impliedVolatility;
@@ -115,4 +120,29 @@ public class OptionInstrument {
     public void setVega(double v) { this.vega = v; }
     public long getLastTickTimeMs() { return lastTickTimeMs; }
     public void setLastTickTimeMs(long v) { this.lastTickTimeMs = v; }
+    
+    // 5-minute high/low getters and setters
+    public double getHigh5m() { return high5m; }
+    public double getLow5m() { return low5m; }
+    public void setHigh5m(double v) { this.high5m = v; }
+    public void setLow5m(double v) { this.low5m = v; }
+    public long getLast5mResetMs() { return last5mResetMs; }
+    public void setLast5mResetMs(long v) { this.last5mResetMs = v; }
+    
+    /**
+     * Update 5-minute high/low tracking.
+     * Call this on every tick to maintain rolling 5-minute high/low.
+     */
+    public void updateHigh5mLow5m(double price) {
+        long now = System.currentTimeMillis();
+        // Reset every 5 minutes
+        if (now - last5mResetMs > 300_000) { // 5 minutes
+            high5m = price;
+            low5m = price;
+            last5mResetMs = now;
+        } else {
+            if (price > high5m) high5m = price;
+            if (price < low5m || low5m == 0) low5m = price;
+        }
+    }
 }

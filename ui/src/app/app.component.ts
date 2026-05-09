@@ -558,15 +558,13 @@ export class AppComponent implements OnInit, OnDestroy {
 
   readonly navItems: NavItem[] = [
     { label: 'Dashboard', path: 'dashboard', icon: 'dashboard' },
-    { label: 'Strategies', path: 'strategies', icon: 'auto_awesome' },
     { label: 'Execution', path: 'execution', icon: 'play_circle' },
+    { label: 'Strategies', path: 'strategies', icon: 'auto_awesome' },
+    { label: 'Index Config', path: 'index-config', icon: 'category' },
     { label: 'Monitoring', path: 'monitoring', icon: 'monitoring' },
-    { label: 'AI Insights', path: 'ai-insights', icon: 'psychology' },
-    { label: 'ML Scorecard', path: 'ml-scorecard', icon: 'analytics' },
     { label: 'Reports', path: 'reports', icon: 'description' },
     { label: 'Diagnostics', path: 'diagnostics', icon: 'monitor_heart' },
     { label: 'Kite Auth', path: 'auth', icon: 'lock_open' },
-    { label: 'Index Config', path: 'index-config', icon: 'category' },
     { label: 'Settings', path: 'settings', icon: 'tune' }
   ];
 

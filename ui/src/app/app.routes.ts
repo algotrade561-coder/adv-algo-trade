@@ -9,8 +9,6 @@ import { RejectedSignalsPageComponent } from './pages/rejected-signals-page.comp
 import { StrategiesPageComponent } from './pages/strategies-page.component';
 import { SettingsPageComponent } from './pages/settings-page.component';
 import { UnderlyingConfigPageComponent } from './pages/underlying-config-page.component';
-import { AiInsightsPageComponent } from './pages/ai-insights-page.component';
-import { MlScorecardPageComponent } from './pages/ml-scorecard-page.component';
 import { DiagnosticsPageComponent } from './pages/diagnostics-page.component';
 
 export const routes: Routes = [
@@ -25,8 +23,6 @@ export const routes: Routes = [
   { path: 'rejected-signals', component: RejectedSignalsPageComponent },
   { path: 'reports', component: ReportsPageComponent },
   { path: 'auth', component: AuthPageComponent },
-  { path: 'ai-insights', component: AiInsightsPageComponent },
-  { path: 'ml-scorecard', component: MlScorecardPageComponent },
   { path: 'diagnostics', component: DiagnosticsPageComponent },
   { path: '**', redirectTo: 'dashboard' }
 ];

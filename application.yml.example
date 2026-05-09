@@ -184,6 +184,14 @@ pcr-tracker:
   extreme-bullish: 0.5
   extreme-bearish: 1.5
 
+# ── Option Chain Snapshot Capture ──────────────────────────────
+snapshot:
+  enabled: true
+  base-dir: data/chain-snapshots
+  retention-days: 60
+  strikes-each-side: 10
+  underlyings: NIFTY,BANKNIFTY,SENSEX
+
 server:
   port: 8089
   servlet:
