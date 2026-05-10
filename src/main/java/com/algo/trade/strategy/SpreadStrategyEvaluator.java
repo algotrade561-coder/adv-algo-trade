@@ -116,6 +116,31 @@ public class SpreadStrategyEvaluator {
                 yield Optional.empty();
             }
 
+            case PREMIUM_SCALP -> {
+                // Premium Scalp: sell ATM straddle when combined premium spikes above rolling average.
+                // Mean reversion — premium tends to contract after spikes in range-bound markets.
+                // Entry: combined premium > rolling avg by premiumSpikeThreshold (stored in maxIvRankForBuying field)
+                // Requires: VIX 14-22, market not strongly trending (EMA9/21 gap < 0.2%)
+                double emaDiffPct = Math.abs(ema9 - ema21) / ema21 * 100;
+                boolean rangebound = emaDiffPct < 0.20; // Not strongly trending
+                if (!rangebound) {
+                    yield Optional.empty();
+                }
+                // Use ivRank as proxy for premium level — elevated IV = premium spike
+                // Entry when IV rank is moderate (not too low = no premium, not too high = trending)
+                double minIvForSelling = 14.0;
+                double maxIvForSelling = config.getMaxIvRankForBuying() != null
+                        ? config.getMaxIvRankForBuying().doubleValue() : 22.0;
+                if (ivRank >= minIvForSelling && ivRank <= maxIvForSelling && rangebound) {
+                    yield Optional.of(signal(underlying, SignalType.SELL_CE, OptionType.CE, latestClose,
+                            "Premium scalp: IV rank=" + String.format("%.0f", ivRank) +
+                            " (range " + String.format("%.0f", minIvForSelling) + "-" +
+                            String.format("%.0f", maxIvForSelling) + "), EMA gap=" +
+                            String.format("%.3f%%", emaDiffPct) + " (rangebound)"));
+                }
+                yield Optional.empty();
+            }
+
             case SCALPING -> {
                 // Scalping: quick momentum trades on short-term EMA crossover
                 // Use tighter EMA (5/13) for faster signals

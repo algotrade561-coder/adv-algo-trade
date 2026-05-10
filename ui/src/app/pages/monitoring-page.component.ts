@@ -52,12 +52,17 @@ type ScorecardRow = { strategyType: string; totalEntries: number; filled: number
         <div class="metrics-group">
           <div class="group-label live-label"><mat-icon>wifi</mat-icon> Live Trading</div>
           <div class="metrics-row">
-            <div class="metric-card live-card metric-big">
+            <div class="metric-card live-card">
               <span class="metric-label">Total P&amp;L</span>
-              <span class="metric-val big" [class.pos]="liveTotal >= 0" [class.neg]="liveTotal < 0">
+              <span class="metric-val" [class.pos]="liveTotal >= 0" [class.neg]="liveTotal < 0">
                 ₹{{ liveTotal | number:'1.2-2' }}
               </span>
               <span class="metric-sub">Realized ₹{{ livePnl | number:'1.2-2' }} · Unrealized ₹{{ liveUnrealized | number:'1.2-2' }}</span>
+            </div>
+            <div class="metric-card live-card">
+              <span class="metric-label">Est. Charges</span>
+              <span class="metric-val neg">₹{{ liveCharges | number:'1.2-2' }}</span>
+              <span class="metric-sub">Net P&amp;L: <span [class.pos]="liveNetPnl >= 0" [class.neg]="liveNetPnl < 0">₹{{ liveNetPnl | number:'1.2-2' }}</span></span>
             </div>
             <div class="metric-card live-card">
               <span class="metric-label">Open Positions</span>
@@ -75,12 +80,17 @@ type ScorecardRow = { strategyType: string; totalEntries: number; filled: number
         <div class="metrics-group">
           <div class="group-label paper-label"><mat-icon>description</mat-icon> Paper Trading</div>
           <div class="metrics-row">
-            <div class="metric-card paper-card metric-big">
+            <div class="metric-card paper-card">
               <span class="metric-label">Paper P&amp;L</span>
-              <span class="metric-val big" [class.pos]="paperPnl >= 0" [class.neg]="paperPnl < 0">
+              <span class="metric-val" [class.pos]="paperPnl >= 0" [class.neg]="paperPnl < 0">
                 ₹{{ paperPnl | number:'1.2-2' }}
               </span>
               <span class="metric-sub">Closed paper trades</span>
+            </div>
+            <div class="metric-card paper-card">
+              <span class="metric-label">Est. Charges</span>
+              <span class="metric-val neg">₹{{ paperCharges | number:'1.2-2' }}</span>
+              <span class="metric-sub">Net P&amp;L: <span [class.pos]="paperNetPnl >= 0" [class.neg]="paperNetPnl < 0">₹{{ paperNetPnl | number:'1.2-2' }}</span></span>
             </div>
             <div class="metric-card paper-card">
               <span class="metric-label">Open Positions</span>
@@ -510,7 +520,7 @@ type ScorecardRow = { strategyType: string; totalEntries: number; filled: number
     .group-label mat-icon { font-size: 13px; width: 13px; height: 13px; }
     .live-label  { color: var(--accent); }
     .paper-label { color: var(--gold, #e6b74c); }
-    .metrics-row { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 10px; }
+    .metrics-row { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 10px; }
     @media (max-width: 700px) { .metrics-row { grid-template-columns: 1fr 1fr; } }
     .metric-card { display: flex; flex-direction: column; gap: 3px; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--line); background: rgba(255,255,255,.03); }
     .live-card  { border-color: rgba(97,168,255,.2);  background: rgba(97,168,255,.03); }
@@ -749,6 +759,10 @@ export class MonitoringPageComponent implements OnInit, OnDestroy {
   get liveUnrealized(): number   { return Number(this.pnl?.unrealizedPnl ?? 0); }
   get liveTotal(): number        { return Number(this.pnl?.totalPnl ?? 0); }
   get paperPnl(): number         { return Number((this.tradingStatus as any)?.paperPnl ?? 0); }
+  get liveCharges(): number      { return Number((this.tradingStatus as any)?.liveEstimatedCharges ?? 0); }
+  get paperCharges(): number     { return Number((this.tradingStatus as any)?.paperEstimatedCharges ?? 0); }
+  get liveNetPnl(): number       { return Number((this.tradingStatus as any)?.liveNetPnl ?? this.liveTotal); }
+  get paperNetPnl(): number      { return Number((this.tradingStatus as any)?.paperNetPnl ?? this.paperPnl); }
   get effectiveLossLimit(): number { return this.dailyLossLimit + (this.runtime?.dailyLossExtension ?? 0); }
   get lossUsedPercent(): number {
     if (this.effectiveLossLimit <= 0) return 0;

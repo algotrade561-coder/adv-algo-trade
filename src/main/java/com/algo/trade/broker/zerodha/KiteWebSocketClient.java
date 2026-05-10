@@ -60,6 +60,7 @@ public class KiteWebSocketClient {
     private final KiteCredentialResolver credentialResolver;
     private final com.algo.trade.risk.MarketGuard marketGuard;
     private final com.algo.trade.notification.TelegramAlertService telegramAlertService;
+    private final com.algo.trade.marketdata.TickVolumeProfileService tickVolumeProfileService;
     
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.algo.trade.commodity.OilPriceTracker oilPriceTracker;
@@ -108,7 +109,8 @@ public class KiteWebSocketClient {
                                 KiteAccessTokenStore tokenStore,
                                 KiteCredentialResolver credentialResolver,
                                 com.algo.trade.risk.MarketGuard marketGuard,
-                                com.algo.trade.notification.TelegramAlertService telegramAlertService) {
+                                com.algo.trade.notification.TelegramAlertService telegramAlertService,
+                                com.algo.trade.marketdata.TickVolumeProfileService tickVolumeProfileService) {
         this.liveInstrumentCache = liveInstrumentCache;
         this.candleBuilder = candleBuilder;
         this.eventPublisher = eventPublisher;
@@ -116,6 +118,7 @@ public class KiteWebSocketClient {
         this.credentialResolver = credentialResolver;
         this.marketGuard = marketGuard;
         this.telegramAlertService = telegramAlertService;
+        this.tickVolumeProfileService = tickVolumeProfileService;
     }
 
     // ── Public API ────────────────────────────────────────────────────────────
@@ -340,6 +343,7 @@ public class KiteWebSocketClient {
             lastConnectTime = Instant.now();
             lastTickTime = Instant.now();
             candleBuilder.clearOpenCandles();
+            tickVolumeProfileService.reset(); // cumulative volumes restart after reconnect
             log.info("[WS] Connected to Kite WebSocket");
             if (!subscribedTokens.isEmpty()) {
                 sendSubscribe(ws, subscribedTokens);
@@ -508,6 +512,11 @@ public class KiteWebSocketClient {
                     // Feed circuit breaker: open price from packet, current = ltp
                     if (open > 0) {
                         marketGuard.updateIndexPrice(open, ltp);
+                    }
+                    // Feed tick-based VPVR — volume from Kite is cumulative daily, use as-is
+                    // (TickVolumeProfileService handles delta internally via bucket accumulation)
+                    if (volume > 0) {
+                        tickVolumeProfileService.onTick(token, ltp, volume);
                     }
                     // Also feed to candle builder for underlying candles
                     candleBuilder.onTick(token, ltp, volume, oi, now);

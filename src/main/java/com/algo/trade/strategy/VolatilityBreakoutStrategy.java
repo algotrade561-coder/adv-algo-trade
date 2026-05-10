@@ -2,6 +2,7 @@ package com.algo.trade.strategy;
 
 import com.algo.trade.config.GlobalConfigService;
 import com.algo.trade.domain.*;
+import com.algo.trade.marketdata.TickVolumeProfileService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -28,16 +29,21 @@ public class VolatilityBreakoutStrategy {
     private static final double SQUEEZE_THRESHOLD = 1.5;
     private static final int BREAKOUT_CONFIRMATION_CANDLES = 2;
     private static final ZoneId IST = ZoneId.of("Asia/Kolkata");
+    private static final double MIN_POC_DISTANCE_PCT = 0.3;
 
     private final GlobalConfigService globalConfigService;
+    private final TickVolumeProfileService tickVolumeProfileService;
 
-    public VolatilityBreakoutStrategy(GlobalConfigService globalConfigService) {
+    public VolatilityBreakoutStrategy(GlobalConfigService globalConfigService,
+                                       TickVolumeProfileService tickVolumeProfileService) {
         this.globalConfigService = globalConfigService;
+        this.tickVolumeProfileService = tickVolumeProfileService;
     }
 
-    /** Backtest/test constructor — no GlobalConfigService, uses hardcoded defaults. */
+    /** Backtest/test constructor — no services, uses hardcoded defaults. */
     public VolatilityBreakoutStrategy() {
         this.globalConfigService = null;
+        this.tickVolumeProfileService = null;
     }
 
     public Optional<StrategyDecision> evaluate(List<Candle> candles15m, double ivRank,
@@ -103,6 +109,27 @@ public class VolatilityBreakoutStrategy {
         }
 
         double latestClose = candles15m.getLast().close().doubleValue();
+
+        // VPVR filter: skip if price is near POC (high-volume node — breakout will stall)
+        if (tickVolumeProfileService != null) {
+            long spotToken = IndexType.from(underlying).spotToken();
+            TickVolumeProfileService.VolumeProfile vp = tickVolumeProfileService.getProfile(spotToken);
+            if (vp != null) {
+                double distPct = vp.distFromPocPct(latestClose);
+                if (distPct < MIN_POC_DISTANCE_PCT) {
+                    log.debug("[VolBreakout] Skipped: price near POC={} dist={}%",
+                            String.format("%.0f", vp.poc()), String.format("%.2f", distPct));
+                    return new StrategyDiagnostics.WithSignal(Optional.empty(),
+                            new StrategyDiagnostics("breakoutIntoHVN(poc=" + String.format("%.0f", vp.poc())
+                                    + ",dist=" + String.format("%.2f", distPct) + "%)",
+                                    null, null, null, null, upper, lower, bandwidth, true));
+                }
+                log.debug("[VolBreakout] VPVR: poc={} vah={} val={} dist={}% inLVN={}",
+                        String.format("%.0f", vp.poc()), String.format("%.0f", vp.vah()),
+                        String.format("%.0f", vp.val()), String.format("%.2f", distPct), !vp.inValueArea(latestClose));
+            }
+        }
+
         log.info("[VolBreakout] Confirmed breakout: {} bandwidth={}% ivRank={} close={}",
                 direction, String.format("%.2f", bandwidth), String.format("%.0f", ivRank), latestClose);
 

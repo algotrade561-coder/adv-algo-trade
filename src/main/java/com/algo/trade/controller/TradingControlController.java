@@ -198,6 +198,32 @@ public class TradingControlController {
         result.put("paperPnl", paperClosedPnl.add(paperUnrealizedPnl));
         result.put("paperClosedPnl", paperClosedPnl);
         result.put("paperUnrealizedPnl", paperUnrealizedPnl);
+
+        // Estimated trading charges (Zerodha F&O Options fee structure)
+        BigDecimal liveCharges = BigDecimal.ZERO;
+        BigDecimal paperCharges = BigDecimal.ZERO;
+        for (var t : todayTrades) {
+            if (t.getStatus() == com.algo.trade.domain.TradeStatus.CLOSED
+                    && t.getEntryPrice() != null && t.getExitPrice() != null && t.getQuantity() > 0) {
+                BigDecimal charges = com.algo.trade.util.ZerodhaChargesCalculator.estimateCharges(
+                        t.getEntryPrice(), t.getExitPrice(), t.getQuantity());
+                if (t.isPaperTrade()) paperCharges = paperCharges.add(charges);
+                else liveCharges = liveCharges.add(charges);
+            }
+        }
+        // Also estimate charges for open trades (using entry price as proxy for exit)
+        for (var t : allOpenTrades) {
+            if (t.getEntryPrice() != null && t.getQuantity() > 0) {
+                BigDecimal charges = com.algo.trade.util.ZerodhaChargesCalculator.estimateCharges(
+                        t.getEntryPrice(), t.getEntryPrice(), t.getQuantity());
+                if (t.isPaperTrade()) paperCharges = paperCharges.add(charges);
+                else liveCharges = liveCharges.add(charges);
+            }
+        }
+        result.put("liveEstimatedCharges", liveCharges);
+        result.put("paperEstimatedCharges", paperCharges);
+        result.put("liveNetPnl", pnl.realizedPnl().subtract(liveCharges));
+        result.put("paperNetPnl", paperClosedPnl.add(paperUnrealizedPnl).subtract(paperCharges));
         // Signal counts today
         long entrySignals = reportingService.countEntrySignalsSince(todayStart);
         long rejectedSignals = reportingService.countRejectedSignalsSince(todayStart);

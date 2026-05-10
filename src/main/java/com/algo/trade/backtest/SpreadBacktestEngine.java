@@ -715,6 +715,8 @@ public class SpreadBacktestEngine {
                     OrderSide.BUY, OrderSide.BUY,
                     qty, expiry);
 
+            case PREMIUM_SCALP -> buildIronButterfly(atm, spreadStrikes, interval, qty, expiry);
+
             default -> List.of();
         };
     }
@@ -760,6 +762,23 @@ public class SpreadBacktestEngine {
         return List.of(
                 new SpreadLeg(syntheticInstrumentKey(sellCe, OptionType.CE), sellCe, OptionType.CE, OrderSide.SELL, qty, expiry),
                 new SpreadLeg(syntheticInstrumentKey(sellPe, OptionType.PE), sellPe, OptionType.PE, OrderSide.SELL, qty, expiry),
+                new SpreadLeg(syntheticInstrumentKey(buyPe, OptionType.PE), buyPe, OptionType.PE, OrderSide.BUY, qty, expiry));
+    }
+
+    /**
+     * Iron Butterfly for Premium Scalp: Sell ATM CE + PE, Buy OTM CE + PE as hedge.
+     * 4 legs: SELL ATM CE, SELL ATM PE, BUY CE at ATM+hedge, BUY PE at ATM-hedge.
+     */
+    private List<SpreadLeg> buildIronButterfly(int atm, int hedgeStrikes, int interval, int qty, LocalDate expiry) {
+        // Hedge wings at spreadStrikes × interval away (default 2 × 50 = 100 points for NIFTY)
+        // For meaningful protection, use at least 500 points (10 strikes)
+        int hedgeDistance = Math.max(hedgeStrikes, 10) * interval;
+        int buyCe = atm + hedgeDistance;
+        int buyPe = atm - hedgeDistance;
+        return List.of(
+                new SpreadLeg(syntheticInstrumentKey(atm, OptionType.CE), atm, OptionType.CE, OrderSide.SELL, qty, expiry),
+                new SpreadLeg(syntheticInstrumentKey(atm, OptionType.PE), atm, OptionType.PE, OrderSide.SELL, qty, expiry),
+                new SpreadLeg(syntheticInstrumentKey(buyCe, OptionType.CE), buyCe, OptionType.CE, OrderSide.BUY, qty, expiry),
                 new SpreadLeg(syntheticInstrumentKey(buyPe, OptionType.PE), buyPe, OptionType.PE, OrderSide.BUY, qty, expiry));
     }
 
