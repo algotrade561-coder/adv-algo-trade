@@ -1,5 +1,6 @@
 package com.algo.trade.strategy;
 
+import com.algo.trade.commodity.CrudeContext;
 import com.algo.trade.domain.Candle;
 import com.algo.trade.domain.OptionType;
 import com.algo.trade.domain.Quote;
@@ -71,7 +72,10 @@ public record SignalRecordContext(
         // Execution context
         String firstFailedFilter,
         boolean executed,
-        String executionStage
+        String executionStage,
+
+        // Crude oil snapshot (observational — not used in entry filters)
+        CrudeContext crudeContext
 ) {
     /**
      * Builder for convenience — most fields are optional.
@@ -108,6 +112,7 @@ public record SignalRecordContext(
         private String firstFailedFilter;
         private boolean executed;
         private String executionStage;
+        private CrudeContext crudeContext;
 
         public Builder strategyType(String v) { this.strategyType = v; return this; }
         public Builder underlying(UnderlyingSymbol v) { this.underlying = v; return this; }
@@ -150,6 +155,7 @@ public record SignalRecordContext(
         public Builder firstFailedFilter(String v) { this.firstFailedFilter = v; return this; }
         public Builder executed(boolean v) { this.executed = v; return this; }
         public Builder executionStage(String v) { this.executionStage = v; return this; }
+        public Builder crudeContext(CrudeContext v) { this.crudeContext = v; return this; }
         public Builder diagnostics(StrategyDiagnostics d) {
             if (d == null) return this;
             this.scalpEma9 = d.ema9(); this.scalpEma21 = d.ema21();
@@ -171,7 +177,7 @@ public record SignalRecordContext(
                     delta, gamma, theta, vega, realizedVol5d, ivSkew,
                     scalpEma9, scalpEma21, scalpCrossType, scalpConfirmCount,
                     bbUpperBand, bbLowerBand, bbBandwidth, bbSqueeze, ivRank,
-                    firstFailedFilter, executed, executionStage);
+                    firstFailedFilter, executed, executionStage, crudeContext);
         }
     }
 }

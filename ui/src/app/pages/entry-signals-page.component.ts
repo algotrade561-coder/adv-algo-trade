@@ -331,7 +331,7 @@ import { catchError, of } from 'rxjs';
 })
 export class EntrySignalsPageComponent implements OnInit {
   readonly signalOpts = ['BUY_CE', 'BUY_PE'];
-  readonly strategyOpts = ['DIRECTIONAL_BUY','SCALPING','VOLATILITY_BREAKOUT','EVENT_DRIVEN_BUY','GAP_AND_GO','REVERSAL_BUY','OI_SHIFT_TRAP','EXPIRY_GAMMA','EXPIRY_REVERSAL','MOMENTUM','BULL_CALL_SPREAD','BEAR_PUT_SPREAD','LONG_STRADDLE','LONG_STRANGLE','SHORT_STRADDLE','SHORT_STRANGLE','IRON_CONDOR','BUTTERFLY','CALENDAR_SPREAD','DIAGONAL_SPREAD','JADE_LIZARD','SYNTHETIC_FUTURES'];
+  strategyOpts: string[] = [];
   readonly underlyingOpts = ['NIFTY', 'BANKNIFTY', 'SENSEX'];
   readonly periodOpts = [
     { value: 'TODAY', label: 'Today' },
@@ -358,6 +358,10 @@ export class EntrySignalsPageComponent implements OnInit {
   constructor(private api: ApiService, private cd: ChangeDetectorRef) {}
 
   ngOnInit(): void {
+    this.api.getStrategyTypes().subscribe(types => {
+      this.strategyOpts = types.map(t => t.type).sort();
+      this.cd.detectChanges();
+    });
     setTimeout(() => this.applyFilters(), 0);
   }
 

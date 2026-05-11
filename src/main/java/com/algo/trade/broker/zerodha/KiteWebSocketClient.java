@@ -146,6 +146,24 @@ public class KiteWebSocketClient {
         if (ws != null) sendSubscribe(ws, tokens);
     }
 
+    /**
+     * Append additional tokens to the live subscription without resending the existing ones.
+     * Kite's WS protocol treats `subscribe` as additive, so we only send the delta to the socket
+     * but keep `subscribedTokens` complete so reconnects restore everything.
+     */
+    public synchronized void addSubscriptions(List<Long> additionalTokens) {
+        if (additionalTokens == null || additionalTokens.isEmpty()) return;
+        var existing = new java.util.LinkedHashSet<>(this.subscribedTokens);
+        var delta = additionalTokens.stream().filter(t -> t != null && t > 0 && !existing.contains(t)).toList();
+        if (delta.isEmpty()) return;
+        existing.addAll(delta);
+        this.subscribedTokens = List.copyOf(existing);
+        this.lastSubscribeTime = Instant.now();
+        this.subscribeCount++;
+        WebSocket ws = this.webSocket;
+        if (connected && ws != null) sendSubscribe(ws, delta);
+    }
+
     public void disconnect() {
         intentionalClose.set(true);
         stopHeartbeat();

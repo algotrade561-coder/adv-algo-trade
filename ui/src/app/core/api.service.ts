@@ -216,6 +216,7 @@ export class ApiService {
 
   // ── Strategy management ───────────────────────────────────────────────────
   getStrategies(): Observable<StrategyDto[]> { return this.http.get<StrategyDto[]>(`${this.base}/strategies`); }
+  getStrategyTypes(): Observable<Array<{type: string; displayName: string}>> { return this.http.get<Array<{type: string; displayName: string}>>(`${this.base}/strategies/types`); }
   getStrategiesByUnderlying(underlying: string): Observable<StrategyDto[]> { return this.http.get<StrategyDto[]>(`${this.base}/strategies/by-underlying/${underlying}`); }
   enableStrategy(type: string, underlying: string): Observable<any> { return this.http.post(`${this.base}/strategies/${type}/enable?underlying=${underlying}`, {}); }
   disableStrategy(type: string, underlying: string): Observable<any> { return this.http.post(`${this.base}/strategies/${type}/disable?underlying=${underlying}`, {}); }

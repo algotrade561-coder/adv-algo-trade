@@ -48,6 +48,7 @@ public class StrategyExecutionPipeline {
     private final InstrumentCache instrumentCache;
     private final TradingProperties properties;
     private final com.algo.trade.underlying.UnderlyingConfigService underlyingConfigService;
+    private final com.algo.trade.commodity.CrudeContextProvider crudeContextProvider;
 
     public StrategyExecutionPipeline(
             GlobalConfigService globalConfigService,
@@ -62,7 +63,8 @@ public class StrategyExecutionPipeline {
             EmaIndicator emaIndicator,
             InstrumentCache instrumentCache,
             TradingProperties properties,
-            com.algo.trade.underlying.UnderlyingConfigService underlyingConfigService
+            com.algo.trade.underlying.UnderlyingConfigService underlyingConfigService,
+            com.algo.trade.commodity.CrudeContextProvider crudeContextProvider
     ) {
         this.globalConfigService = globalConfigService;
         this.executionEngine = executionEngine;
@@ -77,6 +79,7 @@ public class StrategyExecutionPipeline {
         this.instrumentCache = instrumentCache;
         this.properties = properties;
         this.underlyingConfigService = underlyingConfigService;
+        this.crudeContextProvider = crudeContextProvider;
     }
 
     // ── ML shadow recording ────────────────────────────────────────────────────
@@ -259,6 +262,7 @@ public class StrategyExecutionPipeline {
                 .executed(executed)
                 .executionStage(executed ? "EXECUTED" : "NOT_EXECUTED")
                 .diagnostics(diag)
+                .crudeContext(crudeContextProvider.current())
                 .build());
 
         return executed;
@@ -350,6 +354,7 @@ public class StrategyExecutionPipeline {
                     .firstFailedFilter(diag.firstFailedFilter())
                     .executionStage("NO_TRADE")
                     .diagnostics(diag)
+                    .crudeContext(crudeContextProvider.current())
                     .build());
         }
     }

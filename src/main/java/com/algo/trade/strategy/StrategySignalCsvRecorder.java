@@ -57,7 +57,13 @@ public class StrategySignalCsvRecorder {
             "confidenceScore", "firstFailedFilter", "reasons",
             "rsiValue", "atrValue", "ema9Ema21Gap", "bidAskSpread", "vixLevel", "daysToExpiry",
             "delta", "gamma", "theta", "vega", "realizedVol5d", "ivRvSpread", "ivSkew",
-            "oiPriceActionConfirmed"
+            "oiPriceActionConfirmed",
+            // ── Crude oil snapshot (observational; not wired into entry logic) ─────────
+            "crudeAvailable", "crudePriceINR", "crudePriceUSD",
+            "crudePreviousDayCloseINR", "crudeTodayOpenINR",
+            "crudeDailyChangePct", "crudeOvernightGapPct", "crudeLast30MinChangePct",
+            "crudeRegime", "crudeMomentum",
+            "crudeOvernightShock", "crudeIntradayShock"
     ) + System.lineSeparator();
 
     private static final String CANDLES_HEADER = String.join(",",
@@ -177,7 +183,20 @@ public class StrategySignalCsvRecorder {
                             ? quote.impliedVolatility().map(iv -> iv.doubleValue() - ctx.realizedVol5d()).orElse(null)
                             : null),
                     csv(ctx.ivSkew()),
-                    csv(resolveOiPriceActionForContext(ctx))
+                    csv(resolveOiPriceActionForContext(ctx)),
+                    // ── Crude oil columns ────────────────────────────────────────────
+                    csv(ctx.crudeContext() != null && ctx.crudeContext().available()),
+                    csv(ctx.crudeContext() != null ? ctx.crudeContext().priceINR() : null),
+                    csv(ctx.crudeContext() != null ? ctx.crudeContext().priceUSD() : null),
+                    csv(ctx.crudeContext() != null ? ctx.crudeContext().previousDayCloseINR() : null),
+                    csv(ctx.crudeContext() != null ? ctx.crudeContext().todayOpenINR() : null),
+                    csv(ctx.crudeContext() != null ? ctx.crudeContext().dailyChangePct() : null),
+                    csv(ctx.crudeContext() != null ? ctx.crudeContext().overnightGapPct() : null),
+                    csv(ctx.crudeContext() != null ? ctx.crudeContext().last30MinChangePct() : null),
+                    csv(ctx.crudeContext() != null ? ctx.crudeContext().regime() : null),
+                    csv(ctx.crudeContext() != null ? ctx.crudeContext().momentum() : null),
+                    csv(ctx.crudeContext() != null && ctx.crudeContext().overnightShock()),
+                    csv(ctx.crudeContext() != null && ctx.crudeContext().intradayShock())
             ) + System.lineSeparator();
 
             append(OUTPUT, HEADER, row);

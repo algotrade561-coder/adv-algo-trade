@@ -36,6 +36,7 @@ public class OilPriceTracker {
     // Current state
     private volatile double currentPriceINR = 0.0;
     private volatile double previousDayCloseINR = 0.0;
+    private volatile double todayOpenINR = 0.0;
     private volatile Instant lastUpdateTime;
     private volatile long instrumentToken = 0L;
     private volatile String tradingSymbol = "";
@@ -47,6 +48,11 @@ public class OilPriceTracker {
     private final double[] priceHistory = new double[20]; // Last 20 prices
     private int historyIndex = 0;
     private int historyCount = 0;
+
+    // Minute-granular samples for short-horizon shock detection (last ~30 min).
+    // Each entry: [epochMillis, priceINR]. Append-only via sampleNow(); trimmed to a 30-min window.
+    private static final long SHOCK_WINDOW_MS = 30 * 60 * 1000L;
+    private final java.util.Deque<double[]> minuteSamples = new java.util.ArrayDeque<>();
 
     /**
      * Update current oil price from WebSocket tick.
@@ -77,6 +83,27 @@ public class OilPriceTracker {
     public void setPreviousDayClose(double closeINR) {
         this.previousDayCloseINR = closeINR;
         log.info("[OilPrice] Previous day close set: ₹{}", String.format("%.0f", closeINR));
+    }
+
+    /**
+     * Set today's session open price (called at startup / market open).
+     * Used by the overnight-gap derivation in CrudeContext.
+     */
+    public void setTodayOpen(double openINR) {
+        this.todayOpenINR = openINR;
+        log.info("[OilPrice] Today open set: ₹{}", String.format("%.0f", openINR));
+    }
+
+    /**
+     * Capture the current price into the 30-minute ring. Intended for a once-per-minute scheduler.
+     */
+    public synchronized void sampleNow() {
+        if (currentPriceINR <= 0) return;
+        long nowMs = System.currentTimeMillis();
+        minuteSamples.addLast(new double[]{nowMs, currentPriceINR});
+        while (!minuteSamples.isEmpty() && nowMs - minuteSamples.peekFirst()[0] > SHOCK_WINDOW_MS) {
+            minuteSamples.pollFirst();
+        }
     }
 
     /**
@@ -159,6 +186,42 @@ public class OilPriceTracker {
      */
     public boolean isSpiking(double thresholdPct) {
         return Math.abs(getDailyChangePct()) >= thresholdPct;
+    }
+
+    /**
+     * Overnight gap = (today open − previous-day close) / previous-day close × 100.
+     * Returns 0 until both anchors are seeded.
+     */
+    public double getOvernightGapPct() {
+        if (previousDayCloseINR <= 0 || todayOpenINR <= 0) return 0.0;
+        return ((todayOpenINR - previousDayCloseINR) / previousDayCloseINR) * 100;
+    }
+
+    /**
+     * Price change over the last ~30 min, computed from the minute sampler.
+     * Returns 0 when the ring has fewer than 2 samples (cold start).
+     */
+    public synchronized double getLast30MinChangePct() {
+        if (currentPriceINR <= 0 || minuteSamples.size() < 2) return 0.0;
+        double oldest = minuteSamples.peekFirst()[1];
+        if (oldest <= 0) return 0.0;
+        return ((currentPriceINR - oldest) / oldest) * 100;
+    }
+
+    public boolean isOvernightShock(double thresholdPct) {
+        return Math.abs(getOvernightGapPct()) >= thresholdPct;
+    }
+
+    public boolean isIntradayShock(double thresholdPct) {
+        return Math.abs(getLast30MinChangePct()) >= thresholdPct;
+    }
+
+    public double getTodayOpenINR() {
+        return todayOpenINR;
+    }
+
+    public double getPreviousDayCloseINR() {
+        return previousDayCloseINR;
     }
 
     /**
