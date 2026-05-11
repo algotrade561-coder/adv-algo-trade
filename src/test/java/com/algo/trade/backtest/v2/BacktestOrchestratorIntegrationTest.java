@@ -17,12 +17,16 @@ import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
+
 /**
  * Integration test for BacktestOrchestrator.
  * Uses TestSnapshotGenerator to create synthetic data and validates the full pipeline.
+ * Requires full application context — run with: mvn test -Dintegration=true
  */
 @SpringBootTest
 @ActiveProfiles("backtest")
+@EnabledIfSystemProperty(named = "integration", matches = "true")
 class BacktestOrchestratorIntegrationTest {
 
     @Autowired

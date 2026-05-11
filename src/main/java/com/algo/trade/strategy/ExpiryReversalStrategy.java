@@ -36,8 +36,8 @@ public class ExpiryReversalStrategy {
     private static final Logger log = LoggerFactory.getLogger(ExpiryReversalStrategy.class);
     private static final int NEAR_EXPIRY_DAYS = 1;
     private static final int LOOK_BACK_CANDLES = 5;
-    /** Minimum spike % — raised from 0.50 to 0.70 to filter normal expiry volatility. */
-    private static final double MIN_SPIKE_PERCENT = 0.70;
+    /** Minimum spike % — lowered from 0.70 to 0.50 for weekly expiry tradability. */
+    private static final double MIN_SPIKE_PERCENT = 0.50;
     /** Don't fade spikes after this time — too close to close, gamma dominates. */
     private static final LocalTime CUTOFF_TIME = LocalTime.of(14, 30);
 

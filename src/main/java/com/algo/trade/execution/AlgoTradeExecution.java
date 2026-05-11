@@ -209,6 +209,10 @@ public class AlgoTradeExecution {
      *   5-min  → Scalping (EMA 9/21 crossover on 5-min candles)
      *   15-min → Volatility Breakout + Spreads + Event-Driven (use 15-min candles)
      */
+    // Debounce: skip scans for the same timeframe if one ran within 500ms
+    private final java.util.concurrent.ConcurrentHashMap<Timeframe, Instant> lastScanByTimeframe = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final long SCAN_DEBOUNCE_MS = 500;
+
     @EventListener
     public void onCandleClose(CandleClosedEvent event) {
         Timeframe tf = event.timeframe();
@@ -216,8 +220,16 @@ public class AlgoTradeExecution {
         if (tradingStateService.killSwitchEnabled()) return;
         if (tradingStateService.haltMode() == com.algo.trade.risk.HaltMode.HARD) return;
         if (!tradingStateService.running()) return;
+
+        // Debounce: skip if same timeframe scanned within 500ms
+        Instant lastScan = lastScanByTimeframe.get(tf);
+        if (lastScan != null && Instant.now().toEpochMilli() - lastScan.toEpochMilli() < SCAN_DEBOUNCE_MS) {
+            return;
+        }
+
         if (!scanInProgress.compareAndSet(false, true)) return;
         try {
+            lastScanByTimeframe.put(tf, Instant.now());
             log.info("CandleClosedEvent triggered scan: token={} tf={}", event.instrumentToken(), tf);
             runScan(tf);
         } catch (Exception ex) {
@@ -558,38 +570,8 @@ public class AlgoTradeExecution {
         List<Candle> trendCandles = candleCache.computeIfAbsent(trendTf,
                 tf -> underlyingLiveCandles(underlying, tf));
 
-        // VB theta guard: don't buy options within 3 days of expiry
-        IndexType idx = com.algo.trade.domain.IndexType.from(underlying);
-        if (type == StrategyType.VOLATILITY_BREAKOUT
-                && expiryCalendar.isNearExpiry(idx, 3)
-                && !expiryCalendar.isExpiryDay(idx)) {
-            log.debug("VB theta guard: skipping {} — {} days to expiry", underlying, expiryCalendar.daysToExpiry(idx));
-            BigDecimal vbSpotPrice = strategyCandles.isEmpty() ? BigDecimal.ZERO : strategyCandles.getLast().close();
-            String vbReason = "Theta guard: " + expiryCalendar.daysToExpiry(idx) + " days to expiry (max 3)";
-            com.algo.trade.strategy.StrategyDiagnostics thetaDiag =
-                    new com.algo.trade.strategy.StrategyDiagnostics("thetaGuard", null, null, null, null, null, null, null, null);
-            for (OptionType ot : new OptionType[]{OptionType.CE, OptionType.PE}) {
-                Instrument vbAtm = scanContextBuilder.resolveAtmInstrument(underlying, ot, vbSpotPrice).orElse(null);
-                StrategyDecisionEntity thetaNoTrade = StrategyDecisionEntity.forStrategy(
-                        type.name(), Instant.now(), underlying.name(), "NO_TRADE",
-                        ot.name(), vbSpotPrice, BigDecimal.ZERO, vbReason);
-                thetaNoTrade.setPaperTrade(config.isPaperTrading());
-                thetaNoTrade.setIvRank(ivRank);
-                thetaNoTrade.setFirstFailedFilter("thetaGuard");
-                thetaNoTrade.setExecutionStage("NO_TRADE");
-                thetaNoTrade.setExecutionReason(vbReason);
-                if (vbAtm != null) {
-                    thetaNoTrade.setSelectedInstrumentKey(vbAtm.instrumentKey());
-                    thetaNoTrade.setSelectedStrike(vbAtm.strike().orElse(null));
-                }
-                decisionRepository.save(thetaNoTrade);
-                signalCsvRecorder.recordAdditionalNoTrade(type.name(), underlying.name(), vbSpotPrice,
-                        vbReason, trendCandles, thetaDiag, ivRank,
-                        vbAtm != null ? vbAtm.instrumentKey() : null,
-                        vbAtm != null ? vbAtm.strike().orElse(null) : null);
-            }
-            return 0;
-        }
+        // VB theta guard removed — VB has its own IV rank filter (maxIvRankForBuying: 25)
+        // and maxHoldMinutes: 60 which limits theta exposure. Breakout momentum > theta decay.
 
         com.algo.trade.strategy.StrategyDiagnostics[] diagHolder =
                 {com.algo.trade.strategy.StrategyDiagnostics.NONE};
@@ -633,6 +615,10 @@ public class AlgoTradeExecution {
                 yield spreadStrategy.evaluateAndEnter(spreadCtx);
             }
             case GAP_AND_GO -> {
+                // Early exit: GAP_AND_GO only trades 09:20-09:45 — skip evaluation outside window
+                if (marketTime.isAfter(LocalTime.of(9, 45))) {
+                    yield Optional.empty();
+                }
                 evaluated[0] = true;
                 var ggResult = gapAndGoStrategy.evaluateWithDiagnostics(strategyCandles, marketTime, config, underlying);
                 diagHolder[0] = ggResult.diagnostics();
@@ -676,14 +662,70 @@ public class AlgoTradeExecution {
             default -> Optional.empty();
         };
 
-        // Spread strategies: persist signal but don't execute via pipeline
+        // Spread strategies: execute via PositionGroup system
         if (signal.isPresent() && spreadStrategyMap.containsKey(type)) {
             StrategyDecisionEntity spreadEntity = persistStrategyDecision(signal.get(), type.name(), config, ivRankSource);
-            spreadEntity.setExecutionStage("NOT_EXECUTED");
-            spreadEntity.setExecutionReason("Spread recorded — multi-leg broker execution not yet implemented");
+
+            if (config.isPaperTrading()) {
+                // Paper mode: position group already opened by evaluateAndEnter(), just record
+                spreadEntity.setExecutionStage("PAPER_FILLED");
+                spreadEntity.setExecutionReason("Spread paper trade opened via PositionGroup");
+                decisionRepository.save(spreadEntity);
+                log.info("Spread paper entry opened: type={} groupId={}", type, signal.get().selectedInstrumentKey().orElse(""));
+                return 1;
+            }
+
+            // Live mode: place broker orders for each BUY leg
+            String groupId = signal.get().selectedInstrumentKey().orElse("");
+            AbstractSpreadStrategy spreadStrat = spreadStrategyMap.get(type);
+            var activePos = spreadStrat.getActivePositions().get(groupId);
+            if (activePos == null) {
+                spreadEntity.setExecutionStage("NOT_EXECUTED");
+                spreadEntity.setExecutionReason("Position group not found after evaluateAndEnter");
+                decisionRepository.save(spreadEntity);
+                return 0;
+            }
+
+            // Place individual orders for each leg
+            boolean allOrdersPlaced = true;
+            List<String> orderDetails = new java.util.ArrayList<>();
+            for (var leg : activePos.legs()) {
+                try {
+                    com.algo.trade.domain.OrderSide orderSide = leg.side();
+                    com.algo.trade.domain.OrderRequest orderRequest = new com.algo.trade.domain.OrderRequest(
+                            "SPREAD-" + groupId + "-" + leg.instrumentKey().hashCode(),
+                            leg.instrumentKey(),
+                            orderSide,
+                            com.algo.trade.domain.OrderType.MARKET,
+                            com.algo.trade.domain.ProductType.MIS,
+                            leg.quantity(),
+                            Optional.empty(),
+                            "spread-" + type.name().toLowerCase()
+                    );
+                    Optional<com.algo.trade.domain.OrderResponse> response = executionEngine.placeSpreadLegOrder(orderRequest);
+                    if (response.isPresent()) {
+                        orderDetails.add(leg.instrumentKey() + ":" + orderSide + "→" +
+                                response.get().status().name());
+                    } else {
+                        allOrdersPlaced = false;
+                        orderDetails.add(leg.instrumentKey() + ":" + orderSide + "→FAILED");
+                    }
+                    log.info("Spread leg order placed: group={}, instrument={}, side={}, success={}",
+                            groupId, leg.instrumentKey(), orderSide, response.isPresent());
+                } catch (Exception ex) {
+                    log.error("Spread leg order FAILED: group={}, instrument={}, side={}, error={}",
+                            groupId, leg.instrumentKey(), leg.side(), ex.getMessage());
+                    allOrdersPlaced = false;
+                    orderDetails.add(leg.instrumentKey() + ":" + leg.side() + "→FAILED:" + ex.getMessage());
+                }
+            }
+
+            spreadEntity.setExecutionStage(allOrdersPlaced ? "FILLED" : "PARTIAL");
+            spreadEntity.setExecutionReason("Spread live orders: " + String.join(", ", orderDetails));
             decisionRepository.save(spreadEntity);
-            log.info("Spread entry recorded: type={} groupId={}", type, signal.get().selectedInstrumentKey().orElse(""));
-            return 0;
+            log.info("Spread live entry: type={}, groupId={}, allPlaced={}, details={}",
+                    type, groupId, allOrdersPlaced, orderDetails);
+            return allOrdersPlaced ? 1 : 0;
         }
 
         // All non-spread strategies: unified pipeline post-processing

@@ -26,7 +26,31 @@ public class AdvancedAlgoTradeApplication {
     public static void main(String[] args) {
         TimeZone.setDefault(TimeZone.getTimeZone("Asia/Kolkata"));
         System.setProperty("user.timezone", "Asia/Kolkata");
+        log.info("=== ADV-ALGO-TRADE STARTING === build={}, java={}, os={}",
+                AdvancedAlgoTradeApplication.class.getPackage().getImplementationVersion(),
+                System.getProperty("java.version"),
+                System.getProperty("os.name") + " " + System.getProperty("os.arch"));
+        // H2 stale lock cleanup — prevents startup crash after unclean shutdown
+        cleanStaleLockFiles();
         SpringApplication.run(AdvancedAlgoTradeApplication.class, args);
+    }
+
+    private static void cleanStaleLockFiles() {
+        java.nio.file.Path dataDir = java.nio.file.Path.of("data");
+        if (!java.nio.file.Files.isDirectory(dataDir)) return;
+        try (var files = java.nio.file.Files.list(dataDir)) {
+            files.filter(p -> p.getFileName().toString().endsWith(".lock.db"))
+                    .forEach(lockFile -> {
+                        try {
+                            java.nio.file.Files.deleteIfExists(lockFile);
+                            log.info("Deleted stale H2 lock file: {}", lockFile);
+                        } catch (Exception e) {
+                            log.warn("Could not delete lock file {}: {}", lockFile, e.getMessage());
+                        }
+                    });
+        } catch (Exception e) {
+            log.debug("Lock file cleanup skipped: {}", e.getMessage());
+        }
     }
 
     @Bean

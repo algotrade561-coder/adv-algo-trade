@@ -16,12 +16,16 @@ import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
+
 /**
  * Integration test for individual StrategyAdapters.
  * Validates that each adapter can evaluate entry/exit signals against synthetic data.
+ * Requires full application context — run with: mvn test -Dintegration=true
  */
 @SpringBootTest
 @ActiveProfiles("backtest")
+@EnabledIfSystemProperty(named = "integration", matches = "true")
 class StrategyAdapterIntegrationTest {
 
     @Autowired

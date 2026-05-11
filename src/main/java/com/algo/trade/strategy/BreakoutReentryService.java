@@ -95,6 +95,7 @@ public class BreakoutReentryService {
     private final MarketDataService marketDataService;
     private final LiveCandleBuilder liveCandleBuilder;
     private final VwapIndicator vwapIndicator;
+    private final com.algo.trade.persistence.StrategyDecisionRepository decisionRepository;
     private final TickVolumeProfileService tickVolumeProfileService;
 
     // ── State ──
@@ -115,7 +116,8 @@ public class BreakoutReentryService {
                                    MarketDataService marketDataService,
                                    LiveCandleBuilder liveCandleBuilder,
                                    VwapIndicator vwapIndicator,
-                                   TickVolumeProfileService tickVolumeProfileService) {
+                                   TickVolumeProfileService tickVolumeProfileService,
+                                   com.algo.trade.persistence.StrategyDecisionRepository decisionRepository) {
         this.tradeRepository = tradeRepository;
         this.strategyConfigService = strategyConfigService;
         this.instrumentCache = instrumentCache;
@@ -123,6 +125,7 @@ public class BreakoutReentryService {
         this.liveCandleBuilder = liveCandleBuilder;
         this.vwapIndicator = vwapIndicator;
         this.tickVolumeProfileService = tickVolumeProfileService;
+        this.decisionRepository = decisionRepository;
     }
 
     @PostConstruct
@@ -227,7 +230,10 @@ public class BreakoutReentryService {
 
     private void evaluateEntry(Candle candle) {
         List<Candle> candles5m = liveCandleBuilder.getHistory(NIFTY_SPOT_TOKEN, Timeframe.FIVE_MINUTE);
-        if (candles5m.size() < BB_PERIOD + 5) return;
+        if (candles5m.size() < BB_PERIOD + 5) {
+            log.info("[BreakoutReentry] Skipped: insufficient 5m candles ({}/{})", candles5m.size(), BB_PERIOD + 5);
+            return;
+        }
 
         BigDecimal spotPrice = candle.close();
 
@@ -356,6 +362,19 @@ public class BreakoutReentryService {
         activeTradeId = tradeId;
         if (optionType == OptionType.CE) ceEntriesToday++;
         else peEntriesToday++;
+
+        // Record entry signal for reports
+        com.algo.trade.persistence.StrategyDecisionEntity decisionEntity =
+                com.algo.trade.persistence.StrategyDecisionEntity.forStrategy(
+                        StrategyType.BREAKOUT_REENTRY.name(), Instant.now(), UNDERLYING,
+                        "BUY_" + optionType.name(), optionType.name(),
+                        BigDecimal.valueOf(spot), BigDecimal.valueOf(70), reason);
+        decisionEntity.setOptionPrice(premium);
+        decisionEntity.setSelectedInstrumentKey(inst.get().instrumentKey());
+        decisionEntity.setPaperTrade(true);
+        decisionEntity.setExecutionStage("PAPER_FILLED");
+        decisionEntity.setExecutionReason("Breakout re-entry paper trade opened");
+        decisionRepository.save(decisionEntity);
 
         log.info("[BreakoutReentry] {} opened: {} strike={}, premium=₹{}, ROC={}%, squeeze={}",
                 isReentry ? "Re-entry" : "Fresh entry", optionType, atmStrike, premium,
@@ -555,8 +574,12 @@ public class BreakoutReentryService {
     // ── Helpers ─────────────────────────────────────────────────────────────
 
     private boolean isEnabled() {
-        StrategyConfig config = strategyConfigService.getConfig(StrategyType.BREAKOUT_REENTRY, UNDERLYING);
-        return config != null && config.isEnabled() && config.isPaperTrading();
+        try {
+            StrategyConfig config = strategyConfigService.getConfig(StrategyType.BREAKOUT_REENTRY, UNDERLYING);
+            return config != null && config.isEnabled() && config.isPaperTrading();
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     private void resetDay(LocalDate today) {

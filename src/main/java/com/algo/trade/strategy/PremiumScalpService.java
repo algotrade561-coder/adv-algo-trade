@@ -74,6 +74,7 @@ public class PremiumScalpService {
     private final LiveCandleBuilder liveCandleBuilder;
     private final RangeBoundDetector rangeBoundDetector;
     private final VwapIndicator vwapIndicator;
+    private final com.algo.trade.persistence.StrategyDecisionRepository decisionRepository;
 
     // ── State ──
     private volatile String sellCeTradeId = null;
@@ -94,7 +95,8 @@ public class PremiumScalpService {
                                 MarketDataService marketDataService,
                                 LiveCandleBuilder liveCandleBuilder,
                                 RangeBoundDetector rangeBoundDetector,
-                                VwapIndicator vwapIndicator) {
+                                VwapIndicator vwapIndicator,
+                                com.algo.trade.persistence.StrategyDecisionRepository decisionRepository) {
         this.properties = properties;
         this.tradeRepository = tradeRepository;
         this.strategyConfigService = strategyConfigService;
@@ -103,6 +105,7 @@ public class PremiumScalpService {
         this.liveCandleBuilder = liveCandleBuilder;
         this.rangeBoundDetector = rangeBoundDetector;
         this.vwapIndicator = vwapIndicator;
+        this.decisionRepository = decisionRepository;
     }
 
     // ── Startup Recovery ────────────────────────────────────────────────────
@@ -151,28 +154,39 @@ public class PremiumScalpService {
     // ── Event-Driven Scalp Trigger (1-min candle close) ─────────────────────
 
     /**
-     * Primary scalp trigger — fires on every 1-minute candle close from WebSocket.
-     * This replaces the 30-second polling for scalp entry decisions.
-     * Synchronized with actual market data, not wall clock.
+     * Primary scalp trigger — fires on 5-minute candle close from WebSocket.
+     * Uses the candle body (close - open) as the momentum signal.
+     * A strong 5-min candle body > 0.15% of spot = confirmed directional move.
      */
     @EventListener
     public void onCandleClose(CandleClosedEvent event) {
-        if (event.timeframe() != Timeframe.ONE_MINUTE) return;
         if (event.instrumentToken() != NIFTY_SPOT_TOKEN) return;
         if (!isEnabled()) return;
 
         LocalTime now = LocalTime.now(IST);
         if (now.isBefore(BUY_SCALP_START) || now.isAfter(BUY_SCALP_END)) return;
 
-        // Use the closed candle's close price as spot
-        BigDecimal spotPrice = event.candle().close();
-        if (spotPrice.signum() == 0) return;
+        // Use 5-min candle close for ENTRY decisions (confirmed move)
+        if (event.timeframe() == Timeframe.FIVE_MINUTE) {
+            Candle candle = event.candle();
+            BigDecimal body = candle.close().subtract(candle.open());
+            BigDecimal range = candle.high().subtract(candle.low());
+            double bodyPercent = candle.open().signum() > 0
+                    ? body.abs().divide(candle.open(), MC).doubleValue() * 100 : 0;
 
-        // Evaluate scalp entry on candle close
-        evaluateScalpEntry(spotPrice);
+            // Strong candle: body > 0.15% AND body > 60% of range (not a doji)
+            boolean strongCandle = bodyPercent >= MIN_SPOT_MOVE_FOR_SCALP
+                    && range.signum() > 0
+                    && body.abs().doubleValue() / range.doubleValue() > 0.6;
 
-        // Also check active scalp exit on every candle close
-        if (activeBuyTradeId != null) {
+            if (strongCandle) {
+                boolean bullish = body.signum() > 0;
+                evaluateScalpEntry(candle.close(), bullish, bodyPercent);
+            }
+        }
+
+        // Use 1-min candle close for EXIT checks (faster SL response)
+        if (event.timeframe() == Timeframe.ONE_MINUTE && activeBuyTradeId != null) {
             checkScalpExit();
         }
     }
@@ -228,45 +242,35 @@ public class PremiumScalpService {
 
     // ── Scalp Entry Logic (with VWAP + RangeBound filters) ──────────────────
 
-    private void evaluateScalpEntry(BigDecimal spotPrice) {
+    private void evaluateScalpEntry(BigDecimal spotPrice, boolean bullish, double movePercent) {
         // Already in a scalp — wait for exit
         if (activeBuyTradeId != null) return;
 
         // Cooldown
-        if (Instant.now().isBefore(lastScalpTime.plusSeconds(COOLDOWN_SECONDS))) return;
+        if (Instant.now().isBefore(lastScalpTime.plusSeconds(COOLDOWN_SECONDS))) {
+            log.debug("[PremiumScalp] Scalp skipped: cooldown active");
+            return;
+        }
 
         // Max scalps
         if (scalpsToday >= MAX_SCALPS_PER_DAY) return;
 
-        // Spot move check
-        if (lastSpotPrice.signum() == 0) {
-            lastSpotPrice = spotPrice;
-            return;
-        }
-
-        double movePercent = spotPrice.subtract(lastSpotPrice)
-                .divide(lastSpotPrice, MC).doubleValue() * 100;
-        lastSpotPrice = spotPrice;
-
-        if (Math.abs(movePercent) < MIN_SPOT_MOVE_FOR_SCALP) return;
-
         // ── FILTER 1: RangeBound check — skip scalps in choppy market ──
         List<Candle> candles1m = liveCandleBuilder.getHistory(NIFTY_SPOT_TOKEN, Timeframe.ONE_MINUTE);
-        if (rangeBoundDetector.isRangeBound(candles1m)) {
-            log.debug("[PremiumScalp] Scalp skipped: market is range-bound (choppy)");
+        if (candles1m.size() >= 34 && rangeBoundDetector.isRangeBound(candles1m)) {
+            log.info("[PremiumScalp] Scalp skipped: market is range-bound (choppy)");
             return;
         }
 
         // ── FILTER 2: VWAP direction — only buy CE above VWAP, PE below VWAP ──
-        boolean bullish = movePercent > 0;
         BigDecimal vwap = vwapIndicator.calculate(candles1m);
         if (vwap.signum() > 0) {
             if (bullish && spotPrice.compareTo(vwap) < 0) {
-                log.debug("[PremiumScalp] CE scalp skipped: spot {} below VWAP {}", spotPrice, vwap);
+                log.info("[PremiumScalp] CE scalp skipped: spot {} below VWAP {}", spotPrice, vwap);
                 return;
             }
             if (!bullish && spotPrice.compareTo(vwap) > 0) {
-                log.debug("[PremiumScalp] PE scalp skipped: spot {} above VWAP {}", spotPrice, vwap);
+                log.info("[PremiumScalp] PE scalp skipped: spot {} above VWAP {}", spotPrice, vwap);
                 return;
             }
         }
@@ -279,10 +283,16 @@ public class PremiumScalpService {
         // Resolve instrument and get price
         int atmStrike = roundToStrike(spotPrice.doubleValue(), 50);
         Optional<Instrument> inst = resolveOption(atmStrike, optionType);
-        if (inst.isEmpty()) return;
+        if (inst.isEmpty()) {
+            log.warn("[PremiumScalp] Cannot resolve option: strike={}, type={}", atmStrike, optionType);
+            return;
+        }
 
         BigDecimal premium = getLastPrice(inst.get().instrumentKey());
-        if (premium.signum() <= 0 || premium.doubleValue() < 5) return;
+        if (premium.signum() <= 0 || premium.doubleValue() < 5) {
+            log.debug("[PremiumScalp] Scalp skipped: premium too low ({})", premium);
+            return;
+        }
 
         // Open buy scalp
         activeBuyTradeId = openPaperTrade(inst.get().instrumentKey(),
@@ -296,6 +306,13 @@ public class PremiumScalpService {
 
         scalpsToday++;
         lastScalpTime = Instant.now();
+
+        // Record entry signal for reports
+        recordDecision("BUY_" + optionType.name(), optionType.name(), spotPrice, premium,
+                inst.get().instrumentKey(),
+                "Scalp #" + scalpsToday + ": move=" + String.format("%.3f%%", movePercent) + ", vwap=" + vwap.intValue(),
+                true);
+
         log.info("[PremiumScalp] Buy scalp #{} opened: {} strike={}, premium=₹{}, move={}%, vwap={}",
                 scalpsToday, optionType, atmStrike, premium,
                 String.format("%.3f", movePercent), vwap.intValue());
@@ -440,8 +457,13 @@ public class PremiumScalpService {
     // ── Helpers ─────────────────────────────────────────────────────────────
 
     private boolean isEnabled() {
-        StrategyConfig config = strategyConfigService.getConfig(StrategyType.PREMIUM_SCALP, UNDERLYING);
-        return config != null && config.isEnabled() && config.isPaperTrading();
+        try {
+            StrategyConfig config = strategyConfigService.getConfig(StrategyType.PREMIUM_SCALP, UNDERLYING);
+            return config != null && config.isEnabled() && config.isPaperTrading();
+        } catch (Exception e) {
+            // Config may not exist yet on first run — will be auto-created by StrategyConfigService
+            return false;
+        }
     }
 
     private void resetDay(LocalDate today) {
@@ -508,6 +530,21 @@ public class PremiumScalpService {
 
     private int roundToStrike(double spot, int interval) {
         return (int) (Math.round(spot / interval) * interval);
+    }
+
+    /** Record a strategy decision for the reports screen. */
+    private void recordDecision(String signalType, String optionType, BigDecimal spotPrice,
+                                 BigDecimal optionPrice, String instrumentKey, String reason, boolean executed) {
+        com.algo.trade.persistence.StrategyDecisionEntity entity =
+                com.algo.trade.persistence.StrategyDecisionEntity.forStrategy(
+                        StrategyType.PREMIUM_SCALP.name(), Instant.now(), UNDERLYING,
+                        signalType, optionType, spotPrice, BigDecimal.valueOf(70), reason);
+        entity.setOptionPrice(optionPrice);
+        entity.setSelectedInstrumentKey(instrumentKey);
+        entity.setPaperTrade(true);
+        entity.setExecutionStage(executed ? "PAPER_FILLED" : "REJECTED");
+        entity.setExecutionReason(executed ? "Paper scalp opened" : reason);
+        decisionRepository.save(entity);
     }
 
     // ── Public API for monitoring ───────────────────────────────────────────

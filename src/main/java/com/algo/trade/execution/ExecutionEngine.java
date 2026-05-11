@@ -1169,4 +1169,22 @@ public class ExecutionEngine {
         ZoneId zoneId = properties.timezone();
         return LocalDate.ofInstant(clock.instant(), zoneId).plusDays(1).atStartOfDay(zoneId).toInstant();
     }
+
+    /**
+     * Place a broker order for a spread leg. Used by AlgoTradeExecution for live spread execution.
+     *
+     * @return OrderResponse from broker, or empty if order failed
+     */
+    public Optional<OrderResponse> placeSpreadLegOrder(OrderRequest request) {
+        try {
+            OrderResponse response = brokerClient.placeOrder(request);
+            log.info("Spread leg order placed: clientOrderId={}, instrument={}, side={}, status={}",
+                    request.clientOrderId(), request.instrumentKey(), request.side(), response.status());
+            return Optional.of(response);
+        } catch (Exception ex) {
+            log.error("Spread leg order failed: instrument={}, side={}, error={}",
+                    request.instrumentKey(), request.side(), ex.getMessage());
+            return Optional.empty();
+        }
+    }
 }

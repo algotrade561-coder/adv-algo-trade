@@ -74,6 +74,10 @@ public class GapAndGoStrategy {
                 .toList();
 
         Candle first = sessionCandles.get(0);
+        // Guard: skip if first candle has no ticks (open == close == high == low)
+        if (first.high().equals(first.low())) {
+            return noTrade("firstCandleNoTicks");
+        }
         Candle second = sessionCandles.get(1);
         BigDecimal spotPrice = candles5m.getLast().close();
 

@@ -148,23 +148,24 @@ class VerifyAllServiceTest {
     class EngineDelegation {
 
         @Test
-        @DisplayName("10 single-leg strategies delegate to BacktestEngine")
+        @DisplayName("11 single-leg strategies delegate to BacktestEngine")
         void singleLegStrategiesUseBacktestEngine() {
             service.verifyAll(VerifyAllRequest.defaults());
 
-            // BacktestEngine.run() is called for CE and PE per single-leg strategy → 10 × 2 = 20 calls
-            verify(backtestEngine, times(20)).run(
+            // BacktestEngine.run() is called for CE and PE per single-leg strategy → 11 × 2 = 22 calls
+            // (ITM_CONVICTION is live-only so skipped, but BREAKOUT_REENTRY is included)
+            verify(backtestEngine, times(22)).run(
                     any(UnderlyingSymbol.class), any(Timeframe.class), any(OptionType.class),
                     any(LocalDate.class), any(LocalDate.class),
                     any(BacktestEngine.RunOptions.class));
         }
 
         @Test
-        @DisplayName("12 spread strategies delegate to SpreadBacktestEngine")
+        @DisplayName("13 spread strategies delegate to SpreadBacktestEngine")
         void spreadStrategiesUseSpreadBacktestEngine() {
             service.verifyAll(VerifyAllRequest.defaults());
 
-            verify(spreadBacktestEngine, times(12)).run(
+            verify(spreadBacktestEngine, times(13)).run(
                     any(StrategyType.class), any(StrategyConfig.class),
                     any(UnderlyingSymbol.class), any(LocalDate.class), any(LocalDate.class),
                     any(TradingProperties.class), any(ExecutionFlowTracker.class));
@@ -187,10 +188,10 @@ class VerifyAllServiceTest {
         @DisplayName("spread strategies never go to BacktestEngine")
         void spreadNeverDelegatedToSingleLeg() {
             // BacktestEngine is only called for single-leg strategies.
-            // We verify the total call count is exactly 20 (10 strategies × 2 option types).
+            // We verify the total call count is exactly 22 (11 strategies × 2 option types).
             service.verifyAll(VerifyAllRequest.defaults());
 
-            verify(backtestEngine, times(20)).run(
+            verify(backtestEngine, times(22)).run(
                     any(UnderlyingSymbol.class), any(Timeframe.class), any(OptionType.class),
                     any(LocalDate.class), any(LocalDate.class),
                     any(BacktestEngine.RunOptions.class));

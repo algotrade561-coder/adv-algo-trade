@@ -396,7 +396,7 @@ public abstract class AbstractSpreadStrategy {
     }
 
     /**
-     * Exits all legs: logs per-leg prices, computes paper P&L, closes the DB record,
+     * Exits all legs: places broker exit orders (if live), computes P&L, closes the DB record,
      * and removes the group from the in-memory cache.
      */
     protected final void exitAllLegs(PositionGroup group, Map<String, BigDecimal> currentPrices) {
@@ -406,18 +406,40 @@ public abstract class AbstractSpreadStrategy {
         BigDecimal entryNetDebit = netDebit(group.legs(), group.entryPrices());
         BigDecimal exitNetDebit  = netDebit(group.legs(), currentPrices);
 
+        // Place broker exit orders for each leg (reverse the entry side)
+        StrategyConfig config = strategyConfigService.getConfig(strategyType(), group.underlying().name());
+        boolean isLive = config != null && !config.isPaperTrading();
+
         for (SpreadLeg leg : group.legs()) {
             BigDecimal entryPrice = group.entryPrices().getOrDefault(leg.instrumentKey(), BigDecimal.ZERO);
             BigDecimal exitPrice  = currentPrices.getOrDefault(leg.instrumentKey(), BigDecimal.ZERO);
             log.info("  Exit leg: instrument={}, side={}, strike={}, entryPrice={}, exitPrice={}",
                     leg.instrumentKey(), leg.side(), leg.strike(), entryPrice, exitPrice);
+
+            if (isLive && exitPrice.signum() > 0) {
+                // Reverse the side: BUY entry → SELL exit, SELL entry → BUY exit
+                com.algo.trade.domain.OrderSide exitSide = leg.side() == com.algo.trade.domain.OrderSide.BUY
+                        ? com.algo.trade.domain.OrderSide.SELL
+                        : com.algo.trade.domain.OrderSide.BUY;
+                com.algo.trade.domain.OrderRequest exitOrder = new com.algo.trade.domain.OrderRequest(
+                        "SPREAD-EXIT-" + group.groupId() + "-" + leg.instrumentKey().hashCode(),
+                        leg.instrumentKey(),
+                        exitSide,
+                        com.algo.trade.domain.OrderType.MARKET,
+                        com.algo.trade.domain.ProductType.MIS,
+                        leg.quantity(),
+                        java.util.Optional.empty(),
+                        "spread-exit-" + strategyType().name().toLowerCase()
+                );
+                executionEngine.placeSpreadLegOrder(exitOrder);
+            }
         }
 
         // P&L: entryNetDebit - exitNetDebit works for both debit and credit strategies
         BigDecimal pnl = entryNetDebit.subtract(exitNetDebit, MC);
         String pnlLabel = pnl.signum() >= 0 ? "PROFIT" : "LOSS";
-        log.info("PAPER P&L [{}] group={} strategy={} underlying={} pnl={} (entryDebit={} exitDebit={})",
-                pnlLabel, group.groupId(), group.strategyType().displayName(),
+        log.info("{} P&L [{}] group={} strategy={} underlying={} pnl={} (entryDebit={} exitDebit={})",
+                isLive ? "LIVE" : "PAPER", pnlLabel, group.groupId(), group.strategyType().displayName(),
                 group.underlying(), pnl.setScale(2, java.math.RoundingMode.HALF_UP),
                 entryNetDebit.setScale(2, java.math.RoundingMode.HALF_UP),
                 exitNetDebit.setScale(2, java.math.RoundingMode.HALF_UP));
@@ -434,7 +456,7 @@ public abstract class AbstractSpreadStrategy {
     // ── Accessors ─────────────────────────────────────────────────────────
 
     /** Returns an unmodifiable view of in-memory active position groups. */
-    protected Map<String, PositionGroup> getActivePositions() {
+    public Map<String, PositionGroup> getActivePositions() {
         return Map.copyOf(activePositions);
     }
 

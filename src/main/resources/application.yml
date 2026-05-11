@@ -139,7 +139,7 @@ logging:
 # manage-synced-trades: false → SYNC'd positions are tracked only; exit monitors skip them (manual trading)
 # FailSafeSquareoffDaemon always closes everything at 15:20 regardless of this flag.
 position-sync:
-  manage-synced-trades: false
+  manage-synced-trades: true
 
 # ── Tail Hedge ────────────────────────────────────────────────────────────
 tail-hedge:
@@ -167,7 +167,7 @@ algo-flow:
 # ── OI Price Action Filter ────────────────────────────────────────────────
 oi-price-action:
   enabled: true                          # master switch for OI snapshot capture
-  min-oi-change-percent: 2.5               # minimum OI change % to confirm breakout
+  min-oi-change-percent: 1.5               # minimum OI change % to confirm breakout (lowered from 2.5 for intraday)
   max-snapshots: 50                      # how many 5-min snapshots to keep in memory
 
 # ── ATR Indicator ─────────────────────────────────────────────────────────

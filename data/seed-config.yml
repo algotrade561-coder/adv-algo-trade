@@ -56,7 +56,7 @@ globalConfig:
   cooldownMinutes: 15
   dailyProfitTarget: 0
   maxLotsPerTrade: 1
-  minEnvironmentScore: 55
+  minEnvironmentScore: 50
   # Execution tuning
   limitOrderCancelMinutes: 2
   failSafeSquareoffTime: "15:20"

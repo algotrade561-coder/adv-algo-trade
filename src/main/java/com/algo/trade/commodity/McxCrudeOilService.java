@@ -5,6 +5,7 @@ import com.algo.trade.marketdata.InstrumentCache;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
@@ -32,12 +33,23 @@ public class McxCrudeOilService {
     }
 
     /**
-     * Find MCX crude oil contract at startup.
-     * Called after instruments are loaded from Kite.
+     * Attempt to find MCX crude oil contract at startup.
+     * May fail if instruments aren't loaded yet — retry handles this.
      */
     @PostConstruct
     public void initialize() {
         log.info("[MCX Crude Oil] Initializing...");
+        findAndSetCrudeOilContract();
+    }
+
+    /**
+     * Retry finding the contract every 60 seconds until found.
+     * Instruments are loaded after Kite login, which happens after @PostConstruct.
+     */
+    @Scheduled(fixedDelay = 60_000, initialDelay = 30_000)
+    public void retryIfNotFound() {
+        if (oilPriceTracker.getInstrumentToken() > 0) return; // Already found
+        log.info("[MCX Crude Oil] Retrying contract lookup (instruments may now be loaded)...");
         findAndSetCrudeOilContract();
     }
 

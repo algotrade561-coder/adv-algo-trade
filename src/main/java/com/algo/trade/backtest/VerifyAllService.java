@@ -48,7 +48,8 @@ public class VerifyAllService {
             StrategyType.EXPIRY_GAMMA,
             StrategyType.EXPIRY_REVERSAL,
             StrategyType.MOMENTUM,
-            StrategyType.ITM_CONVICTION
+            StrategyType.ITM_CONVICTION,
+            StrategyType.BREAKOUT_REENTRY
     );
 
     /** Strategies that require live data (ATP) and cannot be backtested. */
