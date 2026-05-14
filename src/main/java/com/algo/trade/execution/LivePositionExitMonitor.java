@@ -285,14 +285,9 @@ public class LivePositionExitMonitor {
         // Populate entry Greeks if not yet set (first evaluation after entry)
         populateEntryGreeksIfMissing(trade);
 
-        // Days-to-expiry SL scaling: tighter SL as expiry approaches
+        // Days-to-expiry SL scaling removed — ATR already reflects current volatility.
+        // Kept for reference: previously tightened SL near expiry (0.5× on expiry day).
         long daysToExpiry = expiryCalendar.daysToExpiry(indexType);
-        double slMultiplier = switch ((int) Math.min(daysToExpiry, 3)) {
-            case 0 -> 0.5;   // expiry day: very tight
-            case 1 -> 0.7;   // day before expiry
-            case 2 -> 0.85;  // 2 days before
-            default -> 1.0;  // normal
-        };
 
         // Track peak price (load from DB if available for restart recovery)
         BigDecimal savedPeak = trade.getPeakPrice();
@@ -318,15 +313,20 @@ public class LivePositionExitMonitor {
         boolean useAtrExits = atr > 0 && entryPrice.doubleValue() > 0;
         List<com.algo.trade.domain.Candle> candles1m = liveCandleBuilder.getHistory(instrumentToken, com.algo.trade.domain.Timeframe.ONE_MINUTE);
 
-        // Dynamic SL: ATR-based when available, capped by config SL (never wider than configured)
-        double configSlPct = config.getStopLossPercent().doubleValue() * slMultiplier;
+        // Dynamic SL: purely ATR-based when candle data is available.
+        // ATR determines the SL dynamically based on current market volatility.
+        // Config SL is only used as FALLBACK when ATR data isn't available (startup, no candles).
+        // calculateDynamicSL internally clamps between 15% and 60% for safety.
+        double configSlPct = config.getStopLossPercent().doubleValue();
         double slPct;
         if (useAtrExits) {
-            double atrSl = dynamicExitManager.calculateDynamicSL(entryPrice.doubleValue(), atr, (int) daysToExpiry);
-            slPct = Math.min(atrSl, configSlPct);
-            log.debug("[ExitMonitor] ATR-based SL: {}% (ATR={}, entry={}, configCap={}%)", String.format("%.1f", slPct), String.format("%.1f", atr), entryPrice, String.format("%.1f", configSlPct));
+            slPct = dynamicExitManager.calculateDynamicSL(entryPrice.doubleValue(), atr, (int) daysToExpiry);
+            log.debug("[ExitMonitor] ATR SL: {}% (ATR={}, entry=₹{}, DTE={}) — config fallback={}%",
+                    String.format("%.1f", slPct), String.format("%.1f", atr),
+                    entryPrice, daysToExpiry, String.format("%.1f", configSlPct));
         } else {
             slPct = configSlPct;
+            log.debug("[ExitMonitor] Config SL: {}% (no ATR data available)", String.format("%.1f", slPct));
         }
 
         // Dynamic target: ATR-based when available
@@ -347,8 +347,7 @@ public class LivePositionExitMonitor {
         if (profitPct <= -slPct) {
             log.warn("[ExitMonitor] STOP LOSS hit: tradeId={} instrument={} entry={} current={} profit={}% sl={}%{}",
                     trade.getTradeId(), trade.getInstrumentKey(), entryPrice, currentPrice,
-                    String.format("%.1f", profitPct), String.format("%.1f", slPct),
-                    slMultiplier < 1.0 ? " (expiry-day tightened)" : "");
+                    String.format("%.1f", profitPct), String.format("%.1f", slPct), "");
             telegramAlertService.systemAlert(String.format(
                     "\uD83D\uDD34 SL Hit: %s | Entry \u20B9%.2f \u2192 \u20B9%.2f | P&L %.1f%%",
                     trade.getInstrumentKey(), entryPrice.doubleValue(), currentPrice.doubleValue(), profitPct));
@@ -369,13 +368,21 @@ public class LivePositionExitMonitor {
         }
 
         // ── 3. Trailing Stop ──────────────────────────────────────────────────
-        // When global exit override is active, use global trailing params regardless of entry-locked values.
-        // Otherwise, use trailing params locked at entry time (appliedTrailing*) so mid-trade config changes
-        // don't alter the trailing behavior. Fall back to current config if not set (legacy trades).
+        // ATR-based dynamic trailing: activation and gap are derived from ATR when available.
+        // Config values serve as fallback when no ATR data exists.
         BigDecimal trailActivation;
         BigDecimal trailGap;
-        if (globalConfigService.isGlobalExitOverride()) {
-            // Global override takes priority over entry-locked values
+        if (useAtrExits) {
+            // ATR-based: activate trailing after 1.5× ATR profit, gap = 1× ATR
+            double atrActivation = (1.5 * atr / entryPrice.doubleValue()) * 100;
+            double atrGap = (1.0 * atr / entryPrice.doubleValue()) * 100;
+            // Clamp to reasonable bounds (5% min activation, 50% max; 3% min gap, 25% max)
+            trailActivation = BigDecimal.valueOf(Math.max(5, Math.min(50, atrActivation)));
+            trailGap = BigDecimal.valueOf(Math.max(3, Math.min(25, atrGap)));
+            log.debug("[ExitMonitor] ATR trailing: activation={}%, gap={}% (ATR={}, entry=₹{})",
+                    String.format("%.1f", trailActivation), String.format("%.1f", trailGap),
+                    String.format("%.1f", atr), entryPrice);
+        } else if (globalConfigService.isGlobalExitOverride()) {
             trailActivation = config.getTrailingStopActivationPercent();
             trailGap = config.getTrailingGapPercent();
         } else {

@@ -302,6 +302,7 @@ public class ExecutionEngine {
                         decision.underlying().name(), decision.optionType().orElseThrow().name(), TradeStatus.OPEN,
                         order.filledQuantity(), fillPrice, Instant.now(clock), String.join("; ", decision.reasons()));
                 tradeEntity.setStrategyType(extractStrategyType(decision));
+                tradeEntity.setProductType("MIS"); // Intraday entry
                 tradeEntity.setAppliedTrailingStopActivationPercent(effectiveConfig.getTrailingStopActivationPercent());
                 tradeEntity.setAppliedTrailingGapPercent(effectiveConfig.getTrailingGapPercent());
                 if (envMetadata != null) {
@@ -375,8 +376,8 @@ public class ExecutionEngine {
                 decision.underlying().name(), decision.optionType().map(Enum::name).orElse("CE"),
                 TradeStatus.OPEN, sizing.quantity(), optionPremium, Instant.now(clock),
                 "PAPER_TRADE [" + decision.signalType().name() + "]: " + String.join("; ", decision.reasons()));
-        // Extract strategy type from decision reasons
         trade.setStrategyType(extractStrategyType(decision));
+        trade.setProductType("MIS"); // Paper trades default to MIS
         trade.setAppliedTrailingStopActivationPercent(effectiveConfig.getTrailingStopActivationPercent());
         trade.setAppliedTrailingGapPercent(effectiveConfig.getTrailingGapPercent());
         tradeRepository.save(trade);
@@ -456,31 +457,48 @@ public class ExecutionEngine {
             log.warn("doCloseTrade: lastPrice is zero/null for tradeId={} instrument={} — using MARKET order",
                     tradeId, trade.getInstrumentKey());
         }
+        // Use the same product type as entry (MIS/CNC/NRML). Default to MIS if not set.
+        ProductType exitProductType = resolveProductType(trade);
+        // Determine exit side: SELL for long positions, BUY for short positions
+        boolean isShort = isShortEntry(trade);
+        OrderSide exitSide = isShort ? OrderSide.BUY : OrderSide.SELL;
+        // Apply market protection for fast fill
+        BigDecimal exitLimitPrice = validLastPrice ? applyExitProtection(lastPrice, exitSide) : null;
         OrderRequest orderRequest = validLastPrice
                 ? new OrderRequest("EXIT-" + UUID.randomUUID(), trade.getInstrumentKey(),
-                        OrderSide.SELL, OrderType.LIMIT, ProductType.MIS, trade.getQuantity(), Optional.of(roundToTick(lastPrice, OrderSide.SELL)),
+                        exitSide, OrderType.LIMIT, exitProductType, trade.getQuantity(), Optional.of(exitLimitPrice),
                         "exit")
                 : new OrderRequest("EXIT-MKT-" + UUID.randomUUID(), trade.getInstrumentKey(),
-                        OrderSide.SELL, OrderType.MARKET, ProductType.MIS, trade.getQuantity(), Optional.empty(),
+                        exitSide, OrderType.MARKET, exitProductType, trade.getQuantity(), Optional.empty(),
                         "exit-mkt");
-        log.info("Placing exit order: tradeId={}, clientOrderId={}, instrument={}, quantity={}",
-                tradeId, orderRequest.clientOrderId(), orderRequest.instrumentKey(), orderRequest.quantity());
+        log.info("Placing exit order: tradeId={}, side={}, clientOrderId={}, instrument={}, quantity={}, limitPrice={}",
+                tradeId, exitSide, orderRequest.clientOrderId(), orderRequest.instrumentKey(), orderRequest.quantity(), exitLimitPrice);
         OrderResponse order;
         try {
             order = brokerClient.placeOrder(orderRequest);
         } catch (RuntimeException ex) {
-            // Retry once with MARKET order if LIMIT fails
-            log.warn("Exit LIMIT order failed for tradeId={}, retrying with MARKET order: {}", tradeId, ex.getMessage());
-            if (errorEventService != null) errorEventService.high("ExecutionEngine", "Exit LIMIT failed for " + tradeId + " — retrying MARKET: " + ex.getMessage(), ex);
-            telegramAlertService.systemAlert("⚠️ Exit LIMIT failed for " + trade.getInstrumentKey() + " — retrying MARKET order");
+            // Retry: re-fetch current LTP and use marketable LIMIT with fresh price
+            log.warn("Exit LIMIT order failed for tradeId={}, retrying with fresh LTP: {}", tradeId, ex.getMessage());
+            if (errorEventService != null) errorEventService.high("ExecutionEngine", "Exit LIMIT failed for " + tradeId + " — retrying: " + ex.getMessage(), ex);
+            telegramAlertService.systemAlert("⚠️ Exit LIMIT failed for " + trade.getInstrumentKey() + " — retrying with fresh price");
             try {
-                OrderRequest marketRequest = new OrderRequest("EXIT-MKT-" + UUID.randomUUID(), trade.getInstrumentKey(),
-                        OrderSide.SELL, OrderType.MARKET, ProductType.MIS, trade.getQuantity(), Optional.empty(),
-                        "exit-mkt-retry");
-                order = brokerClient.placeOrder(marketRequest);
+                // Re-fetch current price for the retry (original lastPrice may be stale)
+                BigDecimal freshPrice = marketDataService.quote(trade.getInstrumentKey())
+                        .map(q -> q.lastPrice())
+                        .filter(p -> p != null && p.signum() > 0)
+                        .orElse(lastPrice);
+                BigDecimal retryLimitPrice = applyExitProtection(freshPrice, exitSide);
+                OrderRequest retryRequest = retryLimitPrice != null
+                        ? new OrderRequest("EXIT-RETRY-" + UUID.randomUUID(), trade.getInstrumentKey(),
+                                exitSide, OrderType.LIMIT, exitProductType, trade.getQuantity(),
+                                Optional.of(retryLimitPrice), "exit-retry-fresh")
+                        : new OrderRequest("EXIT-MKT-" + UUID.randomUUID(), trade.getInstrumentKey(),
+                                exitSide, OrderType.MARKET, exitProductType, trade.getQuantity(),
+                                Optional.empty(), "exit-mkt-retry");
+                order = brokerClient.placeOrder(retryRequest);
             } catch (RuntimeException retryEx) {
-                log.error("Exit MARKET retry also failed for tradeId={}: {}", tradeId, retryEx.getMessage());
-                if (errorEventService != null) errorEventService.critical("ExecutionEngine", "Exit MARKET retry failed for " + tradeId + " (" + trade.getInstrumentKey() + "): " + retryEx.getMessage(), retryEx);
+                log.error("Exit retry also failed for tradeId={}: {}", tradeId, retryEx.getMessage());
+                if (errorEventService != null) errorEventService.critical("ExecutionEngine", "Exit retry failed for " + tradeId + " (" + trade.getInstrumentKey() + "): " + retryEx.getMessage(), retryEx);
                 telegramAlertService.systemAlert("🚨 URGENT: Exit failed for " + trade.getInstrumentKey()
                         + " — POSITION STILL OPEN! Manual intervention required.");
                 return ExecutionResult.rejected(List.of("Exit order failed after retry: " + retryEx.getMessage()));
@@ -504,7 +522,6 @@ public class ExecutionEngine {
         }
 
         BigDecimal exitPrice = order.averageFillPrice().orElse(lastPrice);
-        boolean isShort = isShortEntry(trade);
         BigDecimal realizedPnl = isShort
                 ? trade.getEntryPrice().subtract(exitPrice).multiply(BigDecimal.valueOf(trade.getQuantity()))
                 : exitPrice.subtract(trade.getEntryPrice()).multiply(BigDecimal.valueOf(trade.getQuantity()));
@@ -548,8 +565,10 @@ public class ExecutionEngine {
             return new ExecutionResult(true, Optional.empty(), List.of("Paper partial close: layer=" + layerReason + " pnl=" + partialPnl));
         }
 
+        ProductType partialProductType = resolveProductType(trade);
+        BigDecimal partialExitPrice = applyExitProtection(lastPrice, OrderSide.SELL);
         OrderRequest orderRequest = new OrderRequest("PARTIAL-" + UUID.randomUUID(), trade.getInstrumentKey(),
-                OrderSide.SELL, OrderType.LIMIT, ProductType.MIS, partialQuantity, Optional.of(roundToTick(lastPrice, OrderSide.SELL)),
+                OrderSide.SELL, OrderType.LIMIT, partialProductType, partialQuantity, Optional.of(partialExitPrice),
                 "partial-exit");
         OrderResponse order;
         try {
@@ -559,7 +578,7 @@ public class ExecutionEngine {
             if (errorEventService != null) errorEventService.high("ExecutionEngine", "Partial exit LIMIT failed for " + tradeId + " — retrying MARKET: " + ex.getMessage(), ex);
             try {
                 OrderRequest marketReq = new OrderRequest("PARTIAL-MKT-" + UUID.randomUUID(), trade.getInstrumentKey(),
-                        OrderSide.SELL, OrderType.MARKET, ProductType.MIS, partialQuantity, Optional.empty(),
+                        OrderSide.SELL, OrderType.MARKET, partialProductType, partialQuantity, Optional.empty(),
                         "partial-exit-mkt");
                 order = brokerClient.placeOrder(marketReq);
             } catch (RuntimeException retryEx) {
@@ -672,6 +691,8 @@ public class ExecutionEngine {
         Instant entryTime = Instant.now(clock);
         TradeEntity trade = new TradeEntity(tradeId, instrumentKey, underlying, optionType,
                 TradeStatus.OPEN, filledQty, fillPrice, entryTime, entryReason);
+        // Set product type — default to MIS for watchdog-recovered orders (they were placed by our system as MIS)
+        trade.setProductType("MIS");
         // Use strategy type stored on the order entity at placement time
         if (orderEntity.getStrategyType() != null && !orderEntity.getStrategyType().isBlank()) {
             trade.setStrategyType(orderEntity.getStrategyType());
@@ -907,14 +928,17 @@ public class ExecutionEngine {
     private boolean isShortEntry(TradeEntity trade) {
         // Check strategy type — selling strategies have short entries
         if (trade.getStrategyType() != null && !trade.getStrategyType().isBlank()) {
+            // SHORT_POSITION is set by PositionSynchronizer for broker short positions
+            if ("SHORT_POSITION".equals(trade.getStrategyType())) return true;
             try {
                 return com.algo.trade.strategy.StrategyType.valueOf(trade.getStrategyType()).isSellingStrategy();
             } catch (IllegalArgumentException ignored) {}
         }
-        // Fallback: check entry reason for SELL signal markers
+        // Fallback: check entry reason for SELL/SHORT markers
         String reason = trade.getEntryReason();
         return reason != null && (reason.contains("[SELL_CE]") || reason.contains("[SELL_PE]")
-                || reason.contains("SELL_CE") || reason.contains("SELL_PE"));
+                || reason.contains("SELL_CE") || reason.contains("SELL_PE")
+                || reason.contains("SHORT position"));
     }
 
     /** Extract strategy type name from a StrategyDecision's reasons list. */
@@ -1123,6 +1147,36 @@ public class ExecutionEngine {
                 ? java.math.RoundingMode.UP
                 : java.math.RoundingMode.DOWN;
         return price.divide(TICK_SIZE, 0, mode).multiply(TICK_SIZE).setScale(2, java.math.RoundingMode.HALF_UP);
+    }
+
+    /**
+     * Resolve the product type for exit orders from the trade entity.
+     * Uses the stored productType if available, defaults to MIS (intraday) for backward compatibility.
+     */
+    private ProductType resolveProductType(TradeEntity trade) {
+        String pt = trade.getProductType();
+        if (pt == null || pt.isBlank()) return ProductType.MIS;
+        try {
+            return ProductType.valueOf(pt);
+        } catch (IllegalArgumentException e) {
+            log.warn("Unknown productType '{}' on trade {} — defaulting to MIS", pt, trade.getTradeId());
+            return ProductType.MIS;
+        }
+    }
+
+    /**
+     * Apply market protection for exit orders — side-aware.
+     * SELL exit: lastPrice - protection% (willing to accept less for fast fill)
+     * BUY exit (short cover): lastPrice + protection% (willing to pay more for fast fill)
+     */
+    private BigDecimal applyExitProtection(BigDecimal lastPrice, OrderSide side) {
+        if (lastPrice == null || lastPrice.signum() <= 0) return lastPrice;
+        double protectionPct = 1.0;
+        BigDecimal protection = lastPrice.multiply(BigDecimal.valueOf(protectionPct / 100), java.math.MathContext.DECIMAL64);
+        BigDecimal raw = side == OrderSide.BUY
+                ? lastPrice.add(protection)
+                : lastPrice.subtract(protection).max(BigDecimal.ONE);
+        return roundToTick(raw, side);
     }
 
     /**

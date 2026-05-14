@@ -50,6 +50,10 @@ public class StrategyExecutionPipeline {
     private final com.algo.trade.underlying.UnderlyingConfigService underlyingConfigService;
     private final com.algo.trade.commodity.CrudeContextProvider crudeContextProvider;
 
+    // Signal de-dup: suppress identical (strategy+instrument+side) signals for 30s after rejection
+    private final java.util.concurrent.ConcurrentHashMap<String, java.time.Instant> rejectedSignalCache = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final long SIGNAL_DEDUP_SECONDS = 30;
+
     public StrategyExecutionPipeline(
             GlobalConfigService globalConfigService,
             ExecutionEngine executionEngine,
@@ -199,6 +203,13 @@ public class StrategyExecutionPipeline {
         StrategyDecision enriched = decision.selectedInstrumentKey().isPresent()
                 ? decision : enrichWithOptionData(decision, ctx);
 
+        // Signal de-dup: suppress identical signals that were recently rejected (30s window)
+        String dedupKey = type.name() + "|" + enriched.selectedInstrumentKey().orElse("") + "|" + signalName;
+        java.time.Instant lastRejection = rejectedSignalCache.get(dedupKey);
+        if (lastRejection != null && java.time.Instant.now().isBefore(lastRejection.plusSeconds(SIGNAL_DEDUP_SECONDS))) {
+            return false; // Suppress — same signal was rejected within 30s
+        }
+
         // Risk gates (paper trades bypass)
         if (!config.isPaperTrading()) {
             int effectiveOpen = executionEngine.effectiveOpenTradeCount();
@@ -233,6 +244,12 @@ public class StrategyExecutionPipeline {
         boolean executed = executeSignal(enriched, config, ctx.underlying());
         if (executed && !config.isPaperTrading()) {
             weeklyExposureTracker.recordTrade(estimatedCost(enriched, config, ctx.underlying()));
+        }
+        // Record rejection in de-dup cache to suppress identical signals for 30s
+        if (!executed) {
+            rejectedSignalCache.put(dedupKey, java.time.Instant.now());
+            // Evict stale entries older than 60s to prevent unbounded growth
+            rejectedSignalCache.entrySet().removeIf(e -> e.getValue().isBefore(java.time.Instant.now().minusSeconds(60)));
         }
 
         Timeframe csvTf = resolveTimeframe(config.getCandleTimeframe(), Timeframe.ONE_MINUTE);

@@ -35,16 +35,16 @@ public class OiShiftTrapStrategy {
     private static final MathContext MC = MathContext.DECIMAL64;
 
     /** Minimum OI imbalance ratio (trapped side / opposite side). */
-    private static final double OI_IMBALANCE_RATIO = 2.5;
+    private static final double OI_IMBALANCE_RATIO = 1.5;
 
     /** Maximum distance from spot to trap strike as % of spot price. */
-    private static final double PROXIMITY_PERCENT = 0.50;
+    private static final double PROXIMITY_PERCENT = 0.75;
 
     /** Minimum absolute OI on the trapped side to be meaningful. */
     private static final long MIN_ABSOLUTE_OI = 50_000;
 
     /** Minimum OI change (buildup) on the trapped side — writers must be adding, not unwinding. */
-    private static final long MIN_OI_CHANGE = 10_000;
+    private static final long MIN_OI_CHANGE = 3_000;
 
     /** Minimum underlying volume in the last candle to confirm market activity. */
     private static final long MIN_UNDERLYING_VOLUME = 1_000;

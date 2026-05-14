@@ -771,11 +771,11 @@ export class MonitoringPageComponent implements OnInit, OnDestroy {
 
   get liveTrades(): ApiRecord[] {
     return this.trades.filter(t => !String(t['tradeId'] ?? '').startsWith('PAPER-'))
-      .filter(t => this.isToday(String(t['entryTime'] ?? '')));
+      .filter(t => this.isToday(String(t['entryTime'] ?? '')) || String(t['status'] ?? '').toUpperCase() === 'OPEN');
   }
   get paperTrades(): ApiRecord[] {
     return this.trades.filter(t => String(t['tradeId'] ?? '').startsWith('PAPER-'))
-      .filter(t => this.isToday(String(t['entryTime'] ?? '')));
+      .filter(t => this.isToday(String(t['entryTime'] ?? '')) || String(t['status'] ?? '').toUpperCase() === 'OPEN');
   }
   get openPaperPositions(): ApiRecord[] {
     return this.paperTrades.filter(t => String(t['status'] ?? '').toUpperCase() === 'OPEN');

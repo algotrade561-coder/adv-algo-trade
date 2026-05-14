@@ -8,8 +8,15 @@ public record Position(
         int quantity,
         BigDecimal averagePrice,
         BigDecimal lastPrice,
-        BigDecimal unrealizedPnl
+        BigDecimal unrealizedPnl,
+        String productType   // MIS, CNC, NRML — null for backward compatibility
 ) {
+    /** Backward-compatible constructor without productType. */
+    public Position(String instrumentKey, int quantity, BigDecimal averagePrice,
+                    BigDecimal lastPrice, BigDecimal unrealizedPnl) {
+        this(instrumentKey, quantity, averagePrice, lastPrice, unrealizedPnl, null);
+    }
+
     public Position {
         Validation.notBlank(instrumentKey, "instrumentKey");
         Validation.nonNegative(averagePrice, "averagePrice");

@@ -32,7 +32,7 @@ public class MomentumStrategy {
 
     private static final Logger log = LoggerFactory.getLogger(MomentumStrategy.class);
     private static final int ROC_PERIOD = 5;
-    private static final double MIN_ROC_PERCENT = 0.45;
+    private static final double MIN_ROC_PERCENT = 0.25;
     private static final int EMA_PERIOD = 21;
     private static final double MIN_VOLUME_RATIO = 1.2;
     private static final int ATR_PERIOD = 14;

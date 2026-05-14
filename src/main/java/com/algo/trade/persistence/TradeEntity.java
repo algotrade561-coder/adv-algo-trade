@@ -40,6 +40,9 @@ public class TradeEntity {
     private String exitReason;
     /** Strategy type that generated this trade (e.g. DIRECTIONAL_BUY, ITM_CONVICTION). */
     private String strategyType;
+    /** Product type used for entry (MIS, CNC, NRML). Exit orders must use the same type. */
+    @jakarta.persistence.Column(name = "product_type", length = 8)
+    private String productType;
     /** Highest price seen since entry — for trailing stop recovery after restart. */
     private BigDecimal peakPrice;
     /** Greeks at entry time — for post-trade analysis. */
@@ -118,6 +121,8 @@ public class TradeEntity {
     public String getExitReason() { return exitReason; }
     public String getStrategyType() { return strategyType; }
     public void setStrategyType(String strategyType) { this.strategyType = strategyType; }
+    public String getProductType() { return productType; }
+    public void setProductType(String productType) { this.productType = productType; }
     public BigDecimal getPeakPrice() { return peakPrice; }
     public void setPeakPrice(BigDecimal peakPrice) { this.peakPrice = peakPrice; }
     public Double getEntryDelta() { return entryDelta; }

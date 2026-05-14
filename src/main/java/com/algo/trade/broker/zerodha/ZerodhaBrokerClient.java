@@ -196,6 +196,11 @@ public class ZerodhaBrokerClient implements BrokerClient {
         body.add("product", request.productType().name());
         body.add("order_type", request.orderType().name());
         request.limitPrice().ifPresent(price -> body.add("price", price.toPlainString()));
+        // Market protection: required by Zerodha API for MARKET orders on F&O.
+        // Sets max acceptable slippage as percentage (1%).
+        if (request.orderType() == com.algo.trade.domain.OrderType.MARKET) {
+            body.add("market_protection", "1");
+        }
         body.add("validity", "DAY");
         String tag = request.tag();
         if (tag != null && tag.length() > 20) tag = tag.substring(0, 20);
@@ -414,7 +419,8 @@ public class ZerodhaBrokerClient implements BrokerClient {
                         node.path("quantity").asInt(),
                         decimal(node, "average_price"),
                         decimal(node, "last_price"),
-                        decimal(node, "pnl")))
+                        decimal(node, "pnl"),
+                        node.has("product") ? node.path("product").asText() : null))
                 .toList();
     }
 

@@ -44,14 +44,8 @@ public class DynamicExitManager {
     public double calculateDynamicSL(double entryPremium, double atr, int daysToExpiry) {
         if (entryPremium <= 0 || atr <= 0) return 30;
         double atrBasedSL = (2 * atr / entryPremium) * 100;
-        double timeMultiplier = switch (daysToExpiry) {
-            case 0 -> 0.5;
-            case 1 -> 0.7;
-            case 2 -> 0.85;
-            default -> 1.0;
-        };
-        double dynamicSL = atrBasedSL * timeMultiplier;
-        return Math.max(15, Math.min(60, dynamicSL));
+        // Pure ATR-based — no DTE adjustment. ATR already reflects current volatility.
+        return Math.max(15, Math.min(60, atrBasedSL));
     }
 
     public double calculateTrailingSL(double profitPercent, double peakProfitPercent,

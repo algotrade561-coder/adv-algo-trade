@@ -92,9 +92,20 @@ public class ReportingService {
     }
 
     public List<TradeEntity> trades() {
-        List<TradeEntity> trades = tradeRepository.findAll();
-        log.debug("Reporting trades completed: count={}", trades.size());
-        return trades;
+        // Return only today's trades for the monitoring page (not all historical)
+        java.time.LocalDate today = java.time.LocalDate.now(ZoneId.of("Asia/Kolkata"));
+        Instant dayStart = today.atStartOfDay(ZoneId.of("Asia/Kolkata")).toInstant();
+        Instant dayEnd = today.plusDays(1).atStartOfDay(ZoneId.of("Asia/Kolkata")).toInstant();
+        List<TradeEntity> trades = tradeRepository.findByEntryTimeBetween(dayStart, dayEnd);
+        // Also include any OPEN trades from previous days (carry-forward positions)
+        List<TradeEntity> openFromPrevDays = tradeRepository.findByStatus(com.algo.trade.domain.TradeStatus.OPEN).stream()
+                .filter(t -> t.getEntryTime() != null && t.getEntryTime().isBefore(dayStart))
+                .toList();
+        List<TradeEntity> combined = new java.util.ArrayList<>(trades);
+        combined.addAll(openFromPrevDays);
+        log.debug("Reporting trades completed: today={}, openPrevDays={}, total={}",
+                trades.size(), openFromPrevDays.size(), combined.size());
+        return combined;
     }
 
     public PnlSnapshot pnl() {
@@ -120,10 +131,24 @@ public class ReportingService {
                 .filter(Objects::nonNull)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
-        // Unrealized: only from OPEN positions (remaining quantity × price diff)
-        BigDecimal unrealized = positions().stream()
-                .filter(p -> !isPaperPosition(p))
-                .map(Position::unrealizedPnl)
+        // Unrealized: calculated from OPEN TradeEntity records using live quotes.
+        // Single source of truth — avoids double-counting with broker positions API.
+        BigDecimal unrealized = todayTrades.stream()
+                .filter(t -> t.getStatus() == com.algo.trade.domain.TradeStatus.OPEN)
+                .map(t -> {
+                    if (t.getEntryPrice() == null || t.getQuantity() <= 0) return BigDecimal.ZERO;
+                    var quote = marketDataService.quote(t.getInstrumentKey());
+                    if (quote.isEmpty() || quote.get().lastPrice().signum() <= 0) return BigDecimal.ZERO;
+                    BigDecimal currentPrice = quote.get().lastPrice();
+                    // Short positions: profit when price drops (entry - current)
+                    // Long positions: profit when price rises (current - entry)
+                    boolean isShort = "SHORT_POSITION".equals(t.getStrategyType())
+                            || (t.getStrategyType() != null && !t.getStrategyType().isBlank()
+                                && isSellingStrategyType(t.getStrategyType()));
+                    return isShort
+                            ? t.getEntryPrice().subtract(currentPrice).multiply(BigDecimal.valueOf(t.getQuantity()))
+                            : currentPrice.subtract(t.getEntryPrice()).multiply(BigDecimal.valueOf(t.getQuantity()));
+                })
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
         // Total = closed realized + open booked + open unrealized
@@ -354,12 +379,23 @@ public class ReportingService {
 
     /** Determine if a trade is a short entry based on strategy type, with fallback to entry reason. */
     private boolean isShortTrade(TradeEntity trade) {
+        if ("SHORT_POSITION".equals(trade.getStrategyType())) return true;
         if (trade.getStrategyType() != null && !trade.getStrategyType().isBlank()) {
             try {
                 return com.algo.trade.strategy.StrategyType.valueOf(trade.getStrategyType()).isSellingStrategy();
             } catch (IllegalArgumentException ignored) {}
         }
         String reason = trade.getEntryReason();
-        return reason != null && (reason.contains("[SELL_CE]") || reason.contains("[SELL_PE]"));
+        return reason != null && (reason.contains("[SELL_CE]") || reason.contains("[SELL_PE]")
+                || reason.contains("SHORT position"));
+    }
+
+    private boolean isSellingStrategyType(String strategyType) {
+        if ("SHORT_POSITION".equals(strategyType)) return true;
+        try {
+            return com.algo.trade.strategy.StrategyType.valueOf(strategyType).isSellingStrategy();
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
     }
 }

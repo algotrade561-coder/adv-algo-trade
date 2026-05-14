@@ -47,6 +47,9 @@ public class SmartOrderRouter {
     @Value("${smart-order.limit-buffer-percent:0.5}")
     private double limitBufferPercent;
 
+    @Value("${smart-order.market-protection-percent:1.0}")
+    private double marketProtectionPercent;
+
     public SmartOrderRouter(MarketDataService marketDataService) {
         this.marketDataService = marketDataService;
     }
@@ -108,11 +111,14 @@ public class SmartOrderRouter {
 
         return switch (liquidity) {
             case LIQUID -> {
-                // Market order — fastest fill
-                log.info("[SmartRouter] LIQUID: {} spread={}% vol={} → MARKET",
-                        instrumentKey, String.format("%.2f", spreadPct), volume);
-                yield new RoutingDecision(OrderType.MARKET, Optional.empty(),
-                        "Liquid (spread " + String.format("%.1f", spreadPct) + "%, vol " + volume + ")",
+                // Marketable LIMIT — fills instantly like MARKET but with price protection.
+                // BUY at lastPrice + protection%, SELL at lastPrice - protection%.
+                BigDecimal protectedPrice = applyProtection(lastPrice, side);
+                log.info("[SmartRouter] LIQUID: {} spread={}% vol={} → LIMIT at {} (protection {}%)",
+                        instrumentKey, String.format("%.2f", spreadPct), volume,
+                        protectedPrice, marketProtectionPercent);
+                yield new RoutingDecision(OrderType.LIMIT, Optional.of(protectedPrice),
+                        "Liquid (spread " + String.format("%.1f", spreadPct) + "%) — marketable LIMIT +" + marketProtectionPercent + "%",
                         spreadPct, liquidity);
             }
             case SEMI_LIQUID -> {
@@ -137,10 +143,15 @@ public class SmartOrderRouter {
                         spreadPct, liquidity);
             }
             case UNKNOWN -> {
-                BigDecimal buffered = applyBuffer(lastPrice.signum() > 0 ? lastPrice : fallbackPrice, side);
-                log.debug("[SmartRouter] UNKNOWN liquidity: {} → LIMIT at {}", instrumentKey, buffered);
-                yield new RoutingDecision(OrderType.LIMIT, Optional.of(buffered),
-                        "Unknown liquidity — LIMIT at last price", spreadPct, liquidity);
+                // No bid/ask data — use marketable LIMIT at lastPrice + protection%.
+                // Fills instantly like MARKET but won't exceed protection threshold.
+                BigDecimal basePrice = lastPrice.signum() > 0 ? lastPrice : fallbackPrice;
+                BigDecimal protectedPrice = applyProtection(basePrice, side);
+                log.info("[SmartRouter] UNKNOWN liquidity: {} → marketable LIMIT at {} (protection {}% from {})",
+                        instrumentKey, protectedPrice, marketProtectionPercent, basePrice);
+                yield new RoutingDecision(OrderType.LIMIT, Optional.of(protectedPrice),
+                        "Unknown liquidity — marketable LIMIT +" + marketProtectionPercent + "% protection",
+                        spreadPct, liquidity);
             }
         };
     }
@@ -157,6 +168,21 @@ public class SmartOrderRouter {
         BigDecimal raw = side == com.algo.trade.domain.OrderSide.BUY
                 ? price.add(buffer)
                 : price.subtract(buffer);
+        return roundToTickSize(raw, side);
+    }
+
+    /**
+     * Apply market protection percentage — creates a marketable LIMIT that fills instantly
+     * but won't exceed the protection threshold from current price.
+     * BUY: price × (1 + protection%) — willing to pay up to X% above current
+     * SELL: price × (1 - protection%) — willing to accept up to X% below current
+     */
+    private BigDecimal applyProtection(BigDecimal price, com.algo.trade.domain.OrderSide side) {
+        if (price == null || price.signum() <= 0) return price;
+        BigDecimal protection = price.multiply(BigDecimal.valueOf(marketProtectionPercent / 100), MC);
+        BigDecimal raw = side == com.algo.trade.domain.OrderSide.BUY
+                ? price.add(protection)
+                : price.subtract(protection).max(BigDecimal.ONE);
         return roundToTickSize(raw, side);
     }
 

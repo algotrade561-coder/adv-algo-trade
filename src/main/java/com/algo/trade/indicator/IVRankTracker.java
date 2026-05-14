@@ -71,11 +71,16 @@ public class IVRankTracker {
     /** IV Rank 0–100. Returns 50 (neutral) if < 20 samples (insufficient history). */
     public double getIVRank(IndexType indexType) {
         List<IVSample> samples = getSamples(indexType);
-        if (samples.size() < 20) return 50.0;
-        double current = samples.getLast().iv();
-        double low  = samples.stream().mapToDouble(IVSample::iv).min().orElse(current);
-        double high = samples.stream().mapToDouble(IVSample::iv).max().orElse(current);
-        if (high == low) return 50.0;
+        if (samples == null || samples.size() < 20) return 50.0;
+        IVSample lastSample = samples.getLast();
+        if (lastSample == null) return 50.0;
+        double current = lastSample.iv();
+        if (current <= 0) return 50.0;
+        double low  = samples.stream().filter(java.util.Objects::nonNull)
+                .mapToDouble(s -> s.iv() > 0 ? s.iv() : Double.MAX_VALUE).min().orElse(current);
+        double high = samples.stream().filter(java.util.Objects::nonNull)
+                .mapToDouble(s -> s.iv() > 0 ? s.iv() : 0).max().orElse(current);
+        if (high <= low || high == 0) return 50.0;
         return ((current - low) / (high - low)) * 100.0;
     }
 

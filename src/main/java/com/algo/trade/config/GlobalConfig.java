@@ -68,7 +68,7 @@ public class GlobalConfig {
 
     /** Minimum environment score (0-100) for the regime+session entry gate. Default 55. */
     @Column(columnDefinition = "INT DEFAULT 55")
-    private Integer minEnvironmentScore = 55;
+    private Integer minEnvironmentScore = 50;
 
     private boolean ceOiSupportRequired = false;
     private boolean peOiSupportRequired = false;

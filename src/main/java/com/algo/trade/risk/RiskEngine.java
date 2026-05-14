@@ -108,6 +108,27 @@ public class RiskEngine {
     }
 
     /**
+     * ATR-based position sizing: uses ATR to determine stop distance, then sizes position
+     * so that max loss per trade stays within risk budget.
+     *
+     * @param optionPremium entry price per unit
+     * @param lotSize       units per lot
+     * @param atr           current ATR in points (from 15-min candles)
+     * @return sizing result with quantity capped by risk and maxLotsPerTrade
+     */
+    public PositionSizingResult calculateQuantityWithATR(BigDecimal optionPremium, int lotSize, double atr) {
+        if (atr <= 0 || optionPremium == null || optionPremium.signum() <= 0) {
+            return calculateQuantity(optionPremium, lotSize);
+        }
+        // ATR-based SL: 2× ATR as stop distance (same formula as DynamicExitManager)
+        double atrSlPercent = (2 * atr / optionPremium.doubleValue()) * 100;
+        atrSlPercent = Math.max(15, Math.min(60, atrSlPercent)); // Clamp same as DynamicExitManager
+        log.info("ATR-based position sizing: atr={}, entry={}, atrSL={}%",
+                String.format("%.1f", atr), optionPremium, String.format("%.1f", atrSlPercent));
+        return calculateQuantity(optionPremium, lotSize, BigDecimal.valueOf(atrSlPercent));
+    }
+
+    /**
      * Position sizing with explicit stop-loss percent (for per-strategy sizing).
      */
     public PositionSizingResult calculateQuantity(BigDecimal optionPremium, int lotSize, BigDecimal stopLossPercent) {

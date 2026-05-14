@@ -9,6 +9,7 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -114,7 +115,6 @@ public class PositionSynchronizer {
             List<TradeEntity> openTrades = tradeRepository.findByStatus(TradeStatus.OPEN);
 
             // Index open trades by instrumentKey for fast lookup
-            // Use list-based grouping to handle multiple trades on same instrument
             Map<String, List<TradeEntity>> openTradesByInstrument = openTrades.stream()
                     .collect(Collectors.groupingBy(TradeEntity::getInstrumentKey));
 
@@ -123,9 +123,19 @@ public class PositionSynchronizer {
                     .filter(p -> p.quantity() != 0)
                     .collect(Collectors.toMap(Position::instrumentKey, Function.identity(), (a, b) -> a));
 
+            // Today's date range for closed position tracking
+            java.time.LocalDate today = java.time.LocalDate.now(java.time.ZoneId.of("Asia/Kolkata"));
+            java.time.Instant dayStart = today.atStartOfDay(java.time.ZoneId.of("Asia/Kolkata")).toInstant();
+            java.time.Instant dayEnd = today.plusDays(1).atStartOfDay(java.time.ZoneId.of("Asia/Kolkata")).toInstant();
+            List<TradeEntity> todayTrades = tradeRepository.findByEntryTimeBetween(dayStart, dayEnd);
+            Set<String> todayTrackedInstruments = todayTrades.stream()
+                    .map(TradeEntity::getInstrumentKey)
+                    .collect(java.util.stream.Collectors.toSet());
+
             int matched = 0;
             int created = 0;
             int closed = 0;
+            int closedRecorded = 0;
 
             // 1. Broker positions not in DB → create TradeEntity
             for (Position pos : brokerByInstrument.values()) {
@@ -140,7 +150,7 @@ public class PositionSynchronizer {
             // 2. DB OPEN trades not in broker → close them (skip paper trades)
             for (TradeEntity trade : openTrades) {
                 if (trade.isPaperTrade()) {
-                    continue; // Paper trades have no broker position — don't close them
+                    continue;
                 }
                 if (!brokerByInstrument.containsKey(trade.getInstrumentKey())) {
                     closeStaleTrade(trade);
@@ -148,7 +158,19 @@ public class PositionSynchronizer {
                 }
             }
 
-            log.info("Position sync complete: matched={}, created={}, closed={}", matched, created, closed);
+            // 3. Closed broker positions (qty=0, P&L != 0) not tracked in DB → create closed record
+            // This captures manually traded positions that were opened and closed while app was down
+            for (Position pos : brokerPositions) {
+                if (pos.quantity() == 0 && pos.unrealizedPnl() != null
+                        && pos.unrealizedPnl().signum() != 0
+                        && !todayTrackedInstruments.contains(pos.instrumentKey())) {
+                    createClosedTradeFromBrokerPosition(pos);
+                    closedRecorded++;
+                }
+            }
+
+            log.info("Position sync complete: matched={}, created={}, closed={}, closedRecorded={}",
+                    matched, created, closed, closedRecorded);
 
         } catch (Exception ex) {
             log.error("Position sync failed: {}", ex.getMessage(), ex);
@@ -160,9 +182,27 @@ public class PositionSynchronizer {
     }
 
     private void createTradeFromBrokerPosition(Position pos) {
+        // Late-day guard: don't import NEW positions after 15:00 IST
+        // Let broker auto-square-off handle them instead of consuming algo retry budget
+        // Only applies during live market hours (not during tests or off-hours)
+        java.time.LocalTime now = java.time.LocalTime.now(java.time.ZoneId.of("Asia/Kolkata"));
+        if (now.isAfter(java.time.LocalTime.of(15, 0)) && now.isBefore(java.time.LocalTime.of(15, 30))) {
+            log.info("Position sync skipped late-day import: instrument={}, time={} (15:00-15:30 window)",
+                    pos.instrumentKey(), now);
+            return;
+        }
+
         String tradeId = "SYNC-" + UUID.randomUUID();
         String underlying = extractUnderlying(pos.instrumentKey());
         String optionType = extractOptionType(pos.instrumentKey());
+
+        // Handle short positions: broker returns negative quantity for shorts.
+        // Store absolute quantity; mark as short via entry reason so exit uses correct side (BUY to cover).
+        boolean isShort = pos.quantity() < 0;
+        int absQuantity = Math.abs(pos.quantity());
+        String entryReason = isShort
+                ? "position-sync: SHORT position found in broker"
+                : "position-sync: found in broker";
 
         TradeEntity entity = new TradeEntity(
                 tradeId,
@@ -170,17 +210,24 @@ public class PositionSynchronizer {
                 underlying,
                 optionType,
                 TradeStatus.OPEN,
-                pos.quantity(),
+                absQuantity,
                 pos.averagePrice(),
                 Instant.now(),
-                "position-sync: found in broker"
+                entryReason
         );
+        // Synced positions use the product type from the broker (MIS/CNC/NRML).
+        entity.setProductType(pos.productType() != null ? pos.productType() : "NRML");
+        // Mark short positions with a selling strategy type so exit monitor uses BUY to close
+        if (isShort) {
+            entity.setStrategyType("SHORT_POSITION");
+        }
         tradeRepository.save(entity);
-        log.info("Position sync created trade: tradeId={}, instrument={}, qty={}, avgPrice={}",
-                tradeId, pos.instrumentKey(), pos.quantity(), pos.averagePrice());
+        log.info("Position sync created trade: tradeId={}, instrument={}, qty={} ({}), avgPrice={}",
+                tradeId, pos.instrumentKey(), absQuantity, isShort ? "SHORT" : "LONG", pos.averagePrice());
         telegramAlertService.systemAlert(String.format(
-                "🔄 Position Sync: Found %s in broker (not in DB)\nQty: %d | Avg Price: ₹%.2f\nCreated trade: %s",
-                pos.instrumentKey(), pos.quantity(), pos.averagePrice().doubleValue(), tradeId));
+                "🔄 Position Sync: Found %s in broker (not in DB)\nSide: %s | Qty: %d | Avg Price: ₹%.2f\nCreated trade: %s",
+                pos.instrumentKey(), isShort ? "SHORT" : "LONG", absQuantity,
+                pos.averagePrice().doubleValue(), tradeId));
     }
 
     private void closeStaleTrade(TradeEntity trade) {
@@ -225,6 +272,38 @@ public class PositionSynchronizer {
                 "🔄 Position Sync: %s manually closed from broker\nEntry ₹%.2f → Exit ₹%.2f | P&L ₹%.2f\nTrade: %s",
                 fresh.getInstrumentKey(), fresh.getEntryPrice().doubleValue(),
                 exitPrice.doubleValue(), fresh.getRealizedPnl().doubleValue(), fresh.getTradeId()));
+    }
+
+    /**
+     * Create a CLOSED trade record from a broker position that was opened and closed
+     * while the app was not tracking it (e.g., manual trades done on Kite app).
+     * Uses the broker's unrealizedPnl field as the realized P&L (it's the day's P&L for closed positions).
+     */
+    private void createClosedTradeFromBrokerPosition(Position pos) {
+        String tradeId = "SYNC-CLOSED-" + java.util.UUID.randomUUID().toString().substring(0, 8);
+        String underlying = extractUnderlying(pos.instrumentKey());
+        String optionType = extractOptionType(pos.instrumentKey());
+
+        TradeEntity entity = new TradeEntity(
+                tradeId,
+                pos.instrumentKey(),
+                underlying,
+                optionType,
+                TradeStatus.OPEN,
+                Math.abs(pos.quantity() > 0 ? pos.quantity() : 1), // qty=0 for closed, use 1 as placeholder
+                pos.averagePrice(),
+                Instant.now(),
+                "position-sync: closed position found in broker (traded while app was down)"
+        );
+        entity.setProductType(pos.productType() != null ? pos.productType() : "NRML");
+        // Close immediately with the broker-reported P&L
+        entity.close(pos.lastPrice().signum() > 0 ? pos.lastPrice() : pos.averagePrice(),
+                Instant.now(), pos.unrealizedPnl(),
+                "position-sync: already closed in broker");
+        tradeRepository.save(entity);
+
+        log.info("Position sync recorded closed trade: tradeId={}, instrument={}, pnl={}",
+                tradeId, pos.instrumentKey(), pos.unrealizedPnl());
     }
 
     /**

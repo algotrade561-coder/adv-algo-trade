@@ -498,12 +498,14 @@ public class KiteWebSocketClient {
                 bidQty  = pb.getInt() & 0xFFFFFFFFL;
                 bestBid = pb.getInt() / 100.0;
                 pb.getShort(); // orders
-                for (int d = 1; d < 5; d++) { pb.getInt(); pb.getInt(); pb.getShort(); }
+                pb.getShort(); // padding (2 bytes per depth level)
+                for (int d = 1; d < 5; d++) { pb.getInt(); pb.getInt(); pb.getShort(); pb.getShort(); }
                 // Best ask
                 askQty  = pb.getInt() & 0xFFFFFFFFL;
                 bestAsk = pb.getInt() / 100.0;
-                pb.getShort();
-                for (int d = 1; d < 5; d++) { pb.getInt(); pb.getInt(); pb.getShort(); }
+                pb.getShort(); // orders
+                pb.getShort(); // padding
+                for (int d = 1; d < 5; d++) { pb.getInt(); pb.getInt(); pb.getShort(); pb.getShort(); }
             }
 
             Instant now = Instant.now();

@@ -49,6 +49,7 @@ public class TradingControlController {
     private final com.algo.trade.persistence.OrderRepository orderRepository;
     private final com.algo.trade.marketdata.MarketDataService marketDataService;
     private final com.algo.trade.execution.ExecutionEngine executionEngine;
+    private final com.algo.trade.persistence.PositionGroupRepository positionGroupRepository;
 
     public TradingControlController(
             TradingProperties tradingProperties,
@@ -65,7 +66,8 @@ public class TradingControlController {
             com.algo.trade.risk.RiskEngine riskEngine,
             com.algo.trade.persistence.OrderRepository orderRepository,
             com.algo.trade.marketdata.MarketDataService marketDataService,
-            com.algo.trade.execution.ExecutionEngine executionEngine
+            com.algo.trade.execution.ExecutionEngine executionEngine,
+            com.algo.trade.persistence.PositionGroupRepository positionGroupRepository
     ) {
         this.tradingProperties = tradingProperties;
         this.tradingStateService = tradingStateService;
@@ -82,6 +84,7 @@ public class TradingControlController {
         this.orderRepository = orderRepository;
         this.marketDataService = marketDataService;
         this.executionEngine = executionEngine;
+        this.positionGroupRepository = positionGroupRepository;
     }
 
     @GetMapping("/config")
@@ -198,6 +201,19 @@ public class TradingControlController {
         result.put("paperPnl", paperClosedPnl.add(paperUnrealizedPnl));
         result.put("paperClosedPnl", paperClosedPnl);
         result.put("paperUnrealizedPnl", paperUnrealizedPnl);
+
+        // Add spread strategy paper P&L (from PositionGroupEntity — separate tracking)
+        BigDecimal spreadPaperPnl = positionGroupRepository.findAll().stream()
+                .filter(pg -> !pg.isOpen()) // closed spread positions
+                .filter(pg -> pg.getExitTime() != null
+                        && pg.getExitTime().atZone(java.time.ZoneId.of("Asia/Kolkata")).toLocalDate()
+                                .equals(java.time.LocalDate.now(java.time.ZoneId.of("Asia/Kolkata"))))
+                .map(pg -> pg.getPnl() != null ? pg.getPnl() : BigDecimal.ZERO)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        // Combine single-leg paper + spread paper
+        BigDecimal totalPaperPnl = paperClosedPnl.add(paperUnrealizedPnl).add(spreadPaperPnl);
+        result.put("paperPnl", totalPaperPnl);
+        result.put("spreadPaperPnl", spreadPaperPnl);
 
         // Estimated trading charges (Zerodha F&O Options fee structure)
         BigDecimal liveCharges = BigDecimal.ZERO;
