@@ -48,6 +48,67 @@ public class DynamicExitManager {
         return Math.max(15, Math.min(60, atrBasedSL));
     }
 
+    /**
+     * Delta-adjusted SL using the UNDERLYING's ATR.
+     * Formula: SL% = (1.5 × underlyingATR × delta) / optionEntryPrice × 100
+     * This gives tighter SL for ATM (high delta) and wider for OTM (low delta).
+     * Clamps between 10% and 40% for safety.
+     */
+    public double calculateDeltaAdjustedSL(double entryPremium, double underlyingAtr, double delta) {
+        if (entryPremium <= 0 || underlyingAtr <= 0 || delta <= 0) return 25; // safe default
+        double expectedMove = underlyingAtr * delta;
+        double slPct = (1.5 * expectedMove / entryPremium) * 100;
+        return Math.max(10, Math.min(40, slPct));
+    }
+
+    /**
+     * Delta-adjusted target using the UNDERLYING's ATR.
+     * Formula: Target% = (2.5 × underlyingATR × delta) / optionEntryPrice × 100
+     * Clamps between 15% and 80%.
+     */
+    public double calculateDeltaAdjustedTarget(double entryPremium, double underlyingAtr, double delta, int daysToExpiry) {
+        if (entryPremium <= 0 || underlyingAtr <= 0 || delta <= 0) return 40; // safe default
+        double expectedMove = underlyingAtr * delta;
+        double targetPct = (2.5 * expectedMove / entryPremium) * 100;
+        // DTE multiplier: reduce target near expiry (less time for move to develop)
+        double timeMultiplier = switch (daysToExpiry) {
+            case 0 -> 0.5;
+            case 1 -> 0.7;
+            case 2 -> 0.85;
+            default -> 1.0;
+        };
+        return Math.max(15, Math.min(80, targetPct * timeMultiplier));
+    }
+
+    /**
+     * Delta-adjusted trailing stop activation.
+     * Activates trailing when profit reaches 1.5 × expected move.
+     * Clamps between 8% and 35%.
+     */
+    public double calculateDeltaAdjustedTrailActivation(double entryPremium, double underlyingAtr, double delta) {
+        if (entryPremium <= 0 || underlyingAtr <= 0 || delta <= 0) return 20;
+        double expectedMove = underlyingAtr * delta;
+        double activationPct = (1.5 * expectedMove / entryPremium) * 100;
+        return Math.max(8, Math.min(35, activationPct));
+    }
+
+    /**
+     * Delta-adjusted trailing gap (distance from peak before stop triggers).
+     * Gap = 1.0 × expected move as % of entry.
+     * Tightens as profit grows (lock in more at higher profits).
+     * Clamps between 5% and 20%.
+     */
+    public double calculateDeltaAdjustedTrailGap(double entryPremium, double underlyingAtr, double delta, double peakProfitPct) {
+        if (entryPremium <= 0 || underlyingAtr <= 0 || delta <= 0) return 10;
+        double expectedMove = underlyingAtr * delta;
+        double gapPct = (1.0 * expectedMove / entryPremium) * 100;
+        // Tighten gap as profit grows
+        if (peakProfitPct > 50) gapPct *= 0.6;
+        else if (peakProfitPct > 30) gapPct *= 0.75;
+        else if (peakProfitPct > 20) gapPct *= 0.85;
+        return Math.max(5, Math.min(20, gapPct));
+    }
+
     public double calculateTrailingSL(double profitPercent, double peakProfitPercent,
                                        double atr, double entryPremium) {
         if (peakProfitPercent < 10) return -999;

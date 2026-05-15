@@ -72,6 +72,8 @@ export interface TradingStatus {
   globalExitOverride: boolean;
   entrySignals: number;
   rejectedSignals: number;
+  totalEvaluations: number;
+  totalBlocked: number;
   effectiveDailyLossLimit: number;
   lastScanAt?: string | null;
 }

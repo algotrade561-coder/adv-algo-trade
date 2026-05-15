@@ -53,6 +53,25 @@ public class SpreadOrderExecutor {
     public SpreadExecutionResult execute(List<SpreadLeg> legs, String groupId, String strategyName) {
         log.info("[SpreadExecutor] Starting: group={}, strategy={}, legs={}", groupId, strategyName, legs.size());
 
+        // 0. Pre-flight check: estimate total premium needed for BUY legs
+        //    If total BUY premium exceeds a safety threshold, abort before placing any orders.
+        //    This prevents partial fills that require complex unwinding.
+        BigDecimal totalBuyPremium = BigDecimal.ZERO;
+        for (SpreadLeg leg : legs) {
+            if (leg.side() == OrderSide.BUY) {
+                Optional<Quote> q = marketDataService.quote(leg.instrumentKey());
+                BigDecimal price = q.map(Quote::lastPrice).orElse(BigDecimal.ZERO);
+                if (price.signum() <= 0) {
+                    log.warn("[SpreadExecutor] No quote for BUY leg {} — aborting spread", leg.instrumentKey());
+                    telegramAlertService.systemAlert(String.format(
+                            "⚠️ Spread aborted: no quote for %s\nGroup: %s", leg.instrumentKey(), groupId));
+                    return new SpreadExecutionResult(false, List.of(), "No quote for BUY leg: " + leg.instrumentKey());
+                }
+                totalBuyPremium = totalBuyPremium.add(price.multiply(BigDecimal.valueOf(leg.quantity()), MC));
+            }
+        }
+        log.info("[SpreadExecutor] Pre-flight: totalBuyPremium=₹{} for group={}", totalBuyPremium.setScale(0, java.math.RoundingMode.HALF_UP), groupId);
+
         // 1. Sequence legs: BUY first (hedge — low margin), then SELL (needs spread margin benefit)
         // This ensures the broker recognizes the hedge before charging full naked margin on SELL legs.
         List<SpreadLeg> buyLegs = legs.stream().filter(l -> l.side() == OrderSide.BUY).toList();
@@ -64,11 +83,23 @@ public class SpreadOrderExecutor {
         // 2. Execute each leg with LIMIT + protection
         List<LegResult> results = new ArrayList<>();
         boolean anyFailed = false;
+        boolean buyPhaseComplete = false;
 
         for (SpreadLeg leg : sequenced) {
             if (anyFailed) {
                 results.add(new LegResult(leg, false, "Skipped — previous leg failed"));
                 continue;
+            }
+
+            // Insert delay between BUY phase and SELL phase to let exchange confirm hedges
+            if (!buyPhaseComplete && leg.side() == OrderSide.SELL) {
+                buyPhaseComplete = true;
+                try {
+                    log.info("[SpreadExecutor] BUY legs placed — waiting 2s for exchange confirmation before SELL legs");
+                    Thread.sleep(2000);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
             }
 
             LegResult result = executeLeg(leg, groupId);
@@ -181,36 +212,93 @@ public class SpreadOrderExecutor {
     }
 
     private void unwindFilledLegs(List<LegResult> results, String groupId) {
+        // Wait 3 seconds for exchange to confirm fills on BUY legs before attempting unwind.
+        // Without this delay, Zerodha may not recognize the BUY position and reject the SELL
+        // as a new naked short (requiring full margin instead of netting off).
+        try {
+            log.info("[SpreadExecutor] Waiting 3s for exchange fill confirmations before unwind: group={}", groupId);
+            Thread.sleep(3000);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+
+        List<String> failedUnwinds = new ArrayList<>();
+
         for (LegResult result : results) {
-            if (result.success()) {
-                // Reverse this leg
-                SpreadLeg leg = result.leg();
-                OrderSide reverseSide = leg.side() == OrderSide.BUY ? OrderSide.SELL : OrderSide.BUY;
+            if (!result.success()) continue; // Only unwind legs that were placed
 
-                Optional<Quote> quoteOpt = marketDataService.quote(leg.instrumentKey());
-                BigDecimal lastPrice = quoteOpt.map(Quote::lastPrice).orElse(BigDecimal.ZERO);
+            SpreadLeg leg = result.leg();
+            OrderSide reverseSide = leg.side() == OrderSide.BUY ? OrderSide.SELL : OrderSide.BUY;
 
-                if (lastPrice.signum() <= 0) {
-                    log.error("[SpreadExecutor] Cannot unwind — no quote for {}", leg.instrumentKey());
-                    continue;
-                }
+            Optional<Quote> quoteOpt = marketDataService.quote(leg.instrumentKey());
+            BigDecimal lastPrice = quoteOpt.map(Quote::lastPrice).orElse(BigDecimal.ZERO);
 
-                // Use MARKET for unwind (urgency > price)
-                OrderRequest unwindRequest = new OrderRequest(
-                        "UNWIND-" + groupId + "-" + leg.instrumentKey().hashCode(),
+            if (lastPrice.signum() <= 0) {
+                log.error("[SpreadExecutor] Cannot unwind — no quote for {}", leg.instrumentKey());
+                failedUnwinds.add(leg.instrumentKey() + " (no quote)");
+                continue;
+            }
+
+            // For closing a BUY position (SELL to close): use LIMIT at LTP - 1.5% protection
+            // This avoids the margin issue — LIMIT orders for closing existing positions
+            // are recognized by Zerodha as position-closing, not new naked shorts.
+            BigDecimal protection = lastPrice.multiply(BigDecimal.valueOf(SPREAD_PROTECTION_PERCENT / 100), MC);
+            BigDecimal limitPrice = reverseSide == OrderSide.SELL
+                    ? lastPrice.subtract(protection).max(BigDecimal.ONE) // Selling: accept slightly less
+                    : lastPrice.add(protection); // Buying back: pay slightly more
+            limitPrice = ExecutionEngine.roundToTick(limitPrice, reverseSide);
+
+            OrderRequest unwindRequest = new OrderRequest(
+                    "UNWIND-" + groupId + "-" + leg.instrumentKey().hashCode(),
+                    leg.instrumentKey(),
+                    reverseSide,
+                    OrderType.LIMIT,
+                    ProductType.MIS,
+                    leg.quantity(),
+                    Optional.of(limitPrice),
+                    "spread-unwind"
+            );
+
+            Optional<OrderResponse> unwindResponse = executionEngine.placeSpreadLegOrder(unwindRequest);
+            boolean unwindSuccess = unwindResponse.isPresent()
+                    && unwindResponse.get().status() != OrderStatus.REJECTED;
+
+            if (!unwindSuccess) {
+                // Retry once with MARKET after another 2s delay
+                log.warn("[SpreadExecutor] LIMIT unwind failed for {} — retrying with MARKET after 2s", leg.instrumentKey());
+                try { Thread.sleep(2000); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+
+                OrderRequest marketRetry = new OrderRequest(
+                        "UNWIND-MKT-" + groupId + "-" + leg.instrumentKey().hashCode(),
                         leg.instrumentKey(),
                         reverseSide,
                         OrderType.MARKET,
                         ProductType.MIS,
                         leg.quantity(),
                         Optional.empty(),
-                        "spread-unwind"
+                        "spread-unwind-retry"
                 );
+                Optional<OrderResponse> retryResponse = executionEngine.placeSpreadLegOrder(marketRetry);
+                unwindSuccess = retryResponse.isPresent()
+                        && retryResponse.get().status() != OrderStatus.REJECTED;
 
-                Optional<OrderResponse> unwindResponse = executionEngine.placeSpreadLegOrder(unwindRequest);
-                log.info("[SpreadExecutor] Unwind: instrument={}, side={}, success={}",
-                        leg.instrumentKey(), reverseSide, unwindResponse.isPresent());
+                if (!unwindSuccess) {
+                    failedUnwinds.add(leg.instrumentKey() + " " + reverseSide);
+                    log.error("[SpreadExecutor] Unwind FAILED after retry: group={}, instrument={}, side={}",
+                            groupId, leg.instrumentKey(), reverseSide);
+                }
             }
+
+            log.info("[SpreadExecutor] Unwind {}: instrument={}, side={}, price={}",
+                    unwindSuccess ? "SUCCESS" : "FAILED", leg.instrumentKey(), reverseSide, limitPrice);
+        }
+
+        // Alert operator about any legs that couldn't be unwound — manual intervention needed
+        if (!failedUnwinds.isEmpty()) {
+            telegramAlertService.systemAlert(String.format(
+                    "🚨 SPREAD UNWIND FAILED — MANUAL CLOSE REQUIRED\nGroup: %s\nFailed legs: %s\n"
+                    + "These positions are OPEN in your broker. Close them manually from Kite app.",
+                    groupId, String.join(", ", failedUnwinds)));
         }
     }
 

@@ -8,7 +8,7 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.Map;
 
 /**
- * REST API for MCX crude oil price data.
+ * REST API for Brent crude oil price data.
  * Used by dashboard to display current oil price and regime.
  */
 @RestController
@@ -16,51 +16,41 @@ import java.util.Map;
 public class OilPriceController {
 
     private final OilPriceTracker oilPriceTracker;
+    private final BrentCrudeService brentCrudeService;
 
-    public OilPriceController(OilPriceTracker oilPriceTracker) {
+    public OilPriceController(OilPriceTracker oilPriceTracker, BrentCrudeService brentCrudeService) {
         this.oilPriceTracker = oilPriceTracker;
+        this.brentCrudeService = brentCrudeService;
     }
 
     /**
-     * Get current oil price snapshot.
-     * 
-     * GET /api/oil-price/snapshot
-     * 
-     * Response:
-     * {
-     *   "priceINR": 8719.0,
-     *   "priceUSD": 104.42,
-     *   "dailyChangeINR": 282.0,
-     *   "dailyChangePct": 3.34,
-     *   "regime": "CRISIS",
-     *   "momentum": "SPIKING",
-     *   "tradingSymbol": "CRUDEOIL26JUNFUT",
-     *   "contractExpiry": "2026-06-19",
-     *   "lastUpdate": "2026-05-09T10:35:00Z",
-     *   "available": true
-     * }
+     * Get current Brent crude oil price snapshot.
+     * Always returns Brent data (from Yahoo Finance), never MCX.
      */
     @GetMapping("/snapshot")
     public ResponseEntity<Map<String, Object>> getSnapshot() {
-        if (!oilPriceTracker.isDataAvailable()) {
+        if (!brentCrudeService.isAvailable()) {
             return ResponseEntity.ok(Map.of(
                     "available", false,
-                    "message", "Oil price data not available"
+                    "message", "Brent crude price data not available"
             ));
         }
 
-        OilPriceTracker.OilPriceSnapshot snapshot = oilPriceTracker.getSnapshot();
-        
+        double priceUSD = brentCrudeService.getLastPriceUSD();
+        double priceINR = priceUSD * 83.5;
+        double dailyChangePct = brentCrudeService.getDailyChangePct();
+        double dailyChangeINR = priceINR - (brentCrudeService.getPreviousCloseUSD() * 83.5);
+
         return ResponseEntity.ok(Map.of(
-                "priceINR", snapshot.priceINR(),
-                "priceUSD", snapshot.priceUSD(),
-                "dailyChangeINR", snapshot.dailyChangeINR(),
-                "dailyChangePct", snapshot.dailyChangePct(),
-                "regime", snapshot.regime(),
-                "momentum", snapshot.momentum(),
-                "tradingSymbol", snapshot.tradingSymbol(),
-                "contractExpiry", snapshot.contractExpiry() != null ? snapshot.contractExpiry().toString() : null,
-                "lastUpdate", snapshot.lastUpdate() != null ? snapshot.lastUpdate().toString() : null,
+                "priceINR", priceINR,
+                "priceUSD", priceUSD,
+                "dailyChangeINR", dailyChangeINR,
+                "dailyChangePct", dailyChangePct,
+                "regime", brentCrudeService.getRegime(),
+                "momentum", oilPriceTracker.getMomentum(),
+                "tradingSymbol", "BZ=F (Brent Crude)",
+                "contractExpiry", "",
+                "lastUpdate", brentCrudeService.getLastFetchTime() != null ? brentCrudeService.getLastFetchTime().toString() : null,
                 "available", true
         ));
     }

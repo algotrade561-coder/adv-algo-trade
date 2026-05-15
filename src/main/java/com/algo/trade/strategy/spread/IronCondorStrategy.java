@@ -53,14 +53,59 @@ public class IronCondorStrategy extends AbstractSpreadStrategy {
 
     @Override
     protected boolean shouldEnter(SpreadEvaluationContext ctx) {
+        // ── Filter 1: IV Rank > 40 — need elevated IV for premium selling to be profitable ──
         if (ctx.ivRank() <= 40) {
             log.debug("IronCondor: IV rank {} <= 40, skipping", ctx.ivRank());
             return false;
         }
+
+        // ── Filter 2: MarketGuard safe for short premium ──
         if (!marketGuard.isSafeForShortPremium()) {
             log.debug("IronCondor: MarketGuard blocks short premium");
             return false;
         }
+
+        // ── Filter 3: Range-bound check — BB bandwidth < 3.5% ──
+        var candles = ctx.trendCandles();
+        if (candles != null && candles.size() >= 20) {
+            double[] closes = candles.stream().mapToDouble(c -> c.close().doubleValue()).toArray();
+            double sma = 0;
+            for (int i = closes.length - 20; i < closes.length; i++) sma += closes[i];
+            sma /= 20;
+            double variance = 0;
+            for (int i = closes.length - 20; i < closes.length; i++) variance += Math.pow(closes[i] - sma, 2);
+            double stdDev = Math.sqrt(variance / 20);
+            double bandwidth = (stdDev * 4) / sma * 100;
+            if (bandwidth > 3.5) {
+                log.debug("IronCondor: BB bandwidth {:.2f}% > 3.5% (too volatile), skipping", bandwidth);
+                return false;
+            }
+
+            // ── Filter 4: Price within 1.5% of SMA (not trending strongly) ──
+            double deviation = Math.abs(closes[closes.length - 1] - sma) / sma * 100;
+            if (deviation > 1.5) {
+                log.debug("IronCondor: price deviation {:.2f}% from SMA > 1.5% (trending), skipping", deviation);
+                return false;
+            }
+        }
+
+        // ── Filter 5: DTE >= 2 days — don't sell condors near expiry (gamma risk) ──
+        IndexType indexType = ctx.indexType();
+        long dte = expiryCalendar.daysToExpiry(indexType);
+        if (dte < 2) {
+            log.debug("IronCondor: DTE={} < 2 (too close to expiry), skipping", dte);
+            return false;
+        }
+
+        // ── Filter 6: Time window — enter before 12:00 PM only ──
+        java.time.LocalTime now = java.time.LocalTime.now(java.time.ZoneId.of("Asia/Kolkata"));
+        if (now.isAfter(java.time.LocalTime.of(12, 0))) {
+            log.debug("IronCondor: after 12:00 PM, skipping");
+            return false;
+        }
+
+        log.info("IronCondor: all entry filters passed — ivRank={:.1f}, dte={}, time={}",
+                ctx.ivRank(), dte, now);
         return true;
     }
 

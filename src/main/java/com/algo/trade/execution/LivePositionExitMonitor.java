@@ -65,6 +65,7 @@ public class LivePositionExitMonitor {
     private final com.algo.trade.monitoring.SchedulerRegistry schedulerRegistry;
     private final com.algo.trade.ml.MlExitShadowRecorder mlExitShadowRecorder;
     private final com.algo.trade.risk.MarketGuard marketGuard;
+    private final com.algo.trade.marketdata.LiveInstrumentCache liveInstrumentCache;
 
     // tradeId → highest price seen since entry
     private final Map<String, BigDecimal> peakPrices = new ConcurrentHashMap<>();
@@ -91,7 +92,8 @@ public class LivePositionExitMonitor {
                                     com.algo.trade.monitoring.ErrorEventService errorEventService,
                                     com.algo.trade.monitoring.SchedulerRegistry schedulerRegistry,
                                     com.algo.trade.ml.MlExitShadowRecorder mlExitShadowRecorder,
-                                    com.algo.trade.risk.MarketGuard marketGuard) {
+                                    com.algo.trade.risk.MarketGuard marketGuard,
+                                    com.algo.trade.marketdata.LiveInstrumentCache liveInstrumentCache) {
         this.tradeRepository = tradeRepository;
         this.executionEngine = executionEngine;
         this.marketDataService = marketDataService;
@@ -109,6 +111,7 @@ public class LivePositionExitMonitor {
         this.schedulerRegistry = schedulerRegistry;
         this.mlExitShadowRecorder = mlExitShadowRecorder;
         this.marketGuard = marketGuard;
+        this.liveInstrumentCache = liveInstrumentCache;
         schedulerRegistry.register("exitBackup", "Scheduled backup exit evaluation (60s)", 60_000, this::scheduledBackupCheck);
     }
 
@@ -309,39 +312,75 @@ public class LivePositionExitMonitor {
         // Resolve instrument token for candle lookup
         long instrumentToken = resolveInstrumentToken(trade);
         List<com.algo.trade.domain.Candle> candles15m = liveCandleBuilder.getHistory(instrumentToken, com.algo.trade.domain.Timeframe.FIFTEEN_MINUTE);
-        double atr = candles15m.size() >= 15 ? dynamicExitManager.calculateATR(candles15m, 14) : 0;
-        boolean useAtrExits = atr > 0 && entryPrice.doubleValue() > 0;
+        double optionAtr = candles15m.size() >= 15 ? dynamicExitManager.calculateATR(candles15m, 14) : 0;
         List<com.algo.trade.domain.Candle> candles1m = liveCandleBuilder.getHistory(instrumentToken, com.algo.trade.domain.Timeframe.ONE_MINUTE);
 
-        // Dynamic SL: purely ATR-based when candle data is available.
-        // ATR determines the SL dynamically based on current market volatility.
-        // Config SL is only used as FALLBACK when ATR data isn't available (startup, no candles).
-        // calculateDynamicSL internally clamps between 15% and 60% for safety.
+        // ── Compute UNDERLYING ATR for delta-adjusted exits ──
+        // Use the underlying spot's 15-min ATR × option delta for more accurate SL/target.
+        // Falls back to option ATR if underlying data isn't available.
+        // (indexType already declared above for expiry checks)
+        long spotToken = indexType.spotToken();
+        List<com.algo.trade.domain.Candle> underlyingCandles15m = liveCandleBuilder.getHistory(spotToken, com.algo.trade.domain.Timeframe.FIFTEEN_MINUTE);
+        double underlyingAtr = underlyingCandles15m.size() >= 15
+                ? dynamicExitManager.calculateATR(underlyingCandles15m, 14) : 0;
+
+        // Estimate delta: ATM delta ~0.5, adjust by moneyness
+        // delta = 0.5 for ATM, decreases as option goes OTM
+        double delta = 0.5; // default ATM
+        if (trade.getEntryDelta() != null && trade.getEntryDelta() > 0) {
+            delta = trade.getEntryDelta(); // use stored entry delta if available
+        } else if (underlyingAtr > 0) {
+            // Estimate from current price relationship: if option premium < 1% of underlying, it's deep OTM
+            double spotPrice = liveInstrumentCache.getFuturesPrice(indexType);
+            if (spotPrice > 0 && entryPrice.doubleValue() > 0) {
+                double premiumRatio = entryPrice.doubleValue() / spotPrice;
+                if (premiumRatio > 0.008) delta = 0.50;      // ATM
+                else if (premiumRatio > 0.004) delta = 0.35;  // slightly OTM
+                else if (premiumRatio > 0.002) delta = 0.20;  // OTM
+                else delta = 0.10;                             // deep OTM
+            }
+        }
+
+        // Use delta-adjusted exits when underlying ATR is available, else fall back to option ATR
+        boolean useDeltaExits = underlyingAtr > 0 && delta > 0 && entryPrice.doubleValue() > 0;
+        boolean useAtrExits = (useDeltaExits || optionAtr > 0) && entryPrice.doubleValue() > 0;
+        // For stall/gamma/breakout detection, still use option candles
+        double atr = useDeltaExits ? underlyingAtr : optionAtr;
+
+        // Dynamic SL: delta-adjusted when underlying ATR available, else option ATR, else config fallback.
         double configSlPct = config.getStopLossPercent().doubleValue();
         double slPct;
-        if (useAtrExits) {
-            slPct = dynamicExitManager.calculateDynamicSL(entryPrice.doubleValue(), atr, (int) daysToExpiry);
-            log.debug("[ExitMonitor] ATR SL: {}% (ATR={}, entry=₹{}, DTE={}) — config fallback={}%",
-                    String.format("%.1f", slPct), String.format("%.1f", atr),
-                    entryPrice, daysToExpiry, String.format("%.1f", configSlPct));
+        if (useDeltaExits) {
+            slPct = dynamicExitManager.calculateDeltaAdjustedSL(entryPrice.doubleValue(), underlyingAtr, delta);
+            log.debug("[ExitMonitor] Delta-SL: {}% (underlyingATR={}, delta={}, entry=₹{}) — config fallback={}%",
+                    String.format("%.1f", slPct), String.format("%.1f", underlyingAtr),
+                    String.format("%.2f", delta), entryPrice, String.format("%.1f", configSlPct));
+        } else if (optionAtr > 0) {
+            slPct = dynamicExitManager.calculateDynamicSL(entryPrice.doubleValue(), optionAtr, (int) daysToExpiry);
+            log.debug("[ExitMonitor] Option-ATR SL: {}% (optionATR={}, entry=₹{}) — config fallback={}%",
+                    String.format("%.1f", slPct), String.format("%.1f", optionAtr),
+                    entryPrice, String.format("%.1f", configSlPct));
         } else {
             slPct = configSlPct;
             log.debug("[ExitMonitor] Config SL: {}% (no ATR data available)", String.format("%.1f", slPct));
         }
 
-        // Dynamic target: ATR-based when available
+        // Dynamic target: delta-adjusted when available
         double targetPct;
-        if (useAtrExits) {
-            targetPct = dynamicExitManager.calculateDynamicTarget(entryPrice.doubleValue(), atr, (int) daysToExpiry);
+        if (useDeltaExits) {
+            targetPct = dynamicExitManager.calculateDeltaAdjustedTarget(entryPrice.doubleValue(), underlyingAtr, delta, (int) daysToExpiry);
+        } else if (optionAtr > 0) {
+            targetPct = dynamicExitManager.calculateDynamicTarget(entryPrice.doubleValue(), optionAtr, (int) daysToExpiry);
         } else {
             targetPct = config.getTargetPercent().doubleValue();
         }
 
-        log.debug("[ExitMonitor] tradeId={} instrument={} entry={} current={} profit={}% peak={}% sl={}% target={}% atr={}",
+        log.debug("[ExitMonitor] tradeId={} instrument={} entry={} current={} profit={}% peak={}% sl={}% target={}% delta={} uATR={}",
                 trade.getTradeId(), trade.getInstrumentKey(), entryPrice, currentPrice,
                 String.format("%.1f", profitPct), String.format("%.1f", peakPct),
                 String.format("%.1f", slPct), String.format("%.1f", targetPct),
-                useAtrExits ? String.format("%.1f", atr) : "N/A");
+                String.format("%.2f", delta),
+                useDeltaExits ? String.format("%.1f", underlyingAtr) : "N/A");
 
         // ── 1. Stop Loss ──────────────────────────────────────────────────────
         if (profitPct <= -slPct) {
@@ -368,20 +407,29 @@ public class LivePositionExitMonitor {
         }
 
         // ── 3. Trailing Stop ──────────────────────────────────────────────────
-        // ATR-based dynamic trailing: activation and gap are derived from ATR when available.
+        // Delta-adjusted trailing: activation and gap derived from underlying ATR × delta.
         // Config values serve as fallback when no ATR data exists.
         BigDecimal trailActivation;
         BigDecimal trailGap;
-        if (useAtrExits) {
-            // ATR-based: activate trailing after 1.5× ATR profit, gap = 1× ATR
-            double atrActivation = (1.5 * atr / entryPrice.doubleValue()) * 100;
-            double atrGap = (1.0 * atr / entryPrice.doubleValue()) * 100;
-            // Clamp to reasonable bounds (5% min activation, 50% max; 3% min gap, 25% max)
+        if (useDeltaExits) {
+            double deltaActivation = dynamicExitManager.calculateDeltaAdjustedTrailActivation(
+                    entryPrice.doubleValue(), underlyingAtr, delta);
+            double deltaGap = dynamicExitManager.calculateDeltaAdjustedTrailGap(
+                    entryPrice.doubleValue(), underlyingAtr, delta, peakPct);
+            trailActivation = BigDecimal.valueOf(deltaActivation);
+            trailGap = BigDecimal.valueOf(deltaGap);
+            log.debug("[ExitMonitor] Delta trailing: activation={}%, gap={}% (uATR={}, delta={}, entry=₹{})",
+                    String.format("%.1f", deltaActivation), String.format("%.1f", deltaGap),
+                    String.format("%.1f", underlyingAtr), String.format("%.2f", delta), entryPrice);
+        } else if (useAtrExits) {
+            // Fallback to option ATR-based trailing
+            double atrActivation = (1.5 * optionAtr / entryPrice.doubleValue()) * 100;
+            double atrGap = (1.0 * optionAtr / entryPrice.doubleValue()) * 100;
             trailActivation = BigDecimal.valueOf(Math.max(5, Math.min(50, atrActivation)));
             trailGap = BigDecimal.valueOf(Math.max(3, Math.min(25, atrGap)));
-            log.debug("[ExitMonitor] ATR trailing: activation={}%, gap={}% (ATR={}, entry=₹{})",
+            log.debug("[ExitMonitor] Option-ATR trailing: activation={}%, gap={}% (optATR={}, entry=₹{})",
                     String.format("%.1f", trailActivation), String.format("%.1f", trailGap),
-                    String.format("%.1f", atr), entryPrice);
+                    String.format("%.1f", optionAtr), entryPrice);
         } else if (globalConfigService.isGlobalExitOverride()) {
             trailActivation = config.getTrailingStopActivationPercent();
             trailGap = config.getTrailingGapPercent();

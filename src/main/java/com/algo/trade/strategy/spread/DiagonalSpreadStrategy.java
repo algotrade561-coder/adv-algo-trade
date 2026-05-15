@@ -75,7 +75,22 @@ public class DiagonalSpreadStrategy extends AbstractSpreadStrategy {
             return false;
         }
 
-        log.debug("DiagonalSpread: entry passed — emaGap={:.3f}%, ivRank={:.1f}", emaGapPct, ctx.ivRank());
+        // DTE >= 2 — don't sell near-expiry leg too close to expiry
+        IndexType indexType = ctx.indexType();
+        long dte = expiryCalendar.daysToExpiry(indexType);
+        if (dte < 2) {
+            log.debug("DiagonalSpread: DTE={} < 2 (too close to expiry), skipping", dte);
+            return false;
+        }
+
+        // Time window — enter before 12:00 PM
+        java.time.LocalTime now = java.time.LocalTime.now(java.time.ZoneId.of("Asia/Kolkata"));
+        if (now.isAfter(java.time.LocalTime.of(12, 0))) {
+            log.debug("DiagonalSpread: after 12:00 PM, skipping");
+            return false;
+        }
+
+        log.debug("DiagonalSpread: entry passed — emaGap={:.3f}%, ivRank={:.1f}, dte={}", emaGapPct, ctx.ivRank(), dte);
         return true;
     }
 

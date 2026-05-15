@@ -78,7 +78,22 @@ public class JadeLizardStrategy extends AbstractSpreadStrategy {
             }
         }
 
-        log.info("JadeLizard: entry filters passed — ivRank={:.1f}", ctx.ivRank());
+        // DTE >= 2 — don't sell near expiry
+        IndexType indexType = ctx.indexType();
+        long dte = expiryCalendar.daysToExpiry(indexType);
+        if (dte < 2) {
+            log.debug("JadeLizard: DTE={} < 2 (too close to expiry), skipping", dte);
+            return false;
+        }
+
+        // Time window — enter before 12:00 PM
+        java.time.LocalTime now = java.time.LocalTime.now(java.time.ZoneId.of("Asia/Kolkata"));
+        if (now.isAfter(java.time.LocalTime.of(12, 0))) {
+            log.debug("JadeLizard: after 12:00 PM, skipping");
+            return false;
+        }
+
+        log.info("JadeLizard: entry filters passed — ivRank={:.1f}, dte={}", ctx.ivRank(), dte);
         return true;
     }
 

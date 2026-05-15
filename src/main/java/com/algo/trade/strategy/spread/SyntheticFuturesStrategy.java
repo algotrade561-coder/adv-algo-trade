@@ -90,19 +90,39 @@ public class SyntheticFuturesStrategy extends AbstractSpreadStrategy {
         boolean crossAbove = ema9Prev.compareTo(ema21Prev) <= 0 && ema9Current.compareTo(ema21Current) > 0;
         boolean crossBelow = ema9Prev.compareTo(ema21Prev) >= 0 && ema9Current.compareTo(ema21Current) < 0;
 
-        if (crossAbove) {
-            syntheticLong = true;
-            log.debug("SyntheticFutures: EMA9 crossed above EMA21 — synthetic long signal");
-            return true;
-        }
-        if (crossBelow) {
-            syntheticLong = false;
-            log.debug("SyntheticFutures: EMA9 crossed below EMA21 — synthetic short signal");
-            return true;
+        if (!crossAbove && !crossBelow) {
+            log.debug("SyntheticFutures: no EMA crossover detected");
+            return false;
         }
 
-        log.debug("SyntheticFutures: no EMA crossover detected");
-        return false;
+        // EMA gap strength: must be > 0.15% to confirm strong trend
+        double emaGapPct = ema9Current.subtract(ema21Current).abs().doubleValue() / ema21Current.doubleValue() * 100;
+        if (emaGapPct < 0.15) {
+            log.debug("SyntheticFutures: EMA gap {:.3f}% < 0.15% (weak crossover), skipping", emaGapPct);
+            return false;
+        }
+
+        // MarketGuard safe for short premium (synthetic has a SELL leg)
+        if (!marketGuard.isSafeForShortPremium()) {
+            log.debug("SyntheticFutures: MarketGuard blocks short premium (SELL leg)");
+            return false;
+        }
+
+        // Time window — enter before 14:00 (need time for the move to develop)
+        LocalTime now = LocalTime.now(IST);
+        if (now.isAfter(LocalTime.of(14, 0))) {
+            log.debug("SyntheticFutures: after 14:00, skipping");
+            return false;
+        }
+
+        if (crossAbove) {
+            syntheticLong = true;
+            log.info("SyntheticFutures: EMA9 crossed above EMA21 — synthetic long signal (gap={:.3f}%)", emaGapPct);
+        } else {
+            syntheticLong = false;
+            log.info("SyntheticFutures: EMA9 crossed below EMA21 — synthetic short signal (gap={:.3f}%)", emaGapPct);
+        }
+        return true;
     }
 
     @Override

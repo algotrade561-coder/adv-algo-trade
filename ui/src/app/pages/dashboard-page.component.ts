@@ -146,7 +146,7 @@ import { MarketSnapshot, OilPriceSnapshot, PnlSnapshot, RuntimeStatus, StrategyD
             [class.mc-bad]="oilPrice?.regime === 'CRISIS'"
             [class.mc-muted]="!oilPrice">
             <div class="mc-top">
-              <span class="mc-label">MCX Crude Oil</span>
+              <span class="mc-label">Brent Crude Oil</span>
               <span class="mc-badge"
                 [class.badge-ok]="oilPrice?.regime === 'LOW' || oilPrice?.regime === 'NORMAL'"
                 [class.badge-warn]="oilPrice?.regime === 'HIGH'"
@@ -170,7 +170,7 @@ import { MarketSnapshot, OilPriceSnapshot, PnlSnapshot, RuntimeStatus, StrategyD
               @else if (oilPrice?.regime === 'NORMAL') { Normal range — neutral impact }
               @else if (oilPrice?.regime === 'HIGH') { Elevated — watch for risk-off }
               @else if (oilPrice?.regime === 'CRISIS') { Crisis level — risk-off mode }
-              @else { Waiting for MCX data }
+              @else { Waiting for Brent data }
             </div>
           </div>
 

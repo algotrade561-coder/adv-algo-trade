@@ -37,6 +37,7 @@ public class MonitoringController {
     private final com.algo.trade.indicator.IVRankTracker ivRankTracker;
     private final com.algo.trade.reporting.PerformanceMetricsService performanceMetricsService;
     private final com.algo.trade.monitoring.PositionStrengthService positionStrengthService;
+    private final com.algo.trade.commodity.BrentCrudeService brentCrudeService;
 
     public MonitoringController(ReportingService reportingService, MarketGuard marketGuard,
                                  LiveInstrumentCache liveInstrumentCache,
@@ -45,7 +46,8 @@ public class MonitoringController {
                                  com.algo.trade.marketdata.PcrCalculator pcrCalculator,
                                  com.algo.trade.reporting.PerformanceMetricsService performanceMetricsService,
                                  com.algo.trade.monitoring.PositionStrengthService positionStrengthService,
-                                 com.algo.trade.indicator.IVRankTracker ivRankTracker) {
+                                 com.algo.trade.indicator.IVRankTracker ivRankTracker,
+                                 com.algo.trade.commodity.BrentCrudeService brentCrudeService) {
         this.reportingService = reportingService;
         this.marketGuard = marketGuard;
         this.liveInstrumentCache = liveInstrumentCache;
@@ -55,6 +57,7 @@ public class MonitoringController {
         this.performanceMetricsService = performanceMetricsService;
         this.positionStrengthService = positionStrengthService;
         this.ivRankTracker = ivRankTracker;
+        this.brentCrudeService = brentCrudeService;
     }
 
     @GetMapping("/market")
@@ -88,6 +91,8 @@ public class MonitoringController {
         result.put("preEventDay", marketGuard.isPreEventDay());
         result.put("safeForLongPremium", marketGuard.isSafeForLongPremium());
         result.put("longPremiumBlockReason", marketGuard.longPremiumBlockReason());
+        result.put("brentCrude", brentCrudeService.getLastPriceUSD());
+        result.put("brentCrudeAvailable", brentCrudeService.isAvailable());
         return result;
     }
 

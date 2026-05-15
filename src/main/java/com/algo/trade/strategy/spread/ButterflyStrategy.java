@@ -83,7 +83,22 @@ public class ButterflyStrategy extends AbstractSpreadStrategy {
             return false;
         }
 
-        log.info("Butterfly: entry filters passed — ivRank={:.1f}, deviation={:.2f}%", ctx.ivRank(), deviation);
+        // DTE >= 2 — don't sell near expiry (gamma risk on the 2x short ATM leg)
+        IndexType indexType = ctx.indexType();
+        long dte = expiryCalendar.daysToExpiry(indexType);
+        if (dte < 2) {
+            log.debug("Butterfly: DTE={} < 2 (too close to expiry), skipping", dte);
+            return false;
+        }
+
+        // Time window — enter before 12:00 PM
+        java.time.LocalTime now = java.time.LocalTime.now(java.time.ZoneId.of("Asia/Kolkata"));
+        if (now.isAfter(java.time.LocalTime.of(12, 0))) {
+            log.debug("Butterfly: after 12:00 PM, skipping");
+            return false;
+        }
+
+        log.info("Butterfly: entry filters passed — ivRank={:.1f}, deviation={:.2f}%, dte={}", ctx.ivRank(), deviation, dte);
         return true;
     }
 

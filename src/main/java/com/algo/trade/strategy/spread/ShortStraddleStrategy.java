@@ -64,6 +64,37 @@ public class ShortStraddleStrategy extends AbstractSpreadStrategy {
             log.debug("ShortStraddle: MarketGuard blocks short premium");
             return false;
         }
+
+        // Range-bound check: price within 1% of 20-period SMA
+        var candles = ctx.trendCandles();
+        if (candles != null && candles.size() >= 20) {
+            double[] closes = candles.stream().mapToDouble(c -> c.close().doubleValue()).toArray();
+            double sma = 0;
+            for (int i = closes.length - 20; i < closes.length; i++) sma += closes[i];
+            sma /= 20;
+            double deviation = Math.abs(closes[closes.length - 1] - sma) / sma * 100;
+            if (deviation > 1.0) {
+                log.debug("ShortStraddle: price deviation {:.2f}% from SMA > 1% (trending), skipping", deviation);
+                return false;
+            }
+        }
+
+        // DTE >= 2 — don't sell straddles near expiry (gamma risk)
+        IndexType indexType = ctx.indexType();
+        long dte = expiryCalendar.daysToExpiry(indexType);
+        if (dte < 2) {
+            log.debug("ShortStraddle: DTE={} < 2 (too close to expiry), skipping", dte);
+            return false;
+        }
+
+        // Time window — enter before 12:00 PM
+        java.time.LocalTime now = java.time.LocalTime.now(java.time.ZoneId.of("Asia/Kolkata"));
+        if (now.isAfter(java.time.LocalTime.of(12, 0))) {
+            log.debug("ShortStraddle: after 12:00 PM, skipping");
+            return false;
+        }
+
+        log.info("ShortStraddle: entry filters passed — ivRank={:.1f}, dte={}", ctx.ivRank(), dte);
         return true;
     }
 

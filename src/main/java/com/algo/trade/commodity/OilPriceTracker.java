@@ -25,10 +25,11 @@ public class OilPriceTracker {
 
     private static final Logger log = LoggerFactory.getLogger(OilPriceTracker.class);
 
-    // Regime thresholds (USD per barrel)
-    private static final double LOW_THRESHOLD_USD = 60.0;
-    private static final double NORMAL_THRESHOLD_USD = 85.0;
-    private static final double HIGH_THRESHOLD_USD = 100.0;
+    // Regime thresholds (USD per barrel) — calibrated for Brent Crude
+    // Brent trades $5-15 above WTI; thresholds adjusted accordingly
+    private static final double LOW_THRESHOLD_USD = 65.0;
+    private static final double NORMAL_THRESHOLD_USD = 90.0;
+    private static final double HIGH_THRESHOLD_USD = 110.0;
 
     // Assumed USD/INR rate for conversion (update periodically)
     private static final double USD_INR_RATE = 83.5;

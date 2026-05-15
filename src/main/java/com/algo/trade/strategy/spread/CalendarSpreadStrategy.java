@@ -85,7 +85,22 @@ public class CalendarSpreadStrategy extends AbstractSpreadStrategy {
             return false;
         }
 
-        log.info("CalendarSpread: entry filters passed — ivRank={:.1f}, bandwidth={:.2f}%", ctx.ivRank(), bandwidth);
+        // DTE >= 2 — don't sell near-expiry leg too close to expiry
+        IndexType indexType = ctx.indexType();
+        long dte = expiryCalendar.daysToExpiry(indexType);
+        if (dte < 2) {
+            log.debug("CalendarSpread: DTE={} < 2 (too close to expiry), skipping", dte);
+            return false;
+        }
+
+        // Time window — enter before 12:00 PM
+        java.time.LocalTime now = java.time.LocalTime.now(java.time.ZoneId.of("Asia/Kolkata"));
+        if (now.isAfter(java.time.LocalTime.of(12, 0))) {
+            log.debug("CalendarSpread: after 12:00 PM, skipping");
+            return false;
+        }
+
+        log.info("CalendarSpread: entry filters passed — ivRank={:.1f}, bandwidth={:.2f}%, dte={}", ctx.ivRank(), bandwidth, dte);
         return true;
     }
 
