@@ -404,6 +404,7 @@ public class AlgoTradeExecution {
                     List<Candle> spotCandles = candleCache.computeIfAbsent(candleTf,
                             tf -> underlyingLiveCandles(underlying, tf));
                     BigDecimal spotPrice = spotCandles.isEmpty() ? BigDecimal.ZERO : spotCandles.getLast().close();
+                    persistAlgoFlowRejection(type, config, underlying, spotPrice, ivRank, ivRankSource, flowDecision);
                     signalCsvRecorder.recordAdditionalNoTrade(
                             type.name(), underlying.name(), spotPrice,
                             "AlgoFlow:" + flowDecision.blockReason(), spotCandles,
@@ -514,7 +515,13 @@ public class AlgoTradeExecution {
                 evaluated[0] = true;
                 AbstractSpreadStrategy spreadStrategy = spreadStrategyMap.get(type);
                 if (spreadStrategy == null) {
-                    yield spreadStrategyEvaluator.evaluate(trendCandles, ivRank, config, underlying);
+                    var spreadResult = spreadStrategyEvaluator.evaluate(trendCandles, ivRank, config, underlying);
+                    if (spreadResult.isEmpty()) {
+                        diagHolder[0] = new com.algo.trade.strategy.StrategyDiagnostics(
+                                "spreadConditionNotMet:" + type.name(),
+                                null, null, null, null, null, null, null, null);
+                    }
+                    yield spreadResult;
                 }
                 BigDecimal spotPrice = trendCandles.isEmpty()
                         ? BigDecimal.ZERO : trendCandles.getLast().close();
@@ -523,7 +530,13 @@ public class AlgoTradeExecution {
                 com.algo.trade.domain.SpreadEvaluationContext spreadCtx =
                         new com.algo.trade.domain.SpreadEvaluationContext(
                                 spotPrice, ivRank, null, config, underlying, spreadIdx, trendCandles);
-                yield spreadStrategy.evaluateAndEnter(spreadCtx);
+                var spreadEntryResult = spreadStrategy.evaluateAndEnter(spreadCtx);
+                if (spreadEntryResult.isEmpty()) {
+                    diagHolder[0] = new com.algo.trade.strategy.StrategyDiagnostics(
+                            "spreadEntryConditionNotMet:" + type.name(),
+                            null, null, null, null, null, null, null, null);
+                }
+                yield spreadEntryResult;
             }
             case GAP_AND_GO -> {
                 // Early exit: GAP_AND_GO only trades 09:20-09:45 — skip evaluation outside window
@@ -621,6 +634,37 @@ public class AlgoTradeExecution {
         }
 
         return 0;
+    }
+
+    /**
+     * Persist AlgoFlow pre-evaluator rejection rows so the funnel dashboard can bucket them.
+     * Wrapped in try-catch — persistence failure must never block trading.
+     * Creates CE and PE rows (the strategy hadn't decided option type yet at block time).
+     */
+    private void persistAlgoFlowRejection(StrategyType type, StrategyConfig config,
+                                           UnderlyingSymbol underlying, BigDecimal spotPrice,
+                                           double ivRank, String ivRankSource,
+                                           AlgoFlowOrchestrator.EntryDecision flowDecision) {
+        try {
+            String firstFailedFilter = flowDecision.failedFilters() == null || flowDecision.failedFilters().isEmpty()
+                    ? "ALGOFLOW:UNSPECIFIED"
+                    : "ALGOFLOW:" + flowDecision.failedFilters().get(0).split(":")[0];
+            String blockReason = flowDecision.blockReason() != null ? flowDecision.blockReason() : "blocked";
+            for (OptionType ot : new OptionType[]{OptionType.CE, OptionType.PE}) {
+                StrategyDecisionEntity entity = StrategyDecisionEntity.forStrategy(
+                        type.name(), Instant.now(), underlying.name(), "NO_TRADE",
+                        ot.name(), spotPrice, BigDecimal.ZERO, "AlgoFlow rejected: " + blockReason);
+                entity.setPaperTrade(config.isPaperTrading());
+                entity.setIvRank(ivRank);
+                entity.setIvRankSource(ivRankSource);
+                entity.setFirstFailedFilter(firstFailedFilter);
+                entity.setExecutionStage("BLOCKED_BY_ALGOFLOW");
+                entity.setExecutionReason(blockReason);
+                decisionRepository.save(entity);
+            }
+        } catch (Exception e) {
+            log.warn("Failed to persist AlgoFlow rejection for {} {}: {}", type, underlying, e.getMessage());
+        }
     }
 
     /** Persist a signal from any strategy type to H2. */
