@@ -325,84 +325,9 @@ public class AlgoTradeExecution {
         scanContextBuilder.ensureInstrumentsLoaded();
 
         // ═══════════════════════════════════════════════════════════════════════
-        // BEST-INDEX SELECTION — for each strategy, determine which index has
-        // the highest environment score. Only the winning index proceeds to
-        // strategy evaluation. This prevents the same strategy from spraying
-        // across multiple correlated indices in a single scan cycle.
-        // ═══════════════════════════════════════════════════════════════════════
-        int maxPerStrategy = globalConfigService.getMaxOpenPositionsPerStrategy();
-        // Map: StrategyType → best UnderlyingSymbol (highest environment score)
-        Map<StrategyType, UnderlyingSymbol> bestIndexPerStrategy = new EnumMap<>(StrategyType.class);
-        if (maxPerStrategy > 0) {
-            // Collect environment scores for each strategy × index combination
-            Map<StrategyType, Map<UnderlyingSymbol, Integer>> strategyIndexScores = new EnumMap<>(StrategyType.class);
-
-            for (UnderlyingSymbol underlying : enabledUnderlyings) {
-                List<StrategyConfig> configs = strategyConfigService.getEnabledFor(underlying);
-                // Include DIRECTIONAL_BUY if enabled
-                boolean hasDb = configs.stream().anyMatch(c -> c.getStrategyType() == StrategyType.DIRECTIONAL_BUY);
-                if (!hasDb) {
-                    StrategyConfig dbConfig = strategyConfigService.getDirectionalBuyConfig(underlying.name());
-                    if (dbConfig.isEnabled()) {
-                        configs = new ArrayList<>(configs);
-                        configs.add(dbConfig);
-                    }
-                }
-
-                for (StrategyConfig config : configs) {
-                    StrategyType type = config.getStrategyType();
-
-                    // Skip if strategy already has open positions at limit
-                    long openForThisStrategy = executionEngine.countOpenTradesForStrategy(type.name());
-                    if (openForThisStrategy >= maxPerStrategy) continue;
-
-                    // Quick environment score for this underlying (lightweight — no full strategy eval)
-                    var flowDecision = algoFlowOrchestrator.evaluateEntry(underlying, marketTime, type);
-                    if (!flowDecision.allowed()) continue;
-
-                    int envScore = flowDecision.environmentScore();
-                    // Treat -1 (computation failed) as 0
-                    if (envScore < 0) envScore = 0;
-
-                    // Compute lightweight signal quality proxy
-                    Timeframe proxyTimeframe = resolveTimeframe(config.getCandleTimeframe(), Timeframe.ONE_MINUTE);
-                    int signalProxy = computeSignalQualityProxy(underlying, proxyTimeframe);
-
-                    // Combined ranking: signal quality (60%) + environment (40%)
-                    int combinedScore = (int) Math.round(signalProxy * 0.6 + envScore * 0.4);
-
-                    strategyIndexScores
-                        .computeIfAbsent(type, k -> new EnumMap<>(UnderlyingSymbol.class))
-                        .put(underlying, combinedScore);
-
-                    log.debug("[BestIndex] Pre-eval: {} on {} → signal={}, env={}, combined={}",
-                        type, underlying, signalProxy, envScore, combinedScore);
-                }
-            }
-
-            // For each strategy, pick the index with highest environment score
-            for (var entry : strategyIndexScores.entrySet()) {
-                StrategyType type = entry.getKey();
-                Map<UnderlyingSymbol, Integer> scores = entry.getValue();
-                if (scores.isEmpty()) continue;
-
-                UnderlyingSymbol best = scores.entrySet().stream()
-                    .max(Map.Entry.comparingByValue())
-                    .map(Map.Entry::getKey)
-                    .orElse(null);
-                if (best != null) {
-                    bestIndexPerStrategy.put(type, best);
-                    log.debug("[BestIndex] {} → {} (combinedScore={}, candidates={})",
-                        type, best, scores.get(best), scores.keySet());
-                }
-            }
-
-            log.info("[BestIndex] Selection: {}", bestIndexPerStrategy);
-        }
-
-        // ═══════════════════════════════════════════════════════════════════════
         // UNIFIED STRATEGY LOOP — single entry point for ALL strategies
         // ═══════════════════════════════════════════════════════════════════════
+        int maxPerStrategy = globalConfigService.getMaxOpenPositionsPerStrategy();
         int totalEntries = 0;
         // Track entries per underlying within this scan to prevent concentration
         Map<UnderlyingSymbol, Integer> entriesPerUnderlying = new EnumMap<>(UnderlyingSymbol.class);
@@ -471,7 +396,9 @@ public class AlgoTradeExecution {
 
                 // ── Gate 3: Algo Flow Orchestrator — unified pre-trade filter pipeline ──
                 var flowDecision = algoFlowOrchestrator.evaluateEntry(underlying, marketTime, type);
+                tradingStateService.recordEvaluation();
                 if (!flowDecision.allowed()) {
+                    tradingStateService.recordBlocked();
                     log.info("{} blocked by AlgoFlow: underlying={} reason={}", type, underlying, flowDecision.blockReason());
                     Timeframe candleTf = resolveTimeframe(config.getCandleTimeframe(), Timeframe.ONE_MINUTE);
                     List<Candle> spotCandles = candleCache.computeIfAbsent(candleTf,
@@ -484,30 +411,11 @@ public class AlgoTradeExecution {
                     continue;
                 }
 
-                // ── Gate: Best-index selection — only allow the winning index for this strategy ──
-                // Exception: VOLATILITY_BREAKOUT evaluates on ALL enabled underlyings because
-                // it depends on 15-min candle history availability which varies per index.
-                if (maxPerStrategy > 0 && !bestIndexPerStrategy.isEmpty()
-                        && type != StrategyType.VOLATILITY_BREAKOUT) {
-                    UnderlyingSymbol bestIndex = bestIndexPerStrategy.get(type);
-                    if (bestIndex != null && !bestIndex.equals(underlying)) {
-                        log.debug("{} skipped for {}: best index is {} (best-index selection)",
-                                type, underlying, bestIndex);
-                        continue;
-                    }
-                    // Also check if strategy already has open positions at limit
+                // ── Gate: Max open positions per strategy ──
+                if (maxPerStrategy > 0) {
                     long openForThisStrategy = executionEngine.countOpenTradesForStrategy(type.name());
                     if (openForThisStrategy >= maxPerStrategy) {
-                        log.info("{} skipped for {}: already has {} open position(s) (max={})",
-                                type, underlying, openForThisStrategy, maxPerStrategy);
-                        continue;
-                    }
-                } else if (maxPerStrategy > 0) {
-                    // Fallback: bestIndexPerStrategy is empty (no candidates passed pre-eval)
-                    // Still enforce the max open positions per strategy limit
-                    long openForThisStrategy = executionEngine.countOpenTradesForStrategy(type.name());
-                    if (openForThisStrategy >= maxPerStrategy) {
-                        log.info("{} skipped for {}: already has {} open position(s) (max={})",
+                        log.debug("{} skipped for {}: already has {} open position(s) (max={})",
                                 type, underlying, openForThisStrategy, maxPerStrategy);
                         continue;
                     }

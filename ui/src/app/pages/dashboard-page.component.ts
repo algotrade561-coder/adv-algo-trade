@@ -257,6 +257,8 @@ import { MarketSnapshot, OilPriceSnapshot, PnlSnapshot, RuntimeStatus, StrategyD
               <div class="dg"><span>Trades Today</span><strong>{{ tradingStatus?.tradesToday ?? 0 }}</strong></div>
               <div class="dg"><span>Entry Signals</span><strong class="pos">{{ tradingStatus?.entrySignals ?? 0 }}</strong></div>
               <div class="dg"><span>Rejected</span><strong class="neg">{{ tradingStatus?.rejectedSignals ?? 0 }}</strong></div>
+              <div class="dg"><span>Evaluated</span><strong>{{ tradingStatus?.totalEvaluations ?? 0 }}</strong></div>
+              <div class="dg"><span>Blocked</span><strong class="neg">{{ tradingStatus?.totalBlocked ?? 0 }}</strong></div>
             </div>
             @if (latestSignal) {
               <div class="scan-last-signal">

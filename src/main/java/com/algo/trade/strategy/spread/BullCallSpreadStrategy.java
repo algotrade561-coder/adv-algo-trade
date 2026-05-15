@@ -60,9 +60,39 @@ public class BullCallSpreadStrategy extends AbstractSpreadStrategy {
         BigDecimal ema9 = emaIndicator.calculate(closes, 9);
         BigDecimal ema21 = emaIndicator.calculate(closes, 21);
 
+        // EMA crossover must be bullish
         boolean bullish = ema9.compareTo(ema21) > 0;
-        log.debug("BullCallSpread: EMA9={}, EMA21={}, bullish={}", ema9, ema21, bullish);
-        return bullish;
+        if (!bullish) {
+            log.debug("BullCallSpread: EMA9={} <= EMA21={}, not bullish", ema9, ema21);
+            return false;
+        }
+
+        // Trend strength: EMA gap must be > 0.1% of price (avoid flat crossovers)
+        double emaGapPct = ema9.subtract(ema21).abs().doubleValue() / ema21.doubleValue() * 100;
+        if (emaGapPct < 0.1) {
+            log.debug("BullCallSpread: EMA gap {:.3f}% < 0.1% (weak crossover), skipping", emaGapPct);
+            return false;
+        }
+
+        // Volume confirmation: latest candle volume > average of last 5
+        if (candles.size() >= 5) {
+            long latestVol = candles.getLast().volume();
+            double avgVol = candles.subList(candles.size() - 5, candles.size()).stream()
+                    .mapToLong(Candle::volume).average().orElse(0);
+            if (latestVol < avgVol * 1.1) {
+                log.debug("BullCallSpread: volume {} < 1.1x avg {:.0f}, skipping", latestVol, avgVol);
+                return false;
+            }
+        }
+
+        // IV Rank < 50 — don't buy expensive spreads
+        if (ctx.ivRank() > 50) {
+            log.debug("BullCallSpread: IV rank {:.1f} > 50 (premiums expensive), skipping", ctx.ivRank());
+            return false;
+        }
+
+        log.debug("BullCallSpread: entry passed — EMA9={}, EMA21={}, gap={:.3f}%", ema9, ema21, emaGapPct);
+        return true;
     }
 
     @Override

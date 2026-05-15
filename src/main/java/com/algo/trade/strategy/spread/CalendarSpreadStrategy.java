@@ -52,7 +52,40 @@ public class CalendarSpreadStrategy extends AbstractSpreadStrategy {
 
     @Override
     protected boolean shouldEnter(SpreadEvaluationContext ctx) {
-        // Calendar spread is a theta play — always eligible when enabled
+        // Calendar spread profits from theta decay when underlying stays near ATM
+        var candles = ctx.trendCandles();
+        if (candles == null || candles.size() < 20) {
+            log.debug("CalendarSpread: insufficient candles for range analysis");
+            return false;
+        }
+
+        // IV Rank > 30 — calendar benefits from front-month IV being higher than back-month
+        if (ctx.ivRank() < 30) {
+            log.debug("CalendarSpread: IV rank {:.1f} < 30 (need moderate IV), skipping", ctx.ivRank());
+            return false;
+        }
+
+        // Range-bound check: BB bandwidth < 3% (not trending strongly)
+        double[] closes = candles.stream().mapToDouble(c -> c.close().doubleValue()).toArray();
+        double sma = 0;
+        for (int i = closes.length - 20; i < closes.length; i++) sma += closes[i];
+        sma /= 20;
+        double variance = 0;
+        for (int i = closes.length - 20; i < closes.length; i++) variance += Math.pow(closes[i] - sma, 2);
+        double stdDev = Math.sqrt(variance / 20);
+        double bandwidth = (stdDev * 4) / sma * 100;
+        if (bandwidth > 3.0) {
+            log.debug("CalendarSpread: BB bandwidth {:.2f}% > 3% (too volatile for calendar), skipping", bandwidth);
+            return false;
+        }
+
+        // MarketGuard safe for short premium (selling near-expiry leg)
+        if (!marketGuard.isSafeForShortPremium()) {
+            log.debug("CalendarSpread: MarketGuard blocks short premium");
+            return false;
+        }
+
+        log.info("CalendarSpread: entry filters passed — ivRank={:.1f}, bandwidth={:.2f}%", ctx.ivRank(), bandwidth);
         return true;
     }
 

@@ -46,7 +46,37 @@ public class DiagonalSpreadStrategy extends AbstractSpreadStrategy {
     @Override
     protected boolean shouldEnter(SpreadEvaluationContext ctx) {
         // Require at least 21 candles for EMA computation
-        return ctx.trendCandles() != null && ctx.trendCandles().size() >= 21;
+        if (ctx.trendCandles() == null || ctx.trendCandles().size() < 21) {
+            log.debug("DiagonalSpread: insufficient candles");
+            return false;
+        }
+
+        // EMA crossover must be established (not just touching)
+        List<java.math.BigDecimal> closes = ctx.trendCandles().stream()
+                .map(com.algo.trade.domain.Candle::close)
+                .collect(java.util.stream.Collectors.toList());
+        java.math.BigDecimal ema9 = emaIndicator.calculate(closes, 9);
+        java.math.BigDecimal ema21 = emaIndicator.calculate(closes, 21);
+        double emaGapPct = ema9.subtract(ema21).abs().doubleValue() / ema21.doubleValue() * 100;
+        if (emaGapPct < 0.1) {
+            log.debug("DiagonalSpread: EMA gap {:.3f}% < 0.1% (no clear trend), skipping", emaGapPct);
+            return false;
+        }
+
+        // IV Rank check — diagonal benefits from selling high near-term IV
+        if (ctx.ivRank() < 30) {
+            log.debug("DiagonalSpread: IV rank {:.1f} < 30 (need moderate IV for selling near leg), skipping", ctx.ivRank());
+            return false;
+        }
+
+        // MarketGuard safe for short premium (selling near-expiry leg)
+        if (!marketGuard.isSafeForShortPremium()) {
+            log.debug("DiagonalSpread: MarketGuard blocks short premium");
+            return false;
+        }
+
+        log.debug("DiagonalSpread: entry passed — emaGap={:.3f}%, ivRank={:.1f}", emaGapPct, ctx.ivRank());
+        return true;
     }
 
     @Override

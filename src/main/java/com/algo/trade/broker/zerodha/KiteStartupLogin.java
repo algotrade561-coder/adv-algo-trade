@@ -25,6 +25,8 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
     private final java.util.Map<com.algo.trade.domain.IndexType, Integer> lastSubscribedAtm =
             new java.util.concurrent.ConcurrentHashMap<>();
     private volatile boolean webSocketConnected = false;
+    /** Prevents double-start from both run() and event listener racing. */
+    private final java.util.concurrent.atomic.AtomicBoolean scannerStarted = new java.util.concurrent.atomic.AtomicBoolean(false);
 
     private final TradingProperties properties;
     private final KiteAccessTokenStore tokenStore;
@@ -128,7 +130,18 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
     @Override
     public void run(ApplicationArguments args) {
         if (!properties.broker().autoLoginOnStartup()) {
-            log.info("Kite startup login skipped: trading.broker.auto-login-on-startup=false");
+            log.info("Kite startup login skipped: trading.broker.auto-login-on-startup=false. "
+                    + "WebSocket + scanner will start automatically after manual login via /auth/kite/callback.");
+            // Even with auto-login disabled, validate any pre-existing token.
+            // If valid, start WebSocket + scanner immediately (e.g., token from trading-secrets.properties).
+            if (tokenStore.authenticated()) {
+                if (kiteAuthService.validateCurrentSession()) {
+                    log.info("Pre-existing access token is valid — starting WebSocket + scanner");
+                    startScannerAfterLoginIfConfigured();
+                } else {
+                    log.info("Pre-existing access token is invalid/expired — cleared. Manual login required.");
+                }
+            }
             return;
         }
         boolean zerodhaRequired = properties.mode() == TradingMode.LIVE
@@ -174,7 +187,26 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
         startScannerAfterLoginIfConfigured();
     }
 
+    /**
+     * Listens for KiteLoginSuccessEvent — fired after manual login via /auth/kite/callback
+     * or any other path that successfully captures an access token.
+     * This ensures WebSocket + scanner start even when auto-login-on-startup=false.
+     */
+    @org.springframework.context.event.EventListener
+    public void onKiteLoginSuccess(KiteLoginSuccessEvent event) {
+        if (scannerStarted.get()) {
+            log.info("KiteLoginSuccessEvent received but scanner already started — skipping duplicate start");
+            return;
+        }
+        log.info("KiteLoginSuccessEvent received: userId={} — triggering WebSocket + scanner start", event.userId());
+        startScannerAfterLoginIfConfigured();
+    }
+
     private void startScannerAfterLoginIfConfigured() {
+        if (!scannerStarted.compareAndSet(false, true)) {
+            log.info("Scanner/WebSocket start skipped: already started");
+            return;
+        }
         if (properties.mode() == TradingMode.BACKTEST) {
             log.info("Scanner auto-start skipped: mode=BACKTEST");
             return;

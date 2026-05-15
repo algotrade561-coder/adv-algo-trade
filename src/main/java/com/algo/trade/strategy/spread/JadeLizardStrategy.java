@@ -57,6 +57,28 @@ public class JadeLizardStrategy extends AbstractSpreadStrategy {
             log.debug("JadeLizard: MarketGuard blocks short premium");
             return false;
         }
+
+        // IV Rank > 50 — Jade Lizard is a premium-selling strategy, needs elevated IV
+        if (ctx.ivRank() < 50) {
+            log.debug("JadeLizard: IV rank {:.1f} < 50 (need high IV for selling), skipping", ctx.ivRank());
+            return false;
+        }
+
+        // Range-bound check: price within 1.5% of 20-period SMA
+        var candles = ctx.trendCandles();
+        if (candles != null && candles.size() >= 20) {
+            double[] closes = candles.stream().mapToDouble(c -> c.close().doubleValue()).toArray();
+            double sma = 0;
+            for (int i = closes.length - 20; i < closes.length; i++) sma += closes[i];
+            sma /= 20;
+            double deviation = Math.abs(closes[closes.length - 1] - sma) / sma * 100;
+            if (deviation > 1.5) {
+                log.debug("JadeLizard: price deviation {:.2f}% from SMA > 1.5% (trending), skipping", deviation);
+                return false;
+            }
+        }
+
+        log.info("JadeLizard: entry filters passed — ivRank={:.1f}", ctx.ivRank());
         return true;
     }
 

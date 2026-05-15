@@ -466,6 +466,11 @@ public class KiteWebSocketClient {
 
     private void parsePacket(byte[] packet, int len) {
         try {
+            if (len < 8) {
+                // LTP packets are minimum 8 bytes (4 token + 4 ltp).
+                // Shorter packets are heartbeats or subscription confirmations — skip silently.
+                return;
+            }
             ByteBuffer pb = ByteBuffer.wrap(packet).order(ByteOrder.BIG_ENDIAN);
             long token = pb.getInt() & 0xFFFFFFFFL;
             double ltp = pb.getInt() / 100.0;
@@ -489,8 +494,7 @@ public class KiteWebSocketClient {
 
             if (len >= 184) {
                 pb.getInt(); // last_trade_time
-                pb.getInt(); // oi_day_high (skip)
-                oi = pb.getInt() & 0xFFFFFFFFL;
+                oi = pb.getInt() & 0xFFFFFFFFL; // OI
                 pb.getInt(); // oi_day_high
                 pb.getInt(); // oi_day_low
                 pb.getInt(); // exchange_timestamp
@@ -521,7 +525,7 @@ public class KiteWebSocketClient {
             // Route MCX Crude Oil to OilPriceTracker
             if (oilPriceTracker != null && token == oilPriceTracker.getInstrumentToken()) {
                 oilPriceTracker.updatePrice(ltp);
-                log.debug("[WS] MCX Crude Oil tick: ₹{} (${:.2f})", ltp, ltp / 83.5);
+                log.debug("[WS] MCX Crude Oil tick: ltp={}", ltp);
                 return;
             }
 

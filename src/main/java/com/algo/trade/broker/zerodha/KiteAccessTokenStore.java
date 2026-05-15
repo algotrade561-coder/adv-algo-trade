@@ -83,6 +83,10 @@ public class KiteAccessTokenStore {
 
     private void loadPersistedTokenIfAvailable() {
         if (this.accessToken.get() != null) {
+            // Token was loaded from application properties / env var (e.g., trading-secrets.properties).
+            // Log this so the user knows WHY they appear authenticated without manual login.
+            log.info("Access token loaded from application properties (trading-secrets.properties or env var). "
+                    + "Delete data/trading-secrets.properties AND data/kite-access-token.properties to force re-login.");
             return;
         }
         if (Files.notExists(TOKEN_FILE)) {

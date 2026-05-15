@@ -289,6 +289,16 @@ public class TradingStateService {
     public void recordScan() { lastScanAt.set(Instant.now()); }
     public Instant lastScanAt() { return lastScanAt.get(); }
 
+    // ── Evaluation counters (in-memory, reset daily) ─────────────────────────
+    private final java.util.concurrent.atomic.AtomicLong totalEvaluations = new java.util.concurrent.atomic.AtomicLong(0);
+    private final java.util.concurrent.atomic.AtomicLong totalBlocked = new java.util.concurrent.atomic.AtomicLong(0);
+
+    public void recordEvaluation() { totalEvaluations.incrementAndGet(); }
+    public void recordBlocked() { totalBlocked.incrementAndGet(); }
+    public long getTotalEvaluations() { return totalEvaluations.get(); }
+    public long getTotalBlocked() { return totalBlocked.get(); }
+    public void resetEvaluationCounters() { totalEvaluations.set(0); totalBlocked.set(0); }
+
     public void setSchedulerEnabled(boolean enabled) {
         this.schedulerEnabled = enabled;
         updatedAt.set(Instant.now());

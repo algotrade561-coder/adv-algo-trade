@@ -32,7 +32,7 @@ public class ExpiryGammaStrategy {
     private static final LocalTime GAMMA_CUTOFF = LocalTime.of(14, 30);
     private static final int MOMENTUM_CANDLES = 3;
     /** Minimum momentum % over MOMENTUM_CANDLES — 0.20% ≈ 44 NIFTY points over 3 min, realistic on expiry afternoon. */
-    private static final double MIN_MOMENTUM_PERCENT = 0.10;
+    private static final double MIN_MOMENTUM_PERCENT = 0.20;
     /** Minimum volume on the latest candle to confirm the move is real. */
     private static final long MIN_VOLUME = 500;
 

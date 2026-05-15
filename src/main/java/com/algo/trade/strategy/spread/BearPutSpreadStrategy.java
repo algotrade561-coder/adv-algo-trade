@@ -60,9 +60,39 @@ public class BearPutSpreadStrategy extends AbstractSpreadStrategy {
         BigDecimal ema9 = emaIndicator.calculate(closes, 9);
         BigDecimal ema21 = emaIndicator.calculate(closes, 21);
 
+        // EMA crossover must be bearish
         boolean bearish = ema9.compareTo(ema21) < 0;
-        log.debug("BearPutSpread: EMA9={}, EMA21={}, bearish={}", ema9, ema21, bearish);
-        return bearish;
+        if (!bearish) {
+            log.debug("BearPutSpread: EMA9={} >= EMA21={}, not bearish", ema9, ema21);
+            return false;
+        }
+
+        // Trend strength: EMA gap must be > 0.1% of price (avoid flat crossovers)
+        double emaGapPct = ema21.subtract(ema9).doubleValue() / ema21.doubleValue() * 100;
+        if (emaGapPct < 0.1) {
+            log.debug("BearPutSpread: EMA gap {:.3f}% < 0.1% (weak crossover), skipping", emaGapPct);
+            return false;
+        }
+
+        // Volume confirmation: latest candle volume > average of last 5
+        if (candles.size() >= 5) {
+            long latestVol = candles.getLast().volume();
+            double avgVol = candles.subList(candles.size() - 5, candles.size()).stream()
+                    .mapToLong(Candle::volume).average().orElse(0);
+            if (latestVol < avgVol * 1.1) {
+                log.debug("BearPutSpread: volume {} < 1.1x avg {:.0f}, skipping", latestVol, avgVol);
+                return false;
+            }
+        }
+
+        // IV Rank < 50 — don't buy expensive spreads
+        if (ctx.ivRank() > 50) {
+            log.debug("BearPutSpread: IV rank {:.1f} > 50 (premiums expensive), skipping", ctx.ivRank());
+            return false;
+        }
+
+        log.debug("BearPutSpread: entry passed — EMA9={}, EMA21={}, gap={:.3f}%", ema9, ema21, emaGapPct);
+        return true;
     }
 
     @Override

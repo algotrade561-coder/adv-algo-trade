@@ -80,6 +80,9 @@ public abstract class AbstractSpreadStrategy {
     @Autowired(required = false)
     private com.algo.trade.monitoring.ErrorEventService errorEventService;
 
+    @Autowired
+    protected com.algo.trade.risk.MarketGuard marketGuard;
+
     protected AbstractSpreadStrategy(ExpiryCalendar expiryCalendar,
                                      InstrumentCache instrumentCache,
                                      MarketDataService marketDataService,

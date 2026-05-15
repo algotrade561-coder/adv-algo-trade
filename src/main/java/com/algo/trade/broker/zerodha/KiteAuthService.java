@@ -21,6 +21,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.http.HttpHeaders;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -46,16 +47,19 @@ public class KiteAuthService {
     private final ObjectMapper objectMapper;
     private final KiteAccessTokenStore tokenStore;
     private final KiteCredentialResolver credentialResolver;
+    private final ApplicationEventPublisher eventPublisher;
     private final ArrayBlockingQueue<KiteLoginResult> loginResultQueue = new ArrayBlockingQueue<>(1);
 
     public KiteAuthService(TradingProperties properties, RestClient zerodhaRestClient,
                            ObjectMapper objectMapper, KiteAccessTokenStore tokenStore,
-                           KiteCredentialResolver credentialResolver) {
+                           KiteCredentialResolver credentialResolver,
+                           ApplicationEventPublisher eventPublisher) {
         this.properties = properties;
         this.restClient = zerodhaRestClient;
         this.objectMapper = objectMapper;
         this.tokenStore = tokenStore;
         this.credentialResolver = credentialResolver;
+        this.eventPublisher = eventPublisher;
     }
 
     public KiteLoginResult login()  {
@@ -225,6 +229,9 @@ public class KiteAuthService {
                     userId, !isBlank(accessToken), !isBlank(publicToken));
             KiteLoginResult result = new KiteLoginResult(true, userId, accessToken, publicToken, Instant.now());
             loginResultQueue.offer(result);
+            // Publish event so KiteStartupLogin can trigger WebSocket + scanner
+            eventPublisher.publishEvent(new KiteLoginSuccessEvent(userId));
+            log.info("KiteLoginSuccessEvent published: userId={}", userId);
             return result;
         } catch (Exception ex) {
             log.warn("Kite request token exchange failed: {}", ex.getMessage());

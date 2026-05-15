@@ -245,6 +245,8 @@ public class TradingControlController {
         long rejectedSignals = reportingService.countRejectedSignalsSince(todayStart);
         result.put("entrySignals", entrySignals);
         result.put("rejectedSignals", rejectedSignals);
+        result.put("totalEvaluations", tradingStateService.getTotalEvaluations());
+        result.put("totalBlocked", tradingStateService.getTotalBlocked());
         result.put("lastScanAt", tradingStateService.lastScanAt());
         result.put("effectiveDailyLossLimit", tradingStateService.dailyLossExtension() > 0
                 ? globalConfigService.getTotalCapital().doubleValue()

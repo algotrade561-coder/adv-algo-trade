@@ -53,7 +53,37 @@ public class ButterflyStrategy extends AbstractSpreadStrategy {
 
     @Override
     protected boolean shouldEnter(SpreadEvaluationContext ctx) {
-        // Butterfly is a low-cost strategy — always eligible when enabled
+        // Butterfly profits from range-bound markets — need confirmation the market is consolidating
+        var candles = ctx.trendCandles();
+        if (candles == null || candles.size() < 20) {
+            log.debug("Butterfly: insufficient candles for range analysis");
+            return false;
+        }
+
+        // IV Rank > 40 — butterfly benefits from IV contraction (sell 2x ATM)
+        if (ctx.ivRank() < 40) {
+            log.debug("Butterfly: IV rank {:.1f} < 40 (need elevated IV for premium selling), skipping", ctx.ivRank());
+            return false;
+        }
+
+        // Range-bound check: price must be within 1% of 20-period SMA (consolidating)
+        double[] closes = candles.stream().mapToDouble(c -> c.close().doubleValue()).toArray();
+        double sma = 0;
+        for (int i = closes.length - 20; i < closes.length; i++) sma += closes[i];
+        sma /= 20;
+        double deviation = Math.abs(closes[closes.length - 1] - sma) / sma * 100;
+        if (deviation > 1.0) {
+            log.debug("Butterfly: price deviation {:.2f}% from SMA > 1% (not range-bound), skipping", deviation);
+            return false;
+        }
+
+        // MarketGuard safe for short premium (butterfly has net short gamma)
+        if (!marketGuard.isSafeForShortPremium()) {
+            log.debug("Butterfly: MarketGuard blocks short premium");
+            return false;
+        }
+
+        log.info("Butterfly: entry filters passed — ivRank={:.1f}, deviation={:.2f}%", ctx.ivRank(), deviation);
         return true;
     }
 
