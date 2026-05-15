@@ -100,6 +100,7 @@ public class AlgoTradeExecution {
     private final AlgoFlowOrchestrator algoFlowOrchestrator;
     private final ScanContextBuilder scanContextBuilder;
     private final VwapIndicator vwapIndicator;
+    private final SpreadOrderExecutor spreadOrderExecutor;
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.algo.trade.monitoring.ErrorEventService errorEventService;
@@ -153,7 +154,8 @@ public class AlgoTradeExecution {
             com.algo.trade.persistence.GreeksSampleRepository greeksSampleRepository,
             AlgoFlowOrchestrator algoFlowOrchestrator,
             ScanContextBuilder scanContextBuilder,
-            VwapIndicator vwapIndicator
+            VwapIndicator vwapIndicator,
+            SpreadOrderExecutor spreadOrderExecutor
     ) {
         this.properties = properties;
         this.globalConfigService = globalConfigService;
@@ -195,6 +197,7 @@ public class AlgoTradeExecution {
         this.algoFlowOrchestrator = algoFlowOrchestrator;
         this.scanContextBuilder = scanContextBuilder;
         this.vwapIndicator = vwapIndicator;
+        this.spreadOrderExecutor = spreadOrderExecutor;
     }
 
     @jakarta.annotation.PostConstruct
@@ -686,46 +689,16 @@ public class AlgoTradeExecution {
                 return 0;
             }
 
-            // Place individual orders for each leg
-            boolean allOrdersPlaced = true;
-            List<String> orderDetails = new java.util.ArrayList<>();
-            for (var leg : activePos.legs()) {
-                try {
-                    com.algo.trade.domain.OrderSide orderSide = leg.side();
-                    com.algo.trade.domain.OrderRequest orderRequest = new com.algo.trade.domain.OrderRequest(
-                            "SPREAD-" + groupId + "-" + leg.instrumentKey().hashCode(),
-                            leg.instrumentKey(),
-                            orderSide,
-                            com.algo.trade.domain.OrderType.MARKET,
-                            com.algo.trade.domain.ProductType.MIS,
-                            leg.quantity(),
-                            Optional.empty(),
-                            "spread-" + type.name().toLowerCase()
-                    );
-                    Optional<com.algo.trade.domain.OrderResponse> response = executionEngine.placeSpreadLegOrder(orderRequest);
-                    if (response.isPresent()) {
-                        orderDetails.add(leg.instrumentKey() + ":" + orderSide + "→" +
-                                response.get().status().name());
-                    } else {
-                        allOrdersPlaced = false;
-                        orderDetails.add(leg.instrumentKey() + ":" + orderSide + "→FAILED");
-                    }
-                    log.info("Spread leg order placed: group={}, instrument={}, side={}, success={}",
-                            groupId, leg.instrumentKey(), orderSide, response.isPresent());
-                } catch (Exception ex) {
-                    log.error("Spread leg order FAILED: group={}, instrument={}, side={}, error={}",
-                            groupId, leg.instrumentKey(), leg.side(), ex.getMessage());
-                    allOrdersPlaced = false;
-                    orderDetails.add(leg.instrumentKey() + ":" + leg.side() + "→FAILED:" + ex.getMessage());
-                }
-            }
+            // Execute all legs with safety guarantees (sequencing, unwind on failure, alerting)
+            SpreadOrderExecutor.SpreadExecutionResult execResult =
+                    spreadOrderExecutor.execute(activePos.legs(), groupId, type.name());
 
-            spreadEntity.setExecutionStage(allOrdersPlaced ? "FILLED" : "PARTIAL");
-            spreadEntity.setExecutionReason("Spread live orders: " + String.join(", ", orderDetails));
+            spreadEntity.setExecutionStage(execResult.allFilled() ? "FILLED" : "PARTIAL_UNWOUND");
+            spreadEntity.setExecutionReason("Spread live: " + execResult.summary());
             decisionRepository.save(spreadEntity);
-            log.info("Spread live entry: type={}, groupId={}, allPlaced={}, details={}",
-                    type, groupId, allOrdersPlaced, orderDetails);
-            return allOrdersPlaced ? 1 : 0;
+            log.info("Spread live entry: type={}, groupId={}, result={}",
+                    type, groupId, execResult.summary());
+            return execResult.allFilled() ? 1 : 0;
         }
 
         // All non-spread strategies: unified pipeline post-processing

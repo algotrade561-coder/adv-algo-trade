@@ -36,15 +36,14 @@ import { ApiService, StrategyDto } from '../core/api.service';
       @if (msg()) { <div class="toast-ok">{{ msg() }}</div> }
       @if (error()) { <div class="toast-warn">{{ error() }}</div> }
 
-      <!-- Spread execution warning -->
+      <!-- Spread execution info -->
       @if (hasEnabledSpreadStrategy()) {
-        <div class="spread-warning">
-          <mat-icon>warning_amber</mat-icon>
+        <div class="spread-info">
+          <mat-icon>info</mat-icon>
           <div>
-            <strong>Spread strategies place single-leg orders only.</strong>
-            Bull Call Spread, Bear Put Spread, Long Straddle, Long Strangle and other multi-leg strategies
-            currently execute as a single BUY order — the hedge leg is not placed.
-            Risk is NOT capped. They behave like a directional buy until multi-leg execution is implemented.
+            <strong>Multi-leg execution active.</strong>
+            Spread strategies place all legs sequentially with safety guarantees:
+            BUY hedge legs first, then SELL premium legs. Partial fills are automatically unwound.
           </div>
         </div>
       }

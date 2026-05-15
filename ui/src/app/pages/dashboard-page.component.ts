@@ -69,6 +69,28 @@ import { MarketSnapshot, OilPriceSnapshot, PnlSnapshot, RuntimeStatus, StrategyD
             <div class="mc-desc">{{ (market?.banknifty ?? 0) > 0 ? 'Live from WebSocket' : 'Waiting for tick' }}</div>
           </div>
 
+          <div class="mcard index-card">
+            <div class="mc-top">
+              <span class="mc-label">SENSEX</span>
+              <span class="mc-badge badge-muted">SPOT</span>
+            </div>
+            <div class="mc-value">{{ (market?.sensex ?? 0) > 0 ? (market!.sensex | number:'1.2-2') : '—' }}</div>
+            <div class="mc-desc">{{ (market?.sensex ?? 0) > 0 ? 'Live from WebSocket' : 'Waiting for tick' }}</div>
+          </div>
+
+          <div class="mcard index-card">
+            <div class="mc-top">
+              <span class="mc-label">IV Rank</span>
+              <span class="mc-badge" [class.badge-ok]="(market?.ivRank ?? 50) < 30"
+                [class.badge-warn]="(market?.ivRank ?? 50) >= 30 && (market?.ivRank ?? 50) < 60"
+                [class.badge-bad]="(market?.ivRank ?? 50) >= 60">
+                {{ (market?.ivRank ?? 50) < 30 ? 'LOW' : (market?.ivRank ?? 50) < 60 ? 'MID' : 'HIGH' }}
+              </span>
+            </div>
+            <div class="mc-value">{{ market?.ivRank ? (market!.ivRank | number:'1.1-1') + '%' : '—' }}</div>
+            <div class="mc-desc">NIFTY IV percentile rank</div>
+          </div>
+
           <div class="mcard"
             [class.mc-ok]="market?.vixStatus === 'NORMAL'"
             [class.mc-warn]="market?.vixStatus === 'ELEVATED' || market?.vixStatus === 'LOW'"
@@ -175,28 +197,6 @@ import { MarketSnapshot, OilPriceSnapshot, PnlSnapshot, RuntimeStatus, StrategyD
               @else if (market?.longPremiumBlockReason) { {{ market!.longPremiumBlockReason }} }
               @else { Waiting for market data }
             </div>
-          </div>
-
-          <!-- Performance metrics inline in the same card row -->
-          <div class="mcard mc-muted">
-            <div class="mc-top"><span class="mc-label">Profit Factor</span></div>
-            <div class="mc-value">{{ perf?.tradesToday ? (perf.profitFactorToday | number:'1.2-2') : '—' }}</div>
-            <div class="mc-desc">W₹{{ (perf?.avgWinToday ?? 0) | number:'1.0-0' }} L₹{{ (perf?.avgLossToday ?? 0) | number:'1.0-0' }}</div>
-          </div>
-          <div class="mcard mc-muted">
-            <div class="mc-top"><span class="mc-label">Win Rate</span></div>
-            <div class="mc-value">{{ perf?.tradesToday ? (perf.winRateToday | number:'1.0-0') + '%' : '—' }}</div>
-            <div class="mc-desc">{{ perf?.winsToday ?? 0 }}W {{ perf?.lossesToday ?? 0 }}L</div>
-          </div>
-          <div class="mcard mc-muted">
-            <div class="mc-top"><span class="mc-label">Drawdown</span></div>
-            <div class="mc-value">{{ perf?.tradesToday ? '₹' + (perf.maxDrawdownToday | number:'1.0-0') : '—' }}</div>
-            <div class="mc-desc">Peak ₹{{ (perf?.peakPnlToday ?? 0) | number:'1.0-0' }}</div>
-          </div>
-          <div class="mcard mc-muted">
-            <div class="mc-top"><span class="mc-label">7d WR</span></div>
-            <div class="mc-value">{{ perf?.tradesLast7 ? (perf.winRateLast7 | number:'1.0-0') + '%' : '—' }}</div>
-            <div class="mc-desc">PF {{ (perf?.profitFactorLast7 ?? 0) | number:'1.1-1' }}</div>
           </div>
 
         </div>

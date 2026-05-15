@@ -489,14 +489,9 @@ public class AlgoFlowOrchestrator {
             passed.add("REGIME_SESSION_GATE:DISABLED");
         }
 
-        // Environment score gating (threshold check)
-        int minEnvScore = globalConfigService.getMinEnvironmentScore();
-        if (envScore >= 0 && envScore < minEnvScore) {
-            failed.add("ENV_SCORE_GATE:BELOW_THRESHOLD(score=" + envScore + ",threshold=" + minEnvScore + ")");
-            return EntryDecision.blocked(
-                    "Environment score " + envScore + " below threshold " + minEnvScore,
-                    passed, failed, envScore, envBreakdown);
-        }
+        // Environment score: recorded for analysis only. NO blocking at any level.
+        // Individual strategy filters (VWAP, breakout, OI, IV, RSI) handle quality gating.
+        // The envScore is persisted on TradeEntity for post-trade analysis.
 
         // ═══════════════════════════════════════════════════════════════════
         // DETERMINE TRAILING STOP MODE

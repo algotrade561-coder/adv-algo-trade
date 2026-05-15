@@ -92,6 +92,8 @@ export interface MarketSnapshot {
   pcr: number;
   nifty: number;
   banknifty: number;
+  sensex: number;
+  ivRank: number;
   vixStatus: 'UNKNOWN' | 'LOW' | 'NORMAL' | 'ELEVATED' | 'HIGH';
   pcrBias: 'UNKNOWN' | 'BULLISH' | 'NEUTRAL' | 'BEARISH';
   circuitBreakerTriggered: boolean;

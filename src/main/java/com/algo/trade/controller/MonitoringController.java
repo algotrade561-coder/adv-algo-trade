@@ -34,6 +34,7 @@ public class MonitoringController {
     private final com.algo.trade.marketdata.ExpiryCalendar expiryCalendar;
     private final com.algo.trade.persistence.StrategyDecisionRepository decisionRepository;
     private final com.algo.trade.marketdata.PcrCalculator pcrCalculator;
+    private final com.algo.trade.indicator.IVRankTracker ivRankTracker;
     private final com.algo.trade.reporting.PerformanceMetricsService performanceMetricsService;
     private final com.algo.trade.monitoring.PositionStrengthService positionStrengthService;
 
@@ -43,7 +44,8 @@ public class MonitoringController {
                                  com.algo.trade.persistence.StrategyDecisionRepository decisionRepository,
                                  com.algo.trade.marketdata.PcrCalculator pcrCalculator,
                                  com.algo.trade.reporting.PerformanceMetricsService performanceMetricsService,
-                                 com.algo.trade.monitoring.PositionStrengthService positionStrengthService) {
+                                 com.algo.trade.monitoring.PositionStrengthService positionStrengthService,
+                                 com.algo.trade.indicator.IVRankTracker ivRankTracker) {
         this.reportingService = reportingService;
         this.marketGuard = marketGuard;
         this.liveInstrumentCache = liveInstrumentCache;
@@ -52,6 +54,7 @@ public class MonitoringController {
         this.pcrCalculator = pcrCalculator;
         this.performanceMetricsService = performanceMetricsService;
         this.positionStrengthService = positionStrengthService;
+        this.ivRankTracker = ivRankTracker;
     }
 
     @GetMapping("/market")
@@ -59,16 +62,25 @@ public class MonitoringController {
         double vix      = marketGuard.getCurrentVix();
         double nifty    = liveInstrumentCache.getFuturesPrice(IndexType.NIFTY);
         double banknifty = liveInstrumentCache.getFuturesPrice(IndexType.BANKNIFTY);
+        double sensex   = liveInstrumentCache.getFuturesPrice(IndexType.SENSEX);
 
         // Use full-chain PCR from PcrCalculator (all strikes, not just subscribed)
         double pcr = pcrCalculator.getPcr();
         if (pcr <= 0) pcr = marketGuard.getCurrentPcr(); // fall back to last known value
+
+        // IV Rank from tracker
+        double ivRankNifty = 0;
+        try {
+            ivRankNifty = ivRankTracker.getIVRank(IndexType.NIFTY);
+        } catch (Exception ignored) {}
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("vix", vix);
         result.put("pcr", pcr);
         result.put("nifty", nifty);
         result.put("banknifty", banknifty);
+        result.put("sensex", sensex);
+        result.put("ivRank", ivRankNifty);
         result.put("vixStatus", vixStatus(vix));
         result.put("pcrBias", pcrBias(pcr));
         result.put("circuitBreakerTriggered", marketGuard.isCircuitBreakerTriggered());
