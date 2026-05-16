@@ -58,13 +58,7 @@ public enum StrategyType {
     SYNTHETIC_FUTURES("Synthetic Futures",
             "Buy ATM CE + Sell ATM PE (bullish) or inverse (bearish). Replicates futures P&L with options. Entry on strong EMA divergence.", true),
     ITM_CONVICTION("ITM Conviction",
-            "Compares ITM vs ATM option strength via ATP-LTP differential. Order flow signal — requires live WebSocket data.", false),
-
-    PREMIUM_SCALP("Premium Scalp",
-            "Sells ATM straddle at open + buys directional scalps on 5-min momentum. Theta collection + active delta hedging. Paper only.", true),
-
-    BREAKOUT_REENTRY("Breakout Re-Entry",
-            "Bollinger Band squeeze breakout with band-walk re-entries. Buys on breakout above upper band + VWAP + option ROC > 3%. Max 3 re-entries per direction. Paper only.", false);
+            "Compares ITM vs ATM option strength via ATP-LTP differential. Order flow signal — requires live WebSocket data.", false);
 
     private final String displayName;
     private final String description;
@@ -86,8 +80,7 @@ public enum StrategyType {
         return switch (this) {
             case BULL_CALL_SPREAD, BEAR_PUT_SPREAD, LONG_STRADDLE, LONG_STRANGLE,
                  SHORT_STRADDLE, SHORT_STRANGLE, IRON_CONDOR, BUTTERFLY,
-                 CALENDAR_SPREAD, DIAGONAL_SPREAD, JADE_LIZARD, SYNTHETIC_FUTURES,
-                 PREMIUM_SCALP -> true;
+                 CALENDAR_SPREAD, DIAGONAL_SPREAD, JADE_LIZARD, SYNTHETIC_FUTURES -> true;
             default -> false;
         };
     }

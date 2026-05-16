@@ -715,8 +715,6 @@ public class SpreadBacktestEngine {
                     OrderSide.BUY, OrderSide.BUY,
                     qty, expiry);
 
-            case PREMIUM_SCALP -> buildIronButterfly(atm, spreadStrikes, interval, qty, expiry);
-
             default -> List.of();
         };
     }
