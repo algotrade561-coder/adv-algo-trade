@@ -103,6 +103,7 @@ public class LiveInstrumentCache {
         if (oi > 0) {
             if (inst.getOpenInterest() > 0) inst.setPrevOpenInterest(inst.getOpenInterest());
             inst.setOpenInterest(oi);
+            inst.sampleOiIfDue(); // Feed OI ring buffer for time-series lookback
         }
         if (bestBid > 0) inst.setBestBid(bestBid);
         if (bestAsk > 0) inst.setBestAsk(bestAsk);
@@ -200,5 +201,47 @@ public class LiveInstrumentCache {
         if (name.equals("MIDCPNIFTY") || name.startsWith("MIDCPNIFTY")) return IndexType.MIDCPNIFTY;
         if (name.equals("NIFTY") || name.startsWith("NIFTY")) return IndexType.NIFTY;
         return null;
+    }
+
+    /**
+     * Compute real-time PCR from subscribed options' live OI (no REST call).
+     * Less accurate than full-chain PCR (misses far OTM unsubscribed strikes)
+     * but updates on every tick — suitable for 1-sec strategy loops.
+     *
+     * @param indexType the index to compute PCR for
+     * @return put OI / call OI ratio, or 0 if insufficient data
+     */
+    public double getRealtimePcr(IndexType indexType) {
+        long callOi = 0, putOi = 0;
+        for (OptionInstrument opt : byToken.values()) {
+            if (opt.getIndexType() != indexType) continue;
+            if (opt.getOpenInterest() <= 0) continue;
+            if ("CE".equals(opt.getOptionType())) callOi += opt.getOpenInterest();
+            else putOi += opt.getOpenInterest();
+        }
+        return callOi > 0 ? (double) putOi / callOi : 0;
+    }
+
+    /**
+     * Get total OI change (last 3 minutes) for ATM ± N strikes of a given index.
+     * Positive = OI building (new positions), Negative = OI unwinding.
+     * Separated by CE and PE for directional analysis.
+     *
+     * @return [ceOiChange, peOiChange]
+     */
+    public long[] getAtmOiChange(IndexType indexType, int atmStrike, int strikesAround, int minutesBack) {
+        int interval = indexType.strikeInterval();
+        long ceChange = 0, peChange = 0;
+        for (int i = -strikesAround; i <= strikesAround; i++) {
+            int strike = atmStrike + (i * interval);
+            for (OptionInstrument opt : byToken.values()) {
+                if (opt.getIndexType() != indexType) continue;
+                if (opt.getStrikePrice() != strike) continue;
+                long change = opt.getOiChangeSince(minutesBack);
+                if ("CE".equals(opt.getOptionType())) ceChange += change;
+                else peChange += change;
+            }
+        }
+        return new long[]{ceChange, peChange};
     }
 }

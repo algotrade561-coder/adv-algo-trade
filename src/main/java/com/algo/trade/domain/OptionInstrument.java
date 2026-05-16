@@ -145,4 +145,66 @@ public class OptionInstrument {
             if (price < low5m || low5m == 0) low5m = price;
         }
     }
+
+    // ── OI Time-Series Ring Buffer (1-minute slots, 5 slots = 5-min lookback) ──
+    private static final int OI_HISTORY_SLOTS = 5;
+    private final long[] oiHistory = new long[OI_HISTORY_SLOTS];
+    private final long[] oiHistoryTimestamps = new long[OI_HISTORY_SLOTS];
+    private volatile int oiHistoryIndex = 0;
+    private volatile long lastOiSampleMs = 0;
+
+    /**
+     * Record OI sample every 60 seconds (called from updateOptionMarketData flow).
+     * Maintains a 5-slot ring buffer giving 1-5 minute OI lookback.
+     */
+    public void sampleOiIfDue() {
+        long now = System.currentTimeMillis();
+        if (now - lastOiSampleMs < 60_000) return; // Sample once per minute
+        if (openInterest <= 0) return;
+        lastOiSampleMs = now;
+        oiHistory[oiHistoryIndex] = openInterest;
+        oiHistoryTimestamps[oiHistoryIndex] = now;
+        oiHistoryIndex = (oiHistoryIndex + 1) % OI_HISTORY_SLOTS;
+    }
+
+    /**
+     * Get OI change over the last N minutes (1-5).
+     * Returns 0 if insufficient history.
+     */
+    public long getOiChangeSince(int minutes) {
+        if (minutes < 1 || minutes > OI_HISTORY_SLOTS) return 0;
+        if (openInterest <= 0) return 0;
+        long now = System.currentTimeMillis();
+        long cutoff = now - (minutes * 60_000L);
+        // Find the oldest sample within the requested window
+        long oldestOi = 0;
+        long oldestTime = Long.MAX_VALUE;
+        for (int i = 0; i < OI_HISTORY_SLOTS; i++) {
+            if (oiHistoryTimestamps[i] > 0 && oiHistoryTimestamps[i] <= cutoff) {
+                if (oiHistoryTimestamps[i] < oldestTime) {
+                    oldestTime = oiHistoryTimestamps[i];
+                    oldestOi = oiHistory[i];
+                }
+            }
+        }
+        if (oldestOi <= 0) return 0;
+        return openInterest - oldestOi;
+    }
+
+    /**
+     * Get OI change percentage over the last N minutes.
+     */
+    public double getOiChangePercentSince(int minutes) {
+        long change = getOiChangeSince(minutes);
+        if (change == 0) return 0;
+        // Use the oldest sample as base
+        long now = System.currentTimeMillis();
+        long cutoff = now - (minutes * 60_000L);
+        for (int i = 0; i < OI_HISTORY_SLOTS; i++) {
+            if (oiHistoryTimestamps[i] > 0 && oiHistoryTimestamps[i] <= cutoff && oiHistory[i] > 0) {
+                return ((double) change / oiHistory[i]) * 100;
+            }
+        }
+        return 0;
+    }
 }

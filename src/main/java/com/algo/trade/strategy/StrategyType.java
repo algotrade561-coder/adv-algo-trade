@@ -58,7 +58,10 @@ public enum StrategyType {
     SYNTHETIC_FUTURES("Synthetic Futures",
             "Buy ATM CE + Sell ATM PE (bullish) or inverse (bearish). Replicates futures P&L with options. Entry on strong EMA divergence.", true),
     ITM_CONVICTION("ITM Conviction",
-            "Compares ITM vs ATM option strength via ATP-LTP differential. Order flow signal — requires live WebSocket data.", false);
+            "Compares ITM vs ATM option strength via ATP-LTP differential. Order flow signal — requires live WebSocket data.", false),
+
+    OI_MOMENTUM("OI Momentum",
+            "1-second live tracking with OI + PCR + Momentum confluence. Targets 15-20 trades/day. Detects 30-min breakouts, event spikes, and OI-confirmed momentum.", false);
 
     private final String displayName;
     private final String description;
