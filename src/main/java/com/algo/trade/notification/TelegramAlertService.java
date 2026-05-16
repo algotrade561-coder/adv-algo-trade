@@ -37,7 +37,8 @@ public class TelegramAlertService {
             "Trade closed", "PAPER Trade Closed", "order filled", "Entry order filled",
             "URGENT", "DANGER", "FailSafe", "Graceful shutdown",
             "Application started", "Application shutting down",
-            "Kill switch", "HALTED", "Regime change"
+            "Kill switch", "HALTED", "Regime change",
+            "Signal Tuning Report"
     );
 
     public TelegramAlertService(TradingProperties properties, RestClient.Builder restClientBuilder) {
@@ -65,6 +66,11 @@ public class TelegramAlertService {
 
     public void systemAlert(String message) {
         send(message);
+    }
+
+    /** Post-market signal tuning summary (bypasses dedup via ALWAYS_SEND_KEYWORDS). */
+    public void signalTuningReport(String summary) {
+        send(summary);
     }
 
     public void entryRejected(StrategyDecision decision, BigDecimal optionPremium, String stage, List<String> reasons) {

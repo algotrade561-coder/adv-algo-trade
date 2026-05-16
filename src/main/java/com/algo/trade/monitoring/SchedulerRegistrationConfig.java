@@ -29,6 +29,7 @@ public class SchedulerRegistrationConfig {
     private final com.algo.trade.indicator.IVRankTracker ivRankTracker;
     private final com.algo.trade.broker.zerodha.TokenExpiryMonitor tokenExpiryMonitor;
     private final com.algo.trade.insights.AiInsightsScheduler aiInsightsScheduler;
+    private final com.algo.trade.reporting.SignalTuningScheduler signalTuningScheduler;
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.algo.trade.execution.TailHedgeManager tailHedgeManager;
@@ -43,7 +44,8 @@ public class SchedulerRegistrationConfig {
             com.algo.trade.indicator.VolumeDeltaTracker volumeDeltaTracker,
             com.algo.trade.indicator.IVRankTracker ivRankTracker,
             com.algo.trade.broker.zerodha.TokenExpiryMonitor tokenExpiryMonitor,
-            com.algo.trade.insights.AiInsightsScheduler aiInsightsScheduler
+            com.algo.trade.insights.AiInsightsScheduler aiInsightsScheduler,
+            com.algo.trade.reporting.SignalTuningScheduler signalTuningScheduler
     ) {
         this.registry = registry;
         this.safeWeekPredictor = safeWeekPredictor;
@@ -55,6 +57,7 @@ public class SchedulerRegistrationConfig {
         this.ivRankTracker = ivRankTracker;
         this.tokenExpiryMonitor = tokenExpiryMonitor;
         this.aiInsightsScheduler = aiInsightsScheduler;
+        this.signalTuningScheduler = signalTuningScheduler;
     }
 
     @PostConstruct
@@ -71,6 +74,7 @@ public class SchedulerRegistrationConfig {
         registry.register("ivRankTracker", "IV rank intraday snapshot (cron hourly)", 0, ivRankTracker::recordIntradaySnapshot);
         registry.register("tokenMonitor", "Kite token expiry check (cron 8:00/8:45)", 0, tokenExpiryMonitor::checkTokenAtOpen);
         registry.register("aiInsights", "AI insights analysis (cron 9/12/15)", 0, aiInsightsScheduler::runHourlyAnalysis);
+        registry.register("signalTuning", "Signal tuning report (cron 15:30 IST)", 0, signalTuningScheduler::generatePostMarketReport);
         log.info("[SchedulerRegistry] Registered additional tasks via SchedulerRegistrationConfig (tailHedge={})", tailHedgeManager != null);
     }
 }

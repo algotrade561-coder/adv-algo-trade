@@ -45,17 +45,20 @@ public class ReportingService {
     private final OrderRepository orderRepository;
     private final StrategyDecisionRepository decisionRepository;
     private final EntrySignalReplayReportService replayReportService;
+    private final SignalTuningReportService signalTuningReportService;
     private final com.algo.trade.marketdata.MarketDataService marketDataService;
 
     public ReportingService(BrokerClient brokerClient, TradeRepository tradeRepository, OrderRepository orderRepository,
                             StrategyDecisionRepository decisionRepository,
                             EntrySignalReplayReportService replayReportService,
+                            SignalTuningReportService signalTuningReportService,
                             com.algo.trade.marketdata.MarketDataService marketDataService) {
         this.brokerClient = brokerClient;
         this.tradeRepository = tradeRepository;
         this.orderRepository = orderRepository;
         this.decisionRepository = decisionRepository;
         this.replayReportService = replayReportService;
+        this.signalTuningReportService = signalTuningReportService;
         this.marketDataService = marketDataService;
     }
 
@@ -341,6 +344,18 @@ public class ReportingService {
 
     public String replayHtml(Path path) {
         return replayReportService.readHtml(path);
+    }
+
+    public SignalTuningReportService.TuningRunResult generateSignalTuningReport() {
+        return signalTuningReportService.generate();
+    }
+
+    public Optional<Path> latestSignalTuningHtml() {
+        return signalTuningReportService.latestHtmlReport();
+    }
+
+    public String signalTuningHtml(Path path) {
+        return signalTuningReportService.readHtml(path);
     }
 
     private long writeZip(List<Path> files, Path archive) throws IOException {

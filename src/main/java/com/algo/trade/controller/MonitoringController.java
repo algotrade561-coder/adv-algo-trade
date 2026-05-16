@@ -9,6 +9,7 @@ import com.algo.trade.persistence.StrategyDecisionEntity;
 import com.algo.trade.persistence.TradeEntity;
 import com.algo.trade.reporting.EntrySignalReplayReportService.ReplayRunResult;
 import com.algo.trade.reporting.ReportingService;
+import com.algo.trade.reporting.SignalTuningReportService.TuningRunResult;
 import com.algo.trade.reporting.ReportingService.ReportArchiveResult;
 import com.algo.trade.risk.MarketGuard;
 import java.nio.file.Path;
@@ -338,7 +339,9 @@ public class MonitoringController {
         return csv;
     }
 
-    @PostMapping("/reports/entry-signals/archive")
+    /** Report APIs: {@code /reports/...} and alias {@code /monitoring/reports/...}. */
+
+    @PostMapping({"/reports/entry-signals/archive", "/monitoring/reports/entry-signals/archive"})
     public ReportArchiveResult archiveEntrySignalReports() {
         log.info("Entry signal report archive endpoint called");
         ReportArchiveResult result = reportingService.archiveEntrySignalReports();
@@ -347,7 +350,7 @@ public class MonitoringController {
         return result;
     }
 
-    @PostMapping("/reports/entry-signals/replay")
+    @PostMapping({"/reports/entry-signals/replay", "/monitoring/reports/entry-signals/replay"})
     public ReplayRunResult replayEntrySignalReports() {
         log.info("Entry signal replay endpoint called");
         ReplayRunResult result = reportingService.generateEntrySignalReplayReport();
@@ -356,7 +359,8 @@ public class MonitoringController {
         return result;
     }
 
-    @GetMapping(value = "/reports/entry-signals/replay/report", produces = MediaType.TEXT_HTML_VALUE)
+    @GetMapping(value = {"/reports/entry-signals/replay/report", "/monitoring/reports/entry-signals/replay/report"},
+            produces = MediaType.TEXT_HTML_VALUE)
     public String replayEntrySignalReportHtml(@RequestParam(required = false) String path) {
         log.info("Entry signal replay HTML report endpoint called: path={}", path);
         Path resolved = path == null || path.isBlank()
@@ -364,5 +368,25 @@ public class MonitoringController {
                 () -> new IllegalArgumentException("No replay HTML report has been generated yet"))
                 : Path.of(path);
         return reportingService.replayHtml(resolved);
+    }
+
+    @PostMapping({"/reports/signal-tuning/generate", "/monitoring/reports/signal-tuning/generate"})
+    public TuningRunResult generateSignalTuningReport() {
+        log.info("Signal tuning report generate endpoint called");
+        TuningRunResult result = reportingService.generateSignalTuningReport();
+        log.info("Signal tuning report generate completed: evals={}, buys={}, htmlPath={}",
+                result.totalEvaluations(), result.buySignals(), result.htmlReportPath());
+        return result;
+    }
+
+    @GetMapping(value = {"/reports/signal-tuning/report", "/monitoring/reports/signal-tuning/report"},
+            produces = MediaType.TEXT_HTML_VALUE)
+    public String signalTuningReportHtml(@RequestParam(required = false) String path) {
+        log.info("Signal tuning HTML report endpoint called: path={}", path);
+        Path resolved = path == null || path.isBlank()
+                ? reportingService.latestSignalTuningHtml().orElseThrow(
+                () -> new IllegalArgumentException("No signal tuning HTML report has been generated yet"))
+                : Path.of(path);
+        return reportingService.signalTuningHtml(resolved);
     }
 }
