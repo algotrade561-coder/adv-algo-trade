@@ -1136,6 +1136,14 @@ public class ExecutionEngine {
             return rejections;
         }
 
+        // OI_MOMENTUM has its own cooldown/direction-flip logic (cooldownAfterSlSeconds,
+        // maxReversalsPerDay, maxTradesPerDay) — skip global guards that conflict with its 1-sec loop
+        boolean isOiMomentum = decision.reasons().stream()
+                .anyMatch(r -> r.startsWith("OI_MOMENTUM:"));
+        if (isOiMomentum) {
+            return rejections;
+        }
+
         // 1. Duplicate open order check — prevent placing another order for the same instrument
         boolean existingOpenBuyOrder = !orderRepository.findByInstrumentKeyAndSideAndStatusIn(
                 instrumentKey,
