@@ -741,6 +741,11 @@ public class ExecutionEngine {
      */
     @Transactional
     public void openTradeFromFilledOrder(OrderEntity orderEntity) {
+        if (orderEntity.isTradeMaterialized()) {
+            log.info("openTradeFromFilledOrder skipped: order already materialized, clientOrderId={}",
+                    orderEntity.getClientOrderId());
+            return;
+        }
         String tradeId = "TRD-" + UUID.randomUUID();
         String instrumentKey = orderEntity.getInstrumentKey();
         if (orderEntity.getAverageFillPrice() == null || orderEntity.getAverageFillPrice().signum() <= 0) {

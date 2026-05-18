@@ -108,6 +108,7 @@ public class OrderFillWatchdog {
             for (OrderEntity order : filledToday) {
                 if (order.getStatus() != OrderStatus.COMPLETE) continue;
                 if (order.getClientOrderId().startsWith("EXIT-")) continue;
+                if (order.isTradeMaterialized()) continue;
                 if (order.getFilledQuantity() <= 0) continue;
                 if (order.getAverageFillPrice() == null || order.getAverageFillPrice().signum() <= 0) continue;
 
