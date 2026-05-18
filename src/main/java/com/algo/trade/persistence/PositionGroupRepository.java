@@ -1,11 +1,12 @@
 package com.algo.trade.persistence;
 
+import com.algo.trade.domain.PositionGroupStatus;
 import com.algo.trade.strategy.StrategyType;
-import org.springframework.data.jpa.repository.JpaRepository;
-import org.springframework.stereotype.Repository;
-
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.stereotype.Repository;
 
 @Repository
 public interface PositionGroupRepository extends JpaRepository<PositionGroupEntity, Long> {
@@ -18,4 +19,8 @@ public interface PositionGroupRepository extends JpaRepository<PositionGroupEnti
 
     /** Look up a specific group by its business key. */
     Optional<PositionGroupEntity> findByGroupId(String groupId);
+
+    List<PositionGroupEntity> findByStatus(PositionGroupStatus status);
+
+    List<PositionGroupEntity> findByStatusAndEntryTimeBefore(PositionGroupStatus status, Instant before);
 }

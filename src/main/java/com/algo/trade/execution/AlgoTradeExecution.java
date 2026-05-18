@@ -590,16 +590,6 @@ public class AlgoTradeExecution {
         if (signal.isPresent() && spreadStrategyMap.containsKey(type)) {
             StrategyDecisionEntity spreadEntity = persistStrategyDecision(signal.get(), type.name(), config, ivRankSource);
 
-            if (config.isPaperTrading()) {
-                // Paper mode: position group already opened by evaluateAndEnter(), just record
-                spreadEntity.setExecutionStage("PAPER_FILLED");
-                spreadEntity.setExecutionReason("Spread paper trade opened via PositionGroup");
-                decisionRepository.save(spreadEntity);
-                log.info("Spread paper entry opened: type={} groupId={}", type, signal.get().selectedInstrumentKey().orElse(""));
-                return 1;
-            }
-
-            // Live mode: place broker orders for each BUY leg
             String groupId = signal.get().selectedInstrumentKey().orElse("");
             AbstractSpreadStrategy spreadStrat = spreadStrategyMap.get(type);
             var activePos = spreadStrat.getActivePositions().get(groupId);
@@ -610,15 +600,34 @@ public class AlgoTradeExecution {
                 return 0;
             }
 
-            // Execute all legs with safety guarantees (sequencing, unwind on failure, alerting)
-            SpreadOrderExecutor.SpreadExecutionResult execResult =
-                    spreadOrderExecutor.execute(activePos.legs(), groupId, type.name());
+            if (config.isPaperTrading()) {
+                spreadStrat.activatePositionGroup(groupId, activePos.legs(), activePos.entryPrices());
+                spreadEntity.setExecutionStage("PAPER_FILLED");
+                spreadEntity.setExecutionReason("Spread paper trade opened (PENDING→OPEN)");
+                decisionRepository.save(spreadEntity);
+                log.info("Spread paper entry opened: type={} groupId={}", type, groupId);
+                return 1;
+            }
 
-            spreadEntity.setExecutionStage(execResult.allFilled() ? "FILLED" : "PARTIAL_UNWOUND");
+            int configuredLots = Math.max(1, config.getLots());
+            int lotSize = activePos.legs().isEmpty()
+                    ? 1
+                    : activePos.legs().getFirst().quantity() / configuredLots;
+            SpreadOrderExecutor.SpreadExecutionResult execResult = spreadOrderExecutor.execute(
+                    activePos.legs(), groupId, type.name(), configuredLots, lotSize, false);
+
+            if (execResult.allFilled()) {
+                spreadStrat.activatePositionGroup(groupId, activePos.legs(), execResult.fillPricesByInstrument());
+                spreadEntity.setExecutionStage("FILLED");
+            } else {
+                spreadStrat.failPositionGroup(groupId, execResult.summary());
+                spreadEntity.setExecutionStage("MARGIN_REJECTED".equals(execResult.summary())
+                        || execResult.summary().contains("margin")
+                        ? "MARGIN_REJECTED" : "PARTIAL_UNWOUND");
+            }
             spreadEntity.setExecutionReason("Spread live: " + execResult.summary());
             decisionRepository.save(spreadEntity);
-            log.info("Spread live entry: type={}, groupId={}, result={}",
-                    type, groupId, execResult.summary());
+            log.info("Spread live entry: type={}, groupId={}, result={}", type, groupId, execResult.summary());
             return execResult.allFilled() ? 1 : 0;
         }
 

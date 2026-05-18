@@ -15,8 +15,10 @@ import org.springframework.stereotype.Component;
 import java.util.List;
 
 /**
- * Graceful shutdown handler — closes open positions and disconnects WebSocket
- * when the Spring context is shutting down (JVM exit, SIGTERM, etc.).
+ * Graceful shutdown handler — disconnects WebSocket and optionally closes single-leg
+ * {@link TradeEntity} rows when the JVM exits. Spread {@code PositionGroup} positions are
+ * left open at the broker and restored from DB on the next startup (EOD square-off is
+ * handled by {@link FailSafeSquareoffDaemon}).
  */
 @Component
 public class GracefulShutdownHandler {
@@ -49,8 +51,8 @@ public class GracefulShutdownHandler {
 
     @EventListener
     public void onContextClosed(ContextClosedEvent event) {
-        log.warn("[Shutdown] Application shutting down — closing open positions");
-        alertService.systemAlert("⚠️ Application shutting down — closing open positions");
+        log.warn("[Shutdown] Application shutting down (spread groups remain at broker; restored on restart)");
+        alertService.systemAlert("⚠️ Application shutting down — spread positions kept open; single-leg trades may be closed");
 
         // Disconnect WebSocket FIRST — stops incoming ticks from firing CandleClosedEvents
         // against an EntityManagerFactory that is about to be torn down.

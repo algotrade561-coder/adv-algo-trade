@@ -1,9 +1,14 @@
 package com.algo.trade.strategy;
 
+import com.algo.trade.domain.IndexType;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.persistence.*;
 import java.math.BigDecimal;
 import java.time.LocalTime;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * Per-strategy configuration stored in DB.
@@ -67,6 +72,27 @@ public class StrategyConfig {
     /** Minimum volume on the ITM option to confirm conviction (ITM Conviction). */
     private long minimumVolume = 5000;
 
+    /**
+     * Per-index OTM strikes overrides as JSON map (e.g., {"NIFTY":2,"BANKNIFTY":3}).
+     * NULL falls back to the scalar {@link #otmStrikes}. Used by LONG_STRANGLE etc.
+     */
+    @Column(columnDefinition = "TEXT")
+    private String otmStrikesByIndexJson;
+
+    /**
+     * Hard rupee cap on capital committed per trade.
+     * Lots get scaled down proportionally if {@code lots * premiumPerLot} would exceed this.
+     * NULL = no cap (legacy behavior).
+     */
+    @Column(precision = 12, scale = 2)
+    private BigDecimal maxCapitalPerTrade;
+
+    @Transient
+    private static final ObjectMapper OTM_JSON_MAPPER = new ObjectMapper();
+
+    @Transient
+    private volatile Map<String, Integer> cachedOtmByIndex;
+
     protected StrategyConfig() {}
 
     public StrategyConfig(StrategyType type) {
@@ -78,8 +104,8 @@ public class StrategyConfig {
             case EVENT_DRIVEN_BUY -> { stopLossPercent = BigDecimal.valueOf(35); targetPercent = BigDecimal.valueOf(80); maxHoldMinutes = 0; maxIvRankForBuying = BigDecimal.valueOf(40); paperTrading = true; scanTimeframe = "FIFTEEN_MINUTE"; candleTimeframe = "FIVE_MINUTE"; trendTimeframe = "FIFTEEN_MINUTE"; }
             case SCALPING -> { stopLossPercent = BigDecimal.valueOf(20); targetPercent = BigDecimal.valueOf(40); maxHoldMinutes = 15; trailingStopActivationPercent = BigDecimal.valueOf(20); trailingGapPercent = BigDecimal.valueOf(10); minCombinedPremium = BigDecimal.valueOf(70); squareoffHour = 14; squareoffMinute = 30; scanTimeframe = "FIVE_MINUTE"; candleTimeframe = "FIVE_MINUTE"; trendTimeframe = "FIVE_MINUTE"; }
             case BULL_CALL_SPREAD, BEAR_PUT_SPREAD -> { stopLossPercent = BigDecimal.valueOf(50); targetPercent = BigDecimal.valueOf(80); paperTrading = true; scanTimeframe = "FIFTEEN_MINUTE"; candleTimeframe = "FIVE_MINUTE"; trendTimeframe = "FIFTEEN_MINUTE"; }
-            case LONG_STRADDLE -> { stopLossPercent = BigDecimal.valueOf(40); targetPercent = BigDecimal.valueOf(60); maxHoldMinutes = 20; maxIvRankForBuying = BigDecimal.valueOf(25); scanTimeframe = "FIFTEEN_MINUTE"; candleTimeframe = "FIVE_MINUTE"; trendTimeframe = "FIFTEEN_MINUTE"; }
-            case LONG_STRANGLE -> { stopLossPercent = BigDecimal.valueOf(50); targetPercent = BigDecimal.valueOf(80); otmStrikes = 2; maxHoldMinutes = 20; maxIvRankForBuying = BigDecimal.valueOf(30); scanTimeframe = "FIFTEEN_MINUTE"; candleTimeframe = "FIVE_MINUTE"; trendTimeframe = "FIFTEEN_MINUTE"; }
+            case LONG_STRADDLE -> { stopLossPercent = BigDecimal.valueOf(40); targetPercent = BigDecimal.valueOf(60); maxHoldMinutes = 20; maxIvRankForBuying = BigDecimal.valueOf(25); maxCapitalPerTrade = BigDecimal.valueOf(15000); scanTimeframe = "FIFTEEN_MINUTE"; candleTimeframe = "FIVE_MINUTE"; trendTimeframe = "FIFTEEN_MINUTE"; }
+            case LONG_STRANGLE -> { stopLossPercent = BigDecimal.valueOf(50); targetPercent = BigDecimal.valueOf(80); otmStrikes = 2; otmStrikesByIndexJson = "{\"NIFTY\":2,\"BANKNIFTY\":3,\"FINNIFTY\":2,\"MIDCPNIFTY\":2}"; maxHoldMinutes = 20; maxIvRankForBuying = BigDecimal.valueOf(30); maxCapitalPerTrade = BigDecimal.valueOf(10000); scanTimeframe = "FIFTEEN_MINUTE"; candleTimeframe = "FIVE_MINUTE"; trendTimeframe = "FIFTEEN_MINUTE"; }
             case SHORT_STRADDLE -> { stopLossPercent = BigDecimal.valueOf(50); targetPercent = BigDecimal.valueOf(30); minCombinedPremium = BigDecimal.valueOf(150); paperTrading = true; scanTimeframe = "FIFTEEN_MINUTE"; candleTimeframe = "FIVE_MINUTE"; trendTimeframe = "FIFTEEN_MINUTE"; }
             case SHORT_STRANGLE -> { stopLossPercent = BigDecimal.valueOf(40); targetPercent = BigDecimal.valueOf(80); otmStrikes = 2; paperTrading = true; scanTimeframe = "FIFTEEN_MINUTE"; candleTimeframe = "FIVE_MINUTE"; trendTimeframe = "FIFTEEN_MINUTE"; }
             case IRON_CONDOR -> { stopLossPercent = BigDecimal.valueOf(100); targetPercent = BigDecimal.valueOf(50); otmStrikes = 2; spreadStrikes = 4; paperTrading = true; scanTimeframe = "FIFTEEN_MINUTE"; candleTimeframe = "FIVE_MINUTE"; trendTimeframe = "FIFTEEN_MINUTE"; }
@@ -148,4 +174,32 @@ public class StrategyConfig {
     public void setMinimumMove(BigDecimal v) { this.minimumMove = v; }
     public void setMinimumStrengthGap(BigDecimal v) { this.minimumStrengthGap = v; }
     public void setMinimumVolume(long v) { this.minimumVolume = v; }
+
+    public String getOtmStrikesByIndexJson() { return otmStrikesByIndexJson; }
+    public void setOtmStrikesByIndexJson(String v) { this.otmStrikesByIndexJson = v; this.cachedOtmByIndex = null; }
+
+    public BigDecimal getMaxCapitalPerTrade() { return maxCapitalPerTrade; }
+    public void setMaxCapitalPerTrade(BigDecimal v) { this.maxCapitalPerTrade = v; }
+
+    /**
+     * Returns the OTM strike count for the given index, falling back to the scalar
+     * {@link #otmStrikes} when no per-index override is configured.
+     */
+    public int getOtmStrikes(IndexType indexType) {
+        if (otmStrikesByIndexJson == null || otmStrikesByIndexJson.isBlank()) {
+            return otmStrikes;
+        }
+        Map<String, Integer> map = cachedOtmByIndex;
+        if (map == null) {
+            try {
+                map = OTM_JSON_MAPPER.readValue(otmStrikesByIndexJson,
+                        new TypeReference<HashMap<String, Integer>>() {});
+            } catch (Exception e) {
+                map = Map.of();
+            }
+            cachedOtmByIndex = map;
+        }
+        Integer override = map.get(indexType.name());
+        return override != null && override > 0 ? override : otmStrikes;
+    }
 }

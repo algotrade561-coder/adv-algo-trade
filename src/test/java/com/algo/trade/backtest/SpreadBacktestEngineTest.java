@@ -242,7 +242,7 @@ class SpreadBacktestEngineTest {
                             BigDecimal.TEN, BigDecimal.valueOf(20), BigDecimal.valueOf(12),
                             BigDecimal.valueOf(6),
                             LocalTime.of(15, 15),  // forced exit at 3:15 PM
-                            false, 0),
+                            false, 0, "HYBRID", "PRICE"),
                     null, null, null, null, null);
         }
 

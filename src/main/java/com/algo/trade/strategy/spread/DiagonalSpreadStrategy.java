@@ -138,24 +138,6 @@ public class DiagonalSpreadStrategy extends AbstractSpreadStrategy {
 
     @Override
     protected boolean shouldExit(PositionGroup group, Map<String, BigDecimal> currentPrices, StrategyConfig config) {
-        BigDecimal entryNet = netDebit(group.legs(), group.entryPrices());
-        BigDecimal currentNet = netDebit(group.legs(), currentPrices);
-
-        if (slHit(entryNet, currentNet, config.getStopLossPercent())) {
-            log.info("DiagonalSpread: SL hit for group {}", group.groupId());
-            return true;
-        }
-        if (targetHit(entryNet, currentNet, config.getTargetPercent())) {
-            log.info("DiagonalSpread: target hit for group {}", group.groupId());
-            return true;
-        }
-
-        // Exit near-expiry sell leg if within 1 day of expiry
-        IndexType indexType = IndexType.from(group.underlying());
-        if (expiryCalendar.isNearExpiry(indexType, 1)) {
-            log.info("DiagonalSpread: near-expiry sell leg within 1 day for group {}", group.groupId());
-            return true;
-        }
         return false;
     }
 

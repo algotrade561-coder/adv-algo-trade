@@ -124,21 +124,6 @@ public class BearPutSpreadStrategy extends AbstractSpreadStrategy {
 
     @Override
     protected boolean shouldExit(PositionGroup group, Map<String, BigDecimal> currentPrices, StrategyConfig config) {
-        BigDecimal entryNet = netDebit(group.legs(), group.entryPrices());
-        BigDecimal currentNet = netDebit(group.legs(), currentPrices);
-
-        if (slHit(entryNet, currentNet, config.getStopLossPercent())) {
-            log.info("BearPutSpread: SL hit for group {}", group.groupId());
-            return true;
-        }
-        if (targetHit(entryNet, currentNet, config.getTargetPercent())) {
-            log.info("BearPutSpread: target hit for group {}", group.groupId());
-            return true;
-        }
-        if (expiryCalendar.isExpiryDangerZone(IndexType.from(group.underlying()))) {
-            log.info("BearPutSpread: expiry danger zone for group {}", group.groupId());
-            return true;
-        }
         return false;
     }
 

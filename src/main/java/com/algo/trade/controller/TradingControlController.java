@@ -419,10 +419,19 @@ public class TradingControlController {
     // ── Manual order ──────────────────────────────────────────────────────────
 
     @PostMapping("/orders/place")
-    public ResponseEntity<Map<String, Object>> placeManualOrder(@RequestBody ManualOrderRequest request) {
-        log.info("Manual order requested: instrument={}, side={}, type={}, product={}, qty={}, limit={}, tag={}",
+    public ResponseEntity<Map<String, Object>> placeManualOrder(
+            @RequestBody ManualOrderRequest request,
+            jakarta.servlet.http.HttpServletRequest httpRequest) {
+        // P4 #48: Caller attribution — tag with IP or authenticated user
+        String caller = httpRequest.getRemoteAddr();
+        if (httpRequest.getUserPrincipal() != null) {
+            caller = httpRequest.getUserPrincipal().getName();
+        }
+        String effectiveTag = request.tag() != null ? request.tag() + "@" + caller : "manual-ui@" + caller;
+
+        log.info("Manual order requested: instrument={}, side={}, type={}, product={}, qty={}, limit={}, tag={}, caller={}",
                 request.instrumentKey(), request.side(), request.orderType(), request.productType(),
-                request.quantity(), request.limitPrice(), request.tag());
+                request.quantity(), request.limitPrice(), effectiveTag, caller);
 
         // ── Safety checks: same gates as strategy orders ──────────────────────
         if (!tradingStateService.running()) {
@@ -451,7 +460,7 @@ public class TradingControlController {
                     com.algo.trade.domain.ProductType.valueOf(request.productType()),
                     request.quantity(),
                     request.limitPrice() != null ? java.util.Optional.of(request.limitPrice()) : java.util.Optional.empty(),
-                    request.tag() != null ? request.tag() : "manual-ui"
+                    effectiveTag
             );
             var response = brokerClient.placeOrder(orderRequest);
 

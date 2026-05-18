@@ -25,11 +25,14 @@ import java.util.Map;
 
 /**
  * Long Straddle — BUY ATM CE + BUY ATM PE at same strike.
- * Entry: IV rank < maxIvRankForBuying.
- * Exit: SL%, target%, or expiry danger zone.
+ * Entry: IV rank < maxIvRankForBuying, BB squeeze, pre-event or early session.
+ * Exit: SL%, target%, vega-collapse, or expiry danger zone.
  */
 @Component
 public class LongStraddleStrategy extends AbstractSpreadStrategy {
+
+    /** BB bandwidth threshold — below this = squeeze detected. Industry standard ~1.0%. */
+    private static final double BB_SQUEEZE_THRESHOLD_PCT = 1.0;
 
     public LongStraddleStrategy(ExpiryCalendar expiryCalendar,
                                 InstrumentCache instrumentCache,
@@ -45,29 +48,35 @@ public class LongStraddleStrategy extends AbstractSpreadStrategy {
 
     @Override
     protected boolean shouldEnter(SpreadEvaluationContext ctx) {
+        IndexType indexType = ctx.indexType();
+
+        // P0 #3: DTE check — don't enter with < 2 days to expiry (theta catastrophic)
+        long dte = expiryCalendar.daysToExpiry(indexType);
+        if (dte < 2) {
+            log.debug("LongStraddle: DTE={} < 2, theta too high — skipping", dte);
+            return false;
+        }
+
         // ── Filter 1: IV Rank must be low (< 30) — buy when premiums are cheap ──
         double maxIvRank = Math.min(ctx.config().getMaxIvRankForBuying().doubleValue(), 30.0);
         if (ctx.ivRank() >= maxIvRank) {
-            log.debug("LongStraddle: IV rank {:.1f} >= max {}, skipping", ctx.ivRank(), maxIvRank);
+            log.debug("LongStraddle: IV rank {} >= max {}, skipping",
+                    String.format("%.1f", ctx.ivRank()), maxIvRank);
             return false;
         }
 
         // ── Filter 2: Bollinger Band squeeze — only enter when bands are tight ──
         var candles = ctx.trendCandles();
         if (candles.size() >= 20) {
-            double[] closes = candles.stream().mapToDouble(c -> c.close().doubleValue()).toArray();
-            double sma = 0;
-            for (int i = closes.length - 20; i < closes.length; i++) sma += closes[i];
-            sma /= 20;
-            double variance = 0;
-            for (int i = closes.length - 20; i < closes.length; i++) variance += Math.pow(closes[i] - sma, 2);
-            double stdDev = Math.sqrt(variance / 20);
-            double bandwidth = (stdDev * 4) / sma * 100;
-            if (bandwidth > 2.0) {
-                log.debug("LongStraddle: BB bandwidth {:.2f}% > 2% (no squeeze), skipping", bandwidth);
+            double bandwidth = com.algo.trade.indicator.BollingerBandIndicator.bandwidth(candles, 20);
+            if (bandwidth >= 0 && bandwidth > BB_SQUEEZE_THRESHOLD_PCT) {
+                log.debug("LongStraddle: BB bandwidth {}% > {}% (no squeeze), skipping",
+                        String.format("%.2f", bandwidth), BB_SQUEEZE_THRESHOLD_PCT);
                 return false;
             }
-            log.debug("LongStraddle: BB squeeze detected, bandwidth={:.2f}%", bandwidth);
+            if (bandwidth >= 0) {
+                log.debug("LongStraddle: BB squeeze detected, bandwidth={}%", String.format("%.2f", bandwidth));
+            }
         }
 
         // ── Filter 3: Pre-event day OR squeeze required ──
@@ -85,15 +94,17 @@ public class LongStraddleStrategy extends AbstractSpreadStrategy {
             return false;
         }
 
-        // ── Filter 5: VIX must not be elevated (premiums expensive) ──
+        // P1 #4: VIX gate — allow event-day entries even with VIX > 20
+        // (long straddle on event day with high VIX is the highest-conviction setup)
         double vix = marketGuard.getCurrentVix();
-        if (vix > 20) {
-            log.debug("LongStraddle: VIX={:.1f} > 20 (premiums expensive), skipping", vix);
+        if (!isPreEvent && vix > 20) {
+            log.debug("LongStraddle: VIX={} > 20 and not pre-event (premiums expensive), skipping",
+                    String.format("%.1f", vix));
             return false;
         }
 
-        log.info("LongStraddle: all entry filters passed — ivRank={:.1f}, vix={:.1f}, preEvent={}, earlySession={}",
-                ctx.ivRank(), vix, isPreEvent, earlySession);
+        log.info("LongStraddle: all entry filters passed — ivRank={}, vix={}, preEvent={}, earlySession={}, dte={}",
+                String.format("%.1f", ctx.ivRank()), String.format("%.1f", vix), isPreEvent, earlySession, dte);
         return true;
     }
 
@@ -116,6 +127,8 @@ public class LongStraddleStrategy extends AbstractSpreadStrategy {
             return List.of();
         }
 
+        // Capital cap enforced centrally in AbstractSpreadStrategy.evaluateAndEnter
+        // (via StrategyConfig.getMaxCapitalPerTrade — also shrinks lots when premium allows it).
         return List.of(
                 new SpreadLeg(ceKey, atm, OptionType.CE, OrderSide.BUY, qty, expiry),
                 new SpreadLeg(peKey, atm, OptionType.PE, OrderSide.BUY, qty, expiry)
@@ -124,21 +137,6 @@ public class LongStraddleStrategy extends AbstractSpreadStrategy {
 
     @Override
     protected boolean shouldExit(PositionGroup group, Map<String, BigDecimal> currentPrices, StrategyConfig config) {
-        BigDecimal entryNet = netDebit(group.legs(), group.entryPrices());
-        BigDecimal currentNet = netDebit(group.legs(), currentPrices);
-
-        if (slHit(entryNet, currentNet, config.getStopLossPercent())) {
-            log.info("LongStraddle: SL hit for group {}", group.groupId());
-            return true;
-        }
-        if (targetHit(entryNet, currentNet, config.getTargetPercent())) {
-            log.info("LongStraddle: target hit for group {}", group.groupId());
-            return true;
-        }
-        if (expiryCalendar.isExpiryDangerZone(IndexType.from(group.underlying()))) {
-            log.info("LongStraddle: expiry danger zone for group {}", group.groupId());
-            return true;
-        }
         return false;
     }
 

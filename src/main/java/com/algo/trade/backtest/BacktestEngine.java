@@ -749,7 +749,9 @@ public class BacktestEngine {
                 config.getTrailingGapPercent(),
                 squareoffTime,
                 base.exit().partialProfitBookingEnabled(),
-                config.getMaxHoldMinutes());
+                config.getMaxHoldMinutes(),
+                base.exit().exitModeSetting(),
+                base.exit().trailingModeSetting());
         return new TradingProperties(
                 base.mode(), base.marketDataMode(), base.executionMode(),
                 base.liveTradingEnabled(), base.timezone(),
@@ -785,7 +787,9 @@ public class BacktestEngine {
                 gc.getStopLossPercent(), gc.getTargetPercent(),
                 gc.getTrailingStopActivationPercent(), gc.getTrailingGapPercent(),
                 gc.getForcedExitTimeAsLocalTime(), gc.isPartialProfitBookingEnabled(),
-                gc.getMaxHoldMinutes());
+                gc.getMaxHoldMinutes(),
+                properties.exit().exitModeSetting(),
+                properties.exit().trailingModeSetting());
         var risk = new TradingProperties.Risk(
                 gc.getTotalCapital(), gc.getMaxRiskPerTradePercent(), gc.getMaxDailyLossPercent(),
                 gc.getMaxTradesPerDay(), properties.risk().maxOrdersPerDay(), gc.getMaxConsecutiveLosses(),

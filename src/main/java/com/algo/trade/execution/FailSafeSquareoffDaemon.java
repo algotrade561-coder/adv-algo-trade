@@ -43,6 +43,7 @@ public class FailSafeSquareoffDaemon {
     private final com.algo.trade.persistence.OrderRepository orderRepository;
     private final com.algo.trade.broker.BrokerClient brokerClient;
     private final com.algo.trade.monitoring.ErrorEventService errorEventService;
+    private final SpreadEodSquareoffService spreadEodSquareoffService;
 
     @org.springframework.beans.factory.annotation.Autowired
     private com.algo.trade.monitoring.SchedulerRegistry schedulerRegistry;
@@ -57,7 +58,8 @@ public class FailSafeSquareoffDaemon {
                                     com.algo.trade.marketdata.MarketDataService marketDataService,
                                     com.algo.trade.persistence.OrderRepository orderRepository,
                                     com.algo.trade.broker.BrokerClient brokerClient,
-                                    com.algo.trade.monitoring.ErrorEventService errorEventService) {
+                                    com.algo.trade.monitoring.ErrorEventService errorEventService,
+                                    SpreadEodSquareoffService spreadEodSquareoffService) {
         this.tradeRepository = tradeRepository;
         this.executionEngine = executionEngine;
         this.alertService = alertService;
@@ -65,6 +67,7 @@ public class FailSafeSquareoffDaemon {
         this.orderRepository = orderRepository;
         this.brokerClient = brokerClient;
         this.errorEventService = errorEventService;
+        this.spreadEodSquareoffService = spreadEodSquareoffService;
     }
 
     @jakarta.annotation.PostConstruct
@@ -85,11 +88,16 @@ public class FailSafeSquareoffDaemon {
         }
         try {
 
-        List<TradeEntity> openTrades = tradeRepository.findByStatus(TradeStatus.OPEN);
-        if (openTrades.isEmpty()) return;
+        int spreadClosed = spreadEodSquareoffService.squareOffAllOpenGroups("FailSafe square-off " + getFailSafeTime());
 
-        log.warn("[FailSafe] {} open trades remain after {} — forcing close", openTrades.size(), getFailSafeTime());
-        alertService.systemAlert("🚨 FailSafe: " + openTrades.size() + " open trades after " + getFailSafeTime() + " — forcing close");
+        List<TradeEntity> openTrades = tradeRepository.findByStatus(TradeStatus.OPEN);
+        if (openTrades.isEmpty() && spreadClosed == 0) return;
+
+        log.warn("[FailSafe] {} open trades, {} spread groups squared off after {}",
+                openTrades.size(), spreadClosed, getFailSafeTime());
+        if (!openTrades.isEmpty()) {
+            alertService.systemAlert("🚨 FailSafe: " + openTrades.size() + " open trades after " + getFailSafeTime() + " — forcing close");
+        }
 
         // Cancel all pending limit orders first — prevent overnight broker exposure
         try {

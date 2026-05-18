@@ -1,8 +1,10 @@
 package com.algo.trade.config;
 
 import com.algo.trade.domain.ExecutionMode;
+import com.algo.trade.execution.exit.MarketSessionHelper;
 import jakarta.annotation.PostConstruct;
 import java.math.BigDecimal;
+import java.time.LocalTime;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -13,9 +15,11 @@ public class ConfigurationValidator {
     private static final Logger log = LoggerFactory.getLogger(ConfigurationValidator.class);
 
     private final TradingProperties properties;
+    private final GlobalConfigService globalConfigService;
 
-    public ConfigurationValidator(TradingProperties properties) {
+    public ConfigurationValidator(TradingProperties properties, GlobalConfigService globalConfigService) {
         this.properties = properties;
+        this.globalConfigService = globalConfigService;
     }
 
     @PostConstruct
@@ -31,6 +35,16 @@ public class ConfigurationValidator {
         }
         if (!properties.exit().forcedExitTime().isAfter(properties.entry().entryCutoffTime())) {
             throw new IllegalStateException("forced-exit-time must be after entry-cutoff-time");
+        }
+        if (!globalConfigService.getFailSafeSquareoffTime()
+                .isAfter(properties.exit().forcedExitTime())) {
+            throw new IllegalStateException(
+                    "fail-safe-squareoff-time must be after forced-exit-time (strategy squareoff)");
+        }
+        LocalTime marketClose = MarketSessionHelper.marketClose();
+        if (!globalConfigService.getFailSafeSquareoffTime().isBefore(marketClose)) {
+            throw new IllegalStateException(
+                    "fail-safe-squareoff-time must be before market close (" + marketClose + ")");
         }
 
         BigDecimal theoreticalMaxRisk = properties.risk().maxRiskPerTradePercent()

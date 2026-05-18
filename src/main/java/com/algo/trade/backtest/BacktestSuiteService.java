@@ -969,7 +969,9 @@ public class BacktestSuiteService {
                         firstNonNull(variant.trailingGapPercent(), baseExit.trailingGapPercent()),
                         baseExit.forcedExitTime(),
                         baseExit.partialProfitBookingEnabled(),
-                        firstNonNull(variant.maxHoldMinutes(), baseExit.maxHoldMinutes())
+                        firstNonNull(variant.maxHoldMinutes(), baseExit.maxHoldMinutes()),
+                        baseExit.exitModeSetting(),
+                        baseExit.trailingModeSetting()
                 ),
                 new TradingProperties.Risk(
                         firstNonNull(variant.totalCapital(), baseRisk.totalCapital()),

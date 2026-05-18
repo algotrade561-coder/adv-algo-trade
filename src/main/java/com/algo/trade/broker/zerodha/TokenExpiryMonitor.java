@@ -68,4 +68,26 @@ public class TokenExpiryMonitor {
             if (errorEventService != null) errorEventService.high("TokenMonitor", "8:45 AM — still not authenticated, market opens in 30 min");
         }
     }
+
+    /**
+     * Mid-day token health check (every 30 min during market hours).
+     * Detects token revocation mid-session and alerts immediately.
+     * Note: Programmatic re-auth not possible until Kite provides refresh tokens.
+     */
+    @Scheduled(cron = "0 0/30 9-15 * * MON-FRI", zone = "Asia/Kolkata")
+    public void midDayTokenHealthCheck() {
+        if (!tokenStore.authenticated()) {
+            log.error("[TokenMonitor] MID-DAY: Access token lost! Trading is broken.");
+            telegramAlertService.systemAlert(
+                    "🚨 CRITICAL: Kite access token lost mid-session!\n"
+                    + "All exits are client-side — positions at risk.\n"
+                    + "Re-authenticate immediately.");
+            if (errorEventService != null) {
+                errorEventService.critical("TokenMonitor",
+                        "Access token lost mid-session — manual re-auth required");
+            }
+        } else if (!webSocketClient.isConnected()) {
+            log.warn("[TokenMonitor] MID-DAY: WebSocket disconnected but token present");
+        }
+    }
 }

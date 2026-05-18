@@ -36,18 +36,6 @@ import { ApiService, StrategyDto } from '../core/api.service';
       @if (msg()) { <div class="toast-ok">{{ msg() }}</div> }
       @if (error()) { <div class="toast-warn">{{ error() }}</div> }
 
-      <!-- Spread execution info -->
-      @if (hasEnabledSpreadStrategy()) {
-        <div class="spread-info">
-          <mat-icon>info</mat-icon>
-          <div>
-            <strong>Multi-leg execution active.</strong>
-            Spread strategies place all legs sequentially with safety guarantees:
-            BUY hedge legs first, then SELL premium legs. Partial fills are automatically unwound.
-          </div>
-        </div>
-      }
-
       <!-- Buying Strategies -->
       <div class="section-hdr">
         <mat-icon class="icon-buy">trending_up</mat-icon>
@@ -102,6 +90,72 @@ import { ApiService, StrategyDto } from '../core/api.service';
                 <div class="param"><span>Min Move</span><strong>₹{{ s.minimumMove }}</strong></div>
                 <div class="param"><span>Min Strength Gap</span><strong>{{ s.minimumStrengthGap }}</strong></div>
                 <div class="param"><span>Min Volume</span><strong>{{ s.minimumVolume }}</strong></div>
+              }
+            </div>
+            <div class="card-edit-row">
+              <button mat-stroked-button class="edit-btn" (click)="openEdit(s)">
+                <mat-icon>tune</mat-icon> Edit Parameters
+              </button>
+            </div>
+          </div>
+        }
+      </div>
+
+      <!-- Spread Strategies -->
+      <div class="section-hdr" style="margin-top:36px">
+        <mat-icon class="icon-spread">account_tree</mat-icon>
+        <div>
+          <h2>Multi-Leg Spread Strategies</h2>
+          <p>Defined-risk structures with multiple legs. Includes both debit and credit spreads.</p>
+        </div>
+      </div>
+
+      <div class="spread-info">
+        <mat-icon>info</mat-icon>
+        <div>
+          Spread strategies place all legs sequentially with safety guarantees:
+          BUY hedge legs first, then SELL premium legs. Partial fills are automatically unwound.
+        </div>
+      </div>
+
+      <div class="strategy-grid">
+        @for (s of spreadStrategies(); track s.id) {
+          <div class="strategy-card card-spread" [class.card-on]="s.enabled">
+            <div class="card-top">
+              <div class="card-name-row">
+                <span class="card-name">{{ s.displayName }}</span>
+                <mat-slide-toggle [checked]="s.enabled" (change)="toggle(s, $event.checked)" color="accent"></mat-slide-toggle>
+              </div>
+              <p class="card-desc">{{ s.description }}</p>
+              <div class="card-tags">
+                <span class="tag tag-spread">SPREAD</span>
+                @if (s.sellingStrategy) {
+                  <span class="tag tag-sell">CREDIT</span>
+                } @else {
+                  <span class="tag tag-buy">DEBIT</span>
+                }
+                @if (s.paperTrading) {
+                  <span class="tag tag-paper">PAPER</span>
+                }
+                <span class="tag">{{ s.underlying }}</span>
+                <span class="tag">{{ s.lots }} lot{{ s.lots > 1 ? 's' : '' }}</span>
+                @if (signalCount(s.type) > 0) {
+                  <span class="tag tag-signal">{{ signalCount(s.type) }} signals today</span>
+                }
+              </div>
+            </div>
+            <div class="card-params">
+              <div class="param"><span>Stop Loss</span><strong class="c-bad">{{ s.stopLossPercent }}%</strong></div>
+              <div class="param"><span>Target</span><strong class="c-ok">{{ s.targetPercent }}%</strong></div>
+              <div class="param"><span>Max Hold</span><strong>{{ s.maxHoldMinutes === 0 ? 'No limit' : s.maxHoldMinutes + ' min' }}</strong></div>
+              @if (s.type === 'BULL_CALL_SPREAD' || s.type === 'BEAR_PUT_SPREAD') {
+                <div class="param"><span>Spread Strikes</span><strong>{{ s.spreadStrikes }}</strong></div>
+              }
+              @if (s.type === 'LONG_STRANGLE') {
+                <div class="param"><span>OTM Strikes</span><strong>{{ s.otmStrikes }}</strong></div>
+              }
+              @if (s.sellingStrategy) {
+                <div class="param"><span>Min Premium</span><strong>₹{{ s.minCombinedPremium }}</strong></div>
               }
             </div>
             <div class="card-edit-row">
@@ -372,8 +426,11 @@ import { ApiService, StrategyDto } from '../core/api.service';
     .tag { padding: 2px 8px; border-radius: 20px; font-size: 11px; font-weight: 600; background: var(--panel-soft); color: var(--muted); border: 1px solid var(--line); }
     .tag-buy { background: var(--ok-bg); color: var(--ok); border-color: rgba(69,209,140,.3); }
     .tag-sell { background: var(--warn-bg); color: var(--warn); border-color: rgba(242,189,75,.3); }
+    .tag-spread { background: rgba(97,168,255,.12); color: var(--accent); border-color: rgba(97,168,255,.3); }
     .tag-signal { background: rgba(97,168,255,.12); color: var(--accent); border-color: rgba(97,168,255,.3); }
     .tag-paper { background: rgba(168,130,255,.12); color: #a882ff; border-color: rgba(168,130,255,.3); }
+    .icon-spread { color: var(--accent); font-size: 22px; width: 22px; height: 22px; }
+    .card-spread { border-color: rgba(97,168,255,.15); }
 
     .card-params { padding: 12px 16px 16px; border-top: 1px solid var(--line); background: rgba(0,0,0,.1); }
     .param { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; font-size: 12px; }
@@ -442,7 +499,7 @@ export class StrategiesPageComponent implements OnInit {
     });
   }
 
-  readonly SPREAD_TYPES = new Set(['BULL_CALL_SPREAD','BEAR_PUT_SPREAD','LONG_STRADDLE','LONG_STRANGLE','SHORT_STRADDLE','SHORT_STRANGLE','IRON_CONDOR','BUTTERFLY','CALENDAR_SPREAD']);
+  readonly SPREAD_TYPES = new Set(['BULL_CALL_SPREAD','BEAR_PUT_SPREAD','LONG_STRADDLE','LONG_STRANGLE','SHORT_STRADDLE','SHORT_STRANGLE','IRON_CONDOR','BUTTERFLY','CALENDAR_SPREAD','DIAGONAL_SPREAD','JADE_LIZARD','SYNTHETIC_FUTURES']);
 
   hasEnabledSpreadStrategy(): boolean {
     return this.strategies().some(s => s.enabled && this.SPREAD_TYPES.has(s.type));
@@ -450,8 +507,9 @@ export class StrategiesPageComponent implements OnInit {
 
   signalCount(type: string): number { return this.signalCounts()[type] ?? 0; }
 
-  buyingStrategies() { return this.strategies().filter(s => !s.sellingStrategy && s.type !== 'ITM_CONVICTION'); }
-  sellingStrategies() { return this.strategies().filter(s => s.sellingStrategy && s.type !== 'ITM_CONVICTION'); }
+  buyingStrategies() { return this.strategies().filter(s => !s.sellingStrategy && !this.SPREAD_TYPES.has(s.type) && s.type !== 'ITM_CONVICTION'); }
+  sellingStrategies() { return this.strategies().filter(s => s.sellingStrategy && !this.SPREAD_TYPES.has(s.type) && s.type !== 'ITM_CONVICTION'); }
+  spreadStrategies() { return this.strategies().filter(s => this.SPREAD_TYPES.has(s.type)); }
 
   formatTimeframe(tf: string): string {
     switch (tf) {

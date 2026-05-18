@@ -184,9 +184,7 @@ class LiveFlowIntegrationTest {
     void paperEntry_createsTradeWithoutBrokerOrder() {
         StrategyDecision decision = testDecision("ITM_CONVICTION signal");
 
-        StrategyConfig directionalConfig = new StrategyConfig(StrategyType.DIRECTIONAL_BUY);
-        directionalConfig.setStopLossPercent(BigDecimal.valueOf(12));
-        ExecutionResult result = executionEngine.executePaperEntry(decision, BigDecimal.valueOf(30), 65, directionalConfig);
+        ExecutionResult result = executionEngine.executePaperEntry(decision, BigDecimal.valueOf(30), 65, null);
 
         assertThat(result.accepted()).isTrue();
         verify(tradeRepository).save(argThat(trade -> {

@@ -31,6 +31,9 @@ public class OrderFillWatchdog {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.algo.trade.monitoring.SchedulerRegistry schedulerRegistry;
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.notification.TelegramAlertService telegramAlertService;
+
     /** Prevents concurrent watchdog runs from creating duplicate trades. */
     private final java.util.concurrent.atomic.AtomicBoolean checkInProgress =
             new java.util.concurrent.atomic.AtomicBoolean(false);
@@ -212,8 +215,31 @@ public class OrderFillWatchdog {
         } else if (latest.status() == OrderStatus.REJECTED || latest.status() == OrderStatus.CANCELLED) {
             log.info("OrderFillWatchdog: order terminal — clientOrderId={}, status={}, reason={}",
                     order.getClientOrderId(), latest.status(), latest.rejectionReason().orElse(""));
-            order.setUpdatedAt(latest.updatedAt());
-            saveOrderWithRetry(order, latest.status());
+
+            // P0 #2: Partial fill followed by REJECTED/CANCELLED — broker filled some lots
+            // but then rejected the remainder. Those filled lots are now untracked naked positions.
+            if (latest.filledQuantity() > 0) {
+                log.error("OrderFillWatchdog: PARTIAL FILL on terminal order! clientOrderId={}, filledQty={}, status={} — creating synthetic trade + alerting",
+                        order.getClientOrderId(), latest.filledQuantity(), latest.status());
+                // Alert ops about the orphaned partial fill
+                if (telegramAlertService != null) {
+                    telegramAlertService.systemAlert(String.format(
+                            "🚨 PARTIAL FILL on %s order\nInstrument: %s\nFilled: %d lots\nStatus: %s\nCreating synthetic trade to track.",
+                            latest.status(), order.getInstrumentKey(), latest.filledQuantity(), latest.status()));
+                }
+                order.setStatus(OrderStatus.COMPLETE);
+                order.setFilledQuantity(latest.filledQuantity());
+                order.setAverageFillPrice(latest.averageFillPrice().orElse(null));
+                order.setUpdatedAt(latest.updatedAt());
+                saveOrderWithRetry(order, null);
+                // Create a trade so exit monitors can manage the orphaned position
+                if (!order.getClientOrderId().startsWith("EXIT-")) {
+                    executionEngine.openTradeFromFilledOrder(order);
+                }
+            } else {
+                order.setUpdatedAt(latest.updatedAt());
+                saveOrderWithRetry(order, latest.status());
+            }
             // Release entry gate — the order is dead, allow new entries
             executionEngine.releaseEntryInFlightGate();
         }

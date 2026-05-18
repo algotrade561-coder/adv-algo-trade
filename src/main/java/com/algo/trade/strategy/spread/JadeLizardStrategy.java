@@ -135,35 +135,6 @@ public class JadeLizardStrategy extends AbstractSpreadStrategy {
 
     @Override
     protected boolean shouldExit(PositionGroup group, Map<String, BigDecimal> currentPrices, StrategyConfig config) {
-        BigDecimal entryCredit = netCredit(group.legs(), group.entryPrices());
-        BigDecimal currentCredit = netCredit(group.legs(), currentPrices);
-
-        // Target decay: net credit has decayed by target%
-        if (entryCredit.signum() > 0) {
-            BigDecimal decayPercent = entryCredit.subtract(currentCredit)
-                    .divide(entryCredit, MC)
-                    .multiply(BigDecimal.valueOf(100), MC);
-            if (decayPercent.compareTo(config.getTargetPercent()) >= 0) {
-                log.info("JadeLizard: target decay hit for group {}", group.groupId());
-                return true;
-            }
-        }
-
-        // SL expansion: current net cost exceeds entry credit × (1 + SL%/100)
-        if (entryCredit.signum() > 0) {
-            BigDecimal slThreshold = entryCredit.multiply(
-                    BigDecimal.ONE.add(config.getStopLossPercent().divide(BigDecimal.valueOf(100), MC)), MC);
-            BigDecimal currentCost = netDebit(group.legs(), currentPrices);
-            if (currentCost.compareTo(slThreshold) > 0) {
-                log.info("JadeLizard: SL expansion hit for group {}", group.groupId());
-                return true;
-            }
-        }
-
-        if (expiryCalendar.isExpiryDangerZone(IndexType.from(group.underlying()))) {
-            log.info("JadeLizard: expiry danger zone for group {}", group.groupId());
-            return true;
-        }
         return false;
     }
 

@@ -74,6 +74,8 @@ public class SystemDiagnosticsService {
     // Component health tracking
     private final Map<String, Instant> componentLastActive = new java.util.concurrent.ConcurrentHashMap<>();
     private volatile boolean criticalAlertSentThisCycle = false;
+    /** Tracks the last alert content to detect changes (P4 #47). */
+    private volatile String lastAlertContent = "";
 
     @org.springframework.beans.factory.annotation.Autowired
     private SchedulerRegistry schedulerRegistry;
@@ -381,11 +383,24 @@ public class SystemDiagnosticsService {
             if (hasCritical) {
                 telegramAlertService.systemAlert("🚨 System Diagnostics Alert:\n" + String.join("\n", s.alerts()));
                 criticalAlertSentThisCycle = true;
+                lastAlertContent = String.join("|", s.alerts());
+            }
+        }
+        // Re-alert if alert content changed (new/different failures) even if flag was already set
+        if (!s.alerts().isEmpty() && criticalAlertSentThisCycle) {
+            String currentContent = String.join("|", s.alerts());
+            if (!currentContent.equals(lastAlertContent)) {
+                boolean hasCritical = s.alerts().stream().anyMatch(a -> a.contains("🔴"));
+                if (hasCritical) {
+                    telegramAlertService.systemAlert("🚨 System Diagnostics Alert (changed):\n" + String.join("\n", s.alerts()));
+                    lastAlertContent = currentContent;
+                }
             }
         }
         // Reset alert flag when all clear
         if (s.alerts().isEmpty()) {
             criticalAlertSentThisCycle = false;
+            lastAlertContent = "";
         }
     }
 

@@ -26,12 +26,14 @@ import java.util.Map;
 /**
  * Long Strangle — BUY OTM CE + BUY OTM PE at equidistant OTM strikes.
  * OTM distance is driven by StrategyConfig.otmStrikes (default 2 strikes).
- * Entry: IV rank < maxIvRankForBuying (cheap options — buy when vol is low).
- * Exit: SL%, target%, or expiry danger zone.
- * Always paper-trades per StrategyConfig (paperTrading=true by default).
+ * Entry: IV rank < maxIvRankForBuying, BB squeeze, pre-event or early session.
+ * Exit: SL%, target%, vega-collapse, or expiry danger zone.
  */
 @Component
 public class LongStrangleStrategy extends AbstractSpreadStrategy {
+
+    /** BB bandwidth threshold — below this = squeeze detected. Industry standard ~1.0%. */
+    private static final double BB_SQUEEZE_THRESHOLD_PCT = 1.0;
 
     public LongStrangleStrategy(ExpiryCalendar expiryCalendar,
                                 InstrumentCache instrumentCache,
@@ -47,38 +49,40 @@ public class LongStrangleStrategy extends AbstractSpreadStrategy {
 
     @Override
     protected boolean shouldEnter(SpreadEvaluationContext ctx) {
+        IndexType indexType = ctx.indexType();
+
+        // P0 #3: DTE check — don't enter with < 2 days to expiry (theta catastrophic)
+        long dte = expiryCalendar.daysToExpiry(indexType);
+        if (dte < 2) {
+            log.debug("LongStrangle: DTE={} < 2, theta too high — skipping", dte);
+            return false;
+        }
+
         // ── Filter 1: IV Rank must be low (< 30) — buy when premiums are cheap ──
         double maxIvRank = Math.min(ctx.config().getMaxIvRankForBuying().doubleValue(), 30.0);
         if (ctx.ivRank() >= maxIvRank) {
-            log.debug("LongStrangle: IV rank {:.1f} >= max {}, skipping", ctx.ivRank(), maxIvRank);
+            log.debug("LongStrangle: IV rank {} >= max {}, skipping",
+                    String.format("%.1f", ctx.ivRank()), maxIvRank);
             return false;
         }
 
         // ── Filter 2: Bollinger Band squeeze — only enter when bands are tight ──
-        // Tight bands signal low volatility → imminent breakout (ideal for strangles)
         var candles = ctx.trendCandles();
         if (candles.size() >= 20) {
-            double[] closes = candles.stream().mapToDouble(c -> c.close().doubleValue()).toArray();
-            double sma = 0;
-            for (int i = closes.length - 20; i < closes.length; i++) sma += closes[i];
-            sma /= 20;
-            double variance = 0;
-            for (int i = closes.length - 20; i < closes.length; i++) variance += Math.pow(closes[i] - sma, 2);
-            double stdDev = Math.sqrt(variance / 20);
-            double bandwidth = (stdDev * 4) / sma * 100; // BB bandwidth as % of price
-            // Bandwidth < 2% indicates a squeeze (tight range, breakout imminent)
-            if (bandwidth > 2.0) {
-                log.debug("LongStrangle: BB bandwidth {:.2f}% > 2% (no squeeze), skipping", bandwidth);
+            double bandwidth = com.algo.trade.indicator.BollingerBandIndicator.bandwidth(candles, 20);
+            if (bandwidth >= 0 && bandwidth > BB_SQUEEZE_THRESHOLD_PCT) {
+                log.debug("LongStrangle: BB bandwidth {}% > {}% (no squeeze), skipping",
+                        String.format("%.2f", bandwidth), BB_SQUEEZE_THRESHOLD_PCT);
                 return false;
             }
-            log.debug("LongStrangle: BB squeeze detected, bandwidth={:.2f}%", bandwidth);
+            if (bandwidth >= 0) {
+                log.debug("LongStrangle: BB squeeze detected, bandwidth={}%", String.format("%.2f", bandwidth));
+            }
         }
 
         // ── Filter 3: Pre-event day OR squeeze required ──
-        // Strangles work best before known events (RBI, budget, earnings)
         boolean isPreEvent = marketGuard.isPreEventDay() || marketGuard.isEventDay();
         if (!isPreEvent && (candles.size() < 20)) {
-            // No squeeze data and not a pre-event day — skip
             log.debug("LongStrangle: not pre-event and insufficient candle data for squeeze, skipping");
             return false;
         }
@@ -91,19 +95,16 @@ public class LongStrangleStrategy extends AbstractSpreadStrategy {
             return false;
         }
 
-        // ── Filter 5: Max net debit cap — ₹8000 per strangle ──
-        // (checked later in constructLegs/premium check, but pre-validate with ATM estimate)
-
-        // ── Filter 6: VIX must not be falling (contracting IV kills long options) ──
+        // P1 #4: VIX gate — allow event-day entries even with VIX > 20
         double vix = marketGuard.getCurrentVix();
-        if (vix > 20) {
-            // VIX already elevated — premiums are expensive, not ideal for buying
-            log.debug("LongStrangle: VIX={:.1f} > 20 (premiums expensive), skipping", vix);
+        if (!isPreEvent && vix > 20) {
+            log.debug("LongStrangle: VIX={} > 20 and not pre-event (premiums expensive), skipping",
+                    String.format("%.1f", vix));
             return false;
         }
 
-        log.info("LongStrangle: all entry filters passed — ivRank={:.1f}, vix={:.1f}, preEvent={}, earlySession={}",
-                ctx.ivRank(), vix, isPreEvent, earlySession);
+        log.info("LongStrangle: all entry filters passed — ivRank={}, vix={}, preEvent={}, earlySession={}, dte={}",
+                String.format("%.1f", ctx.ivRank()), String.format("%.1f", vix), isPreEvent, earlySession, dte);
         return true;
     }
 
@@ -111,7 +112,7 @@ public class LongStrangleStrategy extends AbstractSpreadStrategy {
     protected List<SpreadLeg> constructLegs(SpreadEvaluationContext ctx) {
         IndexType indexType = ctx.indexType();
         int atm = computeATMStrike(ctx.underlyingPrice(), indexType);
-        int otmStrikes = ctx.config().getOtmStrikes();
+        int otmStrikes = ctx.config().getOtmStrikes(indexType);
         int interval = indexType.strikeInterval();
         LocalDate expiry = currentWeeklyExpiry(indexType);
         int qty = ctx.config().getLots() * indexType.lotSize();
@@ -131,6 +132,8 @@ public class LongStrangleStrategy extends AbstractSpreadStrategy {
             return List.of();
         }
 
+        // Capital cap enforced centrally in AbstractSpreadStrategy.evaluateAndEnter
+        // (via StrategyConfig.getMaxCapitalPerTrade — also shrinks lots when premium allows it).
         return List.of(
                 new SpreadLeg(ceKey, ceStrike, OptionType.CE, OrderSide.BUY, qty, expiry),
                 new SpreadLeg(peKey, peStrike, OptionType.PE, OrderSide.BUY, qty, expiry)
@@ -139,21 +142,6 @@ public class LongStrangleStrategy extends AbstractSpreadStrategy {
 
     @Override
     protected boolean shouldExit(PositionGroup group, Map<String, BigDecimal> currentPrices, StrategyConfig config) {
-        BigDecimal entryNet = netDebit(group.legs(), group.entryPrices());
-        BigDecimal currentNet = netDebit(group.legs(), currentPrices);
-
-        if (slHit(entryNet, currentNet, config.getStopLossPercent())) {
-            log.info("LongStrangle: SL hit for group {}", group.groupId());
-            return true;
-        }
-        if (targetHit(entryNet, currentNet, config.getTargetPercent())) {
-            log.info("LongStrangle: target hit for group {}", group.groupId());
-            return true;
-        }
-        if (expiryCalendar.isExpiryDangerZone(IndexType.from(group.underlying()))) {
-            log.info("LongStrangle: expiry danger zone for group {}", group.groupId());
-            return true;
-        }
         return false;
     }
 

@@ -84,6 +84,51 @@ trading:
   telegram:
     request-timeout: 5s
 
+  # ── Multi-leg spread execution safety ───────────────────────────────────
+  spread:
+    margin-preflight-enabled: true
+    fill-confirmation-enabled: true
+    parallel-buy-legs-enabled: true
+    reconciliation-enabled: true
+    reconciliation-interval-ms: 120000
+    margin-buffer-percent: 3
+    leg-fill-timeout: 30s
+    parallel-leg-timeout: 10s
+    spread-leg-max-retries: 2
+    startup-pending-max-age: 30m
+    # Exit: ATR | CONFIG | HYBRID (SL wider of config/ATR, target tighter)
+    exit-mode-setting: HYBRID
+    spread-atr-exits-enabled: true
+    exit-backup-enabled: true
+    partial-profit-enabled: true
+    straddle-adjustment-enabled: true
+    straddle-adjustment-trigger-points: 100
+    stale-quote-threshold: 5m
+    # Broker-side SL-M: places a server-side stop on SELL legs of credit spreads
+    # as a catastrophe floor (fires even if JVM is dead). Disabled by default.
+    broker-side-sl-enabled: false
+    broker-side-sl-multiplier: 2.0
+
+  # ── Single-leg exit behaviour (also see global_config DB overrides) ─────
+  # SL/target/forced-exit-time live in DB; only mode knobs need YAML here.
+  # Omitting forced-exit-time is OK — TradingProperties.Exit merges with defaults.
+  exit:
+    exit-mode-setting: HYBRID
+    trailing-mode-setting: PRICE
+    liquidity:
+      enabled: true
+      stale-quote-warn-after: 90s
+      stale-quote-force-exit-after: 180s
+      spread-warn-percent: 5
+      spread-exit-percent: 8
+      spread-vs-entry-multiplier: 2.0
+      volume-collapse-ratio: 0.35
+      oi-collapse-ratio: 0.35
+      exit-when-bid-ask-missing: true
+      missing-bid-ask-ticks-required: 3
+      volume-floor-enabled: false
+      market-hours-only: true
+
   # ── Algo Scanner ────────────────────────────────────────────────────────
   # WebSocket is the PRIMARY trigger (CandleClosedEvent).
   # REST poll scheduler is a FALLBACK — disabled by default, toggleable from UI.
@@ -155,6 +200,18 @@ regime-filter:
   enabled: true
   check-interval-seconds: 30
 
+# ── Market Guard ──────────────────────────────────────────────────────────
+market-guard:
+  vix-max-for-short-premium: 21.0
+  vix-min-for-short-premium: 12.0
+  vix-min-for-long-premium: 14.0
+  circuit-breaker-percent: 2.5
+  # Event entries: "yyyy-MM-dd" (date-only) or "yyyy-MM-dd@HH:mm/window-minutes".
+  # Date-only entries default to 10:00 IST + 30min post-event window.
+  # The post-event window drives EVENT_PASSED exits for LONG_STRADDLE / LONG_STRANGLE.
+  event-dates: "2026-06-05@10:00/30,2026-08-05@10:00/30,2026-10-07@10:00/30,2026-12-04@10:00/30"
+  event-window-minutes: 0
+
 # ── Algo Flow Orchestrator — pre-trade filter pipeline ────────────────────
 algo-flow:
   vix-filter-enabled: true
@@ -207,3 +264,14 @@ server:
   servlet:
     context-path: /advalgotrade
   forward-headers-strategy: framework
+
+# ── Actuator / Prometheus ─────────────────────────────────────────────────
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  prometheus:
+    metrics:
+      export:
+        enabled: true

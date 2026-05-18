@@ -159,34 +159,6 @@ public class SyntheticFuturesStrategy extends AbstractSpreadStrategy {
 
     @Override
     protected boolean shouldExit(PositionGroup group, Map<String, BigDecimal> currentPrices, StrategyConfig config) {
-        BigDecimal entryNet = netDebit(group.legs(), group.entryPrices());
-        BigDecimal currentNet = netDebit(group.legs(), currentPrices);
-
-        // Target and SL based on points (using SL% and target% as point proxies)
-        if (slHit(entryNet, currentNet, config.getStopLossPercent())) {
-            log.info("SyntheticFutures: SL hit for group {}", group.groupId());
-            return true;
-        }
-        if (targetHit(entryNet, currentNet, config.getTargetPercent())) {
-            log.info("SyntheticFutures: target hit for group {}", group.groupId());
-            return true;
-        }
-
-        // Expiry danger zone
-        IndexType indexType = IndexType.from(group.underlying());
-        if (expiryCalendar.isExpiryDangerZone(indexType)) {
-            log.info("SyntheticFutures: expiry danger zone for group {}", group.groupId());
-            return true;
-        }
-
-        // Square-off time check
-        LocalTime now = LocalTime.now(IST);
-        LocalTime squareOff = LocalTime.of(config.getSquareoffHour(), config.getSquareoffMinute());
-        if (now.isAfter(squareOff)) {
-            log.info("SyntheticFutures: square-off time reached for group {}", group.groupId());
-            return true;
-        }
-
         return false;
     }
 

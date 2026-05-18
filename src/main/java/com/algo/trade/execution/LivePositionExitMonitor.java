@@ -2,6 +2,14 @@ package com.algo.trade.execution;
 
 import com.algo.trade.config.GlobalConfigService;
 import com.algo.trade.config.PositionSyncProperties;
+import com.algo.trade.config.TradingProperties;
+import com.algo.trade.execution.exit.ExitEvaluationRegistry;
+import com.algo.trade.execution.exit.ExitEvaluationSnapshot;
+import com.algo.trade.execution.exit.ExitMode;
+import com.algo.trade.execution.exit.ExitParamResolver;
+import com.algo.trade.execution.exit.MarketSessionHelper;
+import com.algo.trade.execution.exit.PositionPnlCalculator;
+import com.algo.trade.execution.exit.TrailingMode;
 import com.algo.trade.domain.CandleClosedEvent;
 import com.algo.trade.domain.IndexType;
 import com.algo.trade.domain.Quote;
@@ -15,6 +23,7 @@ import com.algo.trade.persistence.TradeEntity;
 import com.algo.trade.persistence.TradeRepository;
 import com.algo.trade.strategy.StrategyConfig;
 import com.algo.trade.strategy.StrategyConfigService;
+import com.algo.trade.strategy.StrategyType;
 import java.math.BigDecimal;
 import java.math.MathContext;
 import java.time.LocalTime;
@@ -66,8 +75,12 @@ public class LivePositionExitMonitor {
     private final com.algo.trade.ml.MlExitShadowRecorder mlExitShadowRecorder;
     private final com.algo.trade.risk.MarketGuard marketGuard;
     private final com.algo.trade.marketdata.LiveInstrumentCache liveInstrumentCache;
+    private final TradingProperties tradingProperties;
+    private final ExitParamResolver exitParamResolver;
+    private final ExitEvaluationRegistry exitEvaluationRegistry;
+    private final com.algo.trade.execution.exit.LiquidityEmergencyGate liquidityEmergencyGate;
 
-    // tradeId → highest price seen since entry
+    // tradeId → best price seen since entry (high for long, low for short)
     private final Map<String, BigDecimal> peakPrices = new ConcurrentHashMap<>();
     // tradeId → current trailing stop price
     private final Map<String, BigDecimal> trailingStops = new ConcurrentHashMap<>();
@@ -93,7 +106,11 @@ public class LivePositionExitMonitor {
                                     com.algo.trade.monitoring.SchedulerRegistry schedulerRegistry,
                                     com.algo.trade.ml.MlExitShadowRecorder mlExitShadowRecorder,
                                     com.algo.trade.risk.MarketGuard marketGuard,
-                                    com.algo.trade.marketdata.LiveInstrumentCache liveInstrumentCache) {
+                                    com.algo.trade.marketdata.LiveInstrumentCache liveInstrumentCache,
+                                    TradingProperties tradingProperties,
+                                    ExitParamResolver exitParamResolver,
+                                    ExitEvaluationRegistry exitEvaluationRegistry,
+                                    com.algo.trade.execution.exit.LiquidityEmergencyGate liquidityEmergencyGate) {
         this.tradeRepository = tradeRepository;
         this.executionEngine = executionEngine;
         this.marketDataService = marketDataService;
@@ -112,6 +129,10 @@ public class LivePositionExitMonitor {
         this.mlExitShadowRecorder = mlExitShadowRecorder;
         this.marketGuard = marketGuard;
         this.liveInstrumentCache = liveInstrumentCache;
+        this.tradingProperties = tradingProperties;
+        this.exitParamResolver = exitParamResolver;
+        this.exitEvaluationRegistry = exitEvaluationRegistry;
+        this.liquidityEmergencyGate = liquidityEmergencyGate;
         schedulerRegistry.register("exitBackup", "Scheduled backup exit evaluation (60s)", 60_000, this::scheduledBackupCheck);
     }
 
@@ -149,6 +170,7 @@ public class LivePositionExitMonitor {
     public void scheduledBackupCheck() {
         if (!schedulerRegistry.isEnabled("exitBackup")) return;
         schedulerRegistry.recordRun("exitBackup");
+        if (!MarketSessionHelper.isRegularSessionNow()) return;
         if (!tradingStateService.isExitAllowed()) return;
         List<TradeEntity> openTrades = tradeRepository.findByStatus(TradeStatus.OPEN);
         if (openTrades.isEmpty()) return;
@@ -196,6 +218,13 @@ public class LivePositionExitMonitor {
             return;
         }
 
+        // OI_MOMENTUM trades are managed by their own 1-sec loop (OIMomentumStrategy.managePosition)
+        if (cfg.getStrategyType() == StrategyType.OI_MOMENTUM) {
+            log.debug("[ExitMonitor] Skipping OI_MOMENTUM trade {} — managed by OIMomentumStrategy",
+                    trade.getTradeId());
+            return;
+        }
+
         BigDecimal entryPrice = trade.getEntryPrice();
         if (entryPrice == null || entryPrice.signum() <= 0) {
             log.warn("[ExitMonitor] Invalid entry price for trade {}: {} — skipping evaluation",
@@ -209,19 +238,43 @@ public class LivePositionExitMonitor {
             config = applyGlobalExitOverride(config);
         }
 
-        // ── Time-based exits run FIRST — they don't need a live quote ─────────
-
-        // Per-strategy squareoff time check (non-expiry days)
-        LocalTime now = LocalTime.now(java.time.ZoneId.of("Asia/Kolkata"));
+        LocalTime now = LocalTime.now(MarketSessionHelper.ist());
         LocalTime squareoffTime = LocalTime.of(config.getSquareoffHour(), config.getSquareoffMinute());
 
-        // Max hold time: close if trade has been open longer than configured maxHoldMinutes
-        // Checked BEFORE quote lookup — time-based exits must not be blocked by missing quotes
+        Optional<Quote> quoteOpt = marketDataService.quote(trade.getInstrumentKey());
+
+        // ── Tier 1: Liquidity emergency before time/SL exits when a quote exists ──
+        if (quoteOpt.isPresent()) {
+            Quote quote = quoteOpt.get();
+            BigDecimal currentPrice = quote.lastPrice();
+            if (currentPrice != null && currentPrice.signum() > 0) {
+                var liquidityExit = liquidityEmergencyGate.checkSingleLegEmergency(trade, quote);
+                if (liquidityExit.isPresent()) {
+                    var signal = liquidityExit.get();
+                    log.warn("[ExitMonitor] {} — tradeId={} {}", signal.reason(), trade.getTradeId(), signal.detail());
+                    telegramAlertService.systemAlert(String.format(
+                            "🚨 %s: %s | %s", signal.reason(), trade.getInstrumentKey(), signal.detail()));
+                    close(trade, currentPrice, signal.reason());
+                    return;
+                }
+            }
+        } else {
+            var noQuoteExit = liquidityEmergencyGate.checkSingleLegMissingQuote(trade);
+            if (noQuoteExit.isPresent()) {
+                var signal = noQuoteExit.get();
+                log.warn("[ExitMonitor] {} — tradeId={} {}", signal.reason(), trade.getTradeId(), signal.detail());
+                close(trade, resolveExitPrice(trade), signal.reason());
+                return;
+            }
+        }
+
+        // ── Time-based exits (after liquidity; do not require a live quote) ─────
         if (config.getMaxHoldMinutes() > 0 && trade.getEntryTime() != null) {
             long holdMinutes = java.time.Duration.between(trade.getEntryTime(), java.time.Instant.now()).toMinutes();
             if (holdMinutes >= config.getMaxHoldMinutes()) {
                 BigDecimal exitPrice = resolveExitPrice(trade);
-                double holdProfitPct = profitPercent(entryPrice, exitPrice);
+                double holdProfitPct = PositionPnlCalculator.profitPercent(entryPrice, exitPrice,
+                        PositionPnlCalculator.isShortEntry(trade));
                 log.info("[ExitMonitor] MAX HOLD TIME reached: tradeId={} instrument={} hold={}min max={}min profit={}%",
                         trade.getTradeId(), trade.getInstrumentKey(), holdMinutes, config.getMaxHoldMinutes(),
                         String.format("%.1f", holdProfitPct));
@@ -244,23 +297,15 @@ public class LivePositionExitMonitor {
             return;
         }
 
-        // ── Price-based exits require a live quote ────────────────────────────
-
-        Optional<Quote> quoteOpt = marketDataService.quote(trade.getInstrumentKey());
         if (quoteOpt.isEmpty()) {
-            log.debug("[ExitMonitor] No quote for {}", trade.getInstrumentKey());
+            log.debug("[ExitMonitor] No quote for {} — price exits deferred", trade.getInstrumentKey());
             return;
         }
-        // Reject stale quotes — if WebSocket is down, quotes can be minutes old
         Quote quote = quoteOpt.get();
-        if (quote.timestamp() != null
-                && quote.timestamp().isBefore(java.time.Instant.now().minus(java.time.Duration.ofMinutes(5)))) {
-            log.warn("[ExitMonitor] Stale quote for {} (age > 5min, timestamp={}) — skipping price-based exits",
-                    trade.getInstrumentKey(), quote.timestamp());
+        BigDecimal currentPrice = quote.lastPrice();
+        if (currentPrice == null || currentPrice.signum() <= 0) {
             return;
         }
-        BigDecimal currentPrice = quote.lastPrice();
-        if (currentPrice == null || currentPrice.signum() <= 0) return;
 
         // Expiry danger zone: force-exit all positions after 3 PM on expiry day
         IndexType indexType = IndexType.fromName(trade.getUnderlying());
@@ -292,95 +337,78 @@ public class LivePositionExitMonitor {
         // Kept for reference: previously tightened SL near expiry (0.5× on expiry day).
         long daysToExpiry = expiryCalendar.daysToExpiry(indexType);
 
+        boolean shortEntry = PositionPnlCalculator.isShortEntry(trade);
+
         // Track peak price (load from DB if available for restart recovery)
         BigDecimal savedPeak = trade.getPeakPrice();
-        if (savedPeak != null && savedPeak.compareTo(currentPrice) > 0) {
+        if (savedPeak != null) {
             peakPrices.putIfAbsent(trade.getTradeId(), savedPeak);
         }
         BigDecimal peak = peakPrices.merge(trade.getTradeId(), currentPrice,
-                (existing, incoming) -> incoming.compareTo(existing) > 0 ? incoming : existing);
-        // Persist peak price for restart recovery
-        if (peak.compareTo(trade.getPeakPrice() != null ? trade.getPeakPrice() : BigDecimal.ZERO) > 0) {
+                (existing, incoming) -> PositionPnlCalculator.updatePeak(incoming, existing, shortEntry));
+        boolean betterPeak = savedPeak == null || savedPeak.signum() <= 0
+                || (shortEntry ? peak.compareTo(savedPeak) < 0 : peak.compareTo(savedPeak) > 0);
+        if (betterPeak) {
             trade.setPeakPrice(peak);
             tradeRepository.save(trade);
         }
 
-        double profitPct = profitPercent(entryPrice, currentPrice);
-        double peakPct   = profitPercent(entryPrice, peak);
+        double profitPct = PositionPnlCalculator.profitPercent(entryPrice, currentPrice, shortEntry);
+        double peakPct = PositionPnlCalculator.profitPercent(entryPrice, peak, shortEntry);
 
-        // ── Compute ATR-based dynamic exits when candle data is available ─────
-        // Resolve instrument token for candle lookup
-        long instrumentToken = resolveInstrumentToken(trade);
-        List<com.algo.trade.domain.Candle> candles15m = liveCandleBuilder.getHistory(instrumentToken, com.algo.trade.domain.Timeframe.FIFTEEN_MINUTE);
-        double optionAtr = candles15m.size() >= 15 ? dynamicExitManager.calculateATR(candles15m, 14) : 0;
-        List<com.algo.trade.domain.Candle> candles1m = liveCandleBuilder.getHistory(instrumentToken, com.algo.trade.domain.Timeframe.ONE_MINUTE);
-
-        // ── Compute UNDERLYING ATR for delta-adjusted exits ──
-        // Use the underlying spot's 15-min ATR × option delta for more accurate SL/target.
-        // Falls back to option ATR if underlying data isn't available.
-        // (indexType already declared above for expiry checks)
         long spotToken = indexType.spotToken();
-        List<com.algo.trade.domain.Candle> underlyingCandles15m = liveCandleBuilder.getHistory(spotToken, com.algo.trade.domain.Timeframe.FIFTEEN_MINUTE);
-        double underlyingAtr = underlyingCandles15m.size() >= 15
-                ? dynamicExitManager.calculateATR(underlyingCandles15m, 14) : 0;
+        List<com.algo.trade.domain.Candle> candles15m = liveCandleBuilder.getHistory(spotToken, Timeframe.FIFTEEN_MINUTE);
+        List<com.algo.trade.domain.Candle> candles1m = liveCandleBuilder.getHistory(spotToken, Timeframe.ONE_MINUTE);
+        double underlyingAtr = candles15m.size() >= 15
+                ? dynamicExitManager.calculateATR(candles15m, 14) : 0;
 
-        // Estimate delta: ATM delta ~0.5, adjust by moneyness
-        // delta = 0.5 for ATM, decreases as option goes OTM
-        double delta = 0.5; // default ATM
+        double delta = 0.5;
         if (trade.getEntryDelta() != null && trade.getEntryDelta() > 0) {
-            delta = trade.getEntryDelta(); // use stored entry delta if available
+            delta = trade.getEntryDelta();
         } else if (underlyingAtr > 0) {
-            // Estimate from current price relationship: if option premium < 1% of underlying, it's deep OTM
             double spotPrice = liveInstrumentCache.getFuturesPrice(indexType);
             if (spotPrice > 0 && entryPrice.doubleValue() > 0) {
                 double premiumRatio = entryPrice.doubleValue() / spotPrice;
-                if (premiumRatio > 0.008) delta = 0.50;      // ATM
-                else if (premiumRatio > 0.004) delta = 0.35;  // slightly OTM
-                else if (premiumRatio > 0.002) delta = 0.20;  // OTM
-                else delta = 0.10;                             // deep OTM
+                if (premiumRatio > 0.008) delta = 0.50;
+                else if (premiumRatio > 0.004) delta = 0.35;
+                else if (premiumRatio > 0.002) delta = 0.20;
+                else delta = 0.10;
             }
         }
 
-        // Use delta-adjusted exits when underlying ATR is available, else fall back to option ATR
-        boolean useDeltaExits = underlyingAtr > 0 && delta > 0 && entryPrice.doubleValue() > 0;
-        boolean useAtrExits = (useDeltaExits || optionAtr > 0) && entryPrice.doubleValue() > 0;
-        // For stall/gamma/breakout detection, still use option candles
-        double atr = useDeltaExits ? underlyingAtr : optionAtr;
+        ExitMode exitMode = ExitMode.fromString(tradingProperties.exit().exitModeSetting());
+        TrailingMode trailingMode = TrailingMode.fromString(tradingProperties.exit().trailingModeSetting());
+        boolean useAtrExits = underlyingAtr > 0 && entryPrice.doubleValue() > 0;
 
-        // Dynamic SL: delta-adjusted when underlying ATR available, else option ATR, else config fallback.
-        double configSlPct = config.getStopLossPercent().doubleValue();
-        double slPct;
-        if (useDeltaExits) {
-            slPct = dynamicExitManager.calculateDeltaAdjustedSL(entryPrice.doubleValue(), underlyingAtr, delta);
-            log.debug("[ExitMonitor] Delta-SL: {}% (underlyingATR={}, delta={}, entry=₹{}) — config fallback={}%",
-                    String.format("%.1f", slPct), String.format("%.1f", underlyingAtr),
-                    String.format("%.2f", delta), entryPrice, String.format("%.1f", configSlPct));
-        } else if (optionAtr > 0) {
-            slPct = dynamicExitManager.calculateDynamicSL(entryPrice.doubleValue(), optionAtr, (int) daysToExpiry);
-            log.debug("[ExitMonitor] Option-ATR SL: {}% (optionATR={}, entry=₹{}) — config fallback={}%",
-                    String.format("%.1f", slPct), String.format("%.1f", optionAtr),
-                    entryPrice, String.format("%.1f", configSlPct));
-        } else {
-            slPct = configSlPct;
-            log.debug("[ExitMonitor] Config SL: {}% (no ATR data available)", String.format("%.1f", slPct));
+        double configSlPct = trade.getAppliedStopLossPercent() != null
+                ? trade.getAppliedStopLossPercent().doubleValue()
+                : config.getStopLossPercent().doubleValue();
+        double configTargetPct = trade.getAppliedTargetPercent() != null
+                ? trade.getAppliedTargetPercent().doubleValue()
+                : config.getTargetPercent().doubleValue();
+        double configTrailAct = config.getTrailingStopActivationPercent().doubleValue();
+        double configTrailGap = config.getTrailingGapPercent().doubleValue();
+        if (trade.getAppliedTrailingStopActivationPercent() != null) {
+            configTrailAct = trade.getAppliedTrailingStopActivationPercent().doubleValue();
+        }
+        if (trade.getAppliedTrailingGapPercent() != null) {
+            configTrailGap = trade.getAppliedTrailingGapPercent().doubleValue();
         }
 
-        // Dynamic target: delta-adjusted when available
-        double targetPct;
-        if (useDeltaExits) {
-            targetPct = dynamicExitManager.calculateDeltaAdjustedTarget(entryPrice.doubleValue(), underlyingAtr, delta, (int) daysToExpiry);
-        } else if (optionAtr > 0) {
-            targetPct = dynamicExitManager.calculateDynamicTarget(entryPrice.doubleValue(), optionAtr, (int) daysToExpiry);
-        } else {
-            targetPct = config.getTargetPercent().doubleValue();
-        }
+        boolean preferConfigTrail = trade.getAppliedTrailingStopActivationPercent() != null
+                || trade.getAppliedTrailingGapPercent() != null;
 
-        log.debug("[ExitMonitor] tradeId={} instrument={} entry={} current={} profit={}% peak={}% sl={}% target={}% delta={} uATR={}",
-                trade.getTradeId(), trade.getInstrumentKey(), entryPrice, currentPrice,
-                String.format("%.1f", profitPct), String.format("%.1f", peakPct),
-                String.format("%.1f", slPct), String.format("%.1f", targetPct),
-                String.format("%.2f", delta),
-                useDeltaExits ? String.format("%.1f", underlyingAtr) : "N/A");
+        ExitParamResolver.ResolvedExits resolved = exitParamResolver.resolveSingleLeg(
+                exitMode, configSlPct, configTargetPct, configTrailAct, configTrailGap,
+                entryPrice.doubleValue(), underlyingAtr, 0, delta, (int) daysToExpiry, preferConfigTrail);
+        double slPct = resolved.stopLossPercent();
+        double targetPct = resolved.targetPercent();
+
+        publishEvaluationSnapshot(trade, profitPct, peakPct, resolved, "EVALUATING");
+
+        log.debug("[ExitMonitor] tradeId={} short={} profit={}% sl={}% target={}% mode={} atrUsed={}",
+                trade.getTradeId(), shortEntry, String.format("%.1f", profitPct),
+                String.format("%.1f", slPct), String.format("%.1f", targetPct), exitMode, resolved.atrUsed());
 
         // ── 1. Stop Loss ──────────────────────────────────────────────────────
         if (profitPct <= -slPct) {
@@ -406,81 +434,40 @@ public class LivePositionExitMonitor {
             return;
         }
 
-        // ── 3. Trailing Stop ──────────────────────────────────────────────────
-        // Delta-adjusted trailing: activation and gap derived from underlying ATR × delta.
-        // Config values serve as fallback when no ATR data exists.
-        BigDecimal trailActivation;
-        BigDecimal trailGap;
-        if (useDeltaExits) {
-            double deltaActivation = dynamicExitManager.calculateDeltaAdjustedTrailActivation(
-                    entryPrice.doubleValue(), underlyingAtr, delta);
-            double deltaGap = dynamicExitManager.calculateDeltaAdjustedTrailGap(
-                    entryPrice.doubleValue(), underlyingAtr, delta, peakPct);
-            trailActivation = BigDecimal.valueOf(deltaActivation);
-            trailGap = BigDecimal.valueOf(deltaGap);
-            log.debug("[ExitMonitor] Delta trailing: activation={}%, gap={}% (uATR={}, delta={}, entry=₹{})",
-                    String.format("%.1f", deltaActivation), String.format("%.1f", deltaGap),
-                    String.format("%.1f", underlyingAtr), String.format("%.2f", delta), entryPrice);
-        } else if (useAtrExits) {
-            // Fallback to option ATR-based trailing
-            double atrActivation = (1.5 * optionAtr / entryPrice.doubleValue()) * 100;
-            double atrGap = (1.0 * optionAtr / entryPrice.doubleValue()) * 100;
-            trailActivation = BigDecimal.valueOf(Math.max(5, Math.min(50, atrActivation)));
-            trailGap = BigDecimal.valueOf(Math.max(3, Math.min(25, atrGap)));
-            log.debug("[ExitMonitor] Option-ATR trailing: activation={}%, gap={}% (optATR={}, entry=₹{})",
-                    String.format("%.1f", trailActivation), String.format("%.1f", trailGap),
-                    String.format("%.1f", optionAtr), entryPrice);
-        } else if (globalConfigService.isGlobalExitOverride()) {
-            trailActivation = config.getTrailingStopActivationPercent();
-            trailGap = config.getTrailingGapPercent();
-        } else {
-            trailActivation = trade.getAppliedTrailingStopActivationPercent() != null
-                    ? trade.getAppliedTrailingStopActivationPercent()
-                    : config.getTrailingStopActivationPercent();
-            trailGap = trade.getAppliedTrailingGapPercent() != null
-                    ? trade.getAppliedTrailingGapPercent()
-                    : config.getTrailingGapPercent();
-        }
+        // ── 3. Trailing stop (single path: PRICE-level or ATR-percent, not both) ──
+        if (trailingMode == TrailingMode.PRICE) {
+            BigDecimal trailActivation = BigDecimal.valueOf(resolved.trailActivationPercent());
+            BigDecimal trailGap = BigDecimal.valueOf(resolved.trailGapPercent());
 
-        // Recover trailing stop from DB if not in memory (restart recovery)
-        if (!trailingStops.containsKey(trade.getTradeId()) && trade.getTrailingStopPrice() != null) {
-            trailingStops.put(trade.getTradeId(), trade.getTrailingStopPrice());
-        }
-
-        Optional<BigDecimal> currentStop = Optional.ofNullable(trailingStops.get(trade.getTradeId()));
-        Optional<BigDecimal> updatedStop = trailingStopService.nextStop(entryPrice, peak, currentStop,
-                trailActivation, trailGap);
-
-        if (updatedStop.isPresent()) {
-            trailingStops.put(trade.getTradeId(), updatedStop.get());
-            // Persist trailing stop price to DB for restart recovery
-            if (!updatedStop.get().equals(trade.getTrailingStopPrice())) {
-                trade.setTrailingStopPrice(updatedStop.get());
-                tradeRepository.save(trade);
+            if (!trailingStops.containsKey(trade.getTradeId()) && trade.getTrailingStopPrice() != null) {
+                trailingStops.put(trade.getTradeId(), trade.getTrailingStopPrice());
             }
-            if (trailingStopService.isStopHit(currentPrice, updatedStop.get())) {
-                log.info("[ExitMonitor] TRAILING STOP hit: tradeId={} instrument={} current={} stop={} profit={}%",
-                        trade.getTradeId(), trade.getInstrumentKey(), currentPrice,
-                        updatedStop.get(), String.format("%.1f", profitPct));
-                telegramAlertService.systemAlert(String.format(
-                        "\uD83D\uDFE1 Trailing Stop Hit: %s | Entry \u20B9%.2f \u2192 \u20B9%.2f | Stop \u20B9%.2f | P&L %.1f%%",
-                        trade.getInstrumentKey(), entryPrice.doubleValue(), currentPrice.doubleValue(),
-                        updatedStop.get().doubleValue(), profitPct));
-                close(trade, currentPrice, "TRAILING_STOP");
-                return;
-            }
-        }
+            Optional<BigDecimal> currentStop = Optional.ofNullable(trailingStops.get(trade.getTradeId()));
+            Optional<BigDecimal> updatedStop = trailingStopService.nextStop(entryPrice, peak, currentStop,
+                    trailActivation, trailGap, shortEntry);
 
-        // ── 4. ATR-based trailing stop (when candle data available) ───────────
-        if (useAtrExits && peakPct > 10) {
+            if (updatedStop.isPresent()) {
+                trailingStops.put(trade.getTradeId(), updatedStop.get());
+                if (!updatedStop.get().equals(trade.getTrailingStopPrice())) {
+                    trade.setTrailingStopPrice(updatedStop.get());
+                    tradeRepository.save(trade);
+                }
+                if (trailingStopService.isStopHit(currentPrice, updatedStop.get(), shortEntry)) {
+                    log.info("[ExitMonitor] TRAILING STOP hit: tradeId={} profit={}%",
+                            trade.getTradeId(), String.format("%.1f", profitPct));
+                    telegramAlertService.systemAlert(String.format(
+                            "\uD83D\uDFE1 Trailing Stop: %s | P&L %.1f%%",
+                            trade.getInstrumentKey(), profitPct));
+                    close(trade, currentPrice, "TRAILING_STOP");
+                    return;
+                }
+            }
+        } else if (useAtrExits && peakPct >= resolved.trailActivationPercent()) {
             double atrTrailLevel = dynamicExitManager.calculateTrailingSL(
-                    profitPct, peakPct, atr, entryPrice.doubleValue());
+                    profitPct, peakPct, underlyingAtr, entryPrice.doubleValue());
             if (atrTrailLevel > -900 && profitPct < atrTrailLevel) {
                 log.info("[ExitMonitor] ATR TRAILING STOP hit: tradeId={} profit={}% < trail={}%",
                         trade.getTradeId(), String.format("%.1f", profitPct), String.format("%.1f", atrTrailLevel));
-                telegramAlertService.systemAlert(String.format(
-                        "📉 ATR Trail Stop: %s | Profit %.1f%% dropped below trail %.1f%%",
-                        trade.getInstrumentKey(), profitPct, atrTrailLevel));
                 close(trade, currentPrice, "ATR_TRAILING_STOP");
                 return;
             }
@@ -548,7 +535,7 @@ public class LivePositionExitMonitor {
         // ── 6. Stall detection — exit dead trades bleeding theta ───────────────
         // Extended range: -10% to +15% (was +8%). Trades above +8% that stall also bleed theta.
         if (useAtrExits && profitPct > -10 && profitPct < 15 && !candles1m.isEmpty()) {
-            if (dynamicExitManager.isStalled(candles1m, trade.getEntryTime(), atr, 10)) {
+            if (dynamicExitManager.isStalled(candles1m, trade.getEntryTime(), underlyingAtr, 10)) {
                 log.info("[ExitMonitor] STALL EXIT: tradeId={} — underlying flat for 10 candles, profit={}%",
                         trade.getTradeId(), String.format("%.1f", profitPct));
                 telegramAlertService.systemAlert(String.format(
@@ -562,7 +549,7 @@ public class LivePositionExitMonitor {
         // ── 7. Gamma spike exit — expiry day only, before EXPIRY_AFTERNOON gate ──
         if (useAtrExits && expiryCalendar.isExpiryDay(indexType)
                 && !expiryCalendar.isExpiryAfternoon(indexType)
-                && dynamicExitManager.isGammaSpike(candles15m, atr)) {
+                && dynamicExitManager.isGammaSpike(candles15m, underlyingAtr)) {
             if (profitPct >= 20) {
                 log.info("[ExitMonitor] GAMMA SPIKE PROFIT: tradeId={} profit={}% — locking in expiry spike",
                         trade.getTradeId(), String.format("%.1f", profitPct));
@@ -600,29 +587,33 @@ public class LivePositionExitMonitor {
             checkVwapReversal(trade, currentPrice, profitPct);
         }
 
-        // ── 10. Bid-ask spread widening exit — liquidity evaporating ──────────
-        BigDecimal bid = quote.bid().orElse(BigDecimal.ZERO);
-        BigDecimal ask = quote.ask().orElse(BigDecimal.ZERO);
-        if (bid.signum() > 0 && ask.signum() > 0 && currentPrice.signum() > 0) {
-            double spreadPct = ask.subtract(bid).doubleValue() / currentPrice.doubleValue() * 100;
-            if (spreadPct > 5.0) {
-                // Spread > 5% of premium — liquidity is evaporating (common near expiry)
-                log.warn("[ExitMonitor] SPREAD WIDENING: tradeId={} spread={}% bid={} ask={} — liquidity deteriorating",
-                        trade.getTradeId(), String.format("%.1f", spreadPct), bid, ask);
-                if (spreadPct > 10.0) {
-                    // Spread > 10% — exit immediately to avoid being trapped
-                    telegramAlertService.systemAlert(String.format(
-                            "⚠️ Spread Widening Exit: %s | Spread %.1f%% (bid ₹%.2f / ask ₹%.2f) — liquidity gone",
-                            trade.getInstrumentKey(), spreadPct, bid.doubleValue(), ask.doubleValue()));
-                    close(trade, currentPrice, "SPREAD_WIDENING_EXIT");
-                    return;
-                }
-            }
-        }
-
         // ── ML Exit Shadow: record HOLD evaluation (no exit triggered this cycle) ──
-        recordExitShadow(trade, entryPrice, currentPrice, profitPct, peakPct, atr,
+        recordExitShadow(trade, entryPrice, currentPrice, profitPct, peakPct, underlyingAtr,
                 useAtrExits, false, "HOLD");
+        publishEvaluationSnapshot(trade, profitPct, peakPct, resolved, "HOLD");
+    }
+
+    private void publishEvaluationSnapshot(TradeEntity trade, double profitPct, double peakPct,
+                                           ExitParamResolver.ResolvedExits resolved, String decision) {
+        if (exitEvaluationRegistry == null) {
+            return;
+        }
+        exitEvaluationRegistry.put(new ExitEvaluationSnapshot(
+                trade.getTradeId(),
+                "SINGLE_LEG",
+                trade.getStrategyType() != null ? trade.getStrategyType() : "UNKNOWN",
+                trade.getUnderlying() != null ? trade.getUnderlying() : "NIFTY",
+                java.time.Instant.now(),
+                profitPct,
+                peakPct,
+                resolved.stopLossPercent(),
+                resolved.targetPercent(),
+                resolved.trailActivationPercent(),
+                resolved.trailGapPercent(),
+                resolved.atrUsed(),
+                resolved.mode(),
+                decision,
+                decision));
     }
 
     /**
@@ -668,9 +659,10 @@ public class LivePositionExitMonitor {
 
     private void close(TradeEntity trade, BigDecimal price, String reason) {
         // Record ML exit shadow BEFORE closing (trade still has OPEN status and all data)
-        double profitPct = profitPercent(trade.getEntryPrice(), price);
+        boolean shortEntry = PositionPnlCalculator.isShortEntry(trade);
+        double profitPct = PositionPnlCalculator.profitPercent(trade.getEntryPrice(), price, shortEntry);
         BigDecimal peak = peakPrices.getOrDefault(trade.getTradeId(), price);
-        double peakPct = profitPercent(trade.getEntryPrice(), peak);
+        double peakPct = PositionPnlCalculator.profitPercent(trade.getEntryPrice(), peak, shortEntry);
         recordExitShadow(trade, trade.getEntryPrice(), price, profitPct, peakPct, 0, false, true, reason);
 
         try {
@@ -679,6 +671,9 @@ public class LivePositionExitMonitor {
             trailingStops.remove(trade.getTradeId());
             peakPrices.remove(trade.getTradeId());
             firedLayers.remove(trade.getTradeId());
+            if (exitEvaluationRegistry != null) {
+                exitEvaluationRegistry.remove(trade.getTradeId());
+            }
         } catch (Exception e) {
             log.warn("[ExitMonitor] Failed to close trade {} — retaining trailing stop state for next evaluation: {}",
                     trade.getTradeId(), e.getMessage());
@@ -862,23 +857,6 @@ public class LivePositionExitMonitor {
                 overridden.getTrailingStopActivationPercent(), overridden.getTrailingGapPercent(),
                 overridden.getMaxHoldMinutes(), forcedExit);
         return overridden;
-    }
-
-    private double profitPercent(BigDecimal entry, BigDecimal current) {
-        if (entry == null || entry.signum() <= 0) return 0;
-        return current.subtract(entry)
-                .multiply(BigDecimal.valueOf(100), MC)
-                .divide(entry, MC)
-                .doubleValue();
-    }
-
-    /**
-     * Resolve instrument token for candle history lookup.
-     * Uses the underlying's spot token (NIFTY=256265, BANKNIFTY=260105).
-     */
-    private long resolveInstrumentToken(TradeEntity trade) {
-        String underlying = trade.getUnderlying();
-        return com.algo.trade.domain.IndexType.fromName(underlying).spotToken();
     }
 
     private Set<String> loadFiredLayers(TradeEntity trade) {

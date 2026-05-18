@@ -32,6 +32,8 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
@@ -93,6 +95,9 @@ public class ExecutionEngine {
 
     @Autowired(required = false)
     private com.algo.trade.monitoring.ErrorEventService errorEventService;
+
+    @Autowired(required = false)
+    private com.algo.trade.execution.exit.EntryLiquidityRecorder entryLiquidityRecorder;
 
     @Autowired
     public ExecutionEngine(TradingProperties properties, GlobalConfigService globalConfigService, BrokerClient brokerClient, RiskEngine riskEngine, TradingStateService tradingStateService,
@@ -186,7 +191,7 @@ public class ExecutionEngine {
             return ExecutionResult.rejected(List.of("Entry halted: " + tradingStateService.haltMode()
                     + " — resume from UI to continue trading"));
         }
-        StrategyDecisionEntity savedDecision = persistDecision(decision);
+        StrategyDecisionEntity savedDecision = persistDecision(decision, false, strategyConfig);
         if (!tradingStateService.running()) {
             log.warn("Entry execution rejected: trading engine is stopped");
             List<String> reasons = List.of("Trading engine is stopped");
@@ -260,7 +265,8 @@ public class ExecutionEngine {
             OrderResponse order;
             try {
                 order = placeOrderWithRetry(orderRequest, 2);
-                persistOrderWithSignalTime(order, decision.timestamp(), optionPremium, extractStrategyType(decision));
+                persistOrderWithSignalTime(order, decision.timestamp(), optionPremium,
+                        resolveStrategyType(decision, strategyConfig));
                 log.info("Entry order response: clientOrderId={}, brokerOrderId={}, status={}, requestedQuantity={}, filledQuantity={}, averageFillPrice={}, rejectionReason={}",
                         order.clientOrderId(), order.brokerOrderId().orElse(""), order.status(), order.requestedQuantity(),
                         order.filledQuantity(), order.averageFillPrice().orElse(null), order.rejectionReason().orElse(""));
@@ -301,7 +307,7 @@ public class ExecutionEngine {
                 TradeEntity tradeEntity = new TradeEntity(tradeId, order.instrumentKey(),
                         decision.underlying().name(), decision.optionType().orElseThrow().name(), TradeStatus.OPEN,
                         order.filledQuantity(), fillPrice, Instant.now(clock), String.join("; ", decision.reasons()));
-                tradeEntity.setStrategyType(extractStrategyType(decision));
+                tradeEntity.setStrategyType(resolveStrategyType(decision, strategyConfig));
                 tradeEntity.setProductType("MIS"); // Intraday entry
                 tradeEntity.setAppliedTrailingStopActivationPercent(effectiveConfig.getTrailingStopActivationPercent());
                 tradeEntity.setAppliedTrailingGapPercent(effectiveConfig.getTrailingGapPercent());
@@ -309,6 +315,9 @@ public class ExecutionEngine {
                     tradeEntity.setEnvironmentScore(envMetadata.environmentScore());
                     tradeEntity.setEnvironmentBreakdown(envMetadata.environmentBreakdown());
                     tradeEntity.setEntrySessionWindow(envMetadata.sessionWindow());
+                }
+                if (entryLiquidityRecorder != null) {
+                    entryLiquidityRecorder.recordTradeEntry(tradeEntity, effectiveConfig);
                 }
                 tradeRepository.save(tradeEntity);
                 tradingStateService.recordTradeEntry();
@@ -319,7 +328,7 @@ public class ExecutionEngine {
                 executionOutcomeCsvRecorder.recordEntry(decision, optionPremium, lotSize, "ORDER_FILLED", true,
                         sizing.quantity(), sizing.riskAmount(), sizing.estimatedCost(), order, reasons, effectiveConfig);
                 telegramAlertService.entryOrderFilled(decision, optionPremium, sizing.quantity(), sizing.estimatedCost(), order);
-                return ExecutionResult.accepted(order, reasons);
+                return ExecutionResult.accepted(order, reasons, tradeId);
             }
             log.warn("Entry order not filled: clientOrderId={}, status={}, reason={}",
                     order.clientOrderId(), order.status(), order.rejectionReason().orElse("Entry order was not filled"));
@@ -350,7 +359,7 @@ public class ExecutionEngine {
                 decision.signalType(), decision.underlying(),
                 decision.selectedInstrumentKey().orElse(""), optionPremium);
 
-        StrategyDecisionEntity savedDecision = persistDecision(decision, true);
+        StrategyDecisionEntity savedDecision = persistDecision(decision, true, strategyConfig);
         if (!tradingStateService.running()) {
             log.warn("PAPER entry rejected: trading engine is stopped");
             updateExecutionStage(savedDecision, "TRADING_STOPPED", "Trading engine is stopped");
@@ -376,10 +385,13 @@ public class ExecutionEngine {
                 decision.underlying().name(), decision.optionType().map(Enum::name).orElse("CE"),
                 TradeStatus.OPEN, sizing.quantity(), optionPremium, Instant.now(clock),
                 "PAPER_TRADE [" + decision.signalType().name() + "]: " + String.join("; ", decision.reasons()));
-        trade.setStrategyType(extractStrategyType(decision));
+        trade.setStrategyType(resolveStrategyType(decision, strategyConfig));
         trade.setProductType("MIS"); // Paper trades default to MIS
         trade.setAppliedTrailingStopActivationPercent(effectiveConfig.getTrailingStopActivationPercent());
         trade.setAppliedTrailingGapPercent(effectiveConfig.getTrailingGapPercent());
+        if (entryLiquidityRecorder != null) {
+            entryLiquidityRecorder.recordTradeEntry(trade, effectiveConfig);
+        }
         tradeRepository.save(trade);
 
         updateExecutionStage(savedDecision, "PAPER_FILLED", "tradeId=" + tradeId);
@@ -395,7 +407,7 @@ public class ExecutionEngine {
                 sizing.quantity(), sizing.riskAmount(), sizing.estimatedCost(), syntheticOrder,
                 List.of("Paper trade opened — exit managed by live monitors"), effectiveConfig);
 
-        return ExecutionResult.accepted(syntheticOrder, List.of("Paper trade opened"));
+        return ExecutionResult.accepted(syntheticOrder, List.of("Paper trade opened"), tradeId);
         } finally {
             entriesInFlight.decrementAndGet();
         }
@@ -609,10 +621,15 @@ public class ExecutionEngine {
     }
 
     private StrategyDecisionEntity persistDecision(StrategyDecision decision) {
-        return persistDecision(decision, false);
+        return persistDecision(decision, false, null);
     }
 
     private StrategyDecisionEntity persistDecision(StrategyDecision decision, boolean paperTrade) {
+        return persistDecision(decision, paperTrade, null);
+    }
+
+    private StrategyDecisionEntity persistDecision(StrategyDecision decision, boolean paperTrade,
+                                                   StrategyConfig explicitConfig) {
         log.info("Persisting strategy decision: timestamp={}, underlying={}, signalType={}, instrument={}, reasons={}",
                 decision.timestamp(), decision.underlying(), decision.signalType(),
                 decision.selectedInstrumentKey().orElse(""), decision.reasons());
@@ -624,7 +641,7 @@ public class ExecutionEngine {
                 decision.optionType().map(Enum::name).orElse(null), decision.vwapConditionPassed(),
                 decision.imbalance().orElse(null), decision.volumeSpike(), decision.confidenceScore(),
                 String.join("; ", decision.reasons()));
-        entity.setStrategyType(extractStrategyType(decision));
+        entity.setStrategyType(resolveStrategyType(decision, explicitConfig));
         entity.setPaperTrade(paperTrade);
         return decisionRepository.save(entity);
     }
@@ -941,8 +958,25 @@ public class ExecutionEngine {
                 || reason.contains("SHORT position"));
     }
 
+    /**
+     * Prefer an explicitly passed strategy config (e.g. OI Momentum); otherwise parse decision reasons.
+     * Uses {@code explicitConfig} only when non-null — not the directional-buy fallback config.
+     */
+    private String resolveStrategyType(StrategyDecision decision, StrategyConfig explicitConfig) {
+        if (explicitConfig != null && explicitConfig.getStrategyType() != null) {
+            return explicitConfig.getStrategyType().name();
+        }
+        return extractStrategyType(decision);
+    }
+
     /** Extract strategy type name from a StrategyDecision's reasons list. */
     private String extractStrategyType(StrategyDecision decision) {
+        com.algo.trade.strategy.StrategyType[] typesByLength =
+                com.algo.trade.strategy.StrategyType.values();
+        typesByLength = Arrays.copyOf(typesByLength, typesByLength.length);
+        Arrays.sort(typesByLength, Comparator.comparingInt((com.algo.trade.strategy.StrategyType t) -> t.name().length())
+                .reversed());
+
         for (String reason : decision.reasons()) {
             // Skip common phrases that contain strategy names as substrings
             // "RSI momentum gate" contains "MOMENTUM" but isn't a MOMENTUM strategy signal
@@ -951,8 +985,7 @@ public class ExecutionEngine {
             if (reason.toLowerCase().contains("breakout confirmation")) continue;
 
             String upper = reason.toUpperCase().replace(" ", "_").replace("-", "_").replace("&", "AND");
-            // Check longest names first to avoid partial matches
-            for (com.algo.trade.strategy.StrategyType type : com.algo.trade.strategy.StrategyType.values()) {
+            for (com.algo.trade.strategy.StrategyType type : typesByLength) {
                 if (upper.contains(type.name())) return type.name();
             }
             if (upper.contains("ITM") && upper.contains("CONVICTION")) return "ITM_CONVICTION";

@@ -15,6 +15,8 @@ public record OrderRequest(
         ProductType productType,
         int quantity,
         Optional<BigDecimal> limitPrice,
+        /** Trigger price for SL-M orders. Ignored for MARKET/LIMIT. */
+        Optional<BigDecimal> triggerPrice,
         String tag
 ) {
     public OrderRequest {
@@ -27,6 +29,15 @@ public record OrderRequest(
             throw new IllegalArgumentException("quantity must be positive");
         }
         limitPrice = limitPrice == null ? Optional.empty() : limitPrice;
+        triggerPrice = triggerPrice == null ? Optional.empty() : triggerPrice;
         tag = tag == null ? "" : tag;
+    }
+
+    /** Convenience constructor without triggerPrice (backward compatible). */
+    public OrderRequest(String clientOrderId, String instrumentKey, OrderSide side,
+                        OrderType orderType, ProductType productType, int quantity,
+                        Optional<BigDecimal> limitPrice, String tag) {
+        this(clientOrderId, instrumentKey, side, orderType, productType, quantity,
+                limitPrice, Optional.empty(), tag);
     }
 }

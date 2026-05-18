@@ -196,6 +196,7 @@ public class ZerodhaBrokerClient implements BrokerClient {
         body.add("product", request.productType().name());
         body.add("order_type", request.orderType().name());
         request.limitPrice().ifPresent(price -> body.add("price", price.toPlainString()));
+        request.triggerPrice().ifPresent(tp -> body.add("trigger_price", tp.toPlainString()));
         // Market protection: required by Zerodha API for MARKET orders on F&O.
         // Sets max acceptable slippage as percentage (1%).
         if (request.orderType() == com.algo.trade.domain.OrderType.MARKET) {

@@ -154,50 +154,6 @@ public class IronCondorStrategy extends AbstractSpreadStrategy {
 
     @Override
     protected boolean shouldExit(PositionGroup group, Map<String, BigDecimal> currentPrices, StrategyConfig config) {
-        // Short leg doubling check
-        for (SpreadLeg leg : group.legs()) {
-            if (leg.side() == OrderSide.SELL) {
-                BigDecimal entryPrice = group.entryPrices().getOrDefault(leg.instrumentKey(), BigDecimal.ZERO);
-                BigDecimal currentPrice = currentPrices.getOrDefault(leg.instrumentKey(), BigDecimal.ZERO);
-                if (entryPrice.signum() > 0 && currentPrice.compareTo(entryPrice.multiply(BigDecimal.valueOf(2))) >= 0) {
-                    log.info("IronCondor: short leg {} doubled (entry={}, current={})",
-                            leg.instrumentKey(), entryPrice, currentPrice);
-                    return true;
-                }
-            }
-        }
-
-        // Target decay and SL expansion using net credit
-        BigDecimal entryCredit = netCredit(group.legs(), group.entryPrices());
-        BigDecimal currentCredit = netCredit(group.legs(), currentPrices);
-
-        // Target: net credit has decayed (profit for seller)
-        if (entryCredit.signum() > 0) {
-            BigDecimal decayPercent = entryCredit.subtract(currentCredit)
-                    .divide(entryCredit, MC)
-                    .multiply(BigDecimal.valueOf(100), MC);
-            if (decayPercent.compareTo(config.getTargetPercent()) >= 0) {
-                log.info("IronCondor: target decay hit for group {}", group.groupId());
-                return true;
-            }
-        }
-
-        // SL expansion: position has lost more than SL% of the initial credit received.
-        // Loss % = (entryCredit - currentCredit) / entryCredit × 100
-        if (entryCredit.signum() > 0) {
-            BigDecimal lossPct = entryCredit.subtract(currentCredit)
-                    .divide(entryCredit, MC)
-                    .multiply(BigDecimal.valueOf(100), MC);
-            if (lossPct.compareTo(config.getStopLossPercent()) >= 0) {
-                log.info("IronCondor: SL expansion hit (loss={}%) for group {}", lossPct.setScale(1, java.math.RoundingMode.HALF_UP), group.groupId());
-                return true;
-            }
-        }
-
-        if (expiryCalendar.isExpiryDangerZone(IndexType.from(group.underlying()))) {
-            log.info("IronCondor: expiry danger zone for group {}", group.groupId());
-            return true;
-        }
         return false;
     }
 

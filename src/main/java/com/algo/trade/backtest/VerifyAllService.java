@@ -48,12 +48,14 @@ public class VerifyAllService {
             StrategyType.EXPIRY_GAMMA,
             StrategyType.EXPIRY_REVERSAL,
             StrategyType.MOMENTUM,
-            StrategyType.ITM_CONVICTION
+            StrategyType.ITM_CONVICTION,
+            StrategyType.OI_MOMENTUM
     );
 
     /** Strategies that require live data (ATP) and cannot be backtested. */
     private static final Set<StrategyType> LIVE_ONLY_STRATEGIES = Set.of(
-            StrategyType.ITM_CONVICTION
+            StrategyType.ITM_CONVICTION,
+            StrategyType.OI_MOMENTUM
     );
 
     private final TradingProperties tradingProperties;

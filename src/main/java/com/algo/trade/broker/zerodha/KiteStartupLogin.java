@@ -455,6 +455,25 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
     }
 
     /**
+     * Daily instrument refresh at 8:00 AM IST — ensures new expiry tokens are available
+     * after Tuesday/Thursday expiry without requiring a restart.
+     */
+    @org.springframework.scheduling.annotation.Scheduled(cron = "0 0 8 * * MON-FRI", zone = "Asia/Kolkata")
+    public void dailyInstrumentRefresh() {
+        try {
+            log.info("[DailyRefresh] Refreshing instrument cache at 8:00 AM");
+            var instruments = instrumentCache.refresh();
+            if (!instruments.isEmpty()) {
+                liveInstrumentCache.populate(instruments);
+                log.info("[DailyRefresh] Instrument cache refreshed: {} instruments", instruments.size());
+            }
+        } catch (Exception e) {
+            log.warn("[DailyRefresh] Instrument refresh failed: {}", e.getMessage());
+            if (errorEventService != null) errorEventService.medium("DailyRefresh", "Instrument refresh failed: " + e.getMessage());
+        }
+    }
+
+    /**
      * Re-subscribes option tokens when the underlying spot price moves more than RESUBSCRIBE_STRIKE_THRESHOLD
      * strikes from the ATM used at startup. Runs every 5 minutes during market hours.
      * Ensures that selected options remain within the WebSocket subscription window as NIFTY/BANKNIFTY move.

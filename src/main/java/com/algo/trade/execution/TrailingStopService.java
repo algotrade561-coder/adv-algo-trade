@@ -65,33 +65,60 @@ public class TrailingStopService {
      * Computes the next trailing stop using caller-supplied activation and gap percentages.
      * Used by LivePositionExitMonitor to pass per-strategy StrategyConfig values.
      */
-    public Optional<BigDecimal> nextStop(BigDecimal entryPrice, BigDecimal highestPrice,
+    public Optional<BigDecimal> nextStop(BigDecimal entryPrice, BigDecimal extremePrice,
                                           Optional<BigDecimal> currentStop,
                                           BigDecimal activationPercent, BigDecimal gapPercent) {
-        BigDecimal activationPrice = entryPrice.multiply(BigDecimal.ONE.add(
-                activationPercent.movePointLeft(2)), MATH_CONTEXT);
-        if (highestPrice.compareTo(activationPrice) < 0) {
-            log.debug("Trailing stop unchanged before activation: entryPrice={}, highestPrice={}, activationPrice={}, currentStop={}",
-                    entryPrice, highestPrice, activationPrice, currentStop.orElse(null));
+        return nextStop(entryPrice, extremePrice, currentStop, activationPercent, gapPercent, false);
+    }
+
+    /**
+     * @param extremePrice best price for the trade (high for long, low for short)
+     * @param shortEntry   sold option — trail stop ratchets upward on price bounce
+     */
+    public Optional<BigDecimal> nextStop(BigDecimal entryPrice, BigDecimal extremePrice,
+                                          Optional<BigDecimal> currentStop,
+                                          BigDecimal activationPercent, BigDecimal gapPercent,
+                                          boolean shortEntry) {
+        BigDecimal actPct = activationPercent.movePointLeft(2);
+        BigDecimal gapPct = gapPercent.movePointLeft(2);
+
+        if (shortEntry) {
+            BigDecimal activationPrice = entryPrice.multiply(BigDecimal.ONE.subtract(actPct), MATH_CONTEXT);
+            if (extremePrice.compareTo(activationPrice) > 0) {
+                return currentStop;
+            }
+            BigDecimal candidate = extremePrice.multiply(BigDecimal.ONE.add(gapPct), MATH_CONTEXT);
+            if (currentStop.isEmpty() || candidate.compareTo(currentStop.get()) < 0) {
+                log.info("Short trailing stop updated: entry={}, extreme={}, nextStop={}",
+                        entryPrice, extremePrice, candidate);
+                return Optional.of(candidate);
+            }
             return currentStop;
         }
 
-        BigDecimal candidate = highestPrice.multiply(BigDecimal.ONE.subtract(
-                gapPercent.movePointLeft(2)), MATH_CONTEXT);
+        BigDecimal activationPrice = entryPrice.multiply(BigDecimal.ONE.add(actPct), MATH_CONTEXT);
+        if (extremePrice.compareTo(activationPrice) < 0) {
+            return currentStop;
+        }
+        BigDecimal candidate = extremePrice.multiply(BigDecimal.ONE.subtract(gapPct), MATH_CONTEXT);
         if (currentStop.isEmpty() || candidate.compareTo(currentStop.get()) > 0) {
-            log.info("Trailing stop updated: entryPrice={}, highestPrice={}, previousStop={}, nextStop={}",
-                    entryPrice, highestPrice, currentStop.orElse(null), candidate);
+            log.info("Trailing stop updated: entry={}, extreme={}, nextStop={}",
+                    entryPrice, extremePrice, candidate);
             return Optional.of(candidate);
         }
-        log.debug("Trailing stop unchanged: entryPrice={}, highestPrice={}, currentStop={}, candidate={}",
-                entryPrice, highestPrice, currentStop.get(), candidate);
         return currentStop;
     }
 
     public boolean isStopHit(BigDecimal lastPrice, BigDecimal stopPrice) {
-        boolean hit = lastPrice.compareTo(stopPrice) <= 0;
+        return isStopHit(lastPrice, stopPrice, false);
+    }
+
+    public boolean isStopHit(BigDecimal lastPrice, BigDecimal stopPrice, boolean shortEntry) {
+        boolean hit = shortEntry
+                ? lastPrice.compareTo(stopPrice) >= 0
+                : lastPrice.compareTo(stopPrice) <= 0;
         if (hit) {
-            log.info("Trailing stop hit: lastPrice={}, stopPrice={}", lastPrice, stopPrice);
+            log.info("Trailing stop hit (short={}): lastPrice={}, stopPrice={}", shortEntry, lastPrice, stopPrice);
         }
         return hit;
     }

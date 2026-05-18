@@ -270,11 +270,41 @@ public record TradingProperties(
             @DecimalMin("0.0") BigDecimal trailingGapPercent,
             @NotNull LocalTime forcedExitTime,
             boolean partialProfitBookingEnabled,
-            @Min(0) int maxHoldMinutes
+            @Min(0) int maxHoldMinutes,
+            /** ATR | CONFIG | HYBRID for single-leg SL/target */
+            String exitModeSetting,
+            /** PRICE | ATR_PERCENT — use one trailing path only */
+            String trailingModeSetting
     ) {
+        public Exit {
+            // Partial YAML (e.g. only exit-mode-setting) must not leave @NotNull fields null.
+            // Do not call defaults() here — that re-enters this compact constructor (StackOverflowError).
+            if (stopLossPercent == null) {
+                stopLossPercent = BigDecimal.valueOf(12);
+            }
+            if (targetPercent == null) {
+                targetPercent = BigDecimal.valueOf(24);
+            }
+            if (trailingStopActivationPercent == null) {
+                trailingStopActivationPercent = BigDecimal.valueOf(10);
+            }
+            if (trailingGapPercent == null) {
+                trailingGapPercent = BigDecimal.valueOf(5);
+            }
+            if (forcedExitTime == null) {
+                forcedExitTime = LocalTime.of(15, 15);
+            }
+            if (exitModeSetting == null || exitModeSetting.isBlank()) {
+                exitModeSetting = "HYBRID";
+            }
+            if (trailingModeSetting == null || trailingModeSetting.isBlank()) {
+                trailingModeSetting = "PRICE";
+            }
+        }
+
         public static Exit defaults() {
             return new Exit(BigDecimal.valueOf(12), BigDecimal.valueOf(24), BigDecimal.valueOf(10),
-                    BigDecimal.valueOf(5), LocalTime.of(15, 15), false, 0);
+                    BigDecimal.valueOf(5), LocalTime.of(15, 15), false, 0, "HYBRID", "PRICE");
         }
     }
 

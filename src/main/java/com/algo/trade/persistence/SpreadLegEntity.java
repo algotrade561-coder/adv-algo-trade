@@ -37,6 +37,13 @@ public class SpreadLegEntity {
     @Column(precision = 19, scale = 4, nullable = false)
     private BigDecimal entryPrice;
 
+    /** Soft-delete flag: false means this leg was replaced by an adjustment. */
+    private boolean active = true;
+
+    private Double entryBidAskSpreadPercent;
+    private Long entryVolume;
+    private Long entryOpenInterest;
+
     protected SpreadLegEntity() {}
 
     public SpreadLegEntity(PositionGroupEntity positionGroup,
@@ -66,4 +73,18 @@ public class SpreadLegEntity {
     public int getQuantity() { return quantity; }
     public LocalDate getExpiry() { return expiry; }
     public BigDecimal getEntryPrice() { return entryPrice; }
+
+    public void setEntryPrice(BigDecimal entryPrice) {
+        this.entryPrice = entryPrice;
+    }
+
+    public Double getEntryBidAskSpreadPercent() { return entryBidAskSpreadPercent; }
+    public void setEntryBidAskSpreadPercent(Double v) { this.entryBidAskSpreadPercent = v; }
+    public Long getEntryVolume() { return entryVolume; }
+    public void setEntryVolume(Long v) { this.entryVolume = v; }
+    public Long getEntryOpenInterest() { return entryOpenInterest; }
+    public void setEntryOpenInterest(Long v) { this.entryOpenInterest = v; }
+
+    public boolean isActive() { return active; }
+    public void setActive(boolean active) { this.active = active; }
 }

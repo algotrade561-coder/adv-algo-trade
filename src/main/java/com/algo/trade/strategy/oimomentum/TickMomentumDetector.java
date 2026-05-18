@@ -72,40 +72,51 @@ public class TickMomentumDetector {
         double spot = liveInstrumentCache.getFuturesPrice(indexType);
         if (spot <= 0) return MomentumSignal.NONE;
 
-        double high30m = getRolling30MinHigh(indexType);
-        double low30m = getRolling30MinLow(indexType);
-        if (high30m <= 0 || low30m <= 0) return MomentumSignal.NONE;
+        Deque<PriceSample> history = priceHistory.get(indexType);
+        if (history == null || history.size() < 10) return MomentumSignal.NONE;
 
-        // Breakout above 30-min high
-        if (spot > high30m && high30m > 0) {
+        long now = System.currentTimeMillis();
+        long fiveSecsAgo = now - 5_000L;
+
+        // Compute high/low EXCLUDING the latest 5 seconds (by timestamp, not count)
+        double high30m = 0, low30m = Double.MAX_VALUE;
+        for (PriceSample sample : history) {
+            if (sample.timestamp > fiveSecsAgo) break; // Skip recent 5 seconds
+            if (sample.price > high30m) high30m = sample.price;
+            if (sample.price < low30m) low30m = sample.price;
+        }
+        if (high30m <= 0 || low30m == Double.MAX_VALUE) return MomentumSignal.NONE;
+
+        // Breakout above 30-min high (excluding recent ticks)
+        if (spot > high30m) {
             double breakoutPct = (spot - high30m) / high30m * 100;
-            if (breakoutPct > 0.01) { // Meaningful break (not just noise)
+            if (breakoutPct > 0.02) {
                 return new MomentumSignal(1, "30M_HIGH_BREAK", breakoutPct, spot);
             }
         }
 
-        // Breakdown below 30-min low
-        if (spot < low30m && low30m > 0) {
+        // Breakdown below 30-min low (excluding recent ticks)
+        if (spot < low30m) {
             double breakdownPct = (low30m - spot) / low30m * 100;
-            if (breakdownPct > 0.01) {
+            if (breakdownPct > 0.02) {
                 return new MomentumSignal(-1, "30M_LOW_BREAK", breakdownPct, spot);
             }
         }
 
-        // Large candle: check 1-second price change vs threshold
-        Deque<PriceSample> history = priceHistory.get(indexType);
-        if (history != null && history.size() >= 5) {
-            // Compare current price to price 5 seconds ago
-            PriceSample[] recent = history.stream()
-                    .skip(Math.max(0, history.size() - 6))
-                    .toArray(PriceSample[]::new);
-            if (recent.length >= 5) {
-                double priceAgo = recent[0].price;
-                double movePct = (spot - priceAgo) / priceAgo * 100;
-                if (Math.abs(movePct) >= momentumThresholdPct) {
-                    int direction = movePct > 0 ? 1 : -1;
-                    return new MomentumSignal(direction, "LARGE_MOVE", Math.abs(movePct), spot);
-                }
+        // Large candle: check price change over last ~5 seconds (by timestamp)
+        PriceSample fiveSecSample = null;
+        for (PriceSample sample : history) {
+            if (sample.timestamp <= fiveSecsAgo) {
+                fiveSecSample = sample; // Keep updating — last one before cutoff is closest
+            } else {
+                break;
+            }
+        }
+        if (fiveSecSample != null) {
+            double movePct = (spot - fiveSecSample.price) / fiveSecSample.price * 100;
+            if (Math.abs(movePct) >= momentumThresholdPct) {
+                int direction = movePct > 0 ? 1 : -1;
+                return new MomentumSignal(direction, "LARGE_MOVE", Math.abs(movePct), spot);
             }
         }
 

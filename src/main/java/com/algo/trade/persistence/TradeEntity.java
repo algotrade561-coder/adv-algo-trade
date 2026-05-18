@@ -70,6 +70,14 @@ public class TradeEntity {
     /** Session window name at entry time (e.g. MORNING_MOMENTUM). Write-once. */
     private String entrySessionWindow;
 
+    /** Bid–ask spread % of mid at entry — for liquidity collapse exits. */
+    private Double entryBidAskSpreadPercent;
+    private Long entryVolume;
+    private Long entryOpenInterest;
+    /** SL/target % frozen at entry (audit + hybrid resolver baseline). */
+    private BigDecimal appliedStopLossPercent;
+    private BigDecimal appliedTargetPercent;
+
     protected TradeEntity() {
     }
 
@@ -151,4 +159,15 @@ public class TradeEntity {
     public void setEnvironmentBreakdown(String v) { this.environmentBreakdown = v; }
     public String getEntrySessionWindow() { return entrySessionWindow; }
     public void setEntrySessionWindow(String v) { this.entrySessionWindow = v; }
+
+    public Double getEntryBidAskSpreadPercent() { return entryBidAskSpreadPercent; }
+    public void setEntryBidAskSpreadPercent(Double v) { this.entryBidAskSpreadPercent = v; }
+    public Long getEntryVolume() { return entryVolume; }
+    public void setEntryVolume(Long v) { this.entryVolume = v; }
+    public Long getEntryOpenInterest() { return entryOpenInterest; }
+    public void setEntryOpenInterest(Long v) { this.entryOpenInterest = v; }
+    public BigDecimal getAppliedStopLossPercent() { return appliedStopLossPercent; }
+    public void setAppliedStopLossPercent(BigDecimal v) { this.appliedStopLossPercent = v; }
+    public BigDecimal getAppliedTargetPercent() { return appliedTargetPercent; }
+    public void setAppliedTargetPercent(BigDecimal v) { this.appliedTargetPercent = v; }
 }

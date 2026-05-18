@@ -3,6 +3,7 @@ package com.algo.trade.execution;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyCollection;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -237,6 +238,44 @@ class ExecutionEngineTest {
 
         verify(tradeRepository).save(any(TradeEntity.class));
         verify(orderRepository).save(orderEntity);
+    }
+
+    @Test
+    void paperEntryUsesExplicitOiMomentumConfigNotMomentumSubstring() {
+        tradingStateService.start();
+        StrategyConfig oiConfig = new StrategyConfig(StrategyType.OI_MOMENTUM);
+        oiConfig.setStopLossPercent(BigDecimal.valueOf(15));
+        StrategyDecision decision = new StrategyDecision(
+                Instant.now(clock), UnderlyingSymbol.NIFTY, SignalType.BUY_CE,
+                BigDecimal.valueOf(24_500), Optional.of(BigDecimal.valueOf(50)), Optional.empty(),
+                Optional.of(65), Optional.empty(), Optional.of("NFO:NIFTY26MAY24500CE"),
+                Optional.of(BigDecimal.valueOf(24_500)), Optional.of(OptionType.CE),
+                false, Optional.empty(), false, BigDecimal.ZERO,
+                List.of("OI_MOMENTUM: spike"));
+
+        ExecutionResult result = executionEngine.executePaperEntry(
+                decision, BigDecimal.valueOf(50), 65, oiConfig);
+
+        assertThat(result.accepted()).isTrue();
+        verify(tradeRepository).save(argThat(t -> StrategyType.OI_MOMENTUM.name().equals(t.getStrategyType())));
+    }
+
+    @Test
+    void paperEntryWithoutConfigResolvesOiMomentumFromReasonLongestFirst() {
+        tradingStateService.start();
+        StrategyDecision decision = new StrategyDecision(
+                Instant.now(clock), UnderlyingSymbol.NIFTY, SignalType.BUY_CE,
+                BigDecimal.valueOf(24_500), Optional.of(BigDecimal.valueOf(50)), Optional.empty(),
+                Optional.of(65), Optional.empty(), Optional.of("NFO:NIFTY26MAY24500CE"),
+                Optional.of(BigDecimal.valueOf(24_500)), Optional.of(OptionType.CE),
+                false, Optional.empty(), false, BigDecimal.ZERO,
+                List.of("OI_MOMENTUM: momentum spike"));
+
+        ExecutionResult result = executionEngine.executePaperEntry(
+                decision, BigDecimal.valueOf(50), 65, null);
+
+        assertThat(result.accepted()).isTrue();
+        verify(tradeRepository).save(argThat(t -> StrategyType.OI_MOMENTUM.name().equals(t.getStrategyType())));
     }
 
     @Test

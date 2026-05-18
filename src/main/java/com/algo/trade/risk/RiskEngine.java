@@ -77,6 +77,11 @@ public class RiskEngine {
         if (dailyPnl.compareTo(effectiveDailyLossLimit().negate()) <= 0) {
             rejections.add(String.format("Max daily loss reached (limit: \u20b9%.0f)",
                     effectiveDailyLossLimit().doubleValue()));
+            // Auto-halt on daily loss breach — prevents repeated evaluation + log spam
+            if (tradingStateService.haltMode() == com.algo.trade.risk.HaltMode.NONE) {
+                tradingStateService.softHalt("Daily loss limit breached: P&L ₹" + dailyPnl.setScale(0, java.math.RoundingMode.HALF_UP));
+                log.warn("[RiskEngine] SOFT HALT triggered: daily loss limit breached (P&L=₹{})", dailyPnl.setScale(0, java.math.RoundingMode.HALF_UP));
+            }
         }
         if (consecutiveLosses >= globalConfigService.getMaxConsecutiveLosses()) {
             rejections.add("Max consecutive losses reached");

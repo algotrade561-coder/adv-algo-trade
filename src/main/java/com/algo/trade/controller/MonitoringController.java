@@ -39,6 +39,7 @@ public class MonitoringController {
     private final com.algo.trade.reporting.PerformanceMetricsService performanceMetricsService;
     private final com.algo.trade.monitoring.PositionStrengthService positionStrengthService;
     private final com.algo.trade.commodity.BrentCrudeService brentCrudeService;
+    private final com.algo.trade.monitoring.HedgeCostTracker hedgeCostTracker;
 
     public MonitoringController(ReportingService reportingService, MarketGuard marketGuard,
                                  LiveInstrumentCache liveInstrumentCache,
@@ -48,7 +49,8 @@ public class MonitoringController {
                                  com.algo.trade.reporting.PerformanceMetricsService performanceMetricsService,
                                  com.algo.trade.monitoring.PositionStrengthService positionStrengthService,
                                  com.algo.trade.indicator.IVRankTracker ivRankTracker,
-                                 com.algo.trade.commodity.BrentCrudeService brentCrudeService) {
+                                 com.algo.trade.commodity.BrentCrudeService brentCrudeService,
+                                 com.algo.trade.monitoring.HedgeCostTracker hedgeCostTracker) {
         this.reportingService = reportingService;
         this.marketGuard = marketGuard;
         this.liveInstrumentCache = liveInstrumentCache;
@@ -59,6 +61,7 @@ public class MonitoringController {
         this.positionStrengthService = positionStrengthService;
         this.ivRankTracker = ivRankTracker;
         this.brentCrudeService = brentCrudeService;
+        this.hedgeCostTracker = hedgeCostTracker;
     }
 
     @GetMapping("/market")
@@ -94,7 +97,13 @@ public class MonitoringController {
         result.put("longPremiumBlockReason", marketGuard.longPremiumBlockReason());
         result.put("brentCrude", brentCrudeService.getLastPriceUSD());
         result.put("brentCrudeAvailable", brentCrudeService.isAvailable());
+        result.put("hedgeCost", hedgeCostSummary());
         return result;
+    }
+
+    @GetMapping("/hedge-cost/summary")
+    public com.algo.trade.monitoring.HedgeCostTracker.DailySummary hedgeCostSummary() {
+        return hedgeCostTracker.dailySummary();
     }
 
     @GetMapping("/performance")

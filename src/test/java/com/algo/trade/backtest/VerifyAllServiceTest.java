@@ -47,7 +47,7 @@ class VerifyAllServiceTest {
     private SpreadBacktestEngine spreadBacktestEngine;
     private VerifyAllService service;
 
-    /** Single-leg strategies routed to BacktestEngine (excludes ITM_CONVICTION which is live-only). */
+    /** Single-leg strategies routed to BacktestEngine (excludes ITM_CONVICTION and OI_MOMENTUM which are live-only). */
     private static final Set<StrategyType> SINGLE_LEG = Set.of(
             StrategyType.DIRECTIONAL_BUY,
             StrategyType.SCALPING,
@@ -148,24 +148,24 @@ class VerifyAllServiceTest {
     class EngineDelegation {
 
         @Test
-        @DisplayName("11 single-leg strategies delegate to BacktestEngine")
+        @DisplayName("10 single-leg strategies delegate to BacktestEngine")
         void singleLegStrategiesUseBacktestEngine() {
             service.verifyAll(VerifyAllRequest.defaults());
 
-            // BacktestEngine.run() is called for CE and PE per single-leg strategy → 11 × 2 = 22 calls
-            // (ITM_CONVICTION is live-only so skipped, but BREAKOUT_REENTRY is included)
-            verify(backtestEngine, times(22)).run(
+            // BacktestEngine.run() is called for CE and PE per single-leg strategy → 10 × 2 = 20 calls
+            // (ITM_CONVICTION and OI_MOMENTUM are live-only, skipped in backtest)
+            verify(backtestEngine, times(20)).run(
                     any(UnderlyingSymbol.class), any(Timeframe.class), any(OptionType.class),
                     any(LocalDate.class), any(LocalDate.class),
                     any(BacktestEngine.RunOptions.class));
         }
 
         @Test
-        @DisplayName("13 spread strategies delegate to SpreadBacktestEngine")
+        @DisplayName("12 spread strategies delegate to SpreadBacktestEngine")
         void spreadStrategiesUseSpreadBacktestEngine() {
             service.verifyAll(VerifyAllRequest.defaults());
 
-            verify(spreadBacktestEngine, times(13)).run(
+            verify(spreadBacktestEngine, times(12)).run(
                     any(StrategyType.class), any(StrategyConfig.class),
                     any(UnderlyingSymbol.class), any(LocalDate.class), any(LocalDate.class),
                     any(TradingProperties.class), any(ExecutionFlowTracker.class));
@@ -188,10 +188,11 @@ class VerifyAllServiceTest {
         @DisplayName("spread strategies never go to BacktestEngine")
         void spreadNeverDelegatedToSingleLeg() {
             // BacktestEngine is only called for single-leg strategies.
-            // We verify the total call count is exactly 22 (11 strategies × 2 option types).
+            // We verify the total call count is exactly 20 (10 backtestable strategies × 2 option types).
+            // ITM_CONVICTION and OI_MOMENTUM are live-only, skipped.
             service.verifyAll(VerifyAllRequest.defaults());
 
-            verify(backtestEngine, times(22)).run(
+            verify(backtestEngine, times(20)).run(
                     any(UnderlyingSymbol.class), any(Timeframe.class), any(OptionType.class),
                     any(LocalDate.class), any(LocalDate.class),
                     any(BacktestEngine.RunOptions.class));
