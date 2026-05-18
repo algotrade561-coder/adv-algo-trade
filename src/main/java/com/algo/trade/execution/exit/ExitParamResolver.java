@@ -78,12 +78,12 @@ public class ExitParamResolver {
             case CONFIG -> new ResolvedExits(configSl, configTarget, configTrailActivation, configTrailGap, false, mode);
             case ATR -> new ResolvedExits(atrSl, atrTarget, atrTrailAct, atrTrailGap, true, mode);
             case HYBRID -> new ResolvedExits(
-                    Math.max(configSl, atrSl),
+                    Math.min(configSl, atrSl),
                     Math.min(configTarget, atrTarget),
                     preferConfigTrail ? configTrailActivation
-                            : (hasUnderlying ? atrTrailAct : configTrailActivation),
+                            : Math.min(hasUnderlying ? atrTrailAct : configTrailActivation, configTrailActivation),
                     preferConfigTrail ? configTrailGap
-                            : (hasUnderlying ? atrTrailGap : configTrailGap),
+                            : Math.min(hasUnderlying ? atrTrailGap : configTrailGap, configTrailGap),
                     true,
                     mode);
         };
@@ -112,7 +112,7 @@ public class ExitParamResolver {
             case CONFIG -> new ResolvedExits(configSl, configTarget, 0, 0, false, mode);
             case ATR -> new ResolvedExits(atrSl, atrTarget, trailActivation, trailGap, true, mode);
             case HYBRID -> new ResolvedExits(
-                    Math.max(configSl, atrSl),
+                    Math.min(configSl, atrSl),
                     Math.min(configTarget, atrTarget),
                     trailActivation, trailGap, true, mode);
         };
@@ -138,7 +138,7 @@ public class ExitParamResolver {
             case CONFIG -> new ResolvedExits(configSl, configTarget, 0, 0, false, mode);
             case ATR -> new ResolvedExits(atrSl, atrTarget, trailActivation, trailGap, true, mode);
             case HYBRID -> new ResolvedExits(
-                    Math.max(configSl, atrSl),
+                    Math.min(configSl, atrSl),
                     Math.min(configTarget, atrTarget),
                     trailActivation, trailGap, true, mode);
         };

@@ -18,7 +18,7 @@ globalConfig:
   bearishImbalanceThreshold: 0.8
   minLiquidityVolume: 5000
   maxIvPercent: 80
-  minSignalScorePercent: 65
+  minSignalScorePercent: 60
   ceOiSupportRequired: false
   peOiSupportRequired: false
   ceOiDivergenceFilterEnabled: true

@@ -369,6 +369,11 @@ public class AlgoTradeExecution {
 
                 StrategyType type = config.getStrategyType();
 
+                // ── Gate 0: Skip OI_MOMENTUM — it has its own 1-sec daemon thread ──
+                if (type == StrategyType.OI_MOMENTUM) {
+                    continue;
+                }
+
                 // ── Gate 1: Expiry afternoon filter ──
                 if (expiryAfternoon && type != StrategyType.EXPIRY_GAMMA && type != StrategyType.EXPIRY_REVERSAL) {
                     log.debug("{} skipped: expiry day after 1 PM for {}", type, underlying);
@@ -1171,12 +1176,30 @@ public class AlgoTradeExecution {
 
     private IvRankResult computeLiveIvRank(UnderlyingSymbol underlying, List<Candle> candles) {
         com.algo.trade.domain.IndexType indexType = com.algo.trade.domain.IndexType.from(underlying);
-        // Prefer IVRankTracker: real IV rank computed from GreeksCalculator IV, loaded from DB on startup
+
+        // Use VIX-based IV rank as primary source (stable, exchange-computed, no history needed).
+        // IVRankTracker's percentile rank is unreliable until 200+ historical samples accumulate.
+        // VIX mapping: <12 → rank 10, 12-14 → rank 25, 14-16 → rank 40, 16-18 → rank 55,
+        //              18-20 → rank 70, 20-25 → rank 80, >25 → rank 95
+        double vix = marketGuard.getCurrentVix();
+        if (vix > 0) {
+            double vixBasedRank;
+            if (vix < 12) vixBasedRank = 10;
+            else if (vix < 14) vixBasedRank = 25;
+            else if (vix < 16) vixBasedRank = 40;
+            else if (vix < 18) vixBasedRank = 55;
+            else if (vix < 20) vixBasedRank = 70;
+            else if (vix < 25) vixBasedRank = 80;
+            else vixBasedRank = 95;
+            return new IvRankResult(vixBasedRank, "VIX:" + String.format("%.1f", vix));
+        }
+
+        // Fallback: IVRankTracker if VIX unavailable (shouldn't happen during market hours)
         if (ivRankTracker.getCurrentIV(indexType) > 0) {
             return new IvRankResult(ivRankTracker.getIVRank(indexType), "TRACKER");
         }
-        // IVRankTracker not yet warmed up — return neutral 50.0 until history accumulates.
-        log.debug("IV rank unavailable for {} (IVRankTracker not warmed up) — using neutral 50.0", underlying);
+
+        log.debug("IV rank unavailable for {} (VIX and IVRankTracker both unavailable) — using neutral 50.0", underlying);
         return new IvRankResult(50.0, "NEUTRAL");
     }
 

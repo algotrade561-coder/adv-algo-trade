@@ -238,13 +238,7 @@ public class PositionSynchronizer {
             return;
         }
 
-        // Use live market price — best approximation of the manual close price
-        BigDecimal exitPrice = marketDataService.quote(fresh.getInstrumentKey())
-                .map(q -> q.lastPrice())
-                .filter(p -> p != null && p.signum() > 0)
-                .orElse(fresh.getEntryPrice());
-
-        // Account for short entries (selling strategies)
+        // Determine if this is a short position (needed for exit side and P&L calculation)
         boolean isShort = false;
         if (fresh.getStrategyType() != null && !fresh.getStrategyType().isBlank()) {
             try {
@@ -253,6 +247,39 @@ public class PositionSynchronizer {
         }
         if (!isShort && fresh.getEntryReason() != null) {
             isShort = fresh.getEntryReason().contains("[SELL_CE]") || fresh.getEntryReason().contains("[SELL_PE]");
+        }
+
+        // Try to find the actual exit fill price from broker order history
+        // This gives accurate P&L instead of using stale LTP
+        BigDecimal exitPrice = null;
+        try {
+            // Exit side is opposite of entry: long position exits with SELL, short exits with BUY
+            com.algo.trade.domain.OrderSide exitSide = isShort
+                    ? com.algo.trade.domain.OrderSide.BUY
+                    : com.algo.trade.domain.OrderSide.SELL;
+            var orders = brokerClient.orders();
+            exitPrice = orders.stream()
+                    .filter(o -> fresh.getInstrumentKey().equals(o.instrumentKey()))
+                    .filter(o -> o.side() == exitSide)
+                    .filter(o -> o.status() == com.algo.trade.domain.OrderStatus.COMPLETE)
+                    .filter(o -> o.filledQuantity() > 0)
+                    .sorted((a, b) -> b.updatedAt().compareTo(a.updatedAt())) // most recent first
+                    .findFirst()
+                    .flatMap(o -> o.averageFillPrice())
+                    .orElse(null);
+        } catch (Exception ex) {
+            log.debug("Position sync: could not fetch order history for fill price: {}", ex.getMessage());
+        }
+
+        // Fallback to LTP if order history didn't yield a fill price
+        if (exitPrice == null || exitPrice.signum() <= 0) {
+            exitPrice = marketDataService.quote(fresh.getInstrumentKey())
+                    .map(q -> q.lastPrice())
+                    .filter(p -> p != null && p.signum() > 0)
+                    .orElse(fresh.getEntryPrice());
+            log.debug("Position sync: using LTP {} as exit price (order history unavailable)", exitPrice);
+        } else {
+            log.info("Position sync: using actual fill price {} from broker order history", exitPrice);
         }
 
         // P&L on remaining quantity only (after any partial closes)

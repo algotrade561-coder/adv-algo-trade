@@ -166,7 +166,7 @@ public class MarketGuard {
     /** Called from KiteWebSocketClient when India VIX tick arrives. */
     public void updateVix(double vix) {
         currentVix.set(vix);
-        log.debug("[MarketGuard] VIX updated: {}", vix);
+        //log.debug("[MarketGuard] VIX updated: {}", vix);
     }
 
     /** Called from AlgoTradingScheduler after each option chain scan. */

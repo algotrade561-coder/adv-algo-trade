@@ -47,7 +47,7 @@ class SignalTuningAnalyzerTest {
                 new BigDecimal("50"), "signalScore", "score failed",
                 true, true, false, true, true, true, true);
         SignalTuningCsvLoader.ExecutionRow entry = new SignalTuningCsvLoader.ExecutionRow(
-                "key1", ts, "BROKER_ERROR", false, "BUY_CE", "NIFTY", "IP not allowed", "403");
+                "key1", ts, "BROKER_ERROR", false, "DIRECTIONAL_BUY", "BUY_CE", "NIFTY", "IP not allowed", "403");
         SignalTuningCsvLoader.Loaded data = new SignalTuningCsvLoader.Loaded(
                 List.of(row), List.of(entry), List.of(), Map.of(), Map.of());
 

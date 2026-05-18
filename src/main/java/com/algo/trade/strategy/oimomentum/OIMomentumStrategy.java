@@ -10,6 +10,8 @@ import com.algo.trade.marketdata.MarketDataService;
 import com.algo.trade.persistence.TradeEntity;
 import com.algo.trade.persistence.TradeRepository;
 import com.algo.trade.risk.MarketGuard;
+import com.algo.trade.strategy.SignalRecordContext;
+import com.algo.trade.strategy.StrategySignalCsvRecorder;
 import com.algo.trade.strategy.StrategyType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -56,6 +58,7 @@ public class OIMomentumStrategy {
     private final TradeRepository tradeRepository;
     private final MarketGuard marketGuard;
     private final ExpiryCalendar expiryCalendar;
+    private final StrategySignalCsvRecorder signalCsvRecorder;
 
     // ── State ──
     private volatile String activeTradeId = null;
@@ -89,6 +92,9 @@ public class OIMomentumStrategy {
     private volatile LocalTime middayStart = null;
     private volatile LocalTime middayEnd = null;
 
+    /** Instrument key of a pending entry (order accepted but not yet filled). */
+    private volatile String pendingEntryInstrumentKey = null;
+
     // ── Daily counters (reset on startup / new day) ──
     private final AtomicInteger tradesToday = new AtomicInteger(0);
     private final AtomicInteger reversalsToday = new AtomicInteger(0);
@@ -116,7 +122,8 @@ public class OIMomentumStrategy {
                                TradingStateService tradingStateService,
                                TradeRepository tradeRepository,
                                MarketGuard marketGuard,
-                               ExpiryCalendar expiryCalendar) {
+                               ExpiryCalendar expiryCalendar,
+                               StrategySignalCsvRecorder signalCsvRecorder) {
         this.config = config;
         this.momentumDetector = momentumDetector;
         this.liveInstrumentCache = liveInstrumentCache;
@@ -127,6 +134,7 @@ public class OIMomentumStrategy {
         this.tradeRepository = tradeRepository;
         this.marketGuard = marketGuard;
         this.expiryCalendar = expiryCalendar;
+        this.signalCsvRecorder = signalCsvRecorder;
     }
 
     @jakarta.annotation.PostConstruct
@@ -280,6 +288,27 @@ public class OIMomentumStrategy {
             }
 
             // Position management runs every tick (price-based exits are real-time)
+            // First: resolve pending entry if order was accepted but tradeId not yet available
+            if (activeTradeId == null && pendingEntryInstrumentKey != null) {
+                var found = tradeRepository.findByStatus(TradeStatus.OPEN).stream()
+                        .filter(t -> pendingEntryInstrumentKey.equals(t.getInstrumentKey()))
+                        .filter(t -> StrategyType.OI_MOMENTUM.name().equals(t.getStrategyType()))
+                        .findFirst();
+                if (found.isPresent()) {
+                    activeTradeId = found.get().getTradeId();
+                    peakPrice = found.get().getEntryPrice().doubleValue();
+                    pendingEntryInstrumentKey = null;
+                    log.info("[OIMomentum] Pending entry resolved: tradeId={}", activeTradeId);
+                }
+                // If still not found after 30s, give up
+                if (pendingEntryInstrumentKey != null && lastEntryTime != null
+                        && Duration.between(lastEntryTime, Instant.now()).getSeconds() > 30) {
+                    log.warn("[OIMomentum] Pending entry timed out for {} — giving up", pendingEntryInstrumentKey);
+                    pendingEntryInstrumentKey = null;
+                    activeDirection = 0;
+                }
+            }
+
             if (activeTradeId != null) {
                 managePosition();
             } else {
@@ -656,6 +685,8 @@ public class OIMomentumStrategy {
                 java.util.List.of("OI_MOMENTUM: " + reason)
         );
 
+        recordOiBuySignal(decision, entryQuote, instrumentKey, atm, spreadPct(entryQuote), reason);
+
         if (paperMode) {
             var oiConfig = getCachedConfig();
             var result = executionEngine.executePaperEntry(decision, premium, lotSize, oiConfig);
@@ -664,6 +695,19 @@ public class OIMomentumStrategy {
             var oiConfig = getCachedConfig();
             var result = executionEngine.executeEntry(decision, premium, lotSize, oiConfig);
             activeTradeId = result.tradeId().orElse(null);
+            // If order accepted but tradeId not yet available (limit order pending fill),
+            // poll for the trade on subsequent ticks via reconciliation in managePosition()
+            if (activeTradeId == null && result.accepted()) {
+                // Store instrument key so tick() can find the trade once watchdog creates it
+                pendingEntryInstrumentKey = instrumentKey;
+                activeDirection = direction;
+                lastEntryTime = Instant.now();
+                peakPrice = premium.doubleValue();
+                tradesToday.incrementAndGet();
+                log.info("[OIMomentum] ENTRY PENDING: order accepted, waiting for fill — instrument={}, reason={}",
+                        instrumentKey, reason);
+                return;
+            }
         }
 
         if (activeTradeId != null) {
@@ -679,6 +723,51 @@ public class OIMomentumStrategy {
                         direction > 0 ? "BUY CE" : "BUY PE", instrumentKey,
                         premium.doubleValue(), reason, tradesToday.get()));
             }
+        }
+    }
+
+    private void recordOiBuySignal(StrategyDecision decision,
+                                   Quote entryQuote,
+                                   String instrumentKey,
+                                   int atm,
+                                   Double bidAskSpread,
+                                   String reason) {
+        try {
+            signalCsvRecorder.recordUnified(SignalRecordContext.builder()
+                    .strategyType(StrategyType.OI_MOMENTUM.name())
+                    .underlying(UnderlyingSymbol.NIFTY)
+                    .decision(decision)
+                    .selectedOptionQuote(entryQuote)
+                    .selectedInstrumentKey(instrumentKey)
+                    .selectedStrike(BigDecimal.valueOf(atm))
+                    .breakoutPassed(true)
+                    .oiPassed(oiAdvanced || reason.toUpperCase().contains("OI"))
+                    .ivPassed(true)
+                    .liquidityPassed(true)
+                    .timePassed(true)
+                    .bidAskSpread(bidAskSpread)
+                    .executed(true)
+                    .executionStage("SIGNAL_EMITTED")
+                    .build());
+        } catch (Exception ex) {
+            log.warn("[OIMomentum] Failed to record BUY signal for tuning: {}", ex.getMessage());
+        }
+    }
+
+    private Double spreadPct(Quote quote) {
+        try {
+            if (quote.bid().isEmpty() || quote.ask().isEmpty()
+                    || quote.bid().get().signum() <= 0 || quote.ask().get().signum() <= 0) {
+                return null;
+            }
+            double mid = quote.bid().get().add(quote.ask().get())
+                    .divide(BigDecimal.valueOf(2), java.math.MathContext.DECIMAL64).doubleValue();
+            if (mid <= 0) {
+                return null;
+            }
+            return (quote.ask().get().doubleValue() - quote.bid().get().doubleValue()) / mid * 100;
+        } catch (Exception ex) {
+            return null;
         }
     }
 

@@ -12,6 +12,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -73,7 +74,8 @@ public class ExecutionOutcomeCsvRecorder {
             "filledQuantity",
             "averageFillPrice",
             "brokerRejectionReason",
-            "reasons"
+            "reasons",
+            "strategyType"
     ) + System.lineSeparator();
     private final TradingProperties properties;
 
@@ -96,9 +98,7 @@ public class ExecutionOutcomeCsvRecorder {
     ) {
         try {
             Files.createDirectories(OUTPUT.getParent());
-            if (Files.notExists(OUTPUT) || Files.size(OUTPUT) == 0) {
-                Files.writeString(OUTPUT, HEADER, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
-            }
+            ensureEntryHeader();
             Files.writeString(OUTPUT, row(decision, optionPremium, lotSize, stage, accepted, quantity, riskAmount,
                     estimatedCost, order, reasons, strategyConfig), StandardOpenOption.CREATE, StandardOpenOption.APPEND);
         } catch (IOException ex) {
@@ -150,8 +150,29 @@ public class ExecutionOutcomeCsvRecorder {
                 csv(order == null ? null : order.filledQuantity()),
                 csv(order == null ? null : order.averageFillPrice().orElse(null)),
                 csv(order == null ? null : order.rejectionReason().orElse(null)),
-                csv(String.join("; ", reasons))
+                csv(String.join("; ", reasons)),
+                csv(strategyConfig != null && strategyConfig.getStrategyType() != null
+                        ? strategyConfig.getStrategyType().name()
+                        : null)
         ) + System.lineSeparator();
+    }
+
+    private void ensureEntryHeader() throws IOException {
+        if (Files.notExists(OUTPUT) || Files.size(OUTPUT) == 0) {
+            Files.writeString(OUTPUT, HEADER, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+            return;
+        }
+        List<String> lines = Files.readAllLines(OUTPUT);
+        if (lines.isEmpty()) {
+            Files.writeString(OUTPUT, HEADER, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+            return;
+        }
+        if (lines.getFirst().contains("strategyType")) {
+            return;
+        }
+        List<String> upgraded = new ArrayList<>(lines);
+        upgraded.set(0, HEADER.stripTrailing());
+        Files.write(OUTPUT, upgraded, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.CREATE);
     }
 
     private String decisionKey(StrategyDecision decision) {

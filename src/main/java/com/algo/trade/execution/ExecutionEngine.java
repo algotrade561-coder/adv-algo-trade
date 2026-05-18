@@ -5,6 +5,7 @@ import com.algo.trade.config.GlobalConfigService;
 import com.algo.trade.config.TradingProperties;
 import com.algo.trade.strategy.StrategyConfig;
 import com.algo.trade.strategy.StrategyConfigService;
+import com.algo.trade.strategy.StrategyType;
 import com.algo.trade.domain.OrderRequest;
 import com.algo.trade.domain.OrderResponse;
 import com.algo.trade.domain.OrderSide;
@@ -256,9 +257,20 @@ public class ExecutionEngine {
             // SmartOrderRouter decides MARKET vs LIMIT based on liquidity
             SmartOrderRouter.RoutingDecision routing = smartOrderRouter.route(
                     decision.selectedInstrumentKey().orElseThrow(), OrderSide.BUY, optionPremium);
+
+            // OI_MOMENTUM needs instant fills — always use MARKET with market protection
+            OrderType entryOrderType = routing.orderType();
+            Optional<BigDecimal> entryLimitPrice = routing.limitPrice().or(() -> Optional.of(optionPremium));
+            String strategyTag = "strategy-entry";
+            if (strategyConfig != null && strategyConfig.getStrategyType() == StrategyType.OI_MOMENTUM) {
+                entryOrderType = OrderType.MARKET;
+                entryLimitPrice = Optional.empty();
+                strategyTag = "oi-momentum-entry";
+            }
+
             OrderRequest orderRequest = new OrderRequest(clientOrderId, decision.selectedInstrumentKey().orElseThrow(),
-                    OrderSide.BUY, routing.orderType(), ProductType.MIS, sizing.quantity(),
-                    routing.limitPrice().or(() -> Optional.of(optionPremium)), "strategy-entry");
+                    OrderSide.BUY, entryOrderType, ProductType.MIS, sizing.quantity(),
+                    entryLimitPrice, strategyTag);
             log.info("Placing entry order: clientOrderId={}, instrument={}, side={}, orderType={}, product={}, quantity={}, routing={}",
                     orderRequest.clientOrderId(), orderRequest.instrumentKey(), orderRequest.side(),
                     orderRequest.orderType(), orderRequest.productType(), orderRequest.quantity(), routing.reason());
@@ -528,6 +540,52 @@ public class ExecutionEngine {
             }
             log.warn("Exit order not filled: tradeId={}, status={}, reason={}",
                     tradeId, order.status(), order.rejectionReason().orElse("Exit order was not filled"));
+
+            // Fallback: if REJECTED due to margin, retry with MARKET order (Zerodha often accepts
+            // MARKET for closing existing positions even when LIMIT fails margin check)
+            String rejectReason = order.rejectionReason().orElse("");
+            if (order.status() == OrderStatus.REJECTED && rejectReason.toLowerCase().contains("insufficient funds")) {
+                // Safety check: verify the position still exists at broker before retrying
+                // This prevents accidentally opening a naked short if the position was already closed
+                boolean positionStillOpen = false;
+                try {
+                    positionStillOpen = brokerClient.positions().stream()
+                            .anyMatch(p -> trade.getInstrumentKey().equals(p.instrumentKey()) && p.quantity() != 0);
+                } catch (Exception posEx) {
+                    log.warn("Cannot verify position at broker — skipping MARKET fallback: {}", posEx.getMessage());
+                }
+
+                if (positionStillOpen) {
+                    log.warn("Exit LIMIT rejected for margin but position confirmed open — retrying with MARKET: tradeId={}", tradeId);
+                    try {
+                        OrderRequest marketFallback = new OrderRequest(
+                                "EXIT-MKT-" + UUID.randomUUID(), trade.getInstrumentKey(),
+                                exitSide, OrderType.MARKET, exitProductType, trade.getQuantity(),
+                                Optional.empty(), "exit-margin-fallback");
+                        OrderResponse marketOrder = brokerClient.placeOrder(marketFallback);
+                        persistOrder(marketOrder);
+                        if (marketOrder.status() == OrderStatus.COMPLETE || marketOrder.status() == OrderStatus.OPEN
+                                || marketOrder.status() == OrderStatus.NEW) {
+                            log.info("Exit MARKET fallback accepted: tradeId={}, status={}", tradeId, marketOrder.status());
+                            if (marketOrder.status() == OrderStatus.COMPLETE) {
+                                BigDecimal mktExitPrice = marketOrder.averageFillPrice().orElse(lastPrice);
+                                BigDecimal mktPnl = isShort
+                                        ? trade.getEntryPrice().subtract(mktExitPrice).multiply(BigDecimal.valueOf(trade.getQuantity()))
+                                        : mktExitPrice.subtract(trade.getEntryPrice()).multiply(BigDecimal.valueOf(trade.getQuantity()));
+                                trade.close(mktExitPrice, Instant.now(clock), mktPnl, reason);
+                                tradeRepository.save(trade);
+                                return ExecutionResult.accepted(marketOrder, List.of("Exit filled via MARKET fallback"));
+                            }
+                            return ExecutionResult.accepted(marketOrder, List.of("Exit MARKET pending — watchdog tracking"));
+                        }
+                    } catch (Exception mktEx) {
+                        log.error("Exit MARKET fallback also failed: tradeId={}, error={}", tradeId, mktEx.getMessage());
+                    }
+                } else {
+                    log.info("Exit rejected but position no longer open at broker — skipping MARKET fallback: tradeId={}", tradeId);
+                }
+            }
+
             telegramAlertService.systemAlert("⚠️ Exit order rejected for " + trade.getInstrumentKey()
                     + " — " + order.rejectionReason().orElse("unknown reason"));
             return ExecutionResult.rejected(List.of(order.rejectionReason().orElse("Exit order was not filled")));
