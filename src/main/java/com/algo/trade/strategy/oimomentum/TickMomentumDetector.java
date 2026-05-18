@@ -73,7 +73,7 @@ public class TickMomentumDetector {
         if (spot <= 0) return MomentumSignal.NONE;
 
         Deque<PriceSample> history = priceHistory.get(indexType);
-        if (history == null || history.size() < 10) return MomentumSignal.NONE;
+        if (history == null || history.size() < 300) return MomentumSignal.NONE; // 5-min warm-up (300 samples at 1/sec)
 
         long now = System.currentTimeMillis();
         long fiveSecsAgo = now - 5_000L;

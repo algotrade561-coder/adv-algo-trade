@@ -796,7 +796,7 @@ public class OIMomentumStrategy {
 
     private boolean isMarketHours() {
         LocalTime now = LocalTime.now(IST);
-        return now.isAfter(LocalTime.of(9, 15)) && now.isBefore(LocalTime.of(15, 30));
+        return now.isAfter(LocalTime.of(9, 15)) && now.isBefore(LocalTime.of(16, 30));
     }
 
     private boolean isMidday(LocalTime now) {
