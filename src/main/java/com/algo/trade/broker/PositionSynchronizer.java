@@ -37,6 +37,7 @@ public class PositionSynchronizer {
 
     private final BrokerClient brokerClient;
     private final TradeRepository tradeRepository;
+    private final com.algo.trade.persistence.OrderRepository orderRepository;
     private final KiteAccessTokenStore tokenStore;
     private final com.algo.trade.marketdata.MarketDataService marketDataService;
     private final com.algo.trade.notification.TelegramAlertService telegramAlertService;
@@ -50,12 +51,14 @@ public class PositionSynchronizer {
 
     public PositionSynchronizer(BrokerClient brokerClient,
                                 TradeRepository tradeRepository,
+                                com.algo.trade.persistence.OrderRepository orderRepository,
                                 KiteAccessTokenStore tokenStore,
                                 com.algo.trade.marketdata.MarketDataService marketDataService,
                                 com.algo.trade.notification.TelegramAlertService telegramAlertService,
                                 com.algo.trade.monitoring.ErrorEventService errorEventService) {
         this.brokerClient = brokerClient;
         this.tradeRepository = tradeRepository;
+        this.orderRepository = orderRepository;
         this.tokenStore = tokenStore;
         this.marketDataService = marketDataService;
         this.telegramAlertService = telegramAlertService;
@@ -183,8 +186,6 @@ public class PositionSynchronizer {
 
     private void createTradeFromBrokerPosition(Position pos) {
         // Late-day guard: don't import NEW positions after 15:00 IST
-        // Let broker auto-square-off handle them instead of consuming algo retry budget
-        // Only applies during live market hours (not during tests or off-hours)
         java.time.LocalTime now = java.time.LocalTime.now(java.time.ZoneId.of("Asia/Kolkata"));
         if (now.isAfter(java.time.LocalTime.of(15, 0)) && now.isBefore(java.time.LocalTime.of(15, 30))) {
             log.info("Position sync skipped late-day import: instrument={}, time={} (15:00-15:30 window)",
@@ -192,42 +193,108 @@ public class PositionSynchronizer {
             return;
         }
 
-        String tradeId = "SYNC-" + UUID.randomUUID();
+        // Already tracked check
+        boolean alreadyTracked = !tradeRepository.findByInstrumentKeyAndStatus(pos.instrumentKey(), TradeStatus.OPEN).isEmpty();
+        if (alreadyTracked) {
+            log.debug("Position sync: {} already has an OPEN trade — skipping", pos.instrumentKey());
+            return;
+        }
+
         String underlying = extractUnderlying(pos.instrumentKey());
         String optionType = extractOptionType(pos.instrumentKey());
-
-        // Handle short positions: broker returns negative quantity for shorts.
-        // Store absolute quantity; mark as short via entry reason so exit uses correct side (BUY to cover).
         boolean isShort = pos.quantity() < 0;
         int absQuantity = Math.abs(pos.quantity());
-        String entryReason = isShort
-                ? "position-sync: SHORT position found in broker"
-                : "position-sync: found in broker";
+        com.algo.trade.domain.OrderSide entrySide = isShort
+                ? com.algo.trade.domain.OrderSide.SELL
+                : com.algo.trade.domain.OrderSide.BUY;
 
-        TradeEntity entity = new TradeEntity(
-                tradeId,
-                pos.instrumentKey(),
-                underlying,
-                optionType,
-                TradeStatus.OPEN,
-                absQuantity,
-                pos.averagePrice(),
-                Instant.now(),
-                entryReason
-        );
-        // Synced positions use the product type from the broker (MIS/CNC/NRML).
-        entity.setProductType(pos.productType() != null ? pos.productType() : "NRML");
-        // Mark short positions with a selling strategy type so exit monitor uses BUY to close
-        if (isShort) {
-            entity.setStrategyType("SHORT_POSITION");
+        try {
+            var brokerOrders = brokerClient.orders();
+
+            // Collect all broker order IDs already tracked in our local orders table
+            java.util.Set<String> trackedBrokerOrderIds = new java.util.HashSet<>();
+            try {
+                for (var lo : orderRepository.findAll()) {
+                    if (lo.getBrokerOrderId() != null && !lo.getBrokerOrderId().isBlank()) {
+                        trackedBrokerOrderIds.add(lo.getBrokerOrderId());
+                    }
+                }
+            } catch (Exception e) {
+                log.debug("Position sync: could not load local orders: {}", e.getMessage());
+            }
+
+            // Find ALL untracked completed entry orders for this instrument, sorted most recent first.
+            // "Untracked" = broker order ID not in our orders table = manual/external order.
+            // We apply a recency filter: only consider orders filled within the last 5 minutes.
+            // This prevents picking up stale orders from earlier in the day that happen to be untracked.
+            Instant recencyCutoff = Instant.now().minus(java.time.Duration.ofMinutes(5));
+            var untrackedOrders = brokerOrders.stream()
+                    .filter(o -> pos.instrumentKey().equals(o.instrumentKey()))
+                    .filter(o -> o.side() == entrySide)
+                    .filter(o -> o.status() == com.algo.trade.domain.OrderStatus.COMPLETE)
+                    .filter(o -> o.filledQuantity() > 0)
+                    .filter(o -> o.brokerOrderId().isPresent())
+                    .filter(o -> !trackedBrokerOrderIds.contains(o.brokerOrderId().get()))
+                    .sorted((a, b) -> b.updatedAt().compareTo(a.updatedAt()))
+                    .toList();
+
+            // First try: most recent order within recency window (5 min)
+            var untrackedOrder = untrackedOrders.stream()
+                    .filter(o -> o.updatedAt().isAfter(recencyCutoff))
+                    .findFirst()
+                    .orElse(null);
+
+            if (untrackedOrder == null && !untrackedOrders.isEmpty()) {
+                // Fallback: if no recent order found but untracked orders exist,
+                // this might be a position opened earlier today that we missed.
+                // Use the most recent untracked order but log a warning.
+                untrackedOrder = untrackedOrders.getFirst();
+                log.warn("Position sync: no recent (<5min) untracked order for {} — using older order from {} (age={}s, price={})",
+                        pos.instrumentKey(), untrackedOrder.updatedAt(),
+                        java.time.Duration.between(untrackedOrder.updatedAt(), Instant.now()).getSeconds(),
+                        untrackedOrder.averageFillPrice().orElse(BigDecimal.ZERO));
+            }
+
+            if (untrackedOrder == null) {
+                // No untracked order found at all — defer to next cycle (API lag)
+                log.info("Position sync: no untracked {} order for {} — deferring (tracked IDs={}, broker orders for instrument={})",
+                        entrySide, pos.instrumentKey(), trackedBrokerOrderIds.size(),
+                        brokerOrders.stream().filter(o -> pos.instrumentKey().equals(o.instrumentKey())).count());
+                return;
+            }
+
+            BigDecimal entryPrice = untrackedOrder.averageFillPrice().orElse(pos.averagePrice());
+            String tradeId = "SYNC-" + java.util.UUID.randomUUID().toString();
+
+            TradeEntity entity = new TradeEntity(
+                    tradeId,
+                    pos.instrumentKey(),
+                    underlying,
+                    optionType,
+                    TradeStatus.OPEN,
+                    absQuantity,
+                    entryPrice,
+                    untrackedOrder.updatedAt() != null ? untrackedOrder.updatedAt() : Instant.now(),
+                    isShort ? "position-sync: SHORT position found in broker" : "position-sync: found in broker"
+            );
+            entity.setProductType(pos.productType() != null ? pos.productType() : "MIS");
+            if (isShort) {
+                entity.setStrategyType("SHORT_POSITION");
+            }
+            tradeRepository.save(entity);
+
+            log.info("Position sync created trade: tradeId={}, instrument={}, qty={} ({}), entryPrice={} (from order {} filled at {})",
+                    tradeId, pos.instrumentKey(), absQuantity, isShort ? "SHORT" : "LONG",
+                    entryPrice, untrackedOrder.brokerOrderId().orElse("?"), untrackedOrder.updatedAt());
+            telegramAlertService.systemAlert(String.format(
+                    "🔄 Position Sync: Found %s in broker\nSide: %s | Qty: %d | Entry: ₹%.2f (from order fill at %s)\nTrade: %s",
+                    pos.instrumentKey(), isShort ? "SHORT" : "LONG", absQuantity,
+                    entryPrice.doubleValue(), untrackedOrder.updatedAt(), tradeId));
+
+        } catch (Exception ex) {
+            log.warn("Position sync: order-driven sync failed for {} — deferring: {}",
+                    pos.instrumentKey(), ex.getMessage());
         }
-        tradeRepository.save(entity);
-        log.info("Position sync created trade: tradeId={}, instrument={}, qty={} ({}), avgPrice={}",
-                tradeId, pos.instrumentKey(), absQuantity, isShort ? "SHORT" : "LONG", pos.averagePrice());
-        telegramAlertService.systemAlert(String.format(
-                "🔄 Position Sync: Found %s in broker (not in DB)\nSide: %s | Qty: %d | Avg Price: ₹%.2f\nCreated trade: %s",
-                pos.instrumentKey(), isShort ? "SHORT" : "LONG", absQuantity,
-                pos.averagePrice().doubleValue(), tradeId));
     }
 
     private void closeStaleTrade(TradeEntity trade) {
@@ -250,23 +317,47 @@ public class PositionSynchronizer {
         }
 
         // Try to find the actual exit fill price from broker order history
+        // Match by instrument + exit side + COMPLETE + most recent fill time
         // This gives accurate P&L instead of using stale LTP
         BigDecimal exitPrice = null;
+        Instant exitTime = Instant.now();
         try {
             // Exit side is opposite of entry: long position exits with SELL, short exits with BUY
             com.algo.trade.domain.OrderSide exitSide = isShort
                     ? com.algo.trade.domain.OrderSide.BUY
                     : com.algo.trade.domain.OrderSide.SELL;
             var orders = brokerClient.orders();
-            exitPrice = orders.stream()
+
+            // Collect tracked broker order IDs to find the untracked exit order
+            java.util.Set<String> trackedBrokerOrderIds = new java.util.HashSet<>();
+            try {
+                for (var lo : orderRepository.findAll()) {
+                    if (lo.getBrokerOrderId() != null && !lo.getBrokerOrderId().isBlank()) {
+                        trackedBrokerOrderIds.add(lo.getBrokerOrderId());
+                    }
+                }
+            } catch (Exception e) {
+                log.debug("Position sync: could not load local orders for exit matching: {}", e.getMessage());
+            }
+
+            // Find the most recent completed exit order for this instrument
+            // Prefer untracked orders (manual exits), but fall back to any exit order
+            var exitOrder = orders.stream()
                     .filter(o -> fresh.getInstrumentKey().equals(o.instrumentKey()))
                     .filter(o -> o.side() == exitSide)
                     .filter(o -> o.status() == com.algo.trade.domain.OrderStatus.COMPLETE)
                     .filter(o -> o.filledQuantity() > 0)
+                    .filter(o -> o.updatedAt().isAfter(fresh.getEntryTime())) // must be after entry
                     .sorted((a, b) -> b.updatedAt().compareTo(a.updatedAt())) // most recent first
                     .findFirst()
-                    .flatMap(o -> o.averageFillPrice())
                     .orElse(null);
+
+            if (exitOrder != null) {
+                exitPrice = exitOrder.averageFillPrice().orElse(null);
+                exitTime = exitOrder.updatedAt();
+                log.info("Position sync: exit price ₹{} from order {} at {}",
+                        exitPrice, exitOrder.brokerOrderId().orElse("?"), exitTime);
+            }
         } catch (Exception ex) {
             log.debug("Position sync: could not fetch order history for fill price: {}", ex.getMessage());
         }
@@ -277,9 +368,8 @@ public class PositionSynchronizer {
                     .map(q -> q.lastPrice())
                     .filter(p -> p != null && p.signum() > 0)
                     .orElse(fresh.getEntryPrice());
+            exitTime = Instant.now();
             log.debug("Position sync: using LTP {} as exit price (order history unavailable)", exitPrice);
-        } else {
-            log.info("Position sync: using actual fill price {} from broker order history", exitPrice);
         }
 
         // P&L on remaining quantity only (after any partial closes)
@@ -287,7 +377,7 @@ public class PositionSynchronizer {
                 ? fresh.getEntryPrice().subtract(exitPrice).multiply(BigDecimal.valueOf(fresh.getQuantity()))
                 : exitPrice.subtract(fresh.getEntryPrice()).multiply(BigDecimal.valueOf(fresh.getQuantity()));
 
-        fresh.close(exitPrice, Instant.now(), realizedPnl,
+        fresh.close(exitPrice, exitTime, realizedPnl,
                 "position-sync: manually closed from broker app");
         tradeRepository.save(fresh);
 
@@ -304,12 +394,81 @@ public class PositionSynchronizer {
     /**
      * Create a CLOSED trade record from a broker position that was opened and closed
      * while the app was not tracking it (e.g., manual trades done on Kite app).
-     * Uses the broker's unrealizedPnl field as the realized P&L (it's the day's P&L for closed positions).
+     * Uses broker order history to find actual entry and exit fill prices for accurate P&L.
      */
     private void createClosedTradeFromBrokerPosition(Position pos) {
         String tradeId = "SYNC-CLOSED-" + java.util.UUID.randomUUID().toString().substring(0, 8);
         String underlying = extractUnderlying(pos.instrumentKey());
         String optionType = extractOptionType(pos.instrumentKey());
+
+        // Determine likely trade direction from the position's sell/buy quantities
+        // For a closed position (qty=0), we infer from the P&L sign and option type
+        boolean wasShort = pos.unrealizedPnl() != null && pos.unrealizedPnl().signum() > 0
+                && "PE".equals(optionType); // Simplified heuristic
+
+        BigDecimal entryPrice = pos.averagePrice();
+        BigDecimal exitPrice = pos.lastPrice().signum() > 0 ? pos.lastPrice() : pos.averagePrice();
+        Instant entryTime = Instant.now();
+        Instant exitTime = Instant.now();
+
+        // Try to find actual entry and exit orders from broker order history
+        try {
+            var brokerOrders = brokerClient.orders();
+            var instrumentOrders = brokerOrders.stream()
+                    .filter(o -> pos.instrumentKey().equals(o.instrumentKey()))
+                    .filter(o -> o.status() == com.algo.trade.domain.OrderStatus.COMPLETE)
+                    .filter(o -> o.filledQuantity() > 0)
+                    .sorted((a, b) -> a.updatedAt().compareTo(b.updatedAt())) // chronological
+                    .toList();
+
+            if (!instrumentOrders.isEmpty()) {
+                // Find BUY orders (entry for long, exit for short)
+                var buyOrders = instrumentOrders.stream()
+                        .filter(o -> o.side() == com.algo.trade.domain.OrderSide.BUY)
+                        .toList();
+                var sellOrders = instrumentOrders.stream()
+                        .filter(o -> o.side() == com.algo.trade.domain.OrderSide.SELL)
+                        .toList();
+
+                if (!buyOrders.isEmpty() && !sellOrders.isEmpty()) {
+                    // Normal long trade: first BUY = entry, last SELL = exit
+                    var entryOrder = buyOrders.getFirst();
+                    var exitOrder = sellOrders.getLast();
+                    entryPrice = entryOrder.averageFillPrice().orElse(entryPrice);
+                    exitPrice = exitOrder.averageFillPrice().orElse(exitPrice);
+                    entryTime = entryOrder.updatedAt();
+                    exitTime = exitOrder.updatedAt();
+                    log.info("Position sync (closed): {} entry from order {} at ₹{}, exit from order {} at ₹{}",
+                            pos.instrumentKey(),
+                            entryOrder.brokerOrderId().orElse("?"), entryPrice,
+                            exitOrder.brokerOrderId().orElse("?"), exitPrice);
+                } else if (!buyOrders.isEmpty()) {
+                    // Only BUY orders found — use first as entry
+                    var entryOrder = buyOrders.getFirst();
+                    entryPrice = entryOrder.averageFillPrice().orElse(entryPrice);
+                    entryTime = entryOrder.updatedAt();
+                } else if (!sellOrders.isEmpty()) {
+                    // Only SELL orders — might be a short trade
+                    var entryOrder = sellOrders.getFirst();
+                    entryPrice = entryOrder.averageFillPrice().orElse(entryPrice);
+                    entryTime = entryOrder.updatedAt();
+                    wasShort = true;
+                }
+            }
+        } catch (Exception ex) {
+            log.debug("Position sync (closed): could not fetch order history for {}: {}",
+                    pos.instrumentKey(), ex.getMessage());
+        }
+
+        // Calculate P&L from actual prices
+        BigDecimal realizedPnl;
+        if (pos.unrealizedPnl() != null && pos.unrealizedPnl().signum() != 0) {
+            // Use broker-reported P&L as ground truth (accounts for all fills)
+            realizedPnl = pos.unrealizedPnl();
+        } else {
+            // Compute from entry/exit
+            realizedPnl = exitPrice.subtract(entryPrice).multiply(BigDecimal.valueOf(Math.max(1, Math.abs(pos.quantity()))));
+        }
 
         TradeEntity entity = new TradeEntity(
                 tradeId,
@@ -317,20 +476,19 @@ public class PositionSynchronizer {
                 underlying,
                 optionType,
                 TradeStatus.OPEN,
-                Math.abs(pos.quantity() > 0 ? pos.quantity() : 1), // qty=0 for closed, use 1 as placeholder
-                pos.averagePrice(),
-                Instant.now(),
+                Math.max(1, Math.abs(pos.quantity())),
+                entryPrice,
+                entryTime,
                 "position-sync: closed position found in broker (traded while app was down)"
         );
-        entity.setProductType(pos.productType() != null ? pos.productType() : "NRML");
-        // Close immediately with the broker-reported P&L
-        entity.close(pos.lastPrice().signum() > 0 ? pos.lastPrice() : pos.averagePrice(),
-                Instant.now(), pos.unrealizedPnl(),
+        entity.setProductType(pos.productType() != null ? pos.productType() : "MIS");
+        // Close immediately with actual prices
+        entity.close(exitPrice, exitTime, realizedPnl,
                 "position-sync: already closed in broker");
         tradeRepository.save(entity);
 
-        log.info("Position sync recorded closed trade: tradeId={}, instrument={}, pnl={}",
-                tradeId, pos.instrumentKey(), pos.unrealizedPnl());
+        log.info("Position sync recorded closed trade: tradeId={}, instrument={}, entry=₹{}, exit=₹{}, pnl=₹{}",
+                tradeId, pos.instrumentKey(), entryPrice, exitPrice, realizedPnl);
     }
 
     /**

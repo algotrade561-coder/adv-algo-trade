@@ -28,7 +28,7 @@ import java.util.Optional;
 public class ExpiryGammaStrategy {
 
     private static final Logger log = LoggerFactory.getLogger(ExpiryGammaStrategy.class);
-    private static final LocalTime GAMMA_START = LocalTime.of(13, 0);
+    private static final LocalTime GAMMA_START = LocalTime.of(9, 30);
     private static final LocalTime GAMMA_CUTOFF = LocalTime.of(14, 30);
     private static final int MOMENTUM_CANDLES = 3;
     /** Minimum momentum % over MOMENTUM_CANDLES — 0.20% ≈ 44 NIFTY points over 3 min, realistic on expiry afternoon. */

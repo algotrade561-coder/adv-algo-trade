@@ -60,21 +60,39 @@ public class OIMomentumStrategy {
     private final ExpiryCalendar expiryCalendar;
     private final StrategySignalCsvRecorder signalCsvRecorder;
 
-    // ── State ──
-    private volatile String activeTradeId = null;
-    private volatile int activeDirection = 0; // 1=bullish(CE), -1=bearish(PE), 0=flat
-    private volatile Instant lastEntryTime = null;
-    private volatile Instant lastSlTime = null;
-    private volatile Instant lastReversalTime = null; // P3 #25: reversal cooldown
-    private volatile double peakPrice = 0;
+    /** All candidate indices for OI Momentum — actual enablement controlled via UNDERLYING_CONFIGS table (UI toggle). */
+    private static final java.util.List<IndexType> CANDIDATE_INDICES = java.util.List.of(
+            IndexType.NIFTY, IndexType.BANKNIFTY, IndexType.SENSEX);
 
-    /** P0 #1: Track last OI sample to avoid re-triggering on stale data. */
-    private volatile long lastOiCeChange = Long.MIN_VALUE;
-    private volatile long lastOiPeChange = Long.MIN_VALUE;
-    private volatile boolean oiAdvanced = false;
+    /** Per-index state tracking — each index runs independently with its own position. */
+    private final ConcurrentHashMap<IndexType, IndexState> indexStates = new ConcurrentHashMap<>();
 
-    /** P1 #8: Cached config to avoid DB hit every tick. */
-    private volatile com.algo.trade.strategy.StrategyConfig cachedConfig = null;
+    /** Cached enabled indices from UNDERLYING_CONFIGS table — refreshed every 30s. */
+    private volatile java.util.List<IndexType> enabledIndices = java.util.List.of();
+    private volatile Instant enabledIndicesCacheTime = null;
+
+    /** Holds all mutable state for one underlying. */
+    private static class IndexState {
+        volatile String activeTradeId = null;
+        volatile int activeDirection = 0;
+        volatile Instant lastEntryTime = null;
+        volatile Instant lastSlTime = null;
+        volatile Instant lastReversalTime = null;
+        volatile double peakPrice = 0;
+        volatile long lastOiCeChange = Long.MIN_VALUE;
+        volatile long lastOiPeChange = Long.MIN_VALUE;
+        volatile boolean oiAdvanced = false;
+        volatile String pendingEntryInstrumentKey = null;
+        /** Spike dedupe: time of last spike entry — blocks re-entry for 10 min (one entry per spike episode). */
+        volatile Instant lastSpikeEntryTime = null;
+        final AtomicInteger tradesToday = new AtomicInteger(0);
+        final AtomicInteger reversalsToday = new AtomicInteger(0);
+        final AtomicInteger consecutiveLosses = new AtomicInteger(0);
+        volatile double dailyPnl = 0;
+    }
+
+    /** P1 #8: Cached config per underlying to avoid DB hit every tick. */
+    private final ConcurrentHashMap<IndexType, com.algo.trade.strategy.StrategyConfig> cachedConfigs = new ConcurrentHashMap<>();
     private volatile Instant cachedConfigTime = null;
     private static final Duration CONFIG_CACHE_TTL = Duration.ofSeconds(30);
 
@@ -85,20 +103,19 @@ public class OIMomentumStrategy {
     private volatile Instant pausedUntil = null;
     private static final Duration ERROR_PAUSE_DURATION = Duration.ofMinutes(5);
 
-    /** P2 #24: Daily P&L tracking. */
-    private volatile double dailyPnl = 0;
+    /** Counter for periodic summary log (every 60 ticks = ~60 seconds). */
+    private final AtomicInteger tickCounter = new AtomicInteger(0);
+
+    /** Evaluation counters for summary log. */
+    private final AtomicInteger evalCount = new AtomicInteger(0);
+    private final AtomicInteger momentumSignalCount = new AtomicInteger(0);
+    private final AtomicInteger rejectedCount = new AtomicInteger(0);
+    private final AtomicInteger enteredCount = new AtomicInteger(0);
 
     /** Parsed midday times (P2 #20: avoid parsing every tick). */
     private volatile LocalTime middayStart = null;
     private volatile LocalTime middayEnd = null;
 
-    /** Instrument key of a pending entry (order accepted but not yet filled). */
-    private volatile String pendingEntryInstrumentKey = null;
-
-    // ── Daily counters (reset on startup / new day) ──
-    private final AtomicInteger tradesToday = new AtomicInteger(0);
-    private final AtomicInteger reversalsToday = new AtomicInteger(0);
-    private final AtomicInteger consecutiveLosses = new AtomicInteger(0);
     private volatile LocalDate currentDay = null;
 
     // ── Executor ──
@@ -112,6 +129,9 @@ public class OIMomentumStrategy {
 
     @org.springframework.beans.factory.annotation.Autowired
     private com.algo.trade.strategy.StrategyConfigService strategyConfigService;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.algo.trade.underlying.UnderlyingConfigService underlyingConfigService;
 
     public OIMomentumStrategy(OIMomentumConfig config,
                                TickMomentumDetector momentumDetector,
@@ -139,6 +159,10 @@ public class OIMomentumStrategy {
 
     @jakarta.annotation.PostConstruct
     public void start() {
+        // Initialize per-index state for all candidates (enablement checked at runtime)
+        for (IndexType idx : CANDIDATE_INDICES) {
+            indexStates.put(idx, new IndexState());
+        }
         executor = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "oi-momentum-loop");
             t.setDaemon(true);
@@ -146,64 +170,95 @@ public class OIMomentumStrategy {
         });
         executor.scheduleAtFixedRate(this::tick, 5, 1, TimeUnit.SECONDS);
         if (schedulerRegistry != null) {
-            schedulerRegistry.register("oiMomentum", "OI Momentum 1-sec strategy loop", 1000, () -> {});
+            schedulerRegistry.register("oiMomentum", "OI Momentum 1-sec strategy loop (NIFTY+BANKNIFTY+SENSEX)", 1000, () -> {});
         }
         // Reconcile state from DB on startup
         reconcileFromDb();
-        log.info("[OIMomentum] Started 1-second execution loop (enabled/paper controlled from UI)");
+        log.info("[OIMomentum] Started 1-second execution loop — candidates: {}, enabled from DB at runtime",
+                CANDIDATE_INDICES);
     }
 
     /**
      * Restore in-memory state from DB after restart:
-     * - Find any open OI_MOMENTUM trade → set activeTradeId
-     * - Count today's closed OI_MOMENTUM trades → set tradesToday
-     * - Count today's consecutive losses → set consecutiveLosses
+     * - Find any open OI_MOMENTUM trade → set activeTradeId per index
+     * - Count today's closed OI_MOMENTUM trades → set tradesToday per index
+     * - Count today's consecutive losses → set consecutiveLosses per index
      */
     private void reconcileFromDb() {
         try {
             LocalDate today = LocalDate.now(IST);
             currentDay = today;
 
-            // Find open OI_MOMENTUM trade
+            // Find open OI_MOMENTUM trades and assign to correct index
             var openTrades = tradeRepository.findByStatus(TradeStatus.OPEN).stream()
                     .filter(t -> StrategyType.OI_MOMENTUM.name().equals(t.getStrategyType()))
                     .toList();
-            if (!openTrades.isEmpty()) {
-                TradeEntity openTrade = openTrades.getFirst();
-                activeTradeId = openTrade.getTradeId();
-                activeDirection = "CE".equals(openTrade.getOptionType()) ? 1 : -1;
-                peakPrice = openTrade.getPeakPrice() != null ? openTrade.getPeakPrice().doubleValue() : openTrade.getEntryPrice().doubleValue();
-                lastEntryTime = openTrade.getEntryTime();
-                log.info("[OIMomentum] Reconciled open trade: {} direction={}", activeTradeId, activeDirection);
+            for (TradeEntity openTrade : openTrades) {
+                IndexType idx = resolveIndexFromInstrumentKey(openTrade.getInstrumentKey());
+                IndexState state = indexStates.get(idx);
+                if (state == null) continue;
+                if (state.activeTradeId != null) continue; // Already has an active trade
+                state.activeTradeId = openTrade.getTradeId();
+                state.activeDirection = "CE".equals(openTrade.getOptionType()) ? 1 : -1;
+                state.peakPrice = openTrade.getPeakPrice() != null ? openTrade.getPeakPrice().doubleValue() : openTrade.getEntryPrice().doubleValue();
+                state.lastEntryTime = openTrade.getEntryTime();
+                log.info("[OIMomentum] Reconciled open trade: {} index={} direction={}",
+                        state.activeTradeId, idx, state.activeDirection);
             }
 
-            // Count today's OI_MOMENTUM trades
+            // Count today's OI_MOMENTUM trades per index
             Instant dayStart = today.atStartOfDay(IST).toInstant();
             Instant dayEnd = today.plusDays(1).atStartOfDay(IST).toInstant();
             var todayTrades = tradeRepository.findByEntryTimeBetween(dayStart, dayEnd).stream()
                     .filter(t -> StrategyType.OI_MOMENTUM.name().equals(t.getStrategyType()))
                     .toList();
-            tradesToday.set(todayTrades.size());
 
-            // Count consecutive losses (from most recent trades backwards)
-            int losses = 0;
-            var closedToday = todayTrades.stream()
-                    .filter(t -> t.getStatus() == TradeStatus.CLOSED)
-                    .sorted((a, b) -> b.getExitTime().compareTo(a.getExitTime()))
-                    .toList();
-            for (var t : closedToday) {
-                if (t.getRealizedPnl() != null && t.getRealizedPnl().signum() < 0) losses++;
-                else break;
+            for (TradeEntity t : todayTrades) {
+                IndexType idx = resolveIndexFromInstrumentKey(t.getInstrumentKey());
+                IndexState state = indexStates.get(idx);
+                if (state != null) state.tradesToday.incrementAndGet();
             }
-            consecutiveLosses.set(losses);
 
-            if (tradesToday.get() > 0 || activeTradeId != null) {
-                log.info("[OIMomentum] Reconciled: tradesToday={}, consecutiveLosses={}, activeTradeId={}",
-                        tradesToday.get(), losses, activeTradeId);
+            // Count consecutive losses per index (from most recent trades backwards)
+            for (IndexType idx : CANDIDATE_INDICES) {
+                IndexState state = indexStates.get(idx);
+                var closedForIdx = todayTrades.stream()
+                        .filter(t -> t.getStatus() == TradeStatus.CLOSED)
+                        .filter(t -> resolveIndexFromInstrumentKey(t.getInstrumentKey()) == idx)
+                        .sorted((a, b) -> b.getExitTime().compareTo(a.getExitTime()))
+                        .toList();
+                int losses = 0;
+                for (var t : closedForIdx) {
+                    if (t.getRealizedPnl() != null && t.getRealizedPnl().signum() < 0) losses++;
+                    else break;
+                }
+                state.consecutiveLosses.set(losses);
+            }
+
+            int totalTrades = todayTrades.size();
+            int totalActive = (int) CANDIDATE_INDICES.stream()
+                    .filter(idx -> indexStates.get(idx).activeTradeId != null).count();
+            if (totalTrades > 0 || totalActive > 0) {
+                log.info("[OIMomentum] Reconciled: totalTradesToday={}, activePositions={}",
+                        totalTrades, totalActive);
             }
         } catch (Exception e) {
             log.warn("[OIMomentum] Reconcile failed: {}", e.getMessage());
         }
+    }
+
+    /** Resolve IndexType from instrument key prefix (e.g. "NFO:NIFTY26..." → NIFTY, "NFO:BANKNIFTY26..." → BANKNIFTY, "BFO:SENSEX26..." → SENSEX). */
+    private IndexType resolveIndexFromInstrumentKey(String instrumentKey) {
+        if (instrumentKey == null) return IndexType.NIFTY;
+        String upper = instrumentKey.toUpperCase();
+        // Strip exchange prefix if present (e.g. "NFO:", "BFO:")
+        int colonIdx = upper.indexOf(':');
+        if (colonIdx >= 0) upper = upper.substring(colonIdx + 1);
+        if (upper.startsWith("BANKNIFTY")) return IndexType.BANKNIFTY;
+        if (upper.startsWith("SENSEX")) return IndexType.SENSEX;
+        if (upper.startsWith("FINNIFTY")) return IndexType.FINNIFTY;
+        if (upper.startsWith("MIDCPNIFTY")) return IndexType.MIDCPNIFTY;
+        return IndexType.NIFTY;
     }
 
     @jakarta.annotation.PreDestroy
@@ -227,6 +282,7 @@ public class OIMomentumStrategy {
 
     /**
      * Main tick — runs every 1 second. Non-blocking, exception-safe.
+     * Loops over all enabled indices (NIFTY, BANKNIFTY, SENSEX).
      */
     private void tick() {
         try {
@@ -244,80 +300,37 @@ public class OIMomentumStrategy {
                 log.info("[OIMomentum] Error pause expired — resuming");
             }
 
-            // P1 #8: Cache config to avoid DB hit every tick
-            var dbConfig = getCachedConfig();
-            if (dbConfig == null || !dbConfig.isEnabled()) return;
-
-            // P2 #24: Daily P&L cap check
-            if (dailyPnl < -config.getStopLossPercent() * 5) {
-                log.debug("[OIMomentum] Daily P&L cap breached (₹{}), pausing", dailyPnl);
-                return;
-            }
-
             // Reset daily counters on new day
             LocalDate today = LocalDate.now(IST);
             if (!today.equals(currentDay)) {
                 currentDay = today;
-                tradesToday.set(0);
-                reversalsToday.set(0);
-                consecutiveLosses.set(0);
-                dailyPnl = 0;
-                // Don't clear activeTradeId — let reconcileFromDb handle it (P3 #27)
-                if (activeTradeId == null) {
-                    activeDirection = 0;
-                    peakPrice = 0;
+                for (IndexType idx : CANDIDATE_INDICES) {
+                    IndexState state = indexStates.get(idx);
+                    state.tradesToday.set(0);
+                    state.reversalsToday.set(0);
+                    state.consecutiveLosses.set(0);
+                    state.dailyPnl = 0;
+                    if (state.activeTradeId == null) {
+                        state.activeDirection = 0;
+                        state.peakPrice = 0;
+                    }
                 }
                 // Parse midday times once per day (P2 #20)
                 middayStart = LocalTime.parse(config.getMiddayStart());
                 middayEnd = LocalTime.parse(config.getMiddayEnd());
             }
 
-            // Feed momentum detector
-            momentumDetector.tick(IndexType.NIFTY);
-
-            // P0 #1: Check if OI has advanced since last evaluation
-            double spot = liveInstrumentCache.getFuturesPrice(IndexType.NIFTY);
-            if (spot > 0) {
-                int atm = IndexType.NIFTY.roundToATM(spot);
-                long[] oiChange = liveInstrumentCache.getAtmOiChange(IndexType.NIFTY, atm, 3, 3);
-                oiAdvanced = (oiChange[0] != lastOiCeChange || oiChange[1] != lastOiPeChange);
-                if (oiAdvanced) {
-                    lastOiCeChange = oiChange[0];
-                    lastOiPeChange = oiChange[1];
-                }
-            }
-
-            // Position management runs every tick (price-based exits are real-time)
-            // First: resolve pending entry if order was accepted but tradeId not yet available
-            if (activeTradeId == null && pendingEntryInstrumentKey != null) {
-                var found = tradeRepository.findByStatus(TradeStatus.OPEN).stream()
-                        .filter(t -> pendingEntryInstrumentKey.equals(t.getInstrumentKey()))
-                        .filter(t -> StrategyType.OI_MOMENTUM.name().equals(t.getStrategyType()))
-                        .findFirst();
-                if (found.isPresent()) {
-                    activeTradeId = found.get().getTradeId();
-                    peakPrice = found.get().getEntryPrice().doubleValue();
-                    pendingEntryInstrumentKey = null;
-                    log.info("[OIMomentum] Pending entry resolved: tradeId={}", activeTradeId);
-                }
-                // If still not found after 30s, give up
-                if (pendingEntryInstrumentKey != null && lastEntryTime != null
-                        && Duration.between(lastEntryTime, Instant.now()).getSeconds() > 30) {
-                    log.warn("[OIMomentum] Pending entry timed out for {} — giving up", pendingEntryInstrumentKey);
-                    pendingEntryInstrumentKey = null;
-                    activeDirection = 0;
-                }
-            }
-
-            if (activeTradeId != null) {
-                managePosition();
-            } else {
-                // P0 #1: Only evaluate OI-based entry when OI actually changed
-                // Price momentum detection still runs every tick (inside detectEntry)
-                detectEntry();
+            // Process each enabled index independently (driven by UNDERLYING_CONFIGS table)
+            for (IndexType indexType : getEnabledIndices()) {
+                tickIndex(indexType);
             }
 
             if (schedulerRegistry != null) schedulerRegistry.recordRun("oiMomentum");
+
+            // Periodic summary log every 60 seconds for visibility
+            if (tickCounter.incrementAndGet() % 60 == 0) {
+                logPeriodicSummary();
+            }
             consecutiveErrors.set(0); // Reset on success
         } catch (Exception e) {
             int errors = consecutiveErrors.incrementAndGet();
@@ -336,36 +349,133 @@ public class OIMomentumStrategy {
         }
     }
 
-    /** P1 #8: Cache strategy config for 30 seconds to avoid DB hit every tick. */
-    private com.algo.trade.strategy.StrategyConfig getCachedConfig() {
-        Instant now = Instant.now();
-        if (cachedConfig != null && cachedConfigTime != null
-                && Duration.between(cachedConfigTime, now).compareTo(CONFIG_CACHE_TTL) < 0) {
-            return cachedConfig;
+    /** Process one index per tick — feed momentum, check OI, manage/detect. */
+    private void tickIndex(IndexType indexType) {
+        IndexState state = indexStates.get(indexType);
+        if (state == null) return;
+
+        // P1 #8: Check per-index config
+        var dbConfig = getCachedConfig(indexType);
+        if (dbConfig == null || !dbConfig.isEnabled()) return;
+
+        // P2 #24: Daily P&L cap check per index — pause if daily loss exceeds ₹5000
+        if (state.dailyPnl < -5000) {
+            return;
         }
-        cachedConfig = strategyConfigService.getConfig(StrategyType.OI_MOMENTUM, "NIFTY");
+
+        // Feed momentum detector for this index
+        momentumDetector.tick(indexType);
+
+        // P0 #1: Check if OI has advanced since last evaluation
+        double spot = liveInstrumentCache.getFuturesPrice(indexType);
+        if (spot > 0) {
+            int atm = indexType.roundToATM(spot);
+            long[] oiChange = liveInstrumentCache.getAtmOiChange(indexType, atm, 3, 3);
+            state.oiAdvanced = (oiChange[0] != state.lastOiCeChange || oiChange[1] != state.lastOiPeChange);
+            if (state.oiAdvanced) {
+                state.lastOiCeChange = oiChange[0];
+                state.lastOiPeChange = oiChange[1];
+            }
+        }
+
+        // Resolve pending entry if order was accepted but tradeId not yet available
+        if (state.activeTradeId == null && state.pendingEntryInstrumentKey != null) {
+            var found = tradeRepository.findByStatus(TradeStatus.OPEN).stream()
+                    .filter(t -> state.pendingEntryInstrumentKey.equals(t.getInstrumentKey()))
+                    .filter(t -> StrategyType.OI_MOMENTUM.name().equals(t.getStrategyType()))
+                    .findFirst();
+            if (found.isPresent()) {
+                state.activeTradeId = found.get().getTradeId();
+                state.peakPrice = found.get().getEntryPrice().doubleValue();
+                state.pendingEntryInstrumentKey = null;
+                log.info("[OIMomentum][{}] Pending entry resolved: tradeId={}", indexType, state.activeTradeId);
+            }
+            // If still not found after 30s, give up
+            if (state.pendingEntryInstrumentKey != null && state.lastEntryTime != null
+                    && Duration.between(state.lastEntryTime, Instant.now()).getSeconds() > 30) {
+                log.warn("[OIMomentum][{}] Pending entry timed out for {} — giving up",
+                        indexType, state.pendingEntryInstrumentKey);
+                state.pendingEntryInstrumentKey = null;
+                state.activeDirection = 0;
+            }
+        }
+
+        if (state.activeTradeId != null) {
+            managePosition(indexType, state);
+        } else if (isEntryWindow()) {
+            detectEntry(indexType, state);
+        }
+    }
+
+    /** Periodic summary log showing all indices. */
+    private void logPeriodicSummary() {
+        StringBuilder sb = new StringBuilder("[OIMomentum] Status:");
+        for (IndexType idx : getEnabledIndices()) {
+            IndexState s = indexStates.get(idx);
+            double spot = liveInstrumentCache.getFuturesPrice(idx);
+            double pcr = liveInstrumentCache.getRealtimePcr(idx);
+            sb.append(String.format(" | %s: spot=%.0f pcr=%.2f trades=%d active=%s pnl=%.0f",
+                    idx.name(), spot, pcr, s.tradesToday.get(),
+                    s.activeTradeId != null ? s.activeTradeId.substring(0, Math.min(8, s.activeTradeId.length())) : "-",
+                    s.dailyPnl));
+        }
+        sb.append(String.format(" | evals=%d momentum=%d rejected=%d entered=%d",
+                evalCount.get(), momentumSignalCount.get(), rejectedCount.get(), enteredCount.get()));
+        log.info(sb.toString());
+    }
+
+    /** P1 #8: Cache strategy config per underlying for 30 seconds to avoid DB hit every tick. */
+    private com.algo.trade.strategy.StrategyConfig getCachedConfig(IndexType indexType) {
+        Instant now = Instant.now();
+        if (cachedConfigTime != null && Duration.between(cachedConfigTime, now).compareTo(CONFIG_CACHE_TTL) < 0) {
+            var cached = cachedConfigs.get(indexType);
+            if (cached != null) return cached;
+        }
+        // Refresh all configs at once
+        for (IndexType idx : CANDIDATE_INDICES) {
+            cachedConfigs.put(idx, strategyConfigService.getConfig(StrategyType.OI_MOMENTUM, idx.underlyingSymbol()));
+        }
         cachedConfigTime = now;
-        return cachedConfig;
+        return cachedConfigs.get(indexType);
+    }
+
+    /**
+     * Get enabled indices from UNDERLYING_CONFIGS table (cached 30s).
+     * Only returns indices that are enabled in the underlying_configs table AND
+     * have OI_MOMENTUM strategy config enabled.
+     */
+    private java.util.List<IndexType> getEnabledIndices() {
+        Instant now = Instant.now();
+        if (enabledIndicesCacheTime != null && Duration.between(enabledIndicesCacheTime, now).compareTo(CONFIG_CACHE_TTL) < 0) {
+            return enabledIndices;
+        }
+        // Refresh from DB
+        var dbEnabled = underlyingConfigService.getEnabledSymbols();
+        enabledIndices = CANDIDATE_INDICES.stream()
+                .filter(idx -> dbEnabled.contains(UnderlyingSymbol.valueOf(idx.name())))
+                .toList();
+        enabledIndicesCacheTime = now;
+        return enabledIndices;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // ENTRY DETECTION
     // ═══════════════════════════════════════════════════════════════════════════
 
-    private void detectEntry() {
+    private void detectEntry(IndexType indexType, IndexState state) {
+        evalCount.incrementAndGet();
         // ── Throttle checks ──
-        if (tradesToday.get() >= config.getMaxTradesPerDay()) return;
-        if (consecutiveLosses.get() >= config.getConsecutiveLossPause()) {
-            log.debug("[OIMomentum] Paused: {} consecutive losses", consecutiveLosses.get());
+        if (state.tradesToday.get() >= config.getMaxTradesPerDay()) return;
+        if (state.consecutiveLosses.get() >= config.getConsecutiveLossPause()) {
             return;
         }
-        if (lastSlTime != null && Duration.between(lastSlTime, Instant.now()).getSeconds() < config.getCooldownAfterSlSeconds()) {
+        if (state.lastSlTime != null && Duration.between(state.lastSlTime, Instant.now()).getSeconds() < config.getCooldownAfterSlSeconds()) {
             return; // Cooldown after SL
         }
 
         // ── Midday reduction ──
         LocalTime now = LocalTime.now(IST);
-        if (isMidday(now) && tradesToday.get() >= config.getSoftTargetTradesPerDay() / 2) {
+        if (isMidday(now) && state.tradesToday.get() >= config.getSoftTargetTradesPerDay() / 2) {
             return; // Reduce entries during midday
         }
 
@@ -381,29 +491,37 @@ public class OIMomentumStrategy {
 
         // ── Event Spike Detection (highest priority) ──
         TickMomentumDetector.MomentumSignal spike = momentumDetector.detectSpike(
-                IndexType.NIFTY, config.getSpikeThresholdPercent());
+                indexType, config.getSpikeThresholdPercent());
         if (spike.isPresent()) {
-            log.info("[OIMomentum] EVENT SPIKE detected: direction={}, magnitude={}%, spot={}",
-                    spike.direction(), spike.magnitude(), spike.spotPrice());
-            enter(spike.direction(), "SPIKE:" + spike.type(), spike.spotPrice());
-            return;
+            // Spike dedupe: only 1 entry per spike episode (10-min window)
+            if (state.lastSpikeEntryTime != null
+                    && Duration.between(state.lastSpikeEntryTime, Instant.now()).toMinutes() < 10) {
+                // Same spike episode — skip
+            } else {
+                log.info("[OIMomentum][{}] EVENT SPIKE detected: direction={}, magnitude={}%, spot={}",
+                        indexType, spike.direction(), spike.magnitude(), spike.spotPrice());
+                state.lastSpikeEntryTime = Instant.now();
+                enter(indexType, state, spike.direction(), "SPIKE:" + spike.type(), spike.spotPrice());
+                return;
+            }
         }
 
         // ── Momentum Detection ──
         TickMomentumDetector.MomentumSignal momentum = momentumDetector.detect(
-                IndexType.NIFTY, config.getMomentumThresholdPercent());
+                indexType, config.getMomentumThresholdPercent());
         if (!momentum.isPresent()) return; // No momentum — wait
+        momentumSignalCount.incrementAndGet();
 
         // ── OI Analysis (only when OI has actually advanced — P0 #1) ──
         double spot = momentum.spotPrice();
-        int atm = IndexType.NIFTY.roundToATM(spot);
+        int atm = indexType.roundToATM(spot);
         long ceOiChange = 0;
         long peOiChange = 0;
         boolean oiAvailable = false;
         int oiDirection = 0;
 
-        if (oiAdvanced) {
-            long[] oiChange = liveInstrumentCache.getAtmOiChange(IndexType.NIFTY, atm, 3, 3);
+        if (state.oiAdvanced) {
+            long[] oiChange = liveInstrumentCache.getAtmOiChange(indexType, atm, 3, 3);
             ceOiChange = oiChange[0];
             peOiChange = oiChange[1];
             oiAvailable = (ceOiChange != 0 || peOiChange != 0);
@@ -412,14 +530,12 @@ public class OIMomentumStrategy {
                 else if (ceOiChange > peOiChange && ceOiChange > 0) oiDirection = -1;
             }
         }
-        // When OI hasn't advanced, oiAvailable=false → entry matrix uses Case 2 (momentum+PCR only)
 
         // ── PCR Analysis ──
-        double pcr = liveInstrumentCache.getRealtimePcr(IndexType.NIFTY);
+        double pcr = liveInstrumentCache.getRealtimePcr(indexType);
         int pcrDirection = 0;
-        if (pcr >= config.getPcrBullishThreshold()) pcrDirection = 1;      // Bullish
-        else if (pcr <= config.getPcrBearishThreshold()) pcrDirection = -1; // Bearish
-        // else neutral (0)
+        if (pcr >= config.getPcrBullishThreshold()) pcrDirection = 1;
+        else if (pcr <= config.getPcrBearishThreshold()) pcrDirection = -1;
 
         // ── Entry Decision Matrix ──
         int entryDirection = evaluateEntryCase(momentum.direction(), oiDirection, pcrDirection, oiAvailable);
@@ -427,7 +543,10 @@ public class OIMomentumStrategy {
             String reason = String.format("M:%s OI:%d PCR:%.2f(%d) case=%s",
                     momentum.type(), oiDirection, pcr, pcrDirection,
                     describeCase(momentum.direction(), oiDirection, pcrDirection, oiAvailable));
-            enter(entryDirection, reason, spot);
+            enter(indexType, state, entryDirection, reason, spot);
+            enteredCount.incrementAndGet();
+        } else {
+            rejectedCount.incrementAndGet();
         }
     }
 
@@ -467,12 +586,12 @@ public class OIMomentumStrategy {
     // POSITION MANAGEMENT
     // ═══════════════════════════════════════════════════════════════════════════
 
-    private void managePosition() {
-        TradeEntity trade = tradeRepository.findById(activeTradeId).orElse(null);
+    private void managePosition(IndexType indexType, IndexState state) {
+        TradeEntity trade = tradeRepository.findById(state.activeTradeId).orElse(null);
         if (trade == null || trade.getStatus() != TradeStatus.OPEN) {
-            activeTradeId = null;
-            activeDirection = 0;
-            peakPrice = 0;
+            state.activeTradeId = null;
+            state.activeDirection = 0;
+            state.peakPrice = 0;
             return;
         }
 
@@ -486,173 +605,166 @@ public class OIMomentumStrategy {
         // P0 #5: Quote staleness check — force exit if quote is older than 60s
         if (quote.timestamp() != null
                 && Duration.between(quote.timestamp(), Instant.now()).getSeconds() > 60) {
-            log.warn("[OIMomentum] Stale quote ({}s old) for {} — force closing",
-                    Duration.between(quote.timestamp(), Instant.now()).getSeconds(), trade.getInstrumentKey());
-            closePosition(trade, currentPrice, "STALE_QUOTE_FORCE_EXIT");
+            log.warn("[OIMomentum][{}] Stale quote ({}s old) for {} — force closing",
+                    indexType, Duration.between(quote.timestamp(), Instant.now()).getSeconds(), trade.getInstrumentKey());
+            closePosition(indexType, state, trade, currentPrice, "STALE_QUOTE_FORCE_EXIT");
             return;
         }
 
         double entryPrice = trade.getEntryPrice().doubleValue();
 
         // P0 #3: Track and persist peak price
-        if (currentPrice > peakPrice) {
-            peakPrice = currentPrice;
-            // Persist peak to DB so it survives JVM restart
-            if (trade.getPeakPrice() == null || BigDecimal.valueOf(peakPrice).compareTo(trade.getPeakPrice()) > 0) {
-                trade.setPeakPrice(BigDecimal.valueOf(peakPrice));
+        if (currentPrice > state.peakPrice) {
+            state.peakPrice = currentPrice;
+            if (trade.getPeakPrice() == null || BigDecimal.valueOf(state.peakPrice).compareTo(trade.getPeakPrice()) > 0) {
+                trade.setPeakPrice(BigDecimal.valueOf(state.peakPrice));
                 tradeRepository.save(trade);
             }
         }
 
         double profitPct = (currentPrice - entryPrice) / entryPrice * 100;
-        double peakPct = (peakPrice - entryPrice) / entryPrice * 100;
+        double peakPct = (state.peakPrice - entryPrice) / entryPrice * 100;
 
-        // P2 #18: Squareoff time — use !isBefore for inclusive check
+        // P2 #18: Squareoff time
         LocalTime now = LocalTime.now(IST);
         if (!now.isBefore(LocalTime.of(config.getSquareoffHour(), config.getSquareoffMinute()))) {
-            closePosition(trade, currentPrice, "SQUAREOFF_TIME");
-            updateDailyPnl(profitPct, trade);
+            closePosition(indexType, state, trade, currentPrice, "SQUAREOFF_TIME");
+            updateDailyPnl(state, profitPct, trade);
             return;
         }
 
-        // P2 #17: Stop Loss fires REGARDLESS of minimum hold time (protects against real moves)
+        // P2 #17: Stop Loss fires REGARDLESS of minimum hold time
         if (profitPct <= -config.getStopLossPercent()) {
-            closePosition(trade, currentPrice, "STOP_LOSS");
-            lastSlTime = Instant.now();
-            consecutiveLosses.incrementAndGet();
-            updateDailyPnl(profitPct, trade);
+            closePosition(indexType, state, trade, currentPrice, "STOP_LOSS");
+            state.lastSlTime = Instant.now();
+            state.consecutiveLosses.incrementAndGet();
+            updateDailyPnl(state, profitPct, trade);
             return;
         }
 
-        // ── Minimum hold time (gates target/trailing/reversal, NOT SL) ──
-        if (lastEntryTime != null && Duration.between(lastEntryTime, Instant.now()).getSeconds() < config.getMinimumHoldTimeSeconds()) {
+        // Minimum hold time (gates target/trailing/reversal, NOT SL)
+        if (state.lastEntryTime != null && Duration.between(state.lastEntryTime, Instant.now()).getSeconds() < config.getMinimumHoldTimeSeconds()) {
             return;
         }
 
-        // ── Target ──
+        // Target
         if (profitPct >= config.getTargetPercent()) {
-            closePosition(trade, currentPrice, "TARGET");
-            consecutiveLosses.set(0);
-            updateDailyPnl(profitPct, trade);
+            closePosition(indexType, state, trade, currentPrice, "TARGET");
+            state.consecutiveLosses.set(0);
+            updateDailyPnl(state, profitPct, trade);
             return;
         }
 
-        // ── Trailing Stop ──
+        // Trailing Stop
         if (peakPct >= config.getTrailingActivationPercent()) {
             double trailLevel = peakPct - config.getTrailingGapPercent();
             if (profitPct < trailLevel) {
-                closePosition(trade, currentPrice, "TRAILING_STOP");
-                if (profitPct > 0) consecutiveLosses.set(0);
-                else consecutiveLosses.incrementAndGet();
-                updateDailyPnl(profitPct, trade);
+                closePosition(indexType, state, trade, currentPrice, "TRAILING_STOP");
+                if (profitPct > 0) state.consecutiveLosses.set(0);
+                else state.consecutiveLosses.incrementAndGet();
+                updateDailyPnl(state, profitPct, trade);
                 return;
             }
         }
 
-        // ── Reverse on OI flip (only when OI actually advanced) ──
-        if (oiAdvanced && reversalsToday.get() < config.getMaxReversalsPerDay()) {
+        // Reverse on OI flip (only when OI actually advanced)
+        if (state.oiAdvanced && state.reversalsToday.get() < config.getMaxReversalsPerDay()) {
             // P3 #25: Reversal cooldown — min 60s between reversals
-            if (lastReversalTime != null && Duration.between(lastReversalTime, Instant.now()).getSeconds() < 60) {
+            if (state.lastReversalTime != null && Duration.between(state.lastReversalTime, Instant.now()).getSeconds() < 60) {
                 return;
             }
 
-            double spot = momentumDetector.getSpot(IndexType.NIFTY);
-            int atm = IndexType.NIFTY.roundToATM(spot);
-            long[] oiChange = liveInstrumentCache.getAtmOiChange(IndexType.NIFTY, atm, 3, 3);
+            double spot = momentumDetector.getSpot(indexType);
+            int atm = indexType.roundToATM(spot);
+            long[] oiChange = liveInstrumentCache.getAtmOiChange(indexType, atm, 3, 3);
             long ceOiChange = oiChange[0];
             long peOiChange = oiChange[1];
 
             boolean oiFlipped = false;
-            if (activeDirection == 1 && ceOiChange > peOiChange && ceOiChange > 5000) {
+            if (state.activeDirection == 1 && ceOiChange > peOiChange && ceOiChange > 5000) {
                 oiFlipped = true;
-            } else if (activeDirection == -1 && peOiChange > ceOiChange && peOiChange > 5000) {
+            } else if (state.activeDirection == -1 && peOiChange > ceOiChange && peOiChange > 5000) {
                 oiFlipped = true;
             }
 
             if (oiFlipped && profitPct < 5) {
-                closePosition(trade, currentPrice, "OI_FLIP_REVERSE");
-                updateDailyPnl(profitPct, trade);
-                reversalsToday.incrementAndGet();
-                lastReversalTime = Instant.now();
-                // P0 #2: Route reversal through full entry gates (not direct enter())
-                int newDirection = activeDirection * -1;
-                // Re-fetch spot for fresh price
-                double freshSpot = liveInstrumentCache.getFuturesPrice(IndexType.NIFTY);
+                closePosition(indexType, state, trade, currentPrice, "OI_FLIP_REVERSE");
+                updateDailyPnl(state, profitPct, trade);
+                state.reversalsToday.incrementAndGet();
+                state.lastReversalTime = Instant.now();
+                // P0 #2: Route reversal through full entry gates
+                int newDirection = state.activeDirection * -1;
+                double freshSpot = liveInstrumentCache.getFuturesPrice(indexType);
                 if (freshSpot > 0) {
-                    activeDirection = 0; // Reset so detectEntry can fire
-                    // Simulate entry via detectEntry path with forced direction
-                    enterWithGates(newDirection, "REVERSE:OI_FLIP", freshSpot);
+                    state.activeDirection = 0;
+                    enterWithGates(indexType, state, newDirection, "REVERSE:OI_FLIP", freshSpot);
                 }
             }
         }
     }
 
     /** P2 #24: Track daily P&L for drawdown cap. */
-    private void updateDailyPnl(double profitPct, TradeEntity trade) {
+    private void updateDailyPnl(IndexState state, double profitPct, TradeEntity trade) {
         double pnl = (profitPct / 100.0) * trade.getEntryPrice().doubleValue() * trade.getQuantity();
-        dailyPnl += pnl;
+        state.dailyPnl += pnl;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
     // EXECUTION
     // ═══════════════════════════════════════════════════════════════════════════
 
-    private void enter(int direction, String reason, double spot) {
-        if (activeTradeId != null) return; // Already in a position
-        enterWithGates(direction, reason, spot);
+    private void enter(IndexType indexType, IndexState state, int direction, String reason, double spot) {
+        if (state.activeTradeId != null) return;
+        if (state.pendingEntryInstrumentKey != null) return;
+        enterWithGates(indexType, state, direction, reason, spot);
     }
 
     /**
      * P0 #2: All entry paths (including reversals) go through this method
      * which enforces all throttle/safety gates.
      */
-    private void enterWithGates(int direction, String reason, double spot) {
-        if (activeTradeId != null) return;
+    private void enterWithGates(IndexType indexType, IndexState state, int direction, String reason, double spot) {
+        if (state.activeTradeId != null) return;
 
-        // Re-check all entry gates (P0 #2: reversals must pass these too)
-        if (tradesToday.get() >= config.getMaxTradesPerDay()) {
-            log.debug("[OIMomentum] Reversal blocked: max trades/day reached");
+        // Re-check all entry gates
+        if (state.tradesToday.get() >= config.getMaxTradesPerDay()) {
             return;
         }
-        if (consecutiveLosses.get() >= config.getConsecutiveLossPause()) {
-            log.debug("[OIMomentum] Reversal blocked: consecutive losses pause");
+        if (state.consecutiveLosses.get() >= config.getConsecutiveLossPause()) {
             return;
         }
-        if (lastSlTime != null && Duration.between(lastSlTime, Instant.now()).getSeconds() < config.getCooldownAfterSlSeconds()) {
-            log.debug("[OIMomentum] Reversal blocked: SL cooldown active");
+        if (state.lastSlTime != null && Duration.between(state.lastSlTime, Instant.now()).getSeconds() < config.getCooldownAfterSlSeconds()) {
             return;
         }
-        // P2 #19: Allow event spikes to bypass MarketGuard, but block normal entries
+        // P2 #19: Allow event spikes to bypass MarketGuard
         if (!reason.startsWith("SPIKE:") && !marketGuard.isSafeForLongPremium()) {
-            log.debug("[OIMomentum] Entry blocked by MarketGuard");
             return;
         }
         LocalTime now = LocalTime.now(IST);
         if (!now.isBefore(LocalTime.of(config.getSquareoffHour(), config.getSquareoffMinute()).minusMinutes(10))) {
-            log.debug("[OIMomentum] Entry blocked: too close to squareoff");
             return;
         }
 
         // Check DB config for paper/live mode
-        var dbConfig = getCachedConfig();
+        var dbConfig = getCachedConfig(indexType);
         boolean paperMode = (dbConfig != null) ? dbConfig.isPaperTrading() : config.isPaperTrading();
 
-        IndexType indexType = IndexType.NIFTY;
         int atm = indexType.roundToATM(spot);
         OptionType optType = direction > 0 ? OptionType.CE : OptionType.PE;
         LocalDate expiry = expiryCalendar.getCurrentWeeklyExpiry(indexType);
+        UnderlyingSymbol underlying = UnderlyingSymbol.valueOf(indexType.name());
 
         Optional<Instrument> instOpt = instrumentCache.findOption(
-                UnderlyingSymbol.NIFTY, expiry, BigDecimal.valueOf(atm), optType);
+                underlying, expiry, BigDecimal.valueOf(atm), optType);
         if (instOpt.isEmpty()) {
-            log.debug("[OIMomentum] Cannot resolve option: atm={}, type={}", atm, optType);
+            log.debug("[OIMomentum][{}] Cannot resolve option: atm={}, type={}", indexType, atm, optType);
             return;
         }
 
         String instrumentKey = instOpt.get().instrumentKey();
         Optional<Quote> quoteOpt = marketDataService.quote(instrumentKey);
         if (quoteOpt.isEmpty() || quoteOpt.get().lastPrice().signum() <= 0) {
-            log.debug("[OIMomentum] No quote for {}", instrumentKey);
+            log.debug("[OIMomentum][{}] No quote for {}", indexType, instrumentKey);
             return;
         }
 
@@ -662,9 +774,10 @@ public class OIMomentumStrategy {
                 && entryQuote.ask().get().signum() > 0 && entryQuote.bid().get().signum() > 0) {
             double mid = entryQuote.bid().get().add(entryQuote.ask().get())
                     .divide(BigDecimal.valueOf(2), java.math.MathContext.DECIMAL64).doubleValue();
-            double spreadPct = (entryQuote.ask().get().doubleValue() - entryQuote.bid().get().doubleValue()) / mid * 100;
-            if (spreadPct > 5.0) {
-                log.debug("[OIMomentum] Entry rejected: bid-ask spread {}% > 5% for {}", spreadPct, instrumentKey);
+            double spreadPctVal = (entryQuote.ask().get().doubleValue() - entryQuote.bid().get().doubleValue()) / mid * 100;
+            if (spreadPctVal > 5.0) {
+                log.debug("[OIMomentum][{}] Entry rejected: bid-ask spread {}% > 5% for {}",
+                        indexType, spreadPctVal, instrumentKey);
                 return;
             }
         }
@@ -674,7 +787,7 @@ public class OIMomentumStrategy {
 
         // Build decision for execution
         StrategyDecision decision = new StrategyDecision(
-                Instant.now(), UnderlyingSymbol.NIFTY,
+                Instant.now(), underlying,
                 direction > 0 ? SignalType.BUY_CE : SignalType.BUY_PE,
                 BigDecimal.valueOf(spot),
                 Optional.of(premium), Optional.empty(),
@@ -682,66 +795,65 @@ public class OIMomentumStrategy {
                 Optional.of(instrumentKey), Optional.of(BigDecimal.valueOf(atm)),
                 Optional.of(optType), false, Optional.empty(), false,
                 BigDecimal.ZERO,
-                java.util.List.of("OI_MOMENTUM: " + reason)
+                java.util.List.of("OI_MOMENTUM[" + indexType + "]: " + reason)
         );
 
-        recordOiBuySignal(decision, entryQuote, instrumentKey, atm, spreadPct(entryQuote), reason);
+        recordOiBuySignal(indexType, state, decision, entryQuote, instrumentKey, atm, spreadPct(entryQuote), reason);
 
         if (paperMode) {
-            var oiConfig = getCachedConfig();
+            var oiConfig = getCachedConfig(indexType);
             var result = executionEngine.executePaperEntry(decision, premium, lotSize, oiConfig);
-            activeTradeId = result.tradeId().orElse(null);
+            state.activeTradeId = result.tradeId().orElse(null);
         } else {
-            var oiConfig = getCachedConfig();
+            var oiConfig = getCachedConfig(indexType);
             var result = executionEngine.executeEntry(decision, premium, lotSize, oiConfig);
-            activeTradeId = result.tradeId().orElse(null);
-            // If order accepted but tradeId not yet available (limit order pending fill),
-            // poll for the trade on subsequent ticks via reconciliation in managePosition()
-            if (activeTradeId == null && result.accepted()) {
-                // Store instrument key so tick() can find the trade once watchdog creates it
-                pendingEntryInstrumentKey = instrumentKey;
-                activeDirection = direction;
-                lastEntryTime = Instant.now();
-                peakPrice = premium.doubleValue();
-                tradesToday.incrementAndGet();
-                log.info("[OIMomentum] ENTRY PENDING: order accepted, waiting for fill — instrument={}, reason={}",
-                        instrumentKey, reason);
+            state.activeTradeId = result.tradeId().orElse(null);
+            if (state.activeTradeId == null && result.accepted()) {
+                state.pendingEntryInstrumentKey = instrumentKey;
+                state.activeDirection = direction;
+                state.lastEntryTime = Instant.now();
+                state.peakPrice = premium.doubleValue();
+                state.tradesToday.incrementAndGet();
+                log.info("[OIMomentum][{}] ENTRY PENDING: order accepted, waiting for fill — instrument={}, reason={}",
+                        indexType, instrumentKey, reason);
                 return;
             }
         }
 
-        if (activeTradeId != null) {
-            activeDirection = direction;
-            lastEntryTime = Instant.now();
-            peakPrice = premium.doubleValue();
-            tradesToday.incrementAndGet();
-            log.info("[OIMomentum] ENTRY: direction={}, instrument={}, premium=₹{}, reason={}, trades={}",
-                    direction > 0 ? "BULLISH" : "BEARISH", instrumentKey, premium, reason, tradesToday.get());
+        if (state.activeTradeId != null) {
+            state.activeDirection = direction;
+            state.lastEntryTime = Instant.now();
+            state.peakPrice = premium.doubleValue();
+            state.tradesToday.incrementAndGet();
+            log.info("[OIMomentum][{}] ENTRY: direction={}, instrument={}, premium=₹{}, reason={}, trades={}",
+                    indexType, direction > 0 ? "BULLISH" : "BEARISH", instrumentKey, premium, reason, state.tradesToday.get());
             if (telegramAlertService != null) {
                 telegramAlertService.systemAlert(String.format(
-                        "🎯 OIMomentum Entry: %s %s | ₹%.2f | %s | Trade #%d",
-                        direction > 0 ? "BUY CE" : "BUY PE", instrumentKey,
-                        premium.doubleValue(), reason, tradesToday.get()));
+                        "🎯 OIMomentum[%s] Entry: %s %s | ₹%.2f | %s | Trade #%d",
+                        indexType, direction > 0 ? "BUY CE" : "BUY PE", instrumentKey,
+                        premium.doubleValue(), reason, state.tradesToday.get()));
             }
         }
     }
 
-    private void recordOiBuySignal(StrategyDecision decision,
+    private void recordOiBuySignal(IndexType indexType, IndexState state,
+                                   StrategyDecision decision,
                                    Quote entryQuote,
                                    String instrumentKey,
                                    int atm,
                                    Double bidAskSpread,
                                    String reason) {
         try {
+            UnderlyingSymbol underlying = UnderlyingSymbol.valueOf(indexType.name());
             signalCsvRecorder.recordUnified(SignalRecordContext.builder()
                     .strategyType(StrategyType.OI_MOMENTUM.name())
-                    .underlying(UnderlyingSymbol.NIFTY)
+                    .underlying(underlying)
                     .decision(decision)
                     .selectedOptionQuote(entryQuote)
                     .selectedInstrumentKey(instrumentKey)
                     .selectedStrike(BigDecimal.valueOf(atm))
                     .breakoutPassed(true)
-                    .oiPassed(oiAdvanced || reason.toUpperCase().contains("OI"))
+                    .oiPassed(state.oiAdvanced || reason.toUpperCase().contains("OI"))
                     .ivPassed(true)
                     .liquidityPassed(true)
                     .timePassed(true)
@@ -771,23 +883,24 @@ public class OIMomentumStrategy {
         }
     }
 
-    private void closePosition(TradeEntity trade, double currentPrice, String reason) {
+    private void closePosition(IndexType indexType, IndexState state, TradeEntity trade, double currentPrice, String reason) {
         try {
             executionEngine.closeTrade(trade.getTradeId(), BigDecimal.valueOf(currentPrice), reason);
             double pnl = (currentPrice - trade.getEntryPrice().doubleValue()) * trade.getQuantity();
-            log.info("[OIMomentum] EXIT: tradeId={}, reason={}, pnl=₹{}", trade.getTradeId(), reason, pnl);
+            log.info("[OIMomentum][{}] EXIT: tradeId={}, reason={}, pnl=₹{}",
+                    indexType, trade.getTradeId(), reason, pnl);
             if (telegramAlertService != null) {
                 telegramAlertService.systemAlert(String.format(
-                        "📤 OIMomentum Exit: %s | ₹%.2f → ₹%.2f | P&L ₹%.0f | %s",
-                        trade.getInstrumentKey(), trade.getEntryPrice().doubleValue(),
+                        "📤 OIMomentum[%s] Exit: %s | ₹%.2f → ₹%.2f | P&L ₹%.0f | %s",
+                        indexType, trade.getInstrumentKey(), trade.getEntryPrice().doubleValue(),
                         currentPrice, pnl, reason));
             }
         } catch (Exception e) {
-            log.warn("[OIMomentum] Close failed: {}", e.getMessage());
+            log.warn("[OIMomentum][{}] Close failed: {}", indexType, e.getMessage());
         }
-        activeTradeId = null;
-        activeDirection = 0;
-        peakPrice = 0;
+        state.activeTradeId = null;
+        state.activeDirection = 0;
+        state.peakPrice = 0;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -796,7 +909,13 @@ public class OIMomentumStrategy {
 
     private boolean isMarketHours() {
         LocalTime now = LocalTime.now(IST);
-        return now.isAfter(LocalTime.of(9, 15)) && now.isBefore(LocalTime.of(16, 30));
+        return now.isAfter(LocalTime.of(9, 15)) && now.isBefore(LocalTime.of(20, 30));
+    }
+
+    /** Entry window — new entries only allowed until squareoff window. */
+    private boolean isEntryWindow() {
+        LocalTime now = LocalTime.now(IST);
+        return now.isAfter(LocalTime.of(9, 15)) && now.isBefore(LocalTime.of(13, 30));
     }
 
     private boolean isMidday(LocalTime now) {
@@ -811,15 +930,23 @@ public class OIMomentumStrategy {
     // ── Status API ──
 
     public java.util.Map<String, Object> getStatus() {
-        return java.util.Map.of(
-                "enabled", config.isEnabled(),
-                "paperTrading", config.isPaperTrading(),
-                "tradesToday", tradesToday.get(),
-                "reversalsToday", reversalsToday.get(),
-                "consecutiveLosses", consecutiveLosses.get(),
-                "activeTradeId", activeTradeId != null ? activeTradeId : "",
-                "activeDirection", activeDirection == 1 ? "BULLISH" : activeDirection == -1 ? "BEARISH" : "FLAT",
-                "maxTradesPerDay", config.getMaxTradesPerDay()
-        );
+        var result = new java.util.LinkedHashMap<String, Object>();
+        result.put("enabled", config.isEnabled());
+        result.put("paperTrading", config.isPaperTrading());
+        result.put("maxTradesPerDay", config.getMaxTradesPerDay());
+        result.put("enabledIndices", getEnabledIndices().stream().map(Enum::name).toList());
+
+        for (IndexType idx : getEnabledIndices()) {
+            IndexState s = indexStates.get(idx);
+            if (s == null) continue;
+            String prefix = idx.name().toLowerCase();
+            result.put(prefix + "_tradesToday", s.tradesToday.get());
+            result.put(prefix + "_reversalsToday", s.reversalsToday.get());
+            result.put(prefix + "_consecutiveLosses", s.consecutiveLosses.get());
+            result.put(prefix + "_activeTradeId", s.activeTradeId != null ? s.activeTradeId : "");
+            result.put(prefix + "_activeDirection", s.activeDirection == 1 ? "BULLISH" : s.activeDirection == -1 ? "BEARISH" : "FLAT");
+            result.put(prefix + "_dailyPnl", String.format("%.0f", s.dailyPnl));
+        }
+        return result;
     }
 }

@@ -32,7 +32,7 @@ class PositionSynchronizerTest {
         marketDataService = mock(com.algo.trade.marketdata.MarketDataService.class);
         var telegramAlertService = mock(com.algo.trade.notification.TelegramAlertService.class);
         var errorEventService = mock(com.algo.trade.monitoring.ErrorEventService.class);
-        synchronizer = new PositionSynchronizer(brokerClient, tradeRepository, tokenStore, marketDataService, telegramAlertService, errorEventService);
+        synchronizer = new PositionSynchronizer(brokerClient, tradeRepository, mock(com.algo.trade.persistence.OrderRepository.class), tokenStore, marketDataService, telegramAlertService, errorEventService);
         // Inject SchedulerRegistry mock via reflection (field is @Autowired, not in constructor)
         var schedulerRegistry = mock(com.algo.trade.monitoring.SchedulerRegistry.class);
         when(schedulerRegistry.isEnabled(any())).thenReturn(true);
@@ -62,6 +62,15 @@ class PositionSynchronizerTest {
                 new Position("NIFTY26JAN24500CE", 75, BigDecimal.valueOf(120), BigDecimal.valueOf(130), BigDecimal.TEN)
         ));
         when(tradeRepository.findByStatus(TradeStatus.OPEN)).thenReturn(List.of());
+        // Mock broker orders to return a matching untracked BUY order
+        when(brokerClient.orders()).thenReturn(List.of(
+                new com.algo.trade.domain.OrderResponse(
+                        "client-1", java.util.Optional.of("broker-1"),
+                        "NIFTY26JAN24500CE", com.algo.trade.domain.OrderSide.BUY,
+                        com.algo.trade.domain.OrderStatus.COMPLETE, 75, 75,
+                        java.util.Optional.of(BigDecimal.valueOf(120)),
+                        java.util.Optional.empty(), Instant.now())
+        ));
 
         synchronizer.syncPositions();
 
@@ -80,6 +89,7 @@ class PositionSynchronizerTest {
     void closesDbTradeNotInBrokerPositions() {
         when(tokenStore.authenticated()).thenReturn(true);
         when(brokerClient.positions()).thenReturn(List.of());
+        when(brokerClient.orders()).thenReturn(List.of()); // No orders in history
 
         TradeEntity openTrade = new TradeEntity(
                 "T-001", "NIFTY26JAN24500CE", "NIFTY", "CE",
