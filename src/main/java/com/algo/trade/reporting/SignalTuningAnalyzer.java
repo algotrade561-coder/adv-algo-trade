@@ -45,19 +45,47 @@ final class SignalTuningAnalyzer {
                 .orElse(Instant.now());
 
         Map<String, ExecutionRowView> entryByKey = indexEntries(data.entryOutcomes());
+        Map<String, String> execStageByKey = new LinkedHashMap<>();
+        Map<String, String> execReasonByKey = new LinkedHashMap<>();
+        for (var e : data.entryOutcomes()) {
+            execStageByKey.put(e.decisionKey(), e.stage());
+            execReasonByKey.put(e.decisionKey(), e.reasons() != null ? e.reasons() : "");
+        }
+        OiMomentumTuningAnalyzer.OiReport oiReport = OiMomentumTuningAnalyzer.analyze(
+                data.oiMomentumSignals(),
+                data.oiMomentumRejects(),
+                data.oiMomentumExits(),
+                execStageByKey,
+                execReasonByKey,
+                data.chainLevelsByDecisionKey());
+        List<SignalTuningCsvLoader.SignalRow> trapGeneric = signals.stream()
+                .filter(s -> "OI_SHIFT_TRAP".equals(s.strategyType()))
+                .toList();
+        OiShiftTrapTuningAnalyzer.TrapReport trapReport = OiShiftTrapTuningAnalyzer.analyze(
+                data.oiShiftTrapEvaluations(),
+                data.oiShiftTrapNearMisses(),
+                data.oiShiftTrapSignals(),
+                trapGeneric);
         List<BuyOutcome> buyOutcomes = analyzeBuys(signals, data, entryByKey, data.chainLevelsByDecisionKey());
         List<StrategySummary> strategies = summarizeStrategies(signals);
         Map<String, Long> executionStages = data.entryOutcomes().stream()
                 .collect(Collectors.groupingBy(SignalTuningCsvLoader.ExecutionRow::stage, Collectors.counting()));
 
-        List<Recommendation> recommendations = buildRecommendations(signals, strategies, buyOutcomes, executionStages);
+        List<Recommendation> recommendations = buildRecommendations(signals, strategies, buyOutcomes, executionStages, data);
+        recommendations = mergeRecommendations(recommendations, oiReport.recommendations());
+        recommendations = mergeRecommendations(recommendations, trapReport.recommendations());
 
         long totalEvals = signals.size();
         long buyCount = signals.stream().filter(SignalTuningCsvLoader.SignalRow::isBuy).count();
         long noTrade = signals.stream().filter(SignalTuningCsvLoader.SignalRow::isNoTrade).count();
         long falseBreakouts = buyOutcomes.stream().filter(BuyOutcome::falseBreakout).count();
-        long buysNoBreakout = signals.stream().filter(SignalTuningCsvLoader.SignalRow::isBuy)
-                .filter(s -> !s.breakoutPassed()).count();
+        long buysNoBreakoutConfirmed = signals.stream().filter(SignalTuningCsvLoader.SignalRow::isBuy)
+                .filter(SignalTuningCsvLoader.SignalRow::isDirectionalBuy)
+                .filter(s -> !s.breakoutConfirmed()).count();
+        long swingFalseConfirmTrue = signals.stream().filter(SignalTuningCsvLoader.SignalRow::isBuy)
+                .filter(SignalTuningCsvLoader.SignalRow::isDirectionalBuy)
+                .filter(s -> !s.breakoutPassed() && s.breakoutConfirmed()).count();
+        long oiSpikeBurstDuplicates = countOiSpikeBurstDuplicates(signals);
         long chainOiMismatch = buyOutcomes.stream()
                 .filter(b -> b.chain() != null && b.chain().oiMismatch()).count();
         long chainNoOiDelta = buyOutcomes.stream()
@@ -69,7 +97,9 @@ final class SignalTuningAnalyzer {
                 totalEvals,
                 buyCount,
                 noTrade,
-                buysNoBreakout,
+                buysNoBreakoutConfirmed,
+                swingFalseConfirmTrue,
+                oiSpikeBurstDuplicates,
                 falseBreakouts,
                 buyOutcomes.size(),
                 chainOiMismatch,
@@ -77,8 +107,16 @@ final class SignalTuningAnalyzer {
                 strategies,
                 buyOutcomes,
                 executionStages,
-                recommendations
+                recommendations,
+                oiReport,
+                trapReport
         );
+    }
+
+    private static List<Recommendation> mergeRecommendations(List<Recommendation> base, List<Recommendation> extra) {
+        List<Recommendation> merged = new ArrayList<>(base);
+        merged.addAll(extra);
+        return merged;
     }
 
     private static Map<String, ExecutionRowView> indexEntries(List<SignalTuningCsvLoader.ExecutionRow> rows) {
@@ -100,9 +138,10 @@ final class SignalTuningAnalyzer {
                 continue;
             }
             ForwardPath path = forwardPath(signal, data.optionCandlesByInstrument());
-            boolean logicFalseBreakout = !signal.breakoutPassed()
-                    || signal.reasons().contains("Breakout condition failed");
-            boolean priceFalseBreakout = path.labeled() && path.mfePct().compareTo(FALSE_BREAKOUT_MFE_PCT) < 0
+            boolean logicFalseBreakout = directionalBreakoutQualityFailed(signal);
+            boolean priceFalseBreakout = signal.isDirectionalBuy()
+                    && path.labeled()
+                    && path.mfePct().compareTo(FALSE_BREAKOUT_MFE_PCT) < 0
                     && path.maePct().compareTo(FALSE_BREAKOUT_MAE_PCT) > 0;
             boolean falseBreakout = logicFalseBreakout || priceFalseBreakout;
 
@@ -121,6 +160,8 @@ final class SignalTuningAnalyzer {
                     signal.optionPrice(),
                     signal.confidenceScore(),
                     signal.breakoutPassed(),
+                    signal.breakoutConfirmed(),
+                    signal.oiEntryCase(),
                     signal.volumeSpike(),
                     signal.oiPassed(),
                     execStage,
@@ -210,34 +251,140 @@ final class SignalTuningAnalyzer {
         return summaries;
     }
 
+    /** Directional false-breakout logic aligns with entry gate: confirmation, not swing flag alone. */
+    private static boolean directionalBreakoutQualityFailed(SignalTuningCsvLoader.SignalRow signal) {
+        if (!signal.isDirectionalBuy()) {
+            return false;
+        }
+        return !signal.breakoutConfirmed()
+                || signal.reasons().contains("Breakout confirmation failed");
+    }
+
+    /**
+     * Counts extra SPIKE BUY rows within 60s bursts, <strong>per underlying</strong>.
+     * Cross-index spikes (e.g. NIFTY + SENSEX within 60s) are not duplicates.
+     */
+    private static long countOiSpikeBurstDuplicates(List<SignalTuningCsvLoader.SignalRow> signals) {
+        Map<String, List<SignalTuningCsvLoader.SignalRow>> byUnderlying = signals.stream()
+                .filter(SignalTuningCsvLoader.SignalRow::isBuy)
+                .filter(SignalTuningCsvLoader.SignalRow::isOiMomentum)
+                .filter(s -> s.reasons() != null && s.reasons().contains("SPIKE:"))
+                .collect(Collectors.groupingBy(
+                        s -> s.underlying() == null || s.underlying().isBlank() ? "_" : s.underlying()));
+        long duplicates = 0;
+        for (List<SignalTuningCsvLoader.SignalRow> oiBuys : byUnderlying.values()) {
+            duplicates += countSpikeBurstDuplicatesForSeries(oiBuys);
+        }
+        return duplicates;
+    }
+
+    private static long countSpikeBurstDuplicatesForSeries(List<SignalTuningCsvLoader.SignalRow> oiBuys) {
+        if (oiBuys.size() < 2) {
+            return 0;
+        }
+        List<SignalTuningCsvLoader.SignalRow> sorted = oiBuys.stream()
+                .sorted(Comparator.comparing(SignalTuningCsvLoader.SignalRow::timestamp))
+                .toList();
+        long duplicates = 0;
+        Instant windowStart = sorted.get(0).timestamp();
+        int burstCount = 1;
+        for (int i = 1; i < sorted.size(); i++) {
+            SignalTuningCsvLoader.SignalRow row = sorted.get(i);
+            if (Duration.between(windowStart, row.timestamp()).getSeconds() <= 60) {
+                burstCount++;
+            } else {
+                if (burstCount > 1) {
+                    duplicates += burstCount - 1;
+                }
+                windowStart = row.timestamp();
+                burstCount = 1;
+            }
+        }
+        if (burstCount > 1) {
+            duplicates += burstCount - 1;
+        }
+        return duplicates;
+    }
+
+    private static GuardRejectionSummary summarizeGuardRejections(List<SignalTuningCsvLoader.ExecutionRow> rows) {
+        Map<String, Long> categories = new LinkedHashMap<>();
+        for (SignalTuningCsvLoader.ExecutionRow row : rows) {
+            if (!"ORDER_GUARD_REJECTED".equals(row.stage())) {
+                continue;
+            }
+            String cat = categorizeGuardReason(row.reasons());
+            categories.merge(cat, 1L, Long::sum);
+        }
+        return new GuardRejectionSummary(categories);
+    }
+
+    private static String categorizeGuardReason(String reasons) {
+        if (reasons == null || reasons.isBlank()) {
+            return "unknown";
+        }
+        String lower = reasons.toLowerCase();
+        if (lower.contains("open trade already exists") || lower.contains("open buy order already exists")) {
+            return "duplicateInstrument";
+        }
+        if (lower.contains("cooldown")) {
+            return "cooldown";
+        }
+        if (lower.contains("direction flip")) {
+            return "directionFlip";
+        }
+        if (lower.contains("premium") || lower.contains("expensive")) {
+            return "premiumCap";
+        }
+        return "other";
+    }
+
     private static List<Recommendation> buildRecommendations(
             List<SignalTuningCsvLoader.SignalRow> signals,
             List<StrategySummary> strategies,
             List<BuyOutcome> buyOutcomes,
-            Map<String, Long> executionStages
+            Map<String, Long> executionStages,
+            SignalTuningCsvLoader.Loaded data
     ) {
         List<Recommendation> list = new ArrayList<>();
 
-        long buysNoBreakout = signals.stream().filter(SignalTuningCsvLoader.SignalRow::isBuy)
-                .filter(s -> !s.breakoutPassed()).count();
-        if (buysNoBreakout > 0) {
+        long buysNoConfirm = signals.stream().filter(SignalTuningCsvLoader.SignalRow::isBuy)
+                .filter(SignalTuningCsvLoader.SignalRow::isDirectionalBuy)
+                .filter(s -> !s.breakoutConfirmed()).count();
+        if (buysNoConfirm > 0) {
             list.add(new Recommendation(Severity.CRITICAL, "entry_logic",
-                    buysNoBreakout + " BUY signal(s) fired with breakoutPassed=false",
-                    "Require breakoutConfirmed=true before emitting BUY_CE/BUY_PE in RuleBasedOptionsStrategy"));
+                    buysNoConfirm + " DIRECTIONAL_BUY signal(s) without breakout confirmation",
+                    "Entry requires breakoutConfirmed; fix RuleBasedOptionsStrategy or CSV reasons if BUY appears"));
         }
 
+        long swingGap = signals.stream().filter(SignalTuningCsvLoader.SignalRow::isBuy)
+                .filter(SignalTuningCsvLoader.SignalRow::isDirectionalBuy)
+                .filter(s -> !s.breakoutPassed() && s.breakoutConfirmed()).count();
+        if (swingGap > 0) {
+            list.add(new Recommendation(Severity.INFO, "entry_logic",
+                    swingGap + " DIRECTIONAL_BUY: swing breakoutPassed=false but confirmation passed",
+                    "Swing vs confirm use different thresholds; current entry requires BOTH — if BUY fired, audit record timing or gate logic"));
+        }
+
+        long oiDupes = countOiSpikeBurstDuplicates(signals);
+        if (oiDupes > 0) {
+            list.add(new Recommendation(Severity.WARN, "oi_momentum",
+                    oiDupes + " duplicate OI_MOMENTUM SPIKE BUY row(s) within 60s (same underlying)",
+                    "Strengthen spike episode dedupe / skip CSV until order accepted; verify restarts do not reset spike clock"));
+        }
+
+        GuardRejectionSummary guardSummary = summarizeGuardRejections(data.entryOutcomes());
         long premiumGuard = executionStages.getOrDefault("ORDER_GUARD_REJECTED", 0L);
         if (premiumGuard >= 3) {
             list.add(new Recommendation(Severity.WARN, "execution",
-                    premiumGuard + " ORDER_GUARD_REJECTED (often premium cap)",
-                    "Reject expensive strikes in ScanContext before BUY; avoid repeated guard spam"));
+                    premiumGuard + " ORDER_GUARD_REJECTED — " + guardSummary.describe(),
+                    guardSummary.actionHint()));
         }
 
         long brokerErrors = executionStages.getOrDefault("BROKER_ERROR", 0L);
         if (brokerErrors > 0) {
             list.add(new Recommendation(Severity.CRITICAL, "broker",
-                    brokerErrors + " BROKER_ERROR on entry",
-                    "Whitelist server IP on Kite developer console; verify live-trading-enabled"));
+                    brokerErrors + " BROKER_ERROR on entry (historical rows in outcomes CSV)",
+                    "Whitelist server IP on Kite developer console; verify live-trading-enabled; re-run report after fix"));
         }
 
         long orderOpen = executionStages.getOrDefault("ORDER_OPEN", 0L);
@@ -280,11 +427,24 @@ final class SignalTuningAnalyzer {
                     "Ensure option-chain-levels.csv is written (same decisionKey as entry-signals)"));
         }
 
-        for (StrategySummary strategy : strategies) {
-            if (strategy.evaluations() < 50) {
-                continue;
-            }
-            if (strategy.buySignals() == 0) {
+        List<StrategySummary> zeroBuy = strategies.stream()
+                .filter(s -> s.evaluations() >= 50 && s.buySignals() == 0)
+                .sorted(Comparator.comparing(StrategySummary::evaluations).reversed())
+                .toList();
+        if (zeroBuy.size() >= 5) {
+            String topList = zeroBuy.stream()
+                    .limit(14)
+                    .map(s -> s.strategyType() + "(" + s.evaluations() + ")")
+                    .collect(Collectors.joining(", "));
+            list.add(new Recommendation(Severity.INFO, "activation_summary",
+                    zeroBuy.size() + " strategies with 0 BUY (50+ evals). Heaviest: " + topList
+                            + (zeroBuy.size() > 14 ? " …" : ""),
+                    "See Strategy funnel table; inspect entry-signals.csv reasons only for types you care about"));
+            int warnAdded = 0;
+            for (StrategySummary strategy : zeroBuy) {
+                if (strategy.evaluations() < 2_000 || warnAdded >= 3) {
+                    continue;
+                }
                 String top = strategy.topBlockers().isEmpty() ? "unknown"
                         : strategy.topBlockers().get(0).filter();
                 double pct = strategy.topBlockers().isEmpty() ? 0 : strategy.topBlockers().get(0).percent();
@@ -292,7 +452,29 @@ final class SignalTuningAnalyzer {
                         strategy.strategyType() + ": 0 BUY in " + strategy.evaluations() + " evals (top block: "
                                 + top + " " + String.format("%.0f%%", pct) + ")",
                         suggestForFilter(top, strategy)));
-            } else if (strategy.buyRatePercent() < 0.05 && strategy.evaluations() > 500) {
+                warnAdded++;
+            }
+        } else {
+            for (StrategySummary strategy : strategies) {
+                if (strategy.evaluations() < 50) {
+                    continue;
+                }
+                if (strategy.buySignals() == 0) {
+                    String top = strategy.topBlockers().isEmpty() ? "unknown"
+                            : strategy.topBlockers().get(0).filter();
+                    double pct = strategy.topBlockers().isEmpty() ? 0 : strategy.topBlockers().get(0).percent();
+                    list.add(new Recommendation(Severity.WARN, "activation",
+                            strategy.strategyType() + ": 0 BUY in " + strategy.evaluations() + " evals (top block: "
+                                    + top + " " + String.format("%.0f%%", pct) + ")",
+                            suggestForFilter(top, strategy)));
+                }
+            }
+        }
+        for (StrategySummary strategy : strategies) {
+            if (strategy.evaluations() < 50) {
+                continue;
+            }
+            if (strategy.buySignals() > 0 && strategy.buyRatePercent() < 0.05 && strategy.evaluations() > 500) {
                 list.add(new Recommendation(Severity.INFO, "activation",
                         strategy.strategyType() + ": very low BUY rate (" + String.format("%.3f%%", strategy.buyRatePercent()) + ")",
                         "Review top 2 blockers in report; loosen one gate per session"));
@@ -349,7 +531,9 @@ final class SignalTuningAnalyzer {
             long totalEvaluations,
             long buySignals,
             long noTradeSignals,
-            long buysWithoutBreakoutFlag,
+            long buysWithoutBreakoutConfirmed,
+            long swingBreakoutFalseConfirmTrue,
+            long oiSpikeBurstDuplicates,
             long falseBreakoutLabeled,
             long buyOutcomesAnalyzed,
             long chainOiMismatchCount,
@@ -357,13 +541,17 @@ final class SignalTuningAnalyzer {
             List<StrategySummary> strategies,
             List<BuyOutcome> buyOutcomes,
             Map<String, Long> executionStages,
-            List<Recommendation> recommendations
+            List<Recommendation> recommendations,
+            OiMomentumTuningAnalyzer.OiReport oiMomentumReport,
+            OiShiftTrapTuningAnalyzer.TrapReport oiShiftTrapReport
     ) {
         static Report empty() {
-            return new Report(Instant.now(), Instant.now(), 0, 0, 0, 0, 0, 0, 0, 0,
+            return new Report(Instant.now(), Instant.now(), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                     List.of(), List.of(), Map.of(), List.of(
                     new Recommendation(Severity.INFO, "general", "No entry-signals.csv data found",
-                            "Run the scanner during market hours; files live under reports/entry-signals/")));
+                            "Run the scanner during market hours; files live under reports/entry-signals/")),
+                    OiMomentumTuningAnalyzer.OiReport.empty(),
+                    OiShiftTrapTuningAnalyzer.TrapReport.empty());
         }
     }
 
@@ -391,6 +579,8 @@ final class SignalTuningAnalyzer {
             BigDecimal entryPrice,
             BigDecimal score,
             boolean breakoutPassed,
+            boolean breakoutConfirmed,
+            String oiEntryCase,
             boolean volumeSpike,
             boolean oiPassed,
             String executionStage,
@@ -414,6 +604,28 @@ final class SignalTuningAnalyzer {
     private record ForwardPath(boolean labeled, BigDecimal mfePct, BigDecimal maePct) {
         static ForwardPath unlabeled() {
             return new ForwardPath(false, BigDecimal.ZERO, BigDecimal.ZERO);
+        }
+    }
+
+    private record GuardRejectionSummary(Map<String, Long> categories) {
+        String describe() {
+            if (categories.isEmpty()) {
+                return "no reason text";
+            }
+            return categories.entrySet().stream()
+                    .sorted(Map.Entry.<String, Long>comparingByValue().reversed())
+                    .map(e -> e.getKey() + "=" + e.getValue())
+                    .collect(Collectors.joining(", "));
+        }
+
+        String actionHint() {
+            if (categories.getOrDefault("duplicateInstrument", 0L) + categories.getOrDefault("cooldown", 0L) > 0) {
+                return "Suppress repeat BUY signals when guard would reject (open trade/order/cooldown)";
+            }
+            if (categories.getOrDefault("premiumCap", 0L) > 0) {
+                return "Reject expensive strikes in ScanContext before emitting BUY";
+            }
+            return "Review order-guard rules and execution outcomes reasons";
         }
     }
 }

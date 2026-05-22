@@ -19,6 +19,7 @@ import com.algo.trade.strategy.ExpiryGammaStrategy;
 import com.algo.trade.strategy.ExpiryReversalStrategy;
 import com.algo.trade.strategy.GapAndGoStrategy;
 import com.algo.trade.strategy.OiShiftTrapStrategy;
+import com.algo.trade.strategy.oishifttrap.OiShiftTrapTuneRecorder;
 import com.algo.trade.strategy.ReversalBuyStrategy;
 import com.algo.trade.strategy.RuleBasedOptionsStrategy;
 import com.algo.trade.strategy.ScalpingStrategy;
@@ -80,6 +81,7 @@ public class AlgoTradeExecution {
     private final GapAndGoStrategy gapAndGoStrategy;
     private final ReversalBuyStrategy reversalBuyStrategy;
     private final OiShiftTrapStrategy oiShiftTrapStrategy;
+    private final OiShiftTrapTuneRecorder oiShiftTrapTuneRecorder;
     private final ExpiryGammaStrategy expiryGammaStrategy;
     private final ExpiryReversalStrategy expiryReversalStrategy;
     private final MomentumStrategy momentumStrategy;
@@ -136,6 +138,8 @@ public class AlgoTradeExecution {
             GapAndGoStrategy gapAndGoStrategy,
             ReversalBuyStrategy reversalBuyStrategy,
             OiShiftTrapStrategy oiShiftTrapStrategy,
+            @org.springframework.beans.factory.annotation.Autowired(required = false)
+            OiShiftTrapTuneRecorder oiShiftTrapTuneRecorder,
             ExpiryGammaStrategy expiryGammaStrategy,
             ExpiryReversalStrategy expiryReversalStrategy,
             MomentumStrategy momentumStrategy,
@@ -174,6 +178,7 @@ public class AlgoTradeExecution {
         this.gapAndGoStrategy = gapAndGoStrategy;
         this.reversalBuyStrategy = reversalBuyStrategy;
         this.oiShiftTrapStrategy = oiShiftTrapStrategy;
+        this.oiShiftTrapTuneRecorder = oiShiftTrapTuneRecorder;
         this.expiryGammaStrategy = expiryGammaStrategy;
         this.expiryReversalStrategy = expiryReversalStrategy;
         this.momentumStrategy = momentumStrategy;
@@ -331,6 +336,8 @@ public class AlgoTradeExecution {
         int totalEntries = 0;
         // Track entries per underlying within this scan to prevent concentration
         Map<UnderlyingSymbol, Integer> entriesPerUnderlying = new EnumMap<>(UnderlyingSymbol.class);
+        // Track entries per strategy within this scan to prevent same-cycle duplicates
+        Map<StrategyType, Integer> entriesPerStrategyThisScan = new java.util.EnumMap<>(StrategyType.class);
         for (UnderlyingSymbol underlying : enabledUnderlyings) {
             if (totalEntries >= globalConfigService.getMaxEntriesPerScan()) break;
 
@@ -420,9 +427,10 @@ public class AlgoTradeExecution {
                 // ── Gate: Max open positions per strategy ──
                 if (maxPerStrategy > 0) {
                     long openForThisStrategy = executionEngine.countOpenTradesForStrategy(type.name());
-                    if (openForThisStrategy >= maxPerStrategy) {
-                        log.debug("{} skipped for {}: already has {} open position(s) (max={})",
-                                type, underlying, openForThisStrategy, maxPerStrategy);
+                    int enteredThisScan = entriesPerStrategyThisScan.getOrDefault(type, 0);
+                    if (openForThisStrategy + enteredThisScan >= maxPerStrategy) {
+                        log.debug("{} skipped for {}: already has {} open + {} this scan (max={})",
+                                type, underlying, openForThisStrategy, enteredThisScan, maxPerStrategy);
                         continue;
                     }
                 }
@@ -433,6 +441,9 @@ public class AlgoTradeExecution {
                             triggerTimeframe, candleCache, ivRank, ivRankSource, flowDecision);
                     totalEntries += entries;
                     entriesPerUnderlying.merge(underlying, entries, Integer::sum);
+                    if (entries > 0) {
+                        entriesPerStrategyThisScan.merge(type, entries, Integer::sum);
+                    }
                 } catch (Exception e) {
                     log.warn("Strategy evaluation failed: type={} underlying={}: {}", type, underlying, e.getMessage());
                     if (errorEventService != null) errorEventService.medium("AlgoTradeExecution", "Strategy " + type + " evaluation failed for " + underlying + ": " + e.getMessage(), e);
@@ -562,13 +573,24 @@ public class AlgoTradeExecution {
             case OI_SHIFT_TRAP -> {
                 evaluated[0] = true;
                 String[] oiFailReason = {"buildScanContext:unknown"};
+                BigDecimal oiSpot = trendCandles.isEmpty() ? BigDecimal.ZERO : trendCandles.getLast().close();
                 Optional<ScanContext> oiCtx = scanContextBuilder.build(underlying, oiFailReason);
                 if (oiCtx.isEmpty()) {
+                    if (oiShiftTrapTuneRecorder != null) {
+                        oiShiftTrapTuneRecorder.recordScanBlocked(
+                                underlying.name(), "SCAN_CONTEXT", oiFailReason[0], oiSpot);
+                    }
                     diagHolder[0] = new com.algo.trade.strategy.StrategyDiagnostics(oiFailReason[0], null, null, null, null, null, null, null, null);
                     yield Optional.<StrategyDecision>empty();
                 }
-                BigDecimal oiSpot = trendCandles.isEmpty() ? BigDecimal.ZERO : trendCandles.getLast().close();
-                yield oiShiftTrapStrategy.evaluate(oiCtx.get().optionChainSnapshot(), oiSpot, config, underlying, trendCandles);
+                OiShiftTrapStrategy.TrapEvaluation trapEval = oiShiftTrapStrategy.evaluateWithDiagnostics(
+                        oiCtx.get().optionChainSnapshot(), oiSpot, config, underlying, trendCandles);
+                if (oiShiftTrapTuneRecorder != null) {
+                    oiShiftTrapTuneRecorder.recordEvaluation(trapEval.diagnostics());
+                    trapEval.signal().ifPresent(s ->
+                            oiShiftTrapTuneRecorder.recordSignal(s, trapEval.diagnostics()));
+                }
+                yield trapEval.signal();
             }
             case EXPIRY_GAMMA -> {
                 evaluated[0] = true;

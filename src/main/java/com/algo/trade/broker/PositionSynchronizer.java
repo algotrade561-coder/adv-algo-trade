@@ -283,6 +283,22 @@ public class PositionSynchronizer {
             }
             tradeRepository.save(entity);
 
+            // Mark this broker order as tracked so it won't be picked again on next sync cycle
+            try {
+                String brokerOid = untrackedOrder.brokerOrderId().orElse(null);
+                if (brokerOid != null) {
+                    var orderEntity = new com.algo.trade.persistence.OrderEntity(
+                            "SYNC-ORDER-" + brokerOid, brokerOid, pos.instrumentKey(),
+                            entrySide.name(), com.algo.trade.domain.OrderStatus.COMPLETE,
+                            absQuantity, absQuantity, entryPrice, null,
+                            untrackedOrder.updatedAt());
+                    orderEntity.setTradeMaterialized(true);
+                    orderRepository.save(orderEntity);
+                }
+            } catch (Exception orderEx) {
+                log.debug("Position sync: could not persist order tracking record: {}", orderEx.getMessage());
+            }
+
             log.info("Position sync created trade: tradeId={}, instrument={}, qty={} ({}), entryPrice={} (from order {} filled at {})",
                     tradeId, pos.instrumentKey(), absQuantity, isShort ? "SHORT" : "LONG",
                     entryPrice, untrackedOrder.brokerOrderId().orElse("?"), untrackedOrder.updatedAt());

@@ -38,9 +38,18 @@ public class GapAndGoStrategy {
     private static final double MIN_VOLUME_RATIO = 1.3;
 
     private final LiveInstrumentCache liveInstrumentCache;
+    private final com.algo.trade.marketdata.MarketDataService marketDataService;
+    private final com.algo.trade.config.TradingProperties tradingProperties;
 
-    public GapAndGoStrategy(LiveInstrumentCache liveInstrumentCache) {
+    /** Cache: once we fetch prev close for an index today, don't fetch again. */
+    private final java.util.concurrent.ConcurrentHashMap<IndexType, Double> prevCloseCache = new java.util.concurrent.ConcurrentHashMap<>();
+
+    public GapAndGoStrategy(LiveInstrumentCache liveInstrumentCache,
+                            com.algo.trade.marketdata.MarketDataService marketDataService,
+                            com.algo.trade.config.TradingProperties tradingProperties) {
         this.liveInstrumentCache = liveInstrumentCache;
+        this.marketDataService = marketDataService;
+        this.tradingProperties = tradingProperties;
     }
 
     public Optional<StrategyDecision> evaluate(List<Candle> candles5m, LocalTime marketTime,
@@ -90,10 +99,18 @@ public class GapAndGoStrategy {
         if (!prevDayCandles.isEmpty()) {
             prevClose = prevDayCandles.getLast().close();
         } else {
-            // Use stored previous day close from LiveInstrumentCache (seeded at startup)
+            // Try LiveInstrumentCache (seeded at startup)
             IndexType idx = IndexType.fromName(underlying.name());
             double storedClose = liveInstrumentCache.getPreviousDayClose(idx);
-            prevClose = storedClose > 0 ? BigDecimal.valueOf(storedClose) : first.open();
+            if (storedClose <= 0) {
+                // REST fallback: fetch yesterday's close via historical API (cached for the day)
+                storedClose = fetchPreviousDayClose(idx);
+            }
+            prevClose = storedClose > 0 ? BigDecimal.valueOf(storedClose) : null;
+        }
+        if (prevClose == null || prevClose.signum() <= 0) {
+            log.warn("[GapAndGo] Cannot determine previous day close for {} — skipping", underlying);
+            return noTrade("noPrevClose");
         }
         double gapPct = 0;
         if (prevClose.signum() > 0) {
@@ -181,5 +198,46 @@ public class GapAndGoStrategy {
     private static StrategyDiagnostics.WithSignal noTrade(String reason) {
         return new StrategyDiagnostics.WithSignal(Optional.empty(),
                 new StrategyDiagnostics(reason, null, null, null, null, null, null, null, null));
+    }
+
+    /**
+     * Fetch previous day's closing price via REST historical API.
+     * Cached per index for the entire day (only fetches once).
+     * Also stores into LiveInstrumentCache so other components benefit.
+     */
+    private double fetchPreviousDayClose(IndexType idx) {
+        Double cached = prevCloseCache.get(idx);
+        if (cached != null) return cached;
+
+        try {
+            String spotKey = tradingProperties.symbols().spotHistoricalKeys().get(
+                    com.algo.trade.domain.UnderlyingSymbol.valueOf(idx.name()));
+            if (spotKey == null || spotKey.isBlank()) {
+                log.debug("[GapAndGo] No spot historical key configured for {}", idx);
+                prevCloseCache.put(idx, 0.0);
+                return 0;
+            }
+
+            LocalDate today = LocalDate.now(IST);
+            // Fetch last 3 days of daily candles to find the most recent trading day
+            Instant from = today.minusDays(5).atStartOfDay(IST).toInstant();
+            Instant to = today.atStartOfDay(IST).toInstant(); // up to midnight today (excludes today)
+            var request = new com.algo.trade.domain.HistoricalDataRequest(
+                    spotKey, from, to, com.algo.trade.domain.Timeframe.FIVE_MINUTE, false);
+            var candles = marketDataService.historicalCandles(request);
+
+            if (!candles.isEmpty()) {
+                double close = candles.getLast().close().doubleValue();
+                prevCloseCache.put(idx, close);
+                // Also seed into LiveInstrumentCache for other components
+                liveInstrumentCache.setPreviousDayClose(idx, close);
+                log.info("[GapAndGo] Fetched previous day close for {}: {} (REST fallback)", idx, close);
+                return close;
+            }
+        } catch (Exception e) {
+            log.warn("[GapAndGo] Failed to fetch previous day close for {}: {}", idx, e.getMessage());
+        }
+        prevCloseCache.put(idx, 0.0);
+        return 0;
     }
 }

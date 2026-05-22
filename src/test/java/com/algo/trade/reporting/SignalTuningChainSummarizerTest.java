@@ -15,7 +15,8 @@ class SignalTuningChainSummarizerTest {
         SignalTuningCsvLoader.SignalRow signal = new SignalTuningCsvLoader.SignalRow(
                 "k1", ts, "DIRECTIONAL_BUY", "BUY_CE", "NIFTY", "CE",
                 "NFO:NIFTY2651923800CE", new BigDecimal("180"), new BigDecimal("70"),
-                new BigDecimal("75"), "", "", true, true, true, true, true, true, true);
+                new BigDecimal("75"), "", "", true, true, true, true, true, true, true,
+                true, "");
 
         List<SignalTuningCsvLoader.ChainLevelRow> levels = List.of(
                 chainRow("k1", 23700, 23720, 1000, 2000, 500, 5000),
@@ -36,7 +37,8 @@ class SignalTuningChainSummarizerTest {
         SignalTuningCsvLoader.SignalRow signal = new SignalTuningCsvLoader.SignalRow(
                 "k1", Instant.now(), "DIRECTIONAL_BUY", "NO_TRADE", "NIFTY", "CE",
                 "", BigDecimal.ZERO, new BigDecimal("70"), BigDecimal.ZERO, "", "",
-                false, false, false, false, false, false, false);
+                false, false, false, false, false, false, false,
+                false, "");
 
         assertThat(SignalTuningChainSummarizer.summarize(signal, List.of()).present()).isFalse();
     }

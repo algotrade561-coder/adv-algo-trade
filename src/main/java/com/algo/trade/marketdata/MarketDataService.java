@@ -4,7 +4,10 @@ import com.algo.trade.broker.BrokerClient;
 import com.algo.trade.domain.Candle;
 import com.algo.trade.domain.HistoricalDataRequest;
 import com.algo.trade.domain.Quote;
+import com.algo.trade.domain.Timeframe;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -89,12 +92,26 @@ public class MarketDataService {
         return candles;
     }
 
-    /** Convenience overload — fetches today's candles from market open to now. Used by candle seeding on restart. */
-    public List<Candle> historicalCandles(String instrumentKey, com.algo.trade.domain.Timeframe timeframe) {
-        var ist = java.time.ZoneId.of("Asia/Kolkata");
-        var todayOpen = java.time.LocalDate.now(ist).atTime(9, 15).atZone(ist).toInstant();
-        var now = Instant.now();
-        if (!todayOpen.isBefore(now)) return List.of();
-        return historicalCandles(new HistoricalDataRequest(instrumentKey, todayOpen, now, timeframe, true));
+    /**
+     * Convenience overload for startup warm-up: prior NSE session from 09:15 IST through now.
+     * Today-only (09:15→now) left scalping with ~3 five-minute bars right after open until ~09:40.
+     */
+    public List<Candle> historicalCandles(String instrumentKey, Timeframe timeframe) {
+        ZoneId ist = ZoneId.of("Asia/Kolkata");
+        Instant now = Instant.now();
+        LocalDate today = LocalDate.now(ist);
+        Instant from = previousTradingDay(today).atTime(9, 15).atZone(ist).toInstant();
+        if (!from.isBefore(now)) {
+            return List.of();
+        }
+        return historicalCandles(new HistoricalDataRequest(instrumentKey, from, now, timeframe, true));
+    }
+
+    static LocalDate previousTradingDay(LocalDate date) {
+        LocalDate d = date.minusDays(1);
+        while (d.getDayOfWeek().getValue() >= 6) {
+            d = d.minusDays(1);
+        }
+        return d;
     }
 }

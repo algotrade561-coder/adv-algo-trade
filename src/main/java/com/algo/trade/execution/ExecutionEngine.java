@@ -1194,8 +1194,8 @@ public class ExecutionEngine {
         }
 
         // 5b. Direction flip cooldown — block CE↔PE flip on same underlying within cooldown window
-        int directionFlipCooldown = 60; // minutes — TODO: make configurable via GlobalConfig
-        if (decision.optionType().isPresent()) {
+        int directionFlipCooldown = globalConfigService.getDirectionFlipCooldownMinutes();
+        if (directionFlipCooldown > 0 && decision.optionType().isPresent()) {
             String oppositeType = decision.optionType().get() == com.algo.trade.domain.OptionType.CE ? "PE" : "CE";
             Instant flipWindow = clock.instant().minus(Duration.ofMinutes(directionFlipCooldown));
             boolean recentOppositeEntry = tradeRepository.findByStatus(TradeStatus.OPEN).stream()

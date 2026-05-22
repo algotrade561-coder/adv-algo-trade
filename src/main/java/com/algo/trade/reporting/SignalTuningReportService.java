@@ -2,6 +2,8 @@ package com.algo.trade.reporting;
 
 import com.algo.trade.notification.TelegramAlertService;
 import java.io.IOException;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -9,6 +11,7 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.Comparator;
+import java.util.List;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -26,6 +29,8 @@ public class SignalTuningReportService {
     private static final DateTimeFormatter FILE_TS = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss")
             .withZone(ZoneId.of("Asia/Kolkata"));
     private static final DateTimeFormatter DISPLAY_DATE = DateTimeFormatter.ofPattern("yyyy-MM-dd")
+            .withZone(ZoneId.of("Asia/Kolkata"));
+    private static final DateTimeFormatter IST_TS = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
             .withZone(ZoneId.of("Asia/Kolkata"));
 
     private final TelegramAlertService telegramAlertService;
@@ -94,8 +99,13 @@ public class SignalTuningReportService {
         sb.append("Evaluations: ").append(report.totalEvaluations());
         sb.append(" | BUY: ").append(report.buySignals());
         sb.append(" | NO_TRADE: ").append(report.noTradeSignals()).append(System.lineSeparator());
-        if (report.buysWithoutBreakoutFlag() > 0) {
-            sb.append("⚠️ BUY w/o breakout flag: ").append(report.buysWithoutBreakoutFlag()).append(System.lineSeparator());
+        if (report.buysWithoutBreakoutConfirmed() > 0) {
+            sb.append("⚠️ DIRECTIONAL BUY w/o confirmation: ").append(report.buysWithoutBreakoutConfirmed())
+                    .append(System.lineSeparator());
+        }
+        if (report.oiSpikeBurstDuplicates() > 0) {
+            sb.append("⚠️ OI SPIKE duplicate rows (same und, 60s): ").append(report.oiSpikeBurstDuplicates())
+                    .append(System.lineSeparator());
         }
         if (report.falseBreakoutLabeled() > 0) {
             sb.append("⚠️ False-breakout labeled: ").append(report.falseBreakoutLabeled())
@@ -108,6 +118,43 @@ public class SignalTuningReportService {
         if (report.chainMissingOiDeltaCount() > 0) {
             sb.append("⚠️ Chain OI Δ all zero: ").append(report.chainMissingOiDeltaCount())
                     .append(" BUY(s)").append(System.lineSeparator());
+        }
+
+        OiMomentumTuningAnalyzer.OiReport oi = report.oiMomentumReport();
+        OiShiftTrapTuningAnalyzer.TrapReport trap = report.oiShiftTrapReport();
+        if (trap.evaluationSamples() > 0 || trap.nearMissRows() > 0 || trap.trapSignalRows() > 0) {
+            sb.append(System.lineSeparator()).append("OI Shift Trap:").append(System.lineSeparator());
+            sb.append("Eval samples: ").append(trap.evaluationSamples())
+                    .append(" | Near-miss: ").append(trap.nearMissRows())
+                    .append(" | Signals: ").append(trap.trapSignalRows()).append(System.lineSeparator());
+            trap.blockersByGate().entrySet().stream()
+                    .sorted(Map.Entry.<String, Long>comparingByValue().reversed())
+                    .limit(3)
+                    .forEach(e -> sb.append("• blocker ").append(e.getKey()).append(": ").append(e.getValue())
+                            .append(System.lineSeparator()));
+        }
+
+        if (oi.signalCount() > 0 || oi.rejectSampleCount() > 0) {
+            sb.append(System.lineSeparator()).append("OI Momentum:").append(System.lineSeparator());
+            sb.append("Signals: ").append(oi.signalCount())
+                    .append(" | Reject samples: ").append(oi.rejectSampleCount())
+                    .append(" | Spike dupes: ").append(oi.spikeDuplicates()).append(System.lineSeparator());
+            int caseLines = 0;
+            for (var e : oi.statsByCase().entrySet()) {
+                if (caseLines >= 4) {
+                    sb.append("… +").append(oi.statsByCase().size() - 4).append(" cases in HTML")
+                            .append(System.lineSeparator());
+                    break;
+                }
+                OiMomentumTuningAnalyzer.CaseStats stats = e.getValue();
+                sb.append("• ").append(e.getKey()).append(": ").append(stats.count()).append(" sig");
+                if (stats.closed() > 0) {
+                    sb.append(", ").append(stats.closed()).append(" closed, win ")
+                            .append(stats.winRatePct()).append("%");
+                }
+                sb.append(System.lineSeparator());
+                caseLines++;
+            }
         }
 
         sb.append(System.lineSeparator()).append("Strategy funnel:").append(System.lineSeparator());
@@ -205,11 +252,28 @@ public class SignalTuningReportService {
                     <table><thead><tr><th>Strategy</th><th>Evals</th><th>BUY</th><th>NO_TRADE</th><th>BUY %%</th><th>Top blocker</th><th>Near-miss score</th></tr></thead>
                     <tbody>%s</tbody></table></section>
                   <section class="panel"><h2>BUY signals (45m forward + option chain)</h2>
-                    <table><thead><tr><th>Time</th><th>Strategy</th><th>Signal</th><th>Und</th><th>BO</th><th>Vol</th><th>OI</th><th>Score</th><th>Stage</th><th>PCR</th><th>ATM</th><th>Max CE Δ</th><th>Max PE Δ</th><th>Chain</th><th>MFE%%</th><th>MAE%%</th><th>False BO</th></tr></thead>
+                    <table><thead><tr><th>Time</th><th>Strategy</th><th>Signal</th><th>Und</th><th>Swing</th><th>Confirm</th><th>Case</th><th>Vol</th><th>OI</th><th>Score</th><th>Stage</th><th>PCR</th><th>ATM</th><th>Max CE Δ</th><th>Max PE Δ</th><th>Chain</th><th>MFE%%</th><th>MAE%%</th><th>False BO</th></tr></thead>
+                    <tbody>%s</tbody></table></section>
+                  <section class="panel"><h2>OI Shift Trap (dedicated CSV)</h2>
+                    <p class="sub">From oi-shift-trap-evaluations.csv — why no trap matched (30s sample per index)</p>
+                    <table><thead><tr><th>Blocker</th><th>Count</th></tr></thead>
+                    <tbody>%s</tbody></table>
+                    <h2 style="margin-top:16px">Near-miss strikes (score 40–49)</h2>
+                    <table><thead><tr><th>Time</th><th>Und</th><th>Side</th><th>Strike</th><th>Score</th><th>Gate</th><th>Imbalance</th><th>Prox %%</th></tr></thead>
+                    <tbody>%s</tbody></table></section>
+                  <section class="panel"><h2>OI Momentum (dedicated CSV)</h2>
+                    <p class="sub">From oi-momentum-signals.csv — joined to execution outcomes and exits</p>
+                    <table><thead><tr><th>Case</th><th>Signals</th><th>Closed</th><th>Win %%</th><th>Avg PnL</th></tr></thead>
+                    <tbody>%s</tbody></table>
+                    <h2 style="margin-top:16px">OI trades</h2>
+                    <table><thead><tr><th>Time</th><th>Case</th><th>Und</th><th>Opt</th><th>Premium</th><th>PCR</th><th>Mom</th><th>OI dir</th><th>Stage</th><th>Exit</th><th>PnL</th><th>Hold</th><th>Chain</th></tr></thead>
                     <tbody>%s</tbody></table></section>
                   <section class="panel"><h2>Entry execution stages</h2>
                     <table><thead><tr><th>Stage</th><th>Count</th></tr></thead>
                     <tbody>%s</tbody></table></section>
+                  <section class="panel"><h2>Data quality</h2>
+                    <p class="sub">%s</p>
+                  </section>
                 </main>
                 </body>
                 </html>
@@ -220,7 +284,12 @@ public class SignalTuningReportService {
                 recommendationsHtml(report),
                 strategiesHtml(report),
                 buysHtml(report),
-                stagesHtml(report)
+                trapBlockersHtml(report),
+                trapNearMissHtml(report),
+                oiCaseStatsHtml(report),
+                oiTradesHtml(report),
+                stagesHtml(report),
+                dataQualityFooter(report)
         );
     }
 
@@ -234,10 +303,114 @@ public class SignalTuningReportService {
         return card(report.totalEvaluations(), "Evaluations")
                 + card(report.buySignals(), "BUY signals")
                 + card(report.noTradeSignals(), "NO_TRADE")
-                + card(report.buysWithoutBreakoutFlag(), "BUY w/o breakout")
+                + card(report.buysWithoutBreakoutConfirmed(), "BUY w/o confirm")
+                + card(report.oiSpikeBurstDuplicates(), "OI SPIKE dupes (per und)")
                 + card(report.falseBreakoutLabeled(), "False breakouts")
                 + card(report.chainOiMismatchCount(), "Chain OI mismatch")
+                + card(report.oiMomentumReport().signalCount(), "OI signals")
+                + card(report.oiMomentumReport().rejectSampleCount(), "OI reject samples")
+                + card(report.oiShiftTrapReport().evaluationSamples(), "Trap eval samples")
+                + card(report.oiShiftTrapReport().nearMissRows(), "Trap near-miss")
                 + card(report.recommendations().size(), "Recommendations");
+    }
+
+    private static String trapBlockersHtml(SignalTuningAnalyzer.Report report) {
+        OiShiftTrapTuningAnalyzer.TrapReport trap = report.oiShiftTrapReport();
+        if (trap.evaluationSamples() == 0) {
+            return "<tr><td colspan='2'>No oi-shift-trap-evaluations.csv yet (enable OI_SHIFT_TRAP scans)</td></tr>";
+        }
+        StringBuilder sb = new StringBuilder();
+        trap.blockersByGate().entrySet().stream()
+                .sorted(Map.Entry.<String, Long>comparingByValue().reversed())
+                .forEach(e -> sb.append("<tr>").append(td(e.getKey())).append(td(e.getValue())).append("</tr>"));
+        if (sb.isEmpty()) {
+            sb.append("<tr><td colspan='2'>No blocker data</td></tr>");
+        }
+        return sb.toString();
+    }
+
+    private static String trapNearMissHtml(SignalTuningAnalyzer.Report report) {
+        List<SignalTuningCsvLoader.OiShiftTrapNearMissRow> rows = report.oiShiftTrapReport().nearMisses();
+        if (rows.isEmpty()) {
+            return "<tr><td colspan='8'>No near-miss rows (strikes scoring 40–49)</td></tr>";
+        }
+        StringBuilder sb = new StringBuilder();
+        rows.stream()
+                .sorted(Comparator.comparing(SignalTuningCsvLoader.OiShiftTrapNearMissRow::timestamp).reversed())
+                .limit(40)
+                .forEach(r -> sb.append("<tr>")
+                        .append(td(r.timestamp()))
+                        .append(td(r.underlying()))
+                        .append(td(r.side()))
+                        .append(td(r.strike()))
+                        .append(td(r.score()))
+                        .append(td(r.failedGate()))
+                        .append(td(String.format("%.1f", r.imbalance())))
+                        .append(td(String.format("%.2f", r.proximityPct())))
+                        .append("</tr>"));
+        return sb.toString();
+    }
+
+    private static String oiCaseStatsHtml(SignalTuningAnalyzer.Report report) {
+        OiMomentumTuningAnalyzer.OiReport oi = report.oiMomentumReport();
+        if (oi.signalCount() == 0 && oi.rejectSampleCount() == 0) {
+            return "<tr><td colspan='5'>No oi-momentum-*.csv data (run OI_MOMENTUM during market hours)</td></tr>";
+        }
+        StringBuilder sb = new StringBuilder();
+        oi.statsByCase().entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .forEach(e -> {
+                    OiMomentumTuningAnalyzer.CaseStats stats = e.getValue();
+                    sb.append("<tr>")
+                            .append(td(e.getKey()))
+                            .append(td(stats.count()))
+                            .append(td(stats.closed()))
+                            .append(td(stats.closed() > 0 ? stats.winRatePct() + "%" : "—"))
+                            .append(td(stats.closed() > 0 ? stats.avgPnl().setScale(2, RoundingMode.HALF_UP).toPlainString() : "—"))
+                            .append("</tr>");
+                });
+        if (sb.isEmpty()) {
+            sb.append("<tr><td colspan='5'>No entry cases recorded</td></tr>");
+        }
+        return sb.toString();
+    }
+
+    private static String oiTradesHtml(SignalTuningAnalyzer.Report report) {
+        List<OiMomentumTuningAnalyzer.OiTradeOutcome> trades = report.oiMomentumReport().trades();
+        if (trades.isEmpty()) {
+            return "<tr><td colspan='13'>No OI momentum signals in period</td></tr>";
+        }
+        StringBuilder sb = new StringBuilder();
+        for (OiMomentumTuningAnalyzer.OiTradeOutcome t : trades) {
+            var s = t.signal();
+            SignalTuningChainSummarizer.ChainSummary c = t.chain();
+            String chain = c != null && c.present() ? c.shortSummary() : "—";
+            String pnl = formatInr(t.realizedPnl());
+            String rowClass = "ORDER_OPEN".equals(t.executionStage()) ? "warn" : null;
+            sb.append("<tr>")
+                    .append(td(IST_TS.format(s.timestamp()), rowClass))
+                    .append(td(s.entryCase(), rowClass))
+                    .append(td(s.underlying(), rowClass))
+                    .append(td(s.optionType(), rowClass))
+                    .append(td(s.premium() != null ? s.premium() : "—", rowClass))
+                    .append(td(String.format("%.2f", s.pcr()), rowClass))
+                    .append(td(s.momentumType() + " " + s.momentumDir(), rowClass))
+                    .append(td(s.oiDir(), rowClass))
+                    .append(td(t.executionStage(), rowClass))
+                    .append(td(t.exitReason().isBlank() ? "—" : t.exitReason(), rowClass))
+                    .append(td(pnl, rowClass))
+                    .append(td(t.holdSeconds() > 0 ? t.holdSeconds() + "s" : "—", rowClass))
+                    .append(td(chain, rowClass))
+                    .append("</tr>");
+        }
+        return sb.toString();
+    }
+
+    private static String breakoutCell(SignalTuningAnalyzer.BuyOutcome b) {
+        if (!"DIRECTIONAL_BUY".equals(b.strategyType())) {
+            return "—";
+        }
+        return b.breakoutPassed() ? "Y" : "N";
     }
 
     private static String card(Object value, String label) {
@@ -299,12 +472,15 @@ public class SignalTuningReportService {
             String maxPe = c != null && c.present()
                     ? c.maxPutChangeStrike() + " (" + c.maxPutChange() + ")" : "—";
             String chainAlign = c != null && c.present() ? c.alignment() : "—";
+            String oiCase = b.oiEntryCase() == null || b.oiEntryCase().isBlank() ? "—" : b.oiEntryCase();
             sb.append("<tr>")
                     .append(td(b.timestamp(), rowClass))
                     .append(td(b.strategyType(), rowClass))
                     .append(td(b.signalType(), rowClass))
                     .append(td(b.underlying(), rowClass))
-                    .append(td(b.breakoutPassed() ? "Y" : "N", rowClass))
+                    .append(td(breakoutCell(b), rowClass))
+                    .append(td(b.breakoutConfirmed() ? "Y" : "N", rowClass))
+                    .append(td(oiCase, rowClass))
                     .append(td(b.volumeSpike() ? "Y" : "N", rowClass))
                     .append(td(b.oiPassed() ? "Y" : "N", rowClass))
                     .append(td(b.score(), rowClass))
@@ -320,7 +496,7 @@ public class SignalTuningReportService {
                     .append("</tr>");
         }
         if (sb.isEmpty()) {
-            sb.append("<tr><td colspan='16'>No BUY signals in period</td></tr>");
+            sb.append("<tr><td colspan='19'>No BUY signals in period</td></tr>");
         }
         return sb.toString();
     }
@@ -334,6 +510,23 @@ public class SignalTuningReportService {
             sb.append("<tr><td colspan='2'>No execution outcomes CSV</td></tr>");
         }
         return sb.toString();
+    }
+
+    private static String formatInr(BigDecimal v) {
+        if (v == null) {
+            return "—";
+        }
+        return "₹" + v.setScale(2, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString();
+    }
+
+    /** Short notes so operators interpret cards and CSV joins correctly. */
+    private static String dataQualityFooter(SignalTuningAnalyzer.Report report) {
+        String text = "BUY table: times shown in Asia/Kolkata. OI dedicated CSV: join via decisionKey; "
+                + "OI SPIKE duplicate count = extra SPIKE BUY rows within 60s on the same underlying (not cross-index). "
+                + "entry-signals merges all strategies; trap/OI-specific CSVs improve funnel accuracy. "
+                + "Loader merges active reports/entry-signals/ plus the 3 newest reports/archive/*.zip. "
+                + "Merged signal rows in this report: " + report.totalEvaluations() + ".";
+        return escape(text);
     }
 
     private static String td(Object value) {

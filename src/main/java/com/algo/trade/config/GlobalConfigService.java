@@ -163,6 +163,8 @@ public class GlobalConfigService {
 
     public int getCooldownMinutes() { return cached.getCooldownMinutes(); }
 
+    public int getDirectionFlipCooldownMinutes() { return cached.getDirectionFlipCooldownMinutes(); }
+
     public int getMaxOpenPositionsPerStrategy() { return cached.getMaxOpenPositionsPerStrategy(); }
 
     public BigDecimal getDailyProfitTarget() { return cached.getDailyProfitTarget(); }

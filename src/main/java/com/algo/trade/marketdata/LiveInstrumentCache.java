@@ -80,6 +80,11 @@ public class LiveInstrumentCache {
         log.info("LiveInstrumentCache populated: {} option instruments", count);
     }
 
+    /** All live option instruments (for tuning chain snapshots). */
+    public Collection<OptionInstrument> allOptions() {
+        return Collections.unmodifiableCollection(byToken.values());
+    }
+
     private static String compoundKey(OptionInstrument o) {
         return o.getIndexType() + "|" + o.getStrikePrice() + "|" + o.getOptionType() + "|" + o.getExpiry();
     }

@@ -142,6 +142,10 @@ public class GlobalConfig {
 
     private int cooldownMinutes = 0;
 
+    /** Direction flip cooldown: minutes to block CE↔PE flip on same underlying. 0 = disabled. Default 60. */
+    @Column(columnDefinition = "INT DEFAULT 60")
+    private int directionFlipCooldownMinutes = 60;
+
     /** Max open positions per strategy type across all indices. Default 1 = same strategy can only be active on one index at a time. */
     @Column(columnDefinition = "INT DEFAULT 1")
     private Integer maxOpenPositionsPerStrategy = 1;
@@ -448,6 +452,9 @@ public class GlobalConfig {
 
     public int getCooldownMinutes() { return cooldownMinutes; }
     public void setCooldownMinutes(int cooldownMinutes) { this.cooldownMinutes = cooldownMinutes; }
+
+    public int getDirectionFlipCooldownMinutes() { return directionFlipCooldownMinutes; }
+    public void setDirectionFlipCooldownMinutes(int v) { this.directionFlipCooldownMinutes = v; }
 
     public int getMaxOpenPositionsPerStrategy() { return maxOpenPositionsPerStrategy != null ? maxOpenPositionsPerStrategy : 1; }
     public void setMaxOpenPositionsPerStrategy(Integer v) { this.maxOpenPositionsPerStrategy = v; }

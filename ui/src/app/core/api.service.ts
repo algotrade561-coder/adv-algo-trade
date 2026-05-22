@@ -105,6 +105,7 @@ export interface GlobalConfigDto {
   maxConsecutiveLosses: number;
   maxOpenTrades: number;
   cooldownMinutes: number;
+  directionFlipCooldownMinutes: number;
   maxOpenPositionsPerStrategy: number;
   dailyProfitTarget: number;
   maxLotsPerTrade: number;

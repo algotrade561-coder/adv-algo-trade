@@ -264,6 +264,7 @@ public class RuleBasedOptionsStrategy {
 
         boolean entry = timePassed && ivPassed && liquidityPassed && rsiPassed
                 && resistanceHeadroomPassed
+                && breakoutPassed
                 && breakoutConfirmed
                 && confidenceScore.compareTo(cfgMinSignalScorePercent()) >= 0
                 && sideFilterPassed;

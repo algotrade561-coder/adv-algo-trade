@@ -29,8 +29,10 @@ class SignalTuningReportServiceTest {
                 98,
                 1,
                 0,
+                0,
                 2,
                 1,
+                0,
                 0,
                 List.of(),
                 List.of(),
@@ -39,7 +41,9 @@ class SignalTuningReportServiceTest {
                         SignalTuningAnalyzer.Severity.CRITICAL,
                         "broker",
                         "1 BROKER_ERROR on entry",
-                        "Fix IP whitelist")));
+                        "Fix IP whitelist")),
+                OiMomentumTuningAnalyzer.OiReport.empty(),
+                OiShiftTrapTuningAnalyzer.TrapReport.empty());
 
         String summary = SignalTuningReportService.formatTelegramSummary(
                 report, Path.of("reports/tuning/signal-tuning-test.html"));
@@ -47,7 +51,7 @@ class SignalTuningReportServiceTest {
         assertThat(summary).contains("Signal Tuning Report");
         assertThat(summary).contains("Evaluations: 100");
         assertThat(summary).contains("BROKER_ERROR");
-        assertThat(summary).contains("Chain OI mismatch");
+        assertThat(summary).contains("DIRECTIONAL BUY w/o confirmation");
         assertThat(summary).contains("signal-tuning-test.html");
     }
 

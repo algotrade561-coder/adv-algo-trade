@@ -19,7 +19,7 @@ public class OIMomentumConfig {
     private double pcrBearishThreshold = 0.8;            // PCR < 0.8 = bearish
 
     // ── Trade Throttling ──
-    private int maxTradesPerDay = 20;                    // Hard cap
+    private int maxTradesPerDay = 30;                    // Hard cap
     private int softTargetTradesPerDay = 15;             // Soft target
     private int maxReversalsPerDay = 3;                  // Max direction flips
     private int cooldownAfterSlSeconds = 120;            // 2 min cooldown after SL

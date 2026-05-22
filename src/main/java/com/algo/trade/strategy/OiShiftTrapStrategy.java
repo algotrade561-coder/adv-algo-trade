@@ -1,12 +1,12 @@
 package com.algo.trade.strategy;
 
 import com.algo.trade.domain.*;
+import com.algo.trade.strategy.oishifttrap.OiShiftTrapDiagnostics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
-import java.math.MathContext;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -32,8 +32,6 @@ import java.util.Optional;
 public class OiShiftTrapStrategy {
 
     private static final Logger log = LoggerFactory.getLogger(OiShiftTrapStrategy.class);
-    private static final MathContext MC = MathContext.DECIMAL64;
-
     /** Minimum OI imbalance ratio (trapped side / opposite side). */
     private static final double OI_IMBALANCE_RATIO = 1.5;
 
@@ -57,34 +55,45 @@ public class OiShiftTrapStrategy {
         this.underlyingConfigService = underlyingConfigService;
     }
 
-    public Optional<StrategyDecision> evaluate(OptionChainSnapshot snapshot, BigDecimal spotPrice,
-                                                StrategyConfig config, UnderlyingSymbol underlying,
-                                                List<Candle> underlyingCandles) {
+    public record TrapEvaluation(
+            Optional<StrategyDecision> signal,
+            OiShiftTrapDiagnostics diagnostics
+    ) {
+    }
+
+    public TrapEvaluation evaluateWithDiagnostics(OptionChainSnapshot snapshot, BigDecimal spotPrice,
+                                                   StrategyConfig config, UnderlyingSymbol underlying,
+                                                   List<Candle> underlyingCandles) {
         if (snapshot == null || snapshot.levels().isEmpty()) {
-            return Optional.empty();
+            return new TrapEvaluation(Optional.empty(),
+                    OiShiftTrapDiagnostics.blocked(underlying.name(), "NO_CHAIN", "empty_snapshot", spotPrice));
         }
         if (spotPrice == null || spotPrice.signum() <= 0) {
-            return Optional.empty();
+            return new TrapEvaluation(Optional.empty(),
+                    OiShiftTrapDiagnostics.blocked(underlying.name(), "NO_SPOT", "invalid_spot", spotPrice));
         }
 
-        // Volume confirmation: underlying must be active
-        // Skip volume gate when volumeSpikeMode=OI_PROXY (index spots like BANKNIFTY have no volume)
         if (underlyingCandles == null || underlyingCandles.isEmpty()) {
-            return Optional.empty();
+            return new TrapEvaluation(Optional.empty(),
+                    OiShiftTrapDiagnostics.blocked(underlying.name(), "NO_CANDLES", "no_underlying_candles", spotPrice));
         }
+
         String volumeMode = underlyingConfigService != null
                 ? underlyingConfigService.getVolumeSpikeMode(underlying) : "NORMAL";
+        long latestVolume = underlyingCandles.getLast().volume();
         if (!"OI_PROXY".equals(volumeMode) && !"DISABLED".equals(volumeMode)) {
-            long latestVolume = underlyingCandles.getLast().volume();
             if (latestVolume < MIN_UNDERLYING_VOLUME) {
                 log.debug("[OiShiftTrap] Skipped: low underlying volume {} < {}", latestVolume, MIN_UNDERLYING_VOLUME);
-                return Optional.empty();
+                return new TrapEvaluation(Optional.empty(), new OiShiftTrapDiagnostics(
+                        underlying.name(), spotPrice, 0, volumeMode, latestVolume,
+                        "LOW_VOLUME", "underlying_volume", snapshot.levels().size(),
+                        OiShiftTrapDiagnostics.CandidateSnapshot.empty(),
+                        OiShiftTrapDiagnostics.CandidateSnapshot.empty(),
+                        false, "", BigDecimal.ZERO, 0));
             }
         }
 
-        // Trend direction from last 3 candles: +1 bullish, -1 bearish, 0 flat
         int trendDirection = detectShortTermTrend(underlyingCandles);
-
         List<OptionChainLevel> sorted = snapshot.levels().stream()
                 .sorted(Comparator.comparing(OptionChainLevel::strike))
                 .toList();
@@ -92,115 +101,247 @@ public class OiShiftTrapStrategy {
         OptionChainLevel atm = sorted.stream()
                 .min(Comparator.comparing(l -> l.strike().subtract(spotPrice).abs()))
                 .orElse(null);
-        if (atm == null) return Optional.empty();
+        if (atm == null) {
+            return new TrapEvaluation(Optional.empty(),
+                    OiShiftTrapDiagnostics.blocked(underlying.name(), "NO_ATM", "no_atm_strike", spotPrice));
+        }
 
         double spot = spotPrice.doubleValue();
+        OiShiftTrapDiagnostics.CandidateSnapshot bestCe = OiShiftTrapDiagnostics.CandidateSnapshot.empty();
+        OiShiftTrapDiagnostics.CandidateSnapshot bestPe = OiShiftTrapDiagnostics.CandidateSnapshot.empty();
 
-        // ── CE trap: call-heavy strike just above spot, price moving up toward it ──
-        if (trendDirection >= 0) { // only when price is flat or moving up
+        if (trendDirection >= 0) {
             for (OptionChainLevel level : sorted) {
-                if (level.strike().compareTo(atm.strike()) <= 0) continue;
-                if (level.callOpenInterest() == 0) continue;
-
+                if (level.strike().compareTo(atm.strike()) <= 0) {
+                    continue;
+                }
+                if (level.callOpenInterest() == 0) {
+                    continue;
+                }
                 double proximity = (level.strike().doubleValue() - spot) / spot * 100;
-                if (proximity > PROXIMITY_PERCENT) break; // too far — stop scanning
-
-                long ceOi = level.callOpenInterest();
-                long peOi = level.putOpenInterest();
-                long ceOiChange = level.callOpenInterestChange();
-
-                // Gate 1: minimum absolute OI
-                if (ceOi < MIN_ABSOLUTE_OI) continue;
-
-                // Gate 2: OI must be building (writers adding, not unwinding)
-                if (ceOiChange < MIN_OI_CHANGE) continue;
-
-                // Gate 3: imbalance ratio
-                double imbalance = ceOi / (double) Math.max(peOi, 1);
-                if (imbalance < OI_IMBALANCE_RATIO) continue;
-
-                // Graduated confidence score
-                int score = calculateScore(imbalance, ceOi, ceOiChange, proximity, trendDirection);
-                if (score < 50) continue; // minimum quality threshold
-
-                List<String> reasons = new ArrayList<>();
-                reasons.add(String.format("OI Shift Trap: call-heavy strike=%s OI=%,d change=+%,d imbalance=%.1fx",
-                        level.strike(), ceOi, ceOiChange, imbalance));
-                reasons.add(String.format("Spot=%s proximity=%.2f%% trend=%s — call writers exposed",
-                        spotPrice, proximity, trendDirection > 0 ? "BULLISH" : "FLAT"));
-
-                log.info("[OiShiftTrap] CE signal: strike={} OI={} change=+{} imbalance={}x score={} proximity={}%",
-                        level.strike(), ceOi, ceOiChange, String.format("%.1f", imbalance), score,
-                        String.format("%.2f", proximity));
-
-                return Optional.of(new StrategyDecision(
-                        Instant.now(), underlying, SignalType.BUY_CE, spotPrice,
-                        Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
-                        Optional.empty(), Optional.of(level.strike()), Optional.of(OptionType.CE),
-                        false, Optional.of(BigDecimal.valueOf(imbalance)), false,
-                        BigDecimal.valueOf(score), reasons
-                ));
+                if (proximity > PROXIMITY_PERCENT) {
+                    break;
+                }
+                bestCe = betterCandidate(bestCe, evaluateCeCandidate(level, proximity, trendDirection));
+                Optional<StrategyDecision> signal = tryCeSignal(level, spotPrice, underlying, proximity, trendDirection);
+                if (signal.isPresent()) {
+                    OiShiftTrapDiagnostics.CandidateSnapshot chosen = bestCe;
+                    return new TrapEvaluation(signal, buildSuccessDiag(
+                            underlying.name(), spotPrice, trendDirection, volumeMode, latestVolume,
+                            snapshot.levels().size(), bestCe, bestPe, "CE", level.strike(),
+                            signal.get().confidenceScore().intValue()));
+                }
             }
         }
 
-        // ── PE trap: put-heavy strike just below spot, price moving down toward it ──
-        if (trendDirection <= 0) { // only when price is flat or moving down
+        if (trendDirection <= 0) {
             List<OptionChainLevel> belowAtm = sorted.stream()
                     .filter(l -> l.strike().compareTo(atm.strike()) < 0)
                     .sorted(Comparator.comparing(OptionChainLevel::strike, Comparator.reverseOrder()))
                     .toList();
 
             for (OptionChainLevel level : belowAtm) {
-                if (level.putOpenInterest() == 0) continue;
-
+                if (level.putOpenInterest() == 0) {
+                    continue;
+                }
                 double proximity = (spot - level.strike().doubleValue()) / spot * 100;
-                if (proximity > PROXIMITY_PERCENT) break;
-
-                long peOi = level.putOpenInterest();
-                long ceOi = level.callOpenInterest();
-                long peOiChange = level.putOpenInterestChange();
-
-                // Gate 1: minimum absolute OI
-                if (peOi < MIN_ABSOLUTE_OI) continue;
-
-                // Gate 2: OI must be building
-                if (peOiChange < MIN_OI_CHANGE) continue;
-
-                // Gate 3: imbalance ratio
-                double imbalance = peOi / (double) Math.max(ceOi, 1);
-                if (imbalance < OI_IMBALANCE_RATIO) continue;
-
-                // Graduated confidence score
-                int score = calculateScore(imbalance, peOi, peOiChange, proximity, Math.abs(trendDirection));
-                if (score < 50) continue;
-
-                List<String> reasons = new ArrayList<>();
-                reasons.add(String.format("OI Shift Trap: put-heavy strike=%s OI=%,d change=+%,d imbalance=%.1fx",
-                        level.strike(), peOi, peOiChange, imbalance));
-                reasons.add(String.format("Spot=%s proximity=%.2f%% trend=%s — put writers exposed",
-                        spotPrice, proximity, trendDirection < 0 ? "BEARISH" : "FLAT"));
-
-                log.info("[OiShiftTrap] PE signal: strike={} OI={} change=+{} imbalance={}x score={} proximity={}%",
-                        level.strike(), peOi, peOiChange, String.format("%.1f", imbalance), score,
-                        String.format("%.2f", proximity));
-
-                return Optional.of(new StrategyDecision(
-                        Instant.now(), underlying, SignalType.BUY_PE, spotPrice,
-                        Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
-                        Optional.empty(), Optional.of(level.strike()), Optional.of(OptionType.PE),
-                        false, Optional.of(BigDecimal.valueOf(imbalance)), false,
-                        BigDecimal.valueOf(score), reasons
-                ));
+                if (proximity > PROXIMITY_PERCENT) {
+                    break;
+                }
+                bestPe = betterCandidate(bestPe, evaluatePeCandidate(level, proximity, trendDirection));
+                Optional<StrategyDecision> signal = tryPeSignal(level, spotPrice, underlying, proximity, trendDirection);
+                if (signal.isPresent()) {
+                    return new TrapEvaluation(signal, buildSuccessDiag(
+                            underlying.name(), spotPrice, trendDirection, volumeMode, latestVolume,
+                            snapshot.levels().size(), bestCe, bestPe, "PE", level.strike(),
+                            signal.get().confidenceScore().intValue()));
+                }
             }
         }
 
-        return Optional.empty();
+        String primaryBlocker = resolvePrimaryBlocker(trendDirection, bestCe, bestPe);
+        String outcome = trendDirection == 0 ? "TREND_FLAT" : "NO_TRAP_MATCH";
+        return new TrapEvaluation(Optional.empty(), new OiShiftTrapDiagnostics(
+                underlying.name(), spotPrice, trendDirection, volumeMode, latestVolume,
+                outcome, primaryBlocker, snapshot.levels().size(),
+                bestCe, bestPe, false, "", BigDecimal.ZERO, 0));
+    }
+
+    public Optional<StrategyDecision> evaluate(OptionChainSnapshot snapshot, BigDecimal spotPrice,
+                                                StrategyConfig config, UnderlyingSymbol underlying,
+                                                List<Candle> underlyingCandles) {
+        return evaluateWithDiagnostics(snapshot, spotPrice, config, underlying, underlyingCandles).signal();
     }
 
     /** Backward-compatible overload for callers that don't pass candles. */
     public Optional<StrategyDecision> evaluate(OptionChainSnapshot snapshot, BigDecimal spotPrice,
                                                 StrategyConfig config, UnderlyingSymbol underlying) {
         return evaluate(snapshot, spotPrice, config, underlying, null);
+    }
+
+    private static OiShiftTrapDiagnostics buildSuccessDiag(
+            String underlying, BigDecimal spot, int trend, String volumeMode, long volume,
+            int chainLevels, OiShiftTrapDiagnostics.CandidateSnapshot bestCe,
+            OiShiftTrapDiagnostics.CandidateSnapshot bestPe, String trapSide,
+            BigDecimal strike, int score) {
+        return new OiShiftTrapDiagnostics(
+                underlying, spot, trend, volumeMode, volume,
+                "SIGNAL", "passed", chainLevels,
+                bestCe, bestPe, true, trapSide, strike, score);
+    }
+
+    private static String resolvePrimaryBlocker(int trendDirection,
+                                                  OiShiftTrapDiagnostics.CandidateSnapshot bestCe,
+                                                  OiShiftTrapDiagnostics.CandidateSnapshot bestPe) {
+        if (trendDirection > 0 && !bestCe.present() && !bestPe.present()) {
+            return "trend_blocks_pe_no_ce_candidate";
+        }
+        if (trendDirection < 0 && !bestPe.present() && !bestCe.present()) {
+            return "trend_blocks_ce_no_pe_candidate";
+        }
+        if (trendDirection == 0) {
+            return "trend_flat";
+        }
+        OiShiftTrapDiagnostics.CandidateSnapshot best = bestCe.score() >= bestPe.score() ? bestCe : bestPe;
+        if (!best.present()) {
+            return "no_strike_in_proximity";
+        }
+        return best.failedGate().isBlank() ? "score_below_50" : best.failedGate();
+    }
+
+    private static OiShiftTrapDiagnostics.CandidateSnapshot betterCandidate(
+            OiShiftTrapDiagnostics.CandidateSnapshot current,
+            OiShiftTrapDiagnostics.CandidateSnapshot candidate) {
+        if (!candidate.present()) {
+            return current;
+        }
+        if (!current.present() || candidate.score() > current.score()) {
+            return candidate;
+        }
+        return current;
+    }
+
+    private OiShiftTrapDiagnostics.CandidateSnapshot evaluateCeCandidate(
+            OptionChainLevel level, double proximity, int trendDirection) {
+        long ceOi = level.callOpenInterest();
+        long peOi = level.putOpenInterest();
+        long ceOiChange = level.callOpenInterestChange();
+        if (ceOi < MIN_ABSOLUTE_OI) {
+            return snap(level.strike(), ceOi, peOi, ceOiChange, 0, proximity, 0, "MIN_OI");
+        }
+        if (ceOiChange < MIN_OI_CHANGE) {
+            double imb = ceOi / (double) Math.max(peOi, 1);
+            return snap(level.strike(), ceOi, peOi, ceOiChange, imb, proximity, 0, "MIN_OI_CHANGE");
+        }
+        double imbalance = ceOi / (double) Math.max(peOi, 1);
+        if (imbalance < OI_IMBALANCE_RATIO) {
+            return snap(level.strike(), ceOi, peOi, ceOiChange, imbalance, proximity, 0, "IMBALANCE");
+        }
+        int score = calculateScore(imbalance, ceOi, ceOiChange, proximity, trendDirection);
+        String gate = score < 50 ? "SCORE" : "";
+        return snap(level.strike(), ceOi, peOi, ceOiChange, imbalance, proximity, score, gate);
+    }
+
+    private OiShiftTrapDiagnostics.CandidateSnapshot evaluatePeCandidate(
+            OptionChainLevel level, double proximity, int trendDirection) {
+        long peOi = level.putOpenInterest();
+        long ceOi = level.callOpenInterest();
+        long peOiChange = level.putOpenInterestChange();
+        if (peOi < MIN_ABSOLUTE_OI) {
+            return snap(level.strike(), peOi, ceOi, peOiChange, 0, proximity, 0, "MIN_OI");
+        }
+        if (peOiChange < MIN_OI_CHANGE) {
+            double imb = peOi / (double) Math.max(ceOi, 1);
+            return snap(level.strike(), peOi, ceOi, peOiChange, imb, proximity, 0, "MIN_OI_CHANGE");
+        }
+        double imbalance = peOi / (double) Math.max(ceOi, 1);
+        if (imbalance < OI_IMBALANCE_RATIO) {
+            return snap(level.strike(), peOi, ceOi, peOiChange, imbalance, proximity, 0, "IMBALANCE");
+        }
+        int score = calculateScore(imbalance, peOi, peOiChange, proximity, Math.abs(trendDirection));
+        String gate = score < 50 ? "SCORE" : "";
+        return snap(level.strike(), peOi, ceOi, peOiChange, imbalance, proximity, score, gate);
+    }
+
+    private static OiShiftTrapDiagnostics.CandidateSnapshot snap(
+            BigDecimal strike, long trappedOi, long oppositeOi, long oiChange,
+            double imbalance, double proximityPct, int score, String failedGate) {
+        return new OiShiftTrapDiagnostics.CandidateSnapshot(
+                strike, trappedOi, oppositeOi, oiChange, imbalance, proximityPct, score, failedGate);
+    }
+
+    private Optional<StrategyDecision> tryCeSignal(OptionChainLevel level, BigDecimal spotPrice,
+                                                     UnderlyingSymbol underlying,
+                                                     double proximity, int trendDirection) {
+        long ceOi = level.callOpenInterest();
+        long peOi = level.putOpenInterest();
+        long ceOiChange = level.callOpenInterestChange();
+        if (ceOi < MIN_ABSOLUTE_OI || ceOiChange < MIN_OI_CHANGE) {
+            return Optional.empty();
+        }
+        double imbalance = ceOi / (double) Math.max(peOi, 1);
+        if (imbalance < OI_IMBALANCE_RATIO) {
+            return Optional.empty();
+        }
+        int score = calculateScore(imbalance, ceOi, ceOiChange, proximity, trendDirection);
+        if (score < 50) {
+            return Optional.empty();
+        }
+
+        List<String> reasons = new ArrayList<>();
+        reasons.add(String.format("OI Shift Trap: call-heavy strike=%s OI=%,d change=+%,d imbalance=%.1fx",
+                level.strike(), ceOi, ceOiChange, imbalance));
+        reasons.add(String.format("Spot=%s proximity=%.2f%% trend=%s — call writers exposed",
+                spotPrice, proximity, trendDirection > 0 ? "BULLISH" : "FLAT"));
+
+        log.info("[OiShiftTrap] CE signal: strike={} OI={} change=+{} imbalance={}x score={} proximity={}%",
+                level.strike(), ceOi, ceOiChange, String.format("%.1f", imbalance), score,
+                String.format("%.2f", proximity));
+
+        return Optional.of(new StrategyDecision(
+                Instant.now(), underlying, SignalType.BUY_CE, spotPrice,
+                Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
+                Optional.empty(), Optional.of(level.strike()), Optional.of(OptionType.CE),
+                false, Optional.of(BigDecimal.valueOf(imbalance)), false,
+                BigDecimal.valueOf(score), reasons
+        ));
+    }
+
+    private Optional<StrategyDecision> tryPeSignal(OptionChainLevel level, BigDecimal spotPrice,
+                                                     UnderlyingSymbol underlying,
+                                                     double proximity, int trendDirection) {
+        long peOi = level.putOpenInterest();
+        long ceOi = level.callOpenInterest();
+        long peOiChange = level.putOpenInterestChange();
+        if (peOi < MIN_ABSOLUTE_OI || peOiChange < MIN_OI_CHANGE) {
+            return Optional.empty();
+        }
+        double imbalance = peOi / (double) Math.max(ceOi, 1);
+        if (imbalance < OI_IMBALANCE_RATIO) {
+            return Optional.empty();
+        }
+        int score = calculateScore(imbalance, peOi, peOiChange, proximity, Math.abs(trendDirection));
+        if (score < 50) {
+            return Optional.empty();
+        }
+
+        List<String> reasons = new ArrayList<>();
+        reasons.add(String.format("OI Shift Trap: put-heavy strike=%s OI=%,d change=+%,d imbalance=%.1fx",
+                level.strike(), peOi, peOiChange, imbalance));
+        reasons.add(String.format("Spot=%s proximity=%.2f%% trend=%s — put writers exposed",
+                spotPrice, proximity, trendDirection < 0 ? "BEARISH" : "FLAT"));
+
+        log.info("[OiShiftTrap] PE signal: strike={} OI={} change=+{} imbalance={}x score={} proximity={}%",
+                level.strike(), peOi, peOiChange, String.format("%.1f", imbalance), score,
+                String.format("%.2f", proximity));
+
+        return Optional.of(new StrategyDecision(
+                Instant.now(), underlying, SignalType.BUY_PE, spotPrice,
+                Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
+                Optional.empty(), Optional.of(level.strike()), Optional.of(OptionType.PE),
+                false, Optional.of(BigDecimal.valueOf(imbalance)), false,
+                BigDecimal.valueOf(score), reasons
+        ));
     }
 
     /**

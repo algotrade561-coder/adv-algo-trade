@@ -5,6 +5,7 @@ import com.algo.trade.domain.OrderResponse;
 import com.algo.trade.domain.StrategyDecision;
 import com.algo.trade.persistence.TradeEntity;
 import com.algo.trade.strategy.StrategyConfig;
+import com.algo.trade.reporting.SignalDecisionKey;
 import com.algo.trade.util.IstDateTimes;
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -176,13 +177,7 @@ public class ExecutionOutcomeCsvRecorder {
     }
 
     private String decisionKey(StrategyDecision decision) {
-        // Must match StrategySignalCsvRecorder.decisionKey() for correlation
-        // Signal recorder uses: request.timestamp() + "|" + request.underlying() + "|" + request.optionType() + "|" + request.selectedInstrumentKey()
-        // OptionType enum toString = "CE"/"PE", Optional.orElse(null) toString = "CE"/"PE" or "null"
-        String optType = decision.optionType().map(Enum::name).orElse(null);
-        String instKey = decision.selectedInstrumentKey().orElse(null);
-        String raw = decision.timestamp() + "|" + decision.underlying() + "|" + optType + "|" + instKey;
-        return Integer.toUnsignedString(raw.hashCode(), 16);
+        return SignalDecisionKey.from(decision);
     }
 
     public synchronized void recordExit(TradeEntity trade, BigDecimal exitPrice, BigDecimal realizedPnl,

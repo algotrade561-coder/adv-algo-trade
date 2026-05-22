@@ -91,9 +91,45 @@ public class ScalpingStrategy implements StrategyEvaluator {
         String crossType = bullishCross ? "BULLISH" : bearishCross ? "BEARISH" : "NONE";
         int confirmCount = bullishCross ? bullCount : (bearishCross ? bearCount : 0);
 
+        // ── Tightening filters ──────────────────────────────────────────────
+        // 1. Minimum EMA gap: EMA9 must be at least 0.05% away from EMA21 (filters weak/noisy crosses)
+        double emaGapPct = Math.abs(fastEma - slowEma) / slowEma * 100;
+        double minEmaGapPct = 0.05; // 0.05% = ~12 pts on NIFTY, ~26 pts on BANKNIFTY
+
+        // 2. Price must be on the right side of the cross (momentum confirmation)
+        double lastClose = candles5m.getLast().close().doubleValue();
+        boolean priceConfirmsBull = lastClose > fastEma; // Price above fast EMA for bullish
+        boolean priceConfirmsBear = lastClose < fastEma; // Price below fast EMA for bearish
+
+        // 3. Trend filter: 15m trend via EMA21 slope (last 3 candles of slow EMA must slope in direction)
+        double prevPrevSlow = candles5m.size() >= 16
+                ? emaIndicator.calculate(closes.subList(0, closes.size() - 2), 21).doubleValue()
+                : prevSlow;
+        boolean slowEmaSlopingUp = slowEma > prevSlow && prevSlow >= prevPrevSlow;
+        boolean slowEmaSlopingDown = slowEma < prevSlow && prevSlow <= prevPrevSlow;
+
         if (bullCount >= CONFIRM_CANDLES) {
             bullishConfirm.put(key, 0);
-            log.info("[Scalping {}] Bullish EMA crossover confirmed (2 candles)", underlying);
+            // Reject if EMA gap too small, price doesn't confirm, or trend opposes
+            if (emaGapPct < minEmaGapPct) {
+                log.debug("[Scalping {}] Bullish cross rejected: EMA gap {:.3f}% < {}%", underlying, emaGapPct, minEmaGapPct);
+                return new StrategyDiagnostics.WithSignal(Optional.empty(),
+                        new StrategyDiagnostics("emaGapTooSmall(" + String.format("%.3f", emaGapPct) + "%)",
+                                fastEma, slowEma, crossType, confirmCount, null, null, null, null));
+            }
+            if (!priceConfirmsBull) {
+                log.debug("[Scalping {}] Bullish cross rejected: price {} below EMA9 {}", underlying, lastClose, fastEma);
+                return new StrategyDiagnostics.WithSignal(Optional.empty(),
+                        new StrategyDiagnostics("priceNotConfirming(close=" + String.format("%.1f", lastClose) + "<EMA9)",
+                                fastEma, slowEma, crossType, confirmCount, null, null, null, null));
+            }
+            if (slowEmaSlopingDown) {
+                log.debug("[Scalping {}] Bullish cross rejected: EMA21 sloping down (counter-trend)", underlying);
+                return new StrategyDiagnostics.WithSignal(Optional.empty(),
+                        new StrategyDiagnostics("counterTrend(EMA21_sloping_down)",
+                                fastEma, slowEma, crossType, confirmCount, null, null, null, null));
+            }
+            log.info("[Scalping {}] Bullish EMA crossover confirmed (gap={:.2f}%, price confirms, trend OK)", underlying, emaGapPct);
             StrategyDiagnostics diag = new StrategyDiagnostics(null, fastEma, slowEma, crossType, confirmCount,
                     null, null, null, null);
             return new StrategyDiagnostics.WithSignal(
@@ -102,7 +138,25 @@ public class ScalpingStrategy implements StrategyEvaluator {
         }
         if (bearCount >= CONFIRM_CANDLES) {
             bearishConfirm.put(key, 0);
-            log.info("[Scalping {}] Bearish EMA crossover confirmed (2 candles)", underlying);
+            if (emaGapPct < minEmaGapPct) {
+                log.debug("[Scalping {}] Bearish cross rejected: EMA gap {:.3f}% < {}%", underlying, emaGapPct, minEmaGapPct);
+                return new StrategyDiagnostics.WithSignal(Optional.empty(),
+                        new StrategyDiagnostics("emaGapTooSmall(" + String.format("%.3f", emaGapPct) + "%)",
+                                fastEma, slowEma, crossType, confirmCount, null, null, null, null));
+            }
+            if (!priceConfirmsBear) {
+                log.debug("[Scalping {}] Bearish cross rejected: price {} above EMA9 {}", underlying, lastClose, fastEma);
+                return new StrategyDiagnostics.WithSignal(Optional.empty(),
+                        new StrategyDiagnostics("priceNotConfirming(close=" + String.format("%.1f", lastClose) + ">EMA9)",
+                                fastEma, slowEma, crossType, confirmCount, null, null, null, null));
+            }
+            if (slowEmaSlopingUp) {
+                log.debug("[Scalping {}] Bearish cross rejected: EMA21 sloping up (counter-trend)", underlying);
+                return new StrategyDiagnostics.WithSignal(Optional.empty(),
+                        new StrategyDiagnostics("counterTrend(EMA21_sloping_up)",
+                                fastEma, slowEma, crossType, confirmCount, null, null, null, null));
+            }
+            log.info("[Scalping {}] Bearish EMA crossover confirmed (gap={:.2f}%, price confirms, trend OK)", underlying, emaGapPct);
             StrategyDiagnostics diag = new StrategyDiagnostics(null, fastEma, slowEma, crossType, confirmCount,
                     null, null, null, null);
             return new StrategyDiagnostics.WithSignal(

@@ -4,6 +4,7 @@ import com.algo.trade.config.TradingProperties;
 import com.algo.trade.domain.Candle;
 import com.algo.trade.domain.Quote;
 import com.algo.trade.domain.StrategyDecision;
+import com.algo.trade.reporting.SignalDecisionKey;
 import com.algo.trade.util.IstDateTimes;
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -206,9 +207,10 @@ public class StrategySignalCsvRecorder {
     }
 
     private String unifiedDecisionKey(SignalRecordContext ctx) {
-        String raw = ctx.strategyType() + "|" + ctx.underlying() + "|"
-                + (ctx.decision() != null ? ctx.decision().timestamp() : java.time.Instant.now())
-                + "|" + (ctx.decision() != null ? ctx.decision().optionType().map(Enum::name).orElse("") : "");
+        if (ctx.decision() != null) {
+            return SignalDecisionKey.from(ctx.decision());
+        }
+        String raw = ctx.strategyType() + "|" + ctx.underlying() + "|" + java.time.Instant.now();
         return Integer.toUnsignedString(raw.hashCode(), 16);
     }
 

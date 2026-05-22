@@ -37,10 +37,11 @@ class ExitParamResolverTest {
     }
 
     @Test
-    void creditSpreadHybridWidensSl() {
+    void creditSpreadHybridUsesTighterSl() {
         var resolved = resolver.resolveSpreadCredit(
                 ExitMode.HYBRID, 50, 30, 120, 5000, 2);
-        assertThat(resolved.stopLossPercent()).isGreaterThanOrEqualTo(50);
+        // HYBRID uses min(config, ATR) — tighter wins. ATR-derived SL < config 50%.
+        assertThat(resolved.stopLossPercent()).isLessThanOrEqualTo(50);
         assertThat(resolved.atrUsed()).isTrue();
     }
 }

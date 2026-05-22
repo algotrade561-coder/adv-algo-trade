@@ -16,6 +16,33 @@ final class SignalTuningChainSummarizer {
     private SignalTuningChainSummarizer() {
     }
 
+    static ChainSummary summarizeOi(SignalTuningCsvLoader.OiMomentumSignalRow signal,
+                                      List<SignalTuningCsvLoader.ChainLevelRow> levels) {
+        SignalTuningCsvLoader.SignalRow adapter = new SignalTuningCsvLoader.SignalRow(
+                signal.decisionKey(),
+                signal.timestamp(),
+                "OI_MOMENTUM",
+                signal.signalType(),
+                signal.underlying(),
+                signal.optionType(),
+                signal.instrumentKey(),
+                signal.premium(),
+                BigDecimal.ZERO,
+                BigDecimal.ZERO,
+                "",
+                "",
+                false,
+                false,
+                false,
+                signal.oiAvailable(),
+                true,
+                true,
+                true,
+                false,
+                "");
+        return summarize(adapter, levels);
+    }
+
     static ChainSummary summarize(SignalTuningCsvLoader.SignalRow signal, List<SignalTuningCsvLoader.ChainLevelRow> levels) {
         if (levels == null || levels.isEmpty()) {
             return ChainSummary.missing();

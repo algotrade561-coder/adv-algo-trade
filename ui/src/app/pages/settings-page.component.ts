@@ -293,6 +293,12 @@ import { ApiService, GlobalConfigDto } from '../core/api.service';
               <input matInput type="number" min="0" [(ngModel)]="config.cooldownMinutes">
               <mat-hint>Per instrument after trade</mat-hint>
             </mat-form-field>
+
+            <mat-form-field appearance="outline">
+              <mat-label>Direction Flip Cooldown (min)</mat-label>
+              <input matInput type="number" min="0" [(ngModel)]="config.directionFlipCooldownMinutes">
+              <mat-hint>CE↔PE flip block (0=disabled)</mat-hint>
+            </mat-form-field>
             <mat-form-field appearance="outline">
               <mat-label>Daily Profit Target (₹)</mat-label>
               <input matInput type="number" min="0" [(ngModel)]="config.dailyProfitTarget">

@@ -119,12 +119,19 @@ public class LiveCandleBuilder {
         log.info("Open candles cleared after WebSocket reconnect: {} discarded", cleared);
     }
 
-    /** Seed history from REST historical candles fetched on startup. */
+    /**
+     * Seed history from REST on startup. Replaces any partial tick-built buffer so EMA warm-up
+     * is correct immediately after restart (not 12/14 until two more 5m bars close).
+     */
     public void seedHistory(long instrumentToken, Timeframe tf, List<Candle> candles) {
+        if (candles == null || candles.isEmpty()) {
+            return;
+        }
         String key = instrumentToken + ":" + tf.name();
-        CandleHistory h = getHistory(key);
+        CandleHistory h = new CandleHistory(MAX_HISTORY);
         candles.forEach(h::add);
-        log.info("Candle history seeded: token={} tf={} count={}", instrumentToken, tf, candles.size());
+        history.put(key, h);
+        log.info("Candle history seeded: token={} tf={} count={}", instrumentToken, tf, h.size());
     }
 
     private CandleHistory getHistory(String key) {

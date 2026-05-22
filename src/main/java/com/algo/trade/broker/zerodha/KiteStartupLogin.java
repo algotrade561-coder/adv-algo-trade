@@ -270,6 +270,11 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
             webSocketClient.subscribe(tokens);
             log.info("WebSocket subscribed to {} index + VIX + commodity tokens on startup", tokens.size());
 
+            // Seed underlying + VIX candles before option subscribe delay so SCALPING has 14+ 5m bars at 09:30
+            if (isMarketHours()) {
+                seedUnderlyingSpotCandleHistory();
+            }
+
             // Populate LiveInstrumentCache from instrument master
             // then subscribe option tokens after a short delay to allow spot price to arrive
             new Thread(() -> {
@@ -333,9 +338,9 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
                         if (errorEventService != null) errorEventService.medium("KiteStartup", "Option token subscription failed after " + attemptMs + "ms — will retry");
                     }
                     webSocketConnected = true;
-                    // Seed candle history from REST if app was restarted during market hours
+                    // Option 1m history only — underlyings were seeded right after index WS subscribe
                     if (isMarketHours()) {
-                        seedCandleHistory(optionTokens);
+                        seedOptionCandleHistory(optionTokens);
                     }
                 } catch (Exception e) {
                     log.warn("Option token subscription failed: {}", e.getMessage());
@@ -351,35 +356,35 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
     }
 
     /**
-     * Seeds candle history from REST historical API for subscribed option tokens, VIX, and underlying indices.
-     * Called only during market hours on startup to recover in-memory state after a mid-session restart.
-     * Seeds:
-     *   - 5-minute candles for underlying spot indices (required by ScalpingStrategy EMA 9/21 warm-up)
-     *   - 1-minute candles for options (used by DIRECTIONAL_BUY volume analysis)
-     *   - 15-minute candles for VIX (used by detectVixTrend)
-     * Limits to 40 option tokens max and throttles at ~2 REST calls/second to respect Zerodha rate limits.
+     * Seeds VIX + underlying spot 5m/15m from REST (prior session + today).
+     * Runs synchronously right after index WebSocket subscribe so strategies are warm before the scanner ticks.
      */
-    private void seedCandleHistory(java.util.List<Long> optionTokens) {
-        log.info("Market-hours restart detected — seeding candle history from REST for {} option tokens + underlyings + VIX",
-                Math.min(optionTokens.size(), 40));
+    private void seedUnderlyingSpotCandleHistory() {
+        log.info("Market-hours restart — seeding underlying spot + VIX candle history for strategy warm-up");
 
-        // Seed VIX 15-minute candles for detectVixTrend()
         long vixToken = 264969L;
         seedTokenCandles(vixToken, "NSE:" + vixToken, com.algo.trade.domain.Timeframe.FIFTEEN_MINUTE);
 
-        // Seed 5-minute AND 15-minute candles for underlying spot indices.
-        // 5-min: required by ScalpingStrategy (EMA 9/21 needs 22 candles).
-        // 15-min: required by VolatilityBreakoutStrategy (Bollinger 20-period needs 21 candles).
-        // Without 15-min seeding, VB cannot fire for 5+ hours after every restart.
         for (com.algo.trade.domain.IndexType idx : com.algo.trade.domain.IndexType.values()) {
             long token = idx.spotToken();
             String exchange = idx.isBSE() ? "BSE" : "NSE";
             String instrumentKey = exchange + ":" + token;
             seedTokenCandles(token, instrumentKey, com.algo.trade.domain.Timeframe.FIVE_MINUTE);
-            try { Thread.sleep(500); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
+            throttleSeed();
             seedTokenCandles(token, instrumentKey, com.algo.trade.domain.Timeframe.FIFTEEN_MINUTE);
-            try { Thread.sleep(500); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
+            throttleSeed();
         }
+        log.info("Underlying spot candle seeding complete for {} indices + VIX",
+                com.algo.trade.domain.IndexType.values().length);
+    }
+
+    /**
+     * Seeds 1-minute option candles after ATM option tokens are known.
+     * Limits to 40 tokens and throttles REST calls (~2/s).
+     */
+    private void seedOptionCandleHistory(java.util.List<Long> optionTokens) {
+        log.info("Seeding option 1m candle history from REST for up to 40 of {} tokens",
+                optionTokens.size());
 
         // Seed 1-minute candles for up to 40 option tokens (ATM-nearest first)
         int seeded = 0;
@@ -390,10 +395,17 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
             String instrumentKey = opt.get().getExchange() + ":" + token;
             seedTokenCandles(token, instrumentKey, com.algo.trade.domain.Timeframe.ONE_MINUTE);
             seeded++;
-            try { Thread.sleep(500); } catch (InterruptedException ignored) { Thread.currentThread().interrupt(); }
+            throttleSeed();
         }
-        log.info("Candle history seeding complete: seeded {} option tokens + {} underlying 5m + VIX",
-                seeded, com.algo.trade.domain.IndexType.values().length);
+        log.info("Option 1m candle history seeding complete: {} tokens", seeded);
+    }
+
+    private static void throttleSeed() {
+        try {
+            Thread.sleep(500);
+        } catch (InterruptedException ignored) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private void seedTokenCandles(long token, String instrumentKey, com.algo.trade.domain.Timeframe tf) {

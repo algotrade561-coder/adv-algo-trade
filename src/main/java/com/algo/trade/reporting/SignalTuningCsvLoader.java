@@ -41,25 +41,41 @@ final class SignalTuningCsvLoader {
         Map<String, ExecutionRow> exits = new LinkedHashMap<>();
         Map<String, Map<Instant, Candle>> optionCandles = new LinkedHashMap<>();
         Map<String, List<ChainLevelRow>> chainByDecision = new LinkedHashMap<>();
+        List<OiMomentumSignalRow> oiSignals = new ArrayList<>();
+        List<OiMomentumRejectRow> oiRejects = new ArrayList<>();
+        List<OiMomentumExitRow> oiExits = new ArrayList<>();
+        List<OiShiftTrapEvalRow> trapEvals = new ArrayList<>();
+        List<OiShiftTrapNearMissRow> trapNearMiss = new ArrayList<>();
+        List<OiShiftTrapSignalRow> trapSignals = new ArrayList<>();
 
-        loadDir(ACTIVE_DIR, signals, entries, exits, optionCandles, chainByDecision);
-        loadRecentArchives(signals, entries, exits, optionCandles, chainByDecision);
+        loadDir(ACTIVE_DIR, signals, entries, exits, optionCandles, chainByDecision,
+                oiSignals, oiRejects, oiExits, trapEvals, trapNearMiss, trapSignals);
+        loadRecentArchives(signals, entries, exits, optionCandles, chainByDecision,
+                oiSignals, oiRejects, oiExits, trapEvals, trapNearMiss, trapSignals);
 
         Map<String, List<Candle>> finalizedCandles = new LinkedHashMap<>();
         for (var e : optionCandles.entrySet()) {
             finalizedCandles.put(e.getKey(),
                     e.getValue().values().stream().sorted(Comparator.comparing(Candle::timestamp)).toList());
         }
-        log.info("Signal tuning data loaded: signals={}, entryOutcomes={}, exitOutcomes={}, optionSeries={}, chainKeys={}",
-                signals.size(), entries.size(), exits.size(), finalizedCandles.size(), chainByDecision.size());
+        log.info("Signal tuning data loaded: signals={}, entryOutcomes={}, exitOutcomes={}, optionSeries={}, chainKeys={}, oiSignals={}, oiRejects={}, oiExits={}, trapEvals={}, trapNearMiss={}, trapSignals={}",
+                signals.size(), entries.size(), exits.size(), finalizedCandles.size(), chainByDecision.size(),
+                oiSignals.size(), oiRejects.size(), oiExits.size(), trapEvals.size(), trapNearMiss.size(), trapSignals.size());
         return new Loaded(List.copyOf(signals.values()), List.copyOf(entries.values()), List.copyOf(exits.values()),
-                finalizedCandles, chainByDecision);
+                finalizedCandles, chainByDecision, List.copyOf(oiSignals), List.copyOf(oiRejects), List.copyOf(oiExits),
+                List.copyOf(trapEvals), List.copyOf(trapNearMiss), List.copyOf(trapSignals));
     }
 
     private static void loadRecentArchives(Map<String, SignalRow> signals, Map<String, ExecutionRow> entries,
                                            Map<String, ExecutionRow> exits,
                                            Map<String, Map<Instant, Candle>> optionCandles,
-                                           Map<String, List<ChainLevelRow>> chainByDecision) {
+                                           Map<String, List<ChainLevelRow>> chainByDecision,
+                                           List<OiMomentumSignalRow> oiSignals,
+                                           List<OiMomentumRejectRow> oiRejects,
+                                           List<OiMomentumExitRow> oiExits,
+                                           List<OiShiftTrapEvalRow> trapEvals,
+                                           List<OiShiftTrapNearMissRow> trapNearMiss,
+                                           List<OiShiftTrapSignalRow> trapSignals) {
         if (!Files.isDirectory(ARCHIVE_DIR)) {
             return;
         }
@@ -70,7 +86,8 @@ final class SignalTuningCsvLoader {
                     .limit(3)
                     .toList();
             for (Path zip : zips) {
-                loadZip(zip, signals, entries, exits, optionCandles, chainByDecision);
+                loadZip(zip, signals, entries, exits, optionCandles, chainByDecision, oiSignals, oiRejects, oiExits,
+                        trapEvals, trapNearMiss, trapSignals);
             }
         } catch (IOException ex) {
             log.warn("Failed to load signal tuning archives: {}", ex.getMessage());
@@ -79,7 +96,13 @@ final class SignalTuningCsvLoader {
 
     private static void loadDir(Path dir, Map<String, SignalRow> signals, Map<String, ExecutionRow> entries,
                                 Map<String, ExecutionRow> exits, Map<String, Map<Instant, Candle>> optionCandles,
-                                Map<String, List<ChainLevelRow>> chainByDecision) {
+                                Map<String, List<ChainLevelRow>> chainByDecision,
+                                List<OiMomentumSignalRow> oiSignals,
+                                List<OiMomentumRejectRow> oiRejects,
+                                List<OiMomentumExitRow> oiExits,
+                                List<OiShiftTrapEvalRow> trapEvals,
+                                List<OiShiftTrapNearMissRow> trapNearMiss,
+                                List<OiShiftTrapSignalRow> trapSignals) {
         if (!Files.isDirectory(dir)) {
             return;
         }
@@ -104,6 +127,30 @@ final class SignalTuningCsvLoader {
             if (Files.exists(chainLevels)) {
                 readChainLevels(Files.newInputStream(chainLevels), chainByDecision);
             }
+            Path oiSig = dir.resolve("oi-momentum-signals.csv");
+            if (Files.exists(oiSig)) {
+                readOiSignals(Files.newInputStream(oiSig), oiSignals);
+            }
+            Path oiRej = dir.resolve("oi-momentum-rejects.csv");
+            if (Files.exists(oiRej)) {
+                readOiRejects(Files.newInputStream(oiRej), oiRejects);
+            }
+            Path oiExit = dir.resolve("oi-momentum-exits.csv");
+            if (Files.exists(oiExit)) {
+                readOiExits(Files.newInputStream(oiExit), oiExits);
+            }
+            Path trapEval = dir.resolve("oi-shift-trap-evaluations.csv");
+            if (Files.exists(trapEval)) {
+                readOiShiftTrapEvals(Files.newInputStream(trapEval), trapEvals);
+            }
+            Path trapNm = dir.resolve("oi-shift-trap-near-miss.csv");
+            if (Files.exists(trapNm)) {
+                readOiShiftTrapNearMiss(Files.newInputStream(trapNm), trapNearMiss);
+            }
+            Path trapSig = dir.resolve("oi-shift-trap-signals.csv");
+            if (Files.exists(trapSig)) {
+                readOiShiftTrapSignals(Files.newInputStream(trapSig), trapSignals);
+            }
         } catch (IOException ex) {
             throw new IllegalStateException("Failed to load signal tuning CSV from " + dir, ex);
         }
@@ -111,7 +158,13 @@ final class SignalTuningCsvLoader {
 
     private static void loadZip(Path zipPath, Map<String, SignalRow> signals, Map<String, ExecutionRow> entries,
                                 Map<String, ExecutionRow> exits, Map<String, Map<Instant, Candle>> optionCandles,
-                                Map<String, List<ChainLevelRow>> chainByDecision) {
+                                Map<String, List<ChainLevelRow>> chainByDecision,
+                                List<OiMomentumSignalRow> oiSignals,
+                                List<OiMomentumRejectRow> oiRejects,
+                                List<OiMomentumExitRow> oiExits,
+                                List<OiShiftTrapEvalRow> trapEvals,
+                                List<OiShiftTrapNearMissRow> trapNearMiss,
+                                List<OiShiftTrapSignalRow> trapSignals) {
         try (ZipFile zip = new ZipFile(zipPath.toFile())) {
             ZipEntry s = zip.getEntry("entry-signals.csv");
             if (s != null) {
@@ -132,6 +185,30 @@ final class SignalTuningCsvLoader {
             ZipEntry chain = zip.getEntry("option-chain-levels.csv");
             if (chain != null) {
                 readChainLevels(zip.getInputStream(chain), chainByDecision);
+            }
+            ZipEntry oiSig = zip.getEntry("oi-momentum-signals.csv");
+            if (oiSig != null) {
+                readOiSignals(zip.getInputStream(oiSig), oiSignals);
+            }
+            ZipEntry oiRej = zip.getEntry("oi-momentum-rejects.csv");
+            if (oiRej != null) {
+                readOiRejects(zip.getInputStream(oiRej), oiRejects);
+            }
+            ZipEntry oiExit = zip.getEntry("oi-momentum-exits.csv");
+            if (oiExit != null) {
+                readOiExits(zip.getInputStream(oiExit), oiExits);
+            }
+            ZipEntry trapEval = zip.getEntry("oi-shift-trap-evaluations.csv");
+            if (trapEval != null) {
+                readOiShiftTrapEvals(zip.getInputStream(trapEval), trapEvals);
+            }
+            ZipEntry trapNm = zip.getEntry("oi-shift-trap-near-miss.csv");
+            if (trapNm != null) {
+                readOiShiftTrapNearMiss(zip.getInputStream(trapNm), trapNearMiss);
+            }
+            ZipEntry trapSig = zip.getEntry("oi-shift-trap-signals.csv");
+            if (trapSig != null) {
+                readOiShiftTrapSignals(zip.getInputStream(trapSig), trapSignals);
             }
         } catch (IOException ex) {
             log.warn("Failed to read archive {}: {}", zipPath.getFileName(), ex.getMessage());
@@ -194,7 +271,9 @@ final class SignalTuningCsvLoader {
                     bool(r.get("oiPassed")),
                     bool(r.get("ivPassed")),
                     bool(r.get("liquidityPassed")),
-                    bool(r.get("timePassed"))
+                    bool(r.get("timePassed")),
+                    breakoutConfirmedFromReasons(firstText(r.get("reasons"), "")),
+                    extractOiEntryCase(firstText(r.get("reasons"), ""))
             ));
         }
     }
@@ -244,6 +323,34 @@ final class SignalTuningCsvLoader {
         }
     }
 
+    /** Parsed from reasons text (not a dedicated CSV column yet). */
+    static boolean breakoutConfirmedFromReasons(String reasons) {
+        if (reasons == null || reasons.isBlank()) {
+            return false;
+        }
+        if (reasons.contains("Breakout confirmation failed")) {
+            return false;
+        }
+        return reasons.contains("Breakout confirmation passed");
+    }
+
+    static boolean breakoutFailedFromReasons(String reasons) {
+        return reasons != null && reasons.contains("Breakout condition failed");
+    }
+
+    static String extractOiEntryCase(String reasons) {
+        if (reasons == null) {
+            return "";
+        }
+        int caseIdx = reasons.indexOf("case=");
+        if (caseIdx < 0) {
+            return "";
+        }
+        String tail = reasons.substring(caseIdx + 5);
+        int end = tail.indexOf(' ');
+        return end < 0 ? tail.trim() : tail.substring(0, end).trim();
+    }
+
     static String inferFailedFilter(String reasons) {
         if (reasons == null || reasons.isBlank()) {
             return "unknown";
@@ -262,6 +369,9 @@ final class SignalTuningCsvLoader {
         }
         if (reasons.contains("Breakout condition failed")) {
             return "breakout";
+        }
+        if (reasons.contains("Breakout confirmation failed")) {
+            return "breakoutConfirm";
         }
         if (reasons.contains("Volume spike missing")) {
             return "volumeSpike";
@@ -369,8 +479,18 @@ final class SignalTuningCsvLoader {
             boolean oiPassed,
             boolean ivPassed,
             boolean liquidityPassed,
-            boolean timePassed
+            boolean timePassed,
+            boolean breakoutConfirmed,
+            String oiEntryCase
     ) {
+        boolean isDirectionalBuy() {
+            return "DIRECTIONAL_BUY".equals(strategyType);
+        }
+
+        boolean isOiMomentum() {
+            return "OI_MOMENTUM".equals(strategyType);
+        }
+
         boolean isBuy() {
             return signalType != null && (signalType.startsWith("BUY_") || signalType.startsWith("SELL_"));
         }
@@ -409,16 +529,277 @@ final class SignalTuningCsvLoader {
     ) {
     }
 
+    record OiMomentumSignalRow(
+            String decisionKey,
+            Instant timestamp,
+            String indexType,
+            String underlying,
+            String signalType,
+            String optionType,
+            String instrumentKey,
+            BigDecimal premium,
+            Double spreadPct,
+            String entryCase,
+            int momentumDir,
+            String momentumType,
+            double momentumMagnitudePct,
+            int oiDir,
+            int pcrDir,
+            double pcr,
+            long ceOiChange,
+            long peOiChange,
+            boolean oiAvailable,
+            double spot30mHigh,
+            double spot30mLow,
+            double breakoutDistancePct,
+            String spikeEpisodeId,
+            double vix,
+            long daysToExpiry,
+            boolean expiryDay,
+            boolean paperTrading
+    ) {
+    }
+
+    record OiMomentumRejectRow(
+            Instant timestamp,
+            String indexType,
+            String rejectReason,
+            String wouldBeCase,
+            int momentumDir,
+            String momentumType,
+            double pcr,
+            int oiDir,
+            long ceOiChange,
+            long peOiChange,
+            double spot,
+            double vix
+    ) {
+    }
+
+    record OiMomentumExitRow(
+            String decisionKey,
+            String tradeId,
+            Instant timestamp,
+            String indexType,
+            String instrumentKey,
+            BigDecimal profitPct,
+            BigDecimal realizedPnl,
+            long holdSeconds,
+            String exitReason,
+            String entryCase,
+            boolean reversal
+    ) {
+    }
+
+    record OiShiftTrapEvalRow(
+            Instant timestamp,
+            String underlying,
+            BigDecimal spot,
+            int trendDir,
+            String volumeMode,
+            long latestVolume,
+            String outcome,
+            String primaryBlocker,
+            int chainLevels,
+            int bestCeScore,
+            String bestCeFailedGate,
+            int bestPeScore,
+            String bestPeFailedGate,
+            boolean signalGenerated
+    ) {
+    }
+
+    record OiShiftTrapNearMissRow(
+            Instant timestamp,
+            String underlying,
+            String side,
+            BigDecimal strike,
+            long trappedOi,
+            long oiChange,
+            double imbalance,
+            double proximityPct,
+            int score,
+            String failedGate,
+            int trendDir
+    ) {
+    }
+
+    record OiShiftTrapSignalRow(
+            String decisionKey,
+            Instant timestamp,
+            String underlying,
+            String signalType,
+            String trapSide,
+            BigDecimal strike,
+            int score,
+            double imbalance,
+            double proximityPct
+    ) {
+    }
+
     record Loaded(
             List<SignalRow> signals,
             List<ExecutionRow> entryOutcomes,
             List<ExecutionRow> exitOutcomes,
             Map<String, List<Candle>> optionCandlesByInstrument,
-            Map<String, List<ChainLevelRow>> chainLevelsByDecisionKey
+            Map<String, List<ChainLevelRow>> chainLevelsByDecisionKey,
+            List<OiMomentumSignalRow> oiMomentumSignals,
+            List<OiMomentumRejectRow> oiMomentumRejects,
+            List<OiMomentumExitRow> oiMomentumExits,
+            List<OiShiftTrapEvalRow> oiShiftTrapEvaluations,
+            List<OiShiftTrapNearMissRow> oiShiftTrapNearMisses,
+            List<OiShiftTrapSignalRow> oiShiftTrapSignals
     ) {
         Loaded(List<SignalRow> signals, List<ExecutionRow> entryOutcomes, List<ExecutionRow> exitOutcomes,
                Map<String, List<Candle>> optionCandlesByInstrument) {
-            this(signals, entryOutcomes, exitOutcomes, optionCandlesByInstrument, Map.of());
+            this(signals, entryOutcomes, exitOutcomes, optionCandlesByInstrument, Map.of(),
+                    List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
+        }
+
+        Loaded(List<SignalRow> signals, List<ExecutionRow> entryOutcomes, List<ExecutionRow> exitOutcomes,
+               Map<String, List<Candle>> optionCandlesByInstrument,
+               Map<String, List<ChainLevelRow>> chainLevelsByDecisionKey) {
+            this(signals, entryOutcomes, exitOutcomes, optionCandlesByInstrument, chainLevelsByDecisionKey,
+                    List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
+        }
+    }
+
+    private static void readOiShiftTrapEvals(InputStream input, List<OiShiftTrapEvalRow> target) throws IOException {
+        for (Map<String, String> r : Csv.read(input).rows()) {
+            target.add(new OiShiftTrapEvalRow(
+                    parseInstant(r.get("timestamp")),
+                    firstText(r.get("underlying"), ""),
+                    decimal(r.get("spot")),
+                    (int) longValue(r.get("trendDir")),
+                    firstText(r.get("volumeMode"), ""),
+                    longValue(r.get("latestVolume")),
+                    firstText(r.get("outcome"), ""),
+                    firstText(r.get("primaryBlocker"), ""),
+                    (int) longValue(r.get("chainLevels")),
+                    (int) longValue(r.get("bestCeScore")),
+                    firstText(r.get("bestCeFailedGate"), ""),
+                    (int) longValue(r.get("bestPeScore")),
+                    firstText(r.get("bestPeFailedGate"), ""),
+                    bool(r.get("signalGenerated"))
+            ));
+        }
+    }
+
+    private static void readOiShiftTrapNearMiss(InputStream input, List<OiShiftTrapNearMissRow> target) throws IOException {
+        for (Map<String, String> r : Csv.read(input).rows()) {
+            target.add(new OiShiftTrapNearMissRow(
+                    parseInstant(r.get("timestamp")),
+                    firstText(r.get("underlying"), ""),
+                    firstText(r.get("side"), ""),
+                    decimal(r.get("strike")),
+                    longValue(r.get("trappedOi")),
+                    longValue(r.get("oiChange")),
+                    parseDoubleOrNull(r.get("imbalance")) != null ? parseDoubleOrNull(r.get("imbalance")) : 0,
+                    parseDoubleOrNull(r.get("proximityPct")) != null ? parseDoubleOrNull(r.get("proximityPct")) : 0,
+                    (int) longValue(r.get("score")),
+                    firstText(r.get("failedGate"), ""),
+                    (int) longValue(r.get("trendDir"))
+            ));
+        }
+    }
+
+    private static void readOiShiftTrapSignals(InputStream input, List<OiShiftTrapSignalRow> target) throws IOException {
+        for (Map<String, String> r : Csv.read(input).rows()) {
+            target.add(new OiShiftTrapSignalRow(
+                    firstText(r.get("decisionKey"), ""),
+                    parseInstant(r.get("timestamp")),
+                    firstText(r.get("underlying"), ""),
+                    firstText(r.get("signalType"), ""),
+                    firstText(r.get("trapSide"), ""),
+                    decimal(r.get("strike")),
+                    (int) longValue(r.get("score")),
+                    parseDoubleOrNull(r.get("imbalance")) != null ? parseDoubleOrNull(r.get("imbalance")) : 0,
+                    parseDoubleOrNull(r.get("proximityPct")) != null ? parseDoubleOrNull(r.get("proximityPct")) : 0
+            ));
+        }
+    }
+
+    private static void readOiSignals(InputStream input, List<OiMomentumSignalRow> target) throws IOException {
+        for (Map<String, String> r : Csv.read(input).rows()) {
+            target.add(new OiMomentumSignalRow(
+                    firstText(r.get("decisionKey"), ""),
+                    parseInstant(r.get("timestamp")),
+                    firstText(r.get("indexType"), ""),
+                    firstText(r.get("underlying"), ""),
+                    firstText(r.get("signalType"), ""),
+                    firstText(r.get("optionType"), ""),
+                    firstText(r.get("instrumentKey"), ""),
+                    decimal(r.get("premium")),
+                    parseDoubleOrNull(r.get("spreadPct")),
+                    firstText(r.get("entryCase"), ""),
+                    (int) longValue(r.get("momentumDir")),
+                    firstText(r.get("momentumType"), ""),
+                    parseDoubleOrNull(r.get("momentumMagnitudePct")) != null
+                            ? parseDoubleOrNull(r.get("momentumMagnitudePct")) : 0,
+                    (int) longValue(r.get("oiDir")),
+                    (int) longValue(r.get("pcrDir")),
+                    parseDoubleOrNull(r.get("pcr")) != null ? parseDoubleOrNull(r.get("pcr")) : 0,
+                    longValue(r.get("ceOiChange")),
+                    longValue(r.get("peOiChange")),
+                    bool(r.get("oiAvailable")),
+                    parseDoubleOrNull(r.get("spot30mHigh")) != null ? parseDoubleOrNull(r.get("spot30mHigh")) : 0,
+                    parseDoubleOrNull(r.get("spot30mLow")) != null ? parseDoubleOrNull(r.get("spot30mLow")) : 0,
+                    parseDoubleOrNull(r.get("breakoutDistancePct")) != null
+                            ? parseDoubleOrNull(r.get("breakoutDistancePct")) : 0,
+                    firstText(r.get("spikeEpisodeId"), ""),
+                    parseDoubleOrNull(r.get("vix")) != null ? parseDoubleOrNull(r.get("vix")) : 0,
+                    longValue(r.get("daysToExpiry")),
+                    bool(r.get("isExpiryDay")),
+                    bool(r.get("paperTrading"))
+            ));
+        }
+    }
+
+    private static void readOiRejects(InputStream input, List<OiMomentumRejectRow> target) throws IOException {
+        for (Map<String, String> r : Csv.read(input).rows()) {
+            target.add(new OiMomentumRejectRow(
+                    parseInstant(r.get("timestamp")),
+                    firstText(r.get("indexType"), ""),
+                    firstText(r.get("rejectReason"), ""),
+                    firstText(r.get("wouldBeCase"), ""),
+                    (int) longValue(r.get("momentumDir")),
+                    firstText(r.get("momentumType"), ""),
+                    parseDoubleOrNull(r.get("pcr")) != null ? parseDoubleOrNull(r.get("pcr")) : 0,
+                    (int) longValue(r.get("oiDir")),
+                    longValue(r.get("ceOiChange")),
+                    longValue(r.get("peOiChange")),
+                    parseDoubleOrNull(r.get("spot")) != null ? parseDoubleOrNull(r.get("spot")) : 0,
+                    parseDoubleOrNull(r.get("vix")) != null ? parseDoubleOrNull(r.get("vix")) : 0
+            ));
+        }
+    }
+
+    private static void readOiExits(InputStream input, List<OiMomentumExitRow> target) throws IOException {
+        for (Map<String, String> r : Csv.read(input).rows()) {
+            target.add(new OiMomentumExitRow(
+                    firstText(r.get("decisionKey"), ""),
+                    firstText(r.get("tradeId"), ""),
+                    parseInstant(r.get("timestamp")),
+                    firstText(r.get("indexType"), ""),
+                    firstText(r.get("instrumentKey"), ""),
+                    decimal(r.get("profitPct")),
+                    decimal(r.get("realizedPnl")),
+                    longValue(r.get("holdSeconds")),
+                    firstText(r.get("exitReason"), ""),
+                    firstText(r.get("entryCase"), ""),
+                    bool(r.get("reversal"))
+            ));
+        }
+    }
+
+    private static Double parseDoubleOrNull(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            return Double.parseDouble(value);
+        } catch (NumberFormatException ex) {
+            return null;
         }
     }
 
