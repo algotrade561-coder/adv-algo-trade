@@ -27,11 +27,17 @@ public record OiMomentumEntryDiagnostics(
         long daysToExpiry,
         boolean expiryDay,
         boolean paperTrading,
-        String signalReason
+        String signalReason,
+        boolean oiAdvanced,
+        double rangePct30m,
+        String blockDetail,
+        double atmCeLast,
+        double atmPeLast
 ) {
     static OiMomentumEntryDiagnostics forSpike(IndexType indexType, TickMomentumDetector.MomentumSignal spike,
                                                double pcr, int pcrDir, long ceOi, long peOi, boolean oiAvailable,
-                                               int oiDir, double vix, long dte, boolean expiryDay, boolean paper) {
+                                               int oiDir, boolean oiAdvanced, double vix, long dte, boolean expiryDay,
+                                               boolean paper) {
         double high = 0;
         double low = 0;
         double dist = 0;
@@ -42,7 +48,8 @@ public record OiMomentumEntryDiagnostics(
                 high, low, dist,
                 spikeEpisodeId(indexType, spike),
                 vix, dte, expiryDay, paper,
-                "SPIKE:" + spike.type());
+                "SPIKE:" + spike.type(),
+                oiAdvanced, 0, "", 0, 0);
     }
 
     static String spikeEpisodeId(IndexType indexType, TickMomentumDetector.MomentumSignal spike) {

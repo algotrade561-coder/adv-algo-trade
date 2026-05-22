@@ -15,6 +15,7 @@ public class SignalTuningScheduler {
     private static final Logger log = LoggerFactory.getLogger(SignalTuningScheduler.class);
 
     private final SignalTuningReportService reportService;
+    private final SignalTuningProperties tuningProperties;
 
     @Autowired(required = false)
     private com.algo.trade.monitoring.ErrorEventService errorEventService;
@@ -22,13 +23,19 @@ public class SignalTuningScheduler {
     @Autowired(required = false)
     private com.algo.trade.monitoring.SchedulerRegistry schedulerRegistry;
 
-    public SignalTuningScheduler(SignalTuningReportService reportService) {
+    public SignalTuningScheduler(SignalTuningReportService reportService,
+                                 SignalTuningProperties tuningProperties) {
         this.reportService = reportService;
+        this.tuningProperties = tuningProperties;
     }
 
     /** Weekdays 15:30 IST — end-of-day tuning report from {@code reports/entry-signals} CSVs. */
     @Scheduled(cron = "0 30 15 * * MON-FRI", zone = "Asia/Kolkata")
     public void generatePostMarketReport() {
+        if (!tuningProperties.isSchedulerEnabled()) {
+            log.debug("Signal tuning scheduler skipped: signal-tuning.scheduler-enabled=false");
+            return;
+        }
         if (schedulerRegistry != null && !schedulerRegistry.isEnabled("signalTuning")) {
             log.debug("Signal tuning scheduler skipped: disabled in registry");
             return;

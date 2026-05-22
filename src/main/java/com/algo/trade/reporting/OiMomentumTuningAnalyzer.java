@@ -143,10 +143,19 @@ final class OiMomentumTuningAnalyzer {
                     .max(Map.Entry.comparingByValue())
                     .map(en -> en.getKey() + "(" + en.getValue() + ")")
                     .orElse("—");
+            Map<String, Long> topBlocks = rejects.stream()
+                    .filter(r -> r.blockDetail() != null && !r.blockDetail().isBlank())
+                    .collect(Collectors.groupingBy(SignalTuningCsvLoader.OiMomentumRejectRow::blockDetail,
+                            Collectors.counting()));
+            String topBlock = topBlocks.entrySet().stream()
+                    .max(Map.Entry.comparingByValue())
+                    .map(en -> en.getKey() + "(" + en.getValue() + ")")
+                    .orElse("—");
             list.add(new SignalTuningAnalyzer.Recommendation(
                     SignalTuningAnalyzer.Severity.INFO, "oi_funnel",
-                    rejects.size() + " sampled reject rows (30s throttle); top: " + top,
-                    "See oi-momentum-rejects.csv for funnel blockers"));
+                    rejects.size() + " sampled reject rows (5s matrix / 30s other); top reason: " + top
+                            + "; top blockDetail: " + topBlock,
+                    "See oi-momentum-rejects.csv (rangePct30m, atmPeLast, blockDetail columns)"));
         }
 
         if (list.isEmpty() && !trades.isEmpty()) {

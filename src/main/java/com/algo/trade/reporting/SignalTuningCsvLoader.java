@@ -565,14 +565,28 @@ final class SignalTuningCsvLoader {
             String indexType,
             String rejectReason,
             String wouldBeCase,
+            String blockDetail,
             int momentumDir,
             String momentumType,
+            double momentumMagnitudePct,
             double pcr,
+            int pcrDir,
             int oiDir,
             long ceOiChange,
             long peOiChange,
+            boolean oiAvailable,
+            boolean oiAdvanced,
             double spot,
-            double vix
+            int atm,
+            double spot30mHigh,
+            double spot30mLow,
+            double rangePct30m,
+            double breakoutDistancePct,
+            double atmCeLast,
+            double atmPeLast,
+            double vix,
+            long daysToExpiry,
+            boolean expiryDay
     ) {
     }
 
@@ -762,14 +776,30 @@ final class SignalTuningCsvLoader {
                     firstText(r.get("indexType"), ""),
                     firstText(r.get("rejectReason"), ""),
                     firstText(r.get("wouldBeCase"), ""),
+                    firstText(r.get("blockDetail"), ""),
                     (int) longValue(r.get("momentumDir")),
                     firstText(r.get("momentumType"), ""),
+                    parseDoubleOrNull(r.get("momentumMagnitudePct")) != null
+                            ? parseDoubleOrNull(r.get("momentumMagnitudePct")) : 0,
                     parseDoubleOrNull(r.get("pcr")) != null ? parseDoubleOrNull(r.get("pcr")) : 0,
+                    (int) longValue(r.get("pcrDir")),
                     (int) longValue(r.get("oiDir")),
                     longValue(r.get("ceOiChange")),
                     longValue(r.get("peOiChange")),
+                    bool(r.get("oiAvailable")),
+                    bool(r.get("oiAdvanced")),
                     parseDoubleOrNull(r.get("spot")) != null ? parseDoubleOrNull(r.get("spot")) : 0,
-                    parseDoubleOrNull(r.get("vix")) != null ? parseDoubleOrNull(r.get("vix")) : 0
+                    (int) longValue(r.get("atm")),
+                    parseDoubleOrNull(r.get("spot30mHigh")) != null ? parseDoubleOrNull(r.get("spot30mHigh")) : 0,
+                    parseDoubleOrNull(r.get("spot30mLow")) != null ? parseDoubleOrNull(r.get("spot30mLow")) : 0,
+                    parseDoubleOrNull(r.get("rangePct30m")) != null ? parseDoubleOrNull(r.get("rangePct30m")) : 0,
+                    parseDoubleOrNull(r.get("breakoutDistancePct")) != null
+                            ? parseDoubleOrNull(r.get("breakoutDistancePct")) : 0,
+                    parseDoubleOrNull(r.get("atmCeLast")) != null ? parseDoubleOrNull(r.get("atmCeLast")) : 0,
+                    parseDoubleOrNull(r.get("atmPeLast")) != null ? parseDoubleOrNull(r.get("atmPeLast")) : 0,
+                    parseDoubleOrNull(r.get("vix")) != null ? parseDoubleOrNull(r.get("vix")) : 0,
+                    longValue(r.get("daysToExpiry")),
+                    bool(r.get("isExpiryDay"))
             ));
         }
     }

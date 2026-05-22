@@ -8,6 +8,7 @@ import com.algo.trade.persistence.OrderEntity;
 import com.algo.trade.persistence.StrategyDecisionEntity;
 import com.algo.trade.persistence.TradeEntity;
 import com.algo.trade.reporting.EntrySignalReplayReportService.ReplayRunResult;
+import com.algo.trade.reporting.DailyReportBundleService;
 import com.algo.trade.reporting.ReportingService;
 import com.algo.trade.reporting.SignalTuningReportService.TuningRunResult;
 import com.algo.trade.reporting.ReportingService.ReportArchiveResult;
@@ -21,8 +22,13 @@ import java.util.List;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ResponseStatusException;
+import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
+import org.springframework.http.HttpStatus;
 
 @RestController
 public class MonitoringController {
@@ -30,6 +36,7 @@ public class MonitoringController {
     private static final Logger log = LoggerFactory.getLogger(MonitoringController.class);
 
     private final ReportingService reportingService;
+    private final DailyReportBundleService dailyReportBundleService;
     private final MarketGuard marketGuard;
     private final LiveInstrumentCache liveInstrumentCache;
     private final com.algo.trade.marketdata.ExpiryCalendar expiryCalendar;
@@ -41,7 +48,9 @@ public class MonitoringController {
     private final com.algo.trade.commodity.BrentCrudeService brentCrudeService;
     private final com.algo.trade.monitoring.HedgeCostTracker hedgeCostTracker;
 
-    public MonitoringController(ReportingService reportingService, MarketGuard marketGuard,
+    public MonitoringController(ReportingService reportingService,
+                                 DailyReportBundleService dailyReportBundleService,
+                                 MarketGuard marketGuard,
                                  LiveInstrumentCache liveInstrumentCache,
                                  com.algo.trade.marketdata.ExpiryCalendar expiryCalendar,
                                  com.algo.trade.persistence.StrategyDecisionRepository decisionRepository,
@@ -52,6 +61,7 @@ public class MonitoringController {
                                  com.algo.trade.commodity.BrentCrudeService brentCrudeService,
                                  com.algo.trade.monitoring.HedgeCostTracker hedgeCostTracker) {
         this.reportingService = reportingService;
+        this.dailyReportBundleService = dailyReportBundleService;
         this.marketGuard = marketGuard;
         this.liveInstrumentCache = liveInstrumentCache;
         this.expiryCalendar = expiryCalendar;
@@ -349,6 +359,59 @@ public class MonitoringController {
     }
 
     /** Report APIs: {@code /reports/...} and alias {@code /monitoring/reports/...}. */
+
+    @GetMapping({"/reports/download/today/summary", "/monitoring/reports/download/today/summary"})
+    public Map<String, Object> todayAnalysisDownloadSummary() {
+        return dailyReportBundleService.summary(dailyReportBundleService.todayIst()).toMap();
+    }
+
+    @GetMapping({"/reports/download/today/signals", "/monitoring/reports/download/today/signals"})
+    public ResponseEntity<StreamingResponseBody> downloadTodaySignals() {
+        var summary = dailyReportBundleService.summary(dailyReportBundleService.todayIst());
+        return todayZipResponse("entry-signals", dailyReportBundleService::writeSignalsZip, summary.signals().fileCount());
+    }
+
+    @GetMapping({"/reports/download/today/logs", "/monitoring/reports/download/today/logs"})
+    public ResponseEntity<StreamingResponseBody> downloadTodayLogs() {
+        var summary = dailyReportBundleService.summary(dailyReportBundleService.todayIst());
+        return todayZipResponse("application-logs", dailyReportBundleService::writeLogsZip, summary.logs().fileCount());
+    }
+
+    @GetMapping({"/reports/download/today/chain-snapshots", "/monitoring/reports/download/today/chain-snapshots"})
+    public ResponseEntity<StreamingResponseBody> downloadTodayChainSnapshots() {
+        var summary = dailyReportBundleService.summary(dailyReportBundleService.todayIst());
+        return todayZipResponse("chain-snapshots", dailyReportBundleService::writeChainSnapshotsZip,
+                summary.chainSnapshots().fileCount());
+    }
+
+    @GetMapping({"/reports/download/today/all", "/monitoring/reports/download/today/all"})
+    public ResponseEntity<StreamingResponseBody> downloadTodayFullAnalysisPack() {
+        var summary = dailyReportBundleService.summary(dailyReportBundleService.todayIst());
+        return todayZipResponse("analysis-pack", dailyReportBundleService::writeFullAnalysisZip, summary.totalFiles());
+    }
+
+    private ResponseEntity<StreamingResponseBody> todayZipResponse(
+            String filenamePrefix,
+            ZipWriter writer,
+            int fileCount) {
+        if (fileCount == 0) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND,
+                    "No files found for today (IST). Nothing to download yet.");
+        }
+        var date = dailyReportBundleService.todayIst();
+        String filename = dailyReportBundleService.zipFilename(filenamePrefix, date);
+        log.info("Today analysis ZIP download: prefix={}, date={}, files={}", filenamePrefix, date, fileCount);
+        StreamingResponseBody body = out -> writer.write(date, out);
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + "\"")
+                .contentType(MediaType.parseMediaType("application/zip"))
+                .body(body);
+    }
+
+    @FunctionalInterface
+    private interface ZipWriter {
+        void write(LocalDate date, java.io.OutputStream out);
+    }
 
     @PostMapping({"/reports/entry-signals/archive", "/monitoring/reports/entry-signals/archive"})
     public ReportArchiveResult archiveEntrySignalReports() {

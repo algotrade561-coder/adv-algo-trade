@@ -15,6 +15,7 @@ import {
   OilPriceSnapshot,
   PagedResponse,
   PnlSnapshot,
+  DailyBundleSummary,
   ReportArchiveResult,
   RuntimeStatus,
   SignalFilters,
@@ -185,6 +186,21 @@ export class ApiService {
     return this.http.get(`${this.base}/trades/journal.csv`, { responseType: 'text', headers: new HttpHeaders({ Accept: 'text/csv' }) });
   }
   archiveEntrySignals(): Observable<ReportArchiveResult> { return this.http.post<ReportArchiveResult>(`${this.base}/reports/entry-signals/archive`, {}); }
+  todayAnalysisDownloadSummary(): Observable<DailyBundleSummary> {
+    return this.http.get<DailyBundleSummary>(`${this.base}/reports/download/today/summary`);
+  }
+  downloadTodaySignalsZip(): Observable<Blob> {
+    return this.http.get(`${this.base}/reports/download/today/signals`, { responseType: 'blob' });
+  }
+  downloadTodayLogsZip(): Observable<Blob> {
+    return this.http.get(`${this.base}/reports/download/today/logs`, { responseType: 'blob' });
+  }
+  downloadTodayChainSnapshotsZip(): Observable<Blob> {
+    return this.http.get(`${this.base}/reports/download/today/chain-snapshots`, { responseType: 'blob' });
+  }
+  downloadTodayAnalysisPackZip(): Observable<Blob> {
+    return this.http.get(`${this.base}/reports/download/today/all`, { responseType: 'blob' });
+  }
   kiteLogin(): Observable<KiteLoginResponse> { return this.http.get<KiteLoginResponse>(`${this.base}/auth/kite/login`); }
   kiteSession(): Observable<KiteSessionResponse> { return this.http.get<KiteSessionResponse>(`${this.base}/auth/kite/session`); }
   runBacktest(request: Record<string, unknown>): Observable<ApiRecord> { return this.http.post<ApiRecord>(`${this.base}/backtest/run`, clean(request)); }

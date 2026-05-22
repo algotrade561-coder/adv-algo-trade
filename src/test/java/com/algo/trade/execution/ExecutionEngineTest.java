@@ -67,6 +67,7 @@ class ExecutionEngineTest {
         when(globalConfigService.getMaxRiskPerTradePercent()).thenReturn(BigDecimal.valueOf(1.2));
         when(globalConfigService.getMaxDailyLossPercent()).thenReturn(BigDecimal.valueOf(3));
         when(globalConfigService.getCooldownMinutes()).thenReturn(10);
+        when(globalConfigService.getDirectionFlipCooldownMinutes()).thenReturn(60);
         when(globalConfigService.getDailyProfitTarget()).thenReturn(BigDecimal.ZERO);
         when(globalConfigService.getMaxPendingOrders()).thenReturn(3);
         when(globalConfigService.getLimitOrderCancelMinutes()).thenReturn(1);
@@ -276,6 +277,60 @@ class ExecutionEngineTest {
 
         assertThat(result.accepted()).isTrue();
         verify(tradeRepository).save(argThat(t -> StrategyType.OI_MOMENTUM.name().equals(t.getStrategyType())));
+    }
+
+    @Test
+    void oiMomentumBracketReasonSkipsGlobalDirectionFlipCooldown() {
+        tradingStateService.start();
+        when(brokerClient.placeOrder(any(OrderRequest.class))).thenReturn(new OrderResponse(
+                "ENTRY-OI-1",
+                Optional.of("PAPER-OI-1"),
+                "NFO:NIFTY26MAY23800PE",
+                OrderSide.BUY,
+                OrderStatus.COMPLETE,
+                65,
+                65,
+                Optional.of(BigDecimal.valueOf(50)),
+                Optional.empty(),
+                Instant.now(clock)
+        ));
+        TradeEntity recentCe = new TradeEntity("CE-1", "NFO:NIFTY26MAY23800CE", "NIFTY", "CE",
+                TradeStatus.CLOSED, 65, BigDecimal.valueOf(173), Instant.now(clock).minusSeconds(120), "oi-ce");
+        when(tradeRepository.findByEntryTimeBetween(any(), any())).thenReturn(List.of(recentCe));
+
+        StrategyDecision peDecision = new StrategyDecision(
+                Instant.now(clock), UnderlyingSymbol.NIFTY, SignalType.BUY_PE,
+                BigDecimal.valueOf(23_800), Optional.of(BigDecimal.valueOf(50)), Optional.empty(),
+                Optional.of(65), Optional.empty(), Optional.of("NFO:NIFTY26MAY23800PE"),
+                Optional.of(BigDecimal.valueOf(23_800)), Optional.of(OptionType.PE),
+                false, Optional.empty(), false, BigDecimal.ZERO,
+                List.of("OI_MOMENTUM[NIFTY]: REVERSE:OI_FLIP"));
+
+        ExecutionResult result = executionEngine.executeEntry(peDecision, BigDecimal.valueOf(50), 65);
+
+        assertThat(result.accepted()).isTrue();
+        assertThat(result.reasons()).noneMatch(r -> r.contains("Direction flip cooldown"));
+    }
+
+    @Test
+    void directionalBuyStillBlockedByDirectionFlipCooldown() {
+        tradingStateService.start();
+        TradeEntity recentCe = new TradeEntity("CE-2", "NFO:NIFTY26MAY23800CE", "NIFTY", "CE",
+                TradeStatus.CLOSED, 65, BigDecimal.valueOf(173), Instant.now(clock).minusSeconds(120), "dir-ce");
+        when(tradeRepository.findByEntryTimeBetween(any(), any())).thenReturn(List.of(recentCe));
+
+        StrategyDecision peDecision = new StrategyDecision(
+                Instant.now(clock), UnderlyingSymbol.NIFTY, SignalType.BUY_PE,
+                BigDecimal.valueOf(23_800), Optional.of(BigDecimal.valueOf(50)), Optional.empty(),
+                Optional.of(65), Optional.empty(), Optional.of("NFO:NIFTY26MAY23800PE"),
+                Optional.of(BigDecimal.valueOf(23_800)), Optional.of(OptionType.PE),
+                false, Optional.empty(), false, BigDecimal.ZERO,
+                List.of("DIRECTIONAL_BUY trend"));
+
+        ExecutionResult result = executionEngine.executeEntry(peDecision, BigDecimal.valueOf(50), 65);
+
+        assertThat(result.accepted()).isFalse();
+        assertThat(result.reasons()).anyMatch(r -> r.contains("Direction flip cooldown"));
     }
 
     @Test

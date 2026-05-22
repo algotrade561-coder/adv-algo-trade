@@ -45,9 +45,9 @@ public class KiteWebSocketClient {
     private static final ZoneId IST = ZoneId.of("Asia/Kolkata");
 
     /** How often the zombie heartbeat runs (seconds). */
-    private static final int HEARTBEAT_INTERVAL_SEC = 30;
+    private static final int HEARTBEAT_INTERVAL_SEC = 5;
     /** If no tick received for this many seconds during market hours, force-reconnect. */
-    private static final int ZOMBIE_THRESHOLD_SEC = 60;
+    private static final int ZOMBIE_THRESHOLD_SEC = 30;
     /** Max consecutive zombie reconnects before backing off to avoid thrashing. */
     private static final int MAX_ZOMBIE_RECONNECTS_BEFORE_BACKOFF = 5;
     /** Backoff period after too many zombie reconnects (minutes). */

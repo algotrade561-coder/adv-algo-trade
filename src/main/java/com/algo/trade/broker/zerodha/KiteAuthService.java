@@ -38,7 +38,7 @@ import org.springframework.web.util.UriComponentsBuilder;
 @Service
 public class KiteAuthService {
 
-    private static final Duration LOGIN_TIMEOUT = Duration.ofMinutes(2);
+    private static final Duration LOGIN_TIMEOUT = Duration.ofMinutes(10);
     private static final Logger log = LoggerFactory.getLogger(KiteAuthService.class);
     private static final Path LOCAL_SECRETS_PATH = Path.of("data", "trading-secrets.properties");
 
@@ -80,9 +80,13 @@ public class KiteAuthService {
         try {
             openBrowser(loginUrl);
             return awaitLoginResult(loginUrl);
+        } catch (BrokerException e) {
+            // Timeout or callback not received — return null so caller can handle gracefully (EC2 no-browser case)
+            log.warn("Kite login timed out (will continue in auth-pending mode): {}", e.getMessage());
+            return null;
         } catch (Exception e) {
             log.warn("Kite login failed: {}", e.getMessage(), e);
-            throw new BrokerException("Kite login failed", e);
+            return null;
         }
     }
 

@@ -259,6 +259,12 @@ oi-momentum:
   squareoff-hour: 15
   squareoff-minute: 10
 
+# ── Signal tuning (EOD HTML from reports/entry-signals CSVs) ───────────────
+# Scheduler off by default — heavy on heap (t3.small). CSV capture during live session still runs.
+# On-demand: POST /advalgotrade/reports/signal-tuning/generate (or run locally after downloading reports).
+signal-tuning:
+  scheduler-enabled: false
+
 server:
   port: 8089
   servlet:

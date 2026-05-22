@@ -1129,6 +1129,22 @@ public class ExecutionEngine {
         return losses;
     }
 
+    /** OI Momentum tags reasons as {@code OI_MOMENTUM[NIFTY]: ...} — not {@code OI_MOMENTUM:}. */
+    static boolean isOiMomentumDecision(StrategyDecision decision) {
+        if (decision == null || decision.reasons() == null) {
+            return false;
+        }
+        return decision.reasons().stream().anyMatch(ExecutionEngine::reasonIndicatesOiMomentum);
+    }
+
+    private static boolean reasonIndicatesOiMomentum(String reason) {
+        if (reason == null || reason.isBlank()) {
+            return false;
+        }
+        return reason.startsWith("OI_MOMENTUM:")
+                || reason.startsWith("OI_MOMENTUM[");
+    }
+
     private List<String> orderGuardRejections(StrategyDecision decision, BigDecimal optionPremium) {
         List<String> rejections = new ArrayList<>();
         String instrumentKey = decision.selectedInstrumentKey().orElse("");
@@ -1138,9 +1154,7 @@ public class ExecutionEngine {
 
         // OI_MOMENTUM has its own cooldown/direction-flip logic (cooldownAfterSlSeconds,
         // maxReversalsPerDay, maxTradesPerDay) — skip global guards that conflict with its 1-sec loop
-        boolean isOiMomentum = decision.reasons().stream()
-                .anyMatch(r -> r.startsWith("OI_MOMENTUM:"));
-        if (isOiMomentum) {
+        if (isOiMomentumDecision(decision)) {
             return rejections;
         }
 

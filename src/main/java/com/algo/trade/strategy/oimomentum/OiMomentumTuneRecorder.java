@@ -45,8 +45,11 @@ public class OiMomentumTuneRecorder {
     ) + System.lineSeparator();
 
     private static final String REJECT_HEADER = String.join(",",
-            "timestamp", "marketTime", "indexType", "rejectReason", "wouldBeCase",
-            "momentumDir", "momentumType", "pcr", "oiDir", "ceOiChange", "peOiChange", "spot", "vix"
+            "timestamp", "marketTime", "indexType", "rejectReason", "wouldBeCase", "blockDetail",
+            "momentumDir", "momentumType", "momentumMagnitudePct", "pcr", "pcrDir",
+            "oiDir", "ceOiChange", "peOiChange", "oiAvailable", "oiAdvanced",
+            "spot", "atm", "spot30mHigh", "spot30mLow", "rangePct30m", "breakoutDistancePct",
+            "atmCeLast", "atmPeLast", "vix", "daysToExpiry", "isExpiryDay"
     ) + System.lineSeparator();
 
     private static final String EXIT_HEADER = String.join(",",
@@ -64,6 +67,7 @@ public class OiMomentumTuneRecorder {
     ) + System.lineSeparator();
 
     private static final Duration REJECT_SAMPLE_INTERVAL = Duration.ofSeconds(30);
+    private static final Duration MATRIX_REJECT_SAMPLE_INTERVAL = Duration.ofSeconds(5);
 
     private final LiveInstrumentCache liveInstrumentCache;
 
@@ -122,34 +126,56 @@ public class OiMomentumTuneRecorder {
 
     /** @return sample time if a row was written (for throttle state). */
     public Instant recordReject(IndexType indexType, Instant lastSampleTime, String rejectReason,
-                             OiMomentumEntryDiagnostics partial) {
+                                OiMomentumEntryDiagnostics partial) {
+        Duration interval = rejectReason != null && rejectReason.startsWith("matrix_skip:")
+                ? MATRIX_REJECT_SAMPLE_INTERVAL
+                : REJECT_SAMPLE_INTERVAL;
         Instant now = Instant.now();
-        if (lastSampleTime != null && Duration.between(lastSampleTime, now).compareTo(REJECT_SAMPLE_INTERVAL) < 0) {
+        if (lastSampleTime != null && Duration.between(lastSampleTime, now).compareTo(interval) < 0) {
             return lastSampleTime;
         }
         try {
             Files.createDirectories(DIR);
-            String row = String.join(",",
-                    csv(IstDateTimes.formatInstant(now)),
-                    csv(IstDateTimes.formatLocalTime(java.time.LocalTime.now(java.time.ZoneId.of("Asia/Kolkata")))),
-                    csv(indexType.name()),
-                    csv(rejectReason),
-                    csv(partial != null ? partial.entryCase() : ""),
-                    csv(partial != null ? partial.momentumDir() : ""),
-                    csv(partial != null ? partial.momentumType() : ""),
-                    csv(partial != null ? partial.pcr() : ""),
-                    csv(partial != null ? partial.oiDir() : ""),
-                    csv(partial != null ? partial.ceOiChange() : ""),
-                    csv(partial != null ? partial.peOiChange() : ""),
-                    csv(partial != null ? partial.spot() : ""),
-                    csv(partial != null ? partial.vix() : "")
-            ) + System.lineSeparator();
+            String row = rejectRow(now, indexType, rejectReason, partial);
             append(REJECTS, REJECT_HEADER, row);
             return now;
         } catch (IOException ex) {
             log.warn("[OiMomentumTune] reject record failed: {}", ex.getMessage());
         }
         return lastSampleTime;
+    }
+
+    private static String rejectRow(Instant now, IndexType indexType, String rejectReason,
+                                    OiMomentumEntryDiagnostics partial) {
+        return String.join(",",
+                csv(IstDateTimes.formatInstant(now)),
+                csv(IstDateTimes.formatLocalTime(java.time.LocalTime.now(java.time.ZoneId.of("Asia/Kolkata")))),
+                csv(indexType.name()),
+                csv(rejectReason),
+                csv(partial != null ? partial.entryCase() : ""),
+                csv(partial != null ? partial.blockDetail() : ""),
+                csv(partial != null ? partial.momentumDir() : ""),
+                csv(partial != null ? partial.momentumType() : ""),
+                csv(partial != null ? partial.momentumMagnitudePct() : ""),
+                csv(partial != null ? partial.pcr() : ""),
+                csv(partial != null ? partial.pcrDir() : ""),
+                csv(partial != null ? partial.oiDir() : ""),
+                csv(partial != null ? partial.ceOiChange() : ""),
+                csv(partial != null ? partial.peOiChange() : ""),
+                csv(partial != null ? partial.oiAvailable() : ""),
+                csv(partial != null ? partial.oiAdvanced() : ""),
+                csv(partial != null ? partial.spot() : ""),
+                csv(partial != null ? partial.atm() : ""),
+                csv(partial != null ? partial.spot30mHigh() : ""),
+                csv(partial != null ? partial.spot30mLow() : ""),
+                csv(partial != null ? partial.rangePct30m() : ""),
+                csv(partial != null ? partial.breakoutDistancePct() : ""),
+                csv(partial != null ? partial.atmCeLast() : ""),
+                csv(partial != null ? partial.atmPeLast() : ""),
+                csv(partial != null ? partial.vix() : ""),
+                csv(partial != null ? partial.daysToExpiry() : ""),
+                csv(partial != null ? partial.expiryDay() : "")
+        ) + System.lineSeparator();
     }
 
     public void recordExit(String decisionKey, IndexType indexType, TradeEntity trade,
@@ -250,6 +276,9 @@ public class OiMomentumTuneRecorder {
     private static String csv(Object value) {
         if (value == null) {
             return "\"\"";
+        }
+        if (value instanceof Boolean b) {
+            return csv(b ? "true" : "false");
         }
         String text = String.valueOf(value);
         if (text.contains(",") || text.contains("\"") || text.contains("\n")) {

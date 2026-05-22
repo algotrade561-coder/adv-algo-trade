@@ -155,6 +155,21 @@ export interface ReportArchiveResult {
   [key: string]: unknown;
 }
 
+export interface DailyBundleSection {
+  fileCount: number;
+  totalBytes: number;
+  fileNames: string[];
+}
+
+export interface DailyBundleSummary {
+  date: string;
+  signals: DailyBundleSection;
+  logs: DailyBundleSection;
+  chainSnapshots: DailyBundleSection;
+  totalFiles: number;
+  totalBytes: number;
+}
+
 export interface EntrySignalReplayTrade {
   decisionKey: string;
   instrument: string;

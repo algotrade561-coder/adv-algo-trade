@@ -30,6 +30,7 @@ public class SchedulerRegistrationConfig {
     private final com.algo.trade.broker.zerodha.TokenExpiryMonitor tokenExpiryMonitor;
     private final com.algo.trade.insights.AiInsightsScheduler aiInsightsScheduler;
     private final com.algo.trade.reporting.SignalTuningScheduler signalTuningScheduler;
+    private final com.algo.trade.reporting.SignalTuningProperties signalTuningProperties;
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.algo.trade.execution.TailHedgeManager tailHedgeManager;
@@ -45,7 +46,8 @@ public class SchedulerRegistrationConfig {
             com.algo.trade.indicator.IVRankTracker ivRankTracker,
             com.algo.trade.broker.zerodha.TokenExpiryMonitor tokenExpiryMonitor,
             com.algo.trade.insights.AiInsightsScheduler aiInsightsScheduler,
-            com.algo.trade.reporting.SignalTuningScheduler signalTuningScheduler
+            com.algo.trade.reporting.SignalTuningScheduler signalTuningScheduler,
+            com.algo.trade.reporting.SignalTuningProperties signalTuningProperties
     ) {
         this.registry = registry;
         this.safeWeekPredictor = safeWeekPredictor;
@@ -58,6 +60,7 @@ public class SchedulerRegistrationConfig {
         this.tokenExpiryMonitor = tokenExpiryMonitor;
         this.aiInsightsScheduler = aiInsightsScheduler;
         this.signalTuningScheduler = signalTuningScheduler;
+        this.signalTuningProperties = signalTuningProperties;
     }
 
     @PostConstruct
@@ -75,6 +78,8 @@ public class SchedulerRegistrationConfig {
         registry.register("tokenMonitor", "Kite token expiry check (cron 8:00/8:45)", 0, tokenExpiryMonitor::checkTokenAtOpen);
         registry.register("aiInsights", "AI insights analysis (cron 9/12/15)", 0, aiInsightsScheduler::runHourlyAnalysis);
         registry.register("signalTuning", "Signal tuning report (cron 15:30 IST)", 0, signalTuningScheduler::generatePostMarketReport);
-        log.info("[SchedulerRegistry] Registered additional tasks via SchedulerRegistrationConfig (tailHedge={})", tailHedgeManager != null);
+        registry.setEnabled("signalTuning", signalTuningProperties.isSchedulerEnabled());
+        log.info("[SchedulerRegistry] Registered additional tasks via SchedulerRegistrationConfig (tailHedge={}, signalTuningScheduler={})",
+                tailHedgeManager != null, signalTuningProperties.isSchedulerEnabled());
     }
 }
