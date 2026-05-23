@@ -80,6 +80,9 @@ public class SystemDiagnosticsService {
     @org.springframework.beans.factory.annotation.Autowired
     private SchedulerRegistry schedulerRegistry;
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.marketdata.OiRestFallbackService oiRestFallbackService;
+
     public SystemDiagnosticsService(KiteWebSocketClient webSocketClient,
                                      KiteAccessTokenStore tokenStore,
                                      LiveInstrumentCache liveInstrumentCache,
@@ -228,6 +231,15 @@ public class SystemDiagnosticsService {
         systemHealth.put("instrumentCacheReady", instrumentCacheReady);
         systemHealth.put("restCallCount", restCallCount.get());
         systemHealth.put("restErrorCount", restErrorCount.get());
+        if (oiRestFallbackService != null) {
+            systemHealth.put("oiRestFallbackActive", oiRestFallbackService.isRestFallbackActive());
+            systemHealth.put("oiRestFallbackCallCount", oiRestFallbackService.getRestCallCount());
+            systemHealth.put("oiRestFallbackLastBatchAt",
+                    oiRestFallbackService.getLastBatchAt() != null
+                            ? oiRestFallbackService.getLastBatchAt().toString() : null);
+            systemHealth.put("oiRestFallbackLastBatchSummary", oiRestFallbackService.getLastBatchSummary());
+            systemHealth.put("oiRestFallbackWsTickAgeSec", oiRestFallbackService.getWsTickAgeSec());
+        }
         systemHealth.put("dbErrorCount", dbErrorCount.get());
         systemHealth.put("errorsToday", errorsToday);
         // Halt/Kill state
@@ -275,6 +287,9 @@ public class SystemDiagnosticsService {
                 dataHealth.put(key + "OptionsWithLivePrice", optionsWithPrice);
                 dataHealth.put(key + "OptionDataStatus",
                         optionsWithPrice > 5 ? "OK" : optionsWithPrice > 0 ? "PARTIAL" : "NO_DATA");
+                if (oiRestFallbackService != null) {
+                    dataHealth.put(key + "MaxAtmOiSampleAgeSec", oiRestFallbackService.getMaxAtmOiSampleAgeSec(idx));
+                }
             } catch (Exception ignored) {
                 dataHealth.put(key + "OptionDataStatus", "ERROR");
             }

@@ -195,6 +195,42 @@ public class LiveInstrumentCache {
 
     public boolean isReady() { return !byToken.isEmpty(); }
 
+    // ── REST Fallback ─────────────────────────────────────────────────────────
+
+    /**
+     * Apply OI and price data fetched via REST /quote (OI fallback path).
+     * Mirrors the WS updateOptionMarketData() path so:
+     *  - openInterest (persistent field) is updated → Operator Framework stays fresh
+     *  - sampleOiIfDue() is called → populates OI ring buffer for getOiChangeSince()
+     *  - lastTickTimeMs is refreshed → prevents redundant REST calls for this instrument
+     *  - Greeks are recalculated with the fresh price
+     *
+     * Called by OiRestFallbackService when per-instrument OI ticks are stale.
+     *
+     * @param tradingSymbol e.g. "NIFTY23800CE26MAY"
+     * @param lastPrice     last traded price from REST (0 = unavailable, skip price update)
+     * @param oi            open interest from REST (0 = unavailable, skip OI update)
+     */
+    public void applyRestQuoteData(String tradingSymbol, double lastPrice, long oi) {
+        OptionInstrument inst = bySymbol.get(tradingSymbol);
+        if (inst == null) {
+            log.debug("[RestFallback] Unknown tradingSymbol: {}", tradingSymbol);
+            return;
+        }
+        if (lastPrice > 0) inst.setLastPrice(lastPrice);
+        inst.setLastTickTimeMs(System.currentTimeMillis()); // marks instrument as freshly updated
+        if (oi > 0) {
+            long prev = inst.getOpenInterest();
+            if (prev > 0) inst.setPrevOpenInterest(prev);
+            inst.setOpenInterest(oi);
+            inst.sampleOiIfDue(); // feeds OI ring buffer → resolves CASE5_SKIP
+        }
+        double underlying = futuresPriceCache.getOrDefault(inst.getIndexType(), 0.0);
+        if (underlying > 0 && lastPrice > 0) {
+            greeksCalculator.calculateAndUpdate(inst, underlying);
+        }
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private IndexType resolveIndexType(Instrument inst) {

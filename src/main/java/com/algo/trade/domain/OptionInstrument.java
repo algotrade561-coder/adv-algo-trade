@@ -120,6 +120,8 @@ public class OptionInstrument {
     public void setVega(double v) { this.vega = v; }
     public long getLastTickTimeMs() { return lastTickTimeMs; }
     public void setLastTickTimeMs(long v) { this.lastTickTimeMs = v; }
+    /** Wall-clock ms of the last OI ring-buffer sample (via sampleOiIfDue). */
+    public long getLastOiSampleMs() { return lastOiSampleMs; }
     
     // 5-minute high/low getters and setters
     public double getHigh5m() { return high5m; }

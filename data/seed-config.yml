@@ -4,6 +4,13 @@
 
 globalConfig:
   # Entry
+  # ── Signal score (DIRECTIONAL_BUY) + operator framework ─────────────────
+  # Base confidence = weighted filters (VWAP 15 + breakout 25 + volume 20 + OI 25 + liq 10 + IV 5 + RSI 10).
+  # Operator bonus (Java, not here): +0–20 when 5-min chain snapshots show institutional buildup
+  #   aligned with CE (+1) or PE (−1); requires fresh operator score > 45.
+  #   Example: base 60 + operator score 72 → +10 bonus → 70 (passes gate).
+  # Keep minSignalScorePercent at 70 — do NOT set 60; the bonus is meant to lift near-misses over 70,
+  # not replace the threshold (60 alone would pass too many weak setups without operator conviction).
   timeframe: ONE_MINUTE
   trendTimeframe: FIVE_MINUTE
   enabledOptionTypes: "CE,PE"
@@ -18,7 +25,7 @@ globalConfig:
   bearishImbalanceThreshold: 0.8
   minLiquidityVolume: 5000
   maxIvPercent: 80
-  minSignalScorePercent: 60
+  minSignalScorePercent: 70
   ceOiSupportRequired: false
   peOiSupportRequired: false
   ceOiDivergenceFilterEnabled: true
@@ -57,6 +64,7 @@ globalConfig:
   dailyProfitTarget: 0
   maxLotsPerTrade: 1
   minEnvironmentScore: 50
+  mlVirtualTradeThreshold: 45
   # Execution tuning
   limitOrderCancelMinutes: 2
   failSafeSquareoffTime: "15:20"
@@ -222,6 +230,8 @@ strategyConfigs:
   - { strategyType: VOLATILITY_BREAKOUT, underlying: NIFTY,      enabled: true,  paperTrading: false, stopLossPercent: 30, targetPercent: 60,  maxHoldMinutes: 0, squareoffHour: 15, squareoffMinute: 0,  maxIvRankForBuying: 50, scanTimeframe: FIFTEEN_MINUTE, candleTimeframe: FIVE_MINUTE, trendTimeframe: FIFTEEN_MINUTE, trailingStopActivationPercent: 30, trailingGapPercent: 15, minCombinedPremium: 50,  lots: 1, otmStrikes: 2, spreadStrikes: 2 }
   - { strategyType: VOLATILITY_BREAKOUT, underlying: SENSEX,     enabled: true,  paperTrading: false, stopLossPercent: 30, targetPercent: 60,  maxHoldMinutes: 0, squareoffHour: 15, squareoffMinute: 0,  maxIvRankForBuying: 50, scanTimeframe: FIFTEEN_MINUTE, candleTimeframe: FIVE_MINUTE, trendTimeframe: FIFTEEN_MINUTE, trailingStopActivationPercent: 30, trailingGapPercent: 15, minCombinedPremium: 50,  lots: 1, otmStrikes: 2, spreadStrikes: 2 }
   # ── OI_MOMENTUM (1-sec live tracking, OI + PCR + Momentum confluence) ───
+  # PCR thresholds align with globalConfig bullishImbalance 1.2 / bearish 0.8 and application.yml oi-momentum.
+  # Operator framework (chain snapshots) CASE5 override: score >= 65; soft confirm >= 50; PCR override >= 75.
   - { strategyType: OI_MOMENTUM, underlying: NIFTY, enabled: true, paperTrading: false, stopLossPercent: 15, targetPercent: 25, maxHoldMinutes: 0, squareoffHour: 15, squareoffMinute: 10, maxIvRankForBuying: 40, scanTimeframe: ONE_MINUTE, candleTimeframe: ONE_MINUTE, trendTimeframe: FIVE_MINUTE, trailingStopActivationPercent: 12, trailingGapPercent: 8, minCombinedPremium: 30, lots: 1, otmStrikes: 2, spreadStrikes: 2 }
   - { strategyType: OI_MOMENTUM, underlying: BANKNIFTY, enabled: true, paperTrading: true, stopLossPercent: 15, targetPercent: 25, maxHoldMinutes: 0, squareoffHour: 15, squareoffMinute: 10, maxIvRankForBuying: 40, scanTimeframe: ONE_MINUTE, candleTimeframe: ONE_MINUTE, trendTimeframe: FIVE_MINUTE, trailingStopActivationPercent: 12, trailingGapPercent: 8, minCombinedPremium: 50, lots: 1, otmStrikes: 2, spreadStrikes: 2 }
   - { strategyType: OI_MOMENTUM, underlying: SENSEX, enabled: true, paperTrading: true, stopLossPercent: 15, targetPercent: 25, maxHoldMinutes: 0, squareoffHour: 15, squareoffMinute: 10, maxIvRankForBuying: 40, scanTimeframe: ONE_MINUTE, candleTimeframe: ONE_MINUTE, trendTimeframe: FIVE_MINUTE, trailingStopActivationPercent: 12, trailingGapPercent: 8, minCombinedPremium: 50, lots: 1, otmStrikes: 2, spreadStrikes: 2 }

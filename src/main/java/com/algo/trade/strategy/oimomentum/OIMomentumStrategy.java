@@ -133,6 +133,13 @@ public class OIMomentumStrategy {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.algo.trade.notification.TelegramAlertService telegramAlertService;
 
+    /**
+     * Operator Framework — detects institutional OI accumulation from chain snapshots
+     * before price breakouts. Optional: falls back to existing behaviour if not wired.
+     */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private OperatorFrameworkService operatorFrameworkService;
+
     @org.springframework.beans.factory.annotation.Autowired
     private com.algo.trade.strategy.StrategyConfigService strategyConfigService;
 
@@ -326,6 +333,10 @@ public class OIMomentumStrategy {
                 // Parse midday times once per day (P2 #20)
                 middayStart = LocalTime.parse(config.getMiddayStart());
                 middayEnd = LocalTime.parse(config.getMiddayEnd());
+                // Reset Operator Framework baseline for new trading day
+                if (operatorFrameworkService != null) {
+                    operatorFrameworkService.resetForNewDay();
+                }
             }
 
             // Process each enabled index independently (driven by UNDERLYING_CONFIGS table)
@@ -568,8 +579,7 @@ public class OIMomentumStrategy {
             peOiChange = oiChange[1];
             oiAvailable = (ceOiChange != 0 || peOiChange != 0);
             if (oiAvailable) {
-                if (peOiChange > ceOiChange && peOiChange > 0) oiDirection = 1;
-                else if (ceOiChange > peOiChange && ceOiChange > 0) oiDirection = -1;
+                oiDirection = oiDir(ceOiChange, peOiChange); // includes buildup AND squeeze detection
             }
         }
 
@@ -582,13 +592,16 @@ public class OIMomentumStrategy {
         // ── Entry Decision Matrix ──
         String entryCase = describeCase(momentum.direction(), oiDirection, pcrDirection, oiAvailable);
         EntryCaseEvaluation eval = evaluateEntryCaseDetail(indexType, momentum.direction(), oiDirection,
-                pcrDirection, oiAvailable);
+                pcrDirection, oiAvailable, momentum.type(), ceOiChange, peOiChange);
+        entryCase = entryCaseLabel(entryCase, eval);
+        String diagBlockDetail = diagnosticsBlockDetail(entryCase, eval.blockDetail());
         OiMomentumEntryDiagnostics diag = buildDiagnostics(
                 indexType, state, momentum, oiDirection, pcrDirection, pcr, ceOiChange, peOiChange,
-                oiAvailable, spot, atm, entryCase, null, eval.blockDetail());
+                oiAvailable, spot, atm, entryCase, null, diagBlockDetail);
         if (eval.direction() != 0) {
-            String reason = String.format("M:%s OI:%d PCR:%.2f(%d) case=%s",
-                    momentum.type(), oiDirection, pcr, pcrDirection, entryCase);
+            String operatorTag = formatOperatorEntryTag(entryCase, eval.blockDetail());
+            String reason = String.format("M:%s OI:%d PCR:%.2f(%d) case=%s%s",
+                    momentum.type(), oiDirection, pcr, pcrDirection, entryCase, operatorTag);
             enter(indexType, state, eval.direction(), reason, spot, diag);
             enteredCount.incrementAndGet();
         } else {
@@ -724,9 +737,28 @@ public class OIMomentumStrategy {
         return 0;
     }
 
+    /**
+     * Derive OI direction from CE/PE change vs opening baseline.
+     *
+     * Two signals are recognized:
+     *
+     * (A) Fresh buildup — strongest signal:
+     *   PE growing faster than CE (peΔ > ceΔ, peΔ > 0) → operators writing PE support → bullish (+1)
+     *   CE growing faster than PE (ceΔ > peΔ, ceΔ > 0) → operators writing CE resistance → bearish (-1)
+     *
+     * (B) OI Squeeze / short-covering — both negative (all holders closing):
+     *   PE unwinding faster → put holders cashing out as spot falls → bearish continuation (-1, buy PE)
+     *   CE unwinding faster → call holders exiting as spot rises → bullish continuation (+1, buy CE)
+     *
+     * Returns 0 when no clear directional bias exists (mixed or zero changes).
+     */
     private int oiDir(long ceOiChange, long peOiChange) {
+        // (A) Primary: fresh OI buildup
         if (peOiChange > ceOiChange && peOiChange > 0) return 1;
         if (ceOiChange > peOiChange && ceOiChange > 0) return -1;
+        // (B) OI Squeeze: both negative — whichever unwinds faster dominates
+        if (peOiChange < 0 && ceOiChange < 0 && peOiChange < ceOiChange) return -1; // PE squeeze → bearish continuation
+        if (peOiChange < 0 && ceOiChange < 0 && ceOiChange < peOiChange) return 1;  // CE squeeze → bullish continuation
         return 0;
     }
 
@@ -735,8 +767,15 @@ public class OIMomentumStrategy {
         return db != null ? db.isPaperTrading() : config.isPaperTrading();
     }
 
+    /**
+     * Evaluate which entry case applies and whether to enter or skip.
+     *
+     * @param momentumType  e.g. "30M_LOW_BREAK", "30M_HIGH_BREAK" — used to relax
+     *                      the CASE3 range guard for genuine breakouts.
+     */
     private EntryCaseEvaluation evaluateEntryCaseDetail(IndexType indexType, int momentumDir, int oiDir,
-                                                      int pcrDir, boolean oiAvailable) {
+                                                      int pcrDir, boolean oiAvailable, String momentumType,
+                                                      long ceOiChange, long peOiChange) {
         // Case 1: All three align
         if (oiAvailable && oiDir == momentumDir && pcrDir == momentumDir) {
             return new EntryCaseEvaluation(momentumDir, "");
@@ -748,7 +787,13 @@ public class OIMomentumStrategy {
         // Case 3: Momentum + OI align, PCR neutral
         if (oiAvailable && oiDir == momentumDir && pcrDir == 0) {
             double rangePct = computeRangePct30m(indexType);
-            if (rangePct > 0 && rangePct < 0.3) {
+            // Bypass narrow-range guard when:
+            // (a) breakout momentum — tight range is the setup, not a skip reason
+            // (b) dual-negative OI squeeze with material |Δ| on both legs (not WS noise)
+            boolean isBreakout = momentumType != null &&
+                    (momentumType.contains("HIGH_BREAK") || momentumType.contains("LOW_BREAK"));
+            boolean isOiSqueeze = isMaterialOiSqueeze(ceOiChange, peOiChange);
+            if (!isBreakout && !isOiSqueeze && rangePct > 0 && rangePct < 0.3) {
                 return new EntryCaseEvaluation(0, "CASE3_RANGE_LT_0.3:" + String.format("%.3f", rangePct));
             }
             return new EntryCaseEvaluation(momentumDir, "");
@@ -757,14 +802,98 @@ public class OIMomentumStrategy {
         if (oiAvailable && oiDir != 0 && oiDir != momentumDir) {
             return new EntryCaseEvaluation(0, "CASE4_OI_VS_MOMENTUM");
         }
-        // Case 5: PCR conflicts, no OI → SKIP
+        // Case 5: PCR conflicts, no OI → check operator framework before skipping
         if (!oiAvailable && pcrDir != 0 && pcrDir != momentumDir) {
+            String operatorOverride = tryOperatorOverride(indexType, momentumDir, "CASE5_PCR_VS_MOMENTUM");
+            if (operatorOverride != null) {
+                return new EntryCaseEvaluation(momentumDir, operatorOverride);
+            }
             return new EntryCaseEvaluation(0, "CASE5_PCR_VS_MOMENTUM");
         }
         if (!oiAvailable) {
+            String operatorOverride = tryOperatorOverride(indexType, momentumDir, "CASE5_OI_UNAVAILABLE");
+            if (operatorOverride != null) {
+                return new EntryCaseEvaluation(momentumDir, operatorOverride);
+            }
             return new EntryCaseEvaluation(0, "CASE5_OI_UNAVAILABLE");
         }
+        // Fallback Case 5
+        String operatorOverride = tryOperatorOverride(indexType, momentumDir, "CASE5_NO_RULE");
+        if (operatorOverride != null) {
+            return new EntryCaseEvaluation(momentumDir, operatorOverride);
+        }
         return new EntryCaseEvaluation(0, "CASE5_NO_RULE");
+    }
+
+    /**
+     * Ask the Operator Framework if it can upgrade a CASE5 block to an actionable entry.
+     * Returns the upgrade label to store in blockDetail (for reporting), or null to keep blocking.
+     */
+    private String tryOperatorOverride(IndexType indexType, int momentumDir, String case5Reason) {
+        if (operatorFrameworkService == null) return null;
+        return operatorFrameworkService.evaluateCase5Override(indexType, momentumDir, case5Reason);
+    }
+
+    /** Use operator override label in tune CSV when matrix would still say CASE5_SKIP. */
+    private String entryCaseLabel(String matrixCase, EntryCaseEvaluation eval) {
+        if (eval.direction() == 0) {
+            return matrixCase;
+        }
+        String detail = eval.blockDetail();
+        if (detail == null || detail.isBlank() || !detail.startsWith("CASE")) {
+            return matrixCase;
+        }
+        int bracket = detail.indexOf('[');
+        return bracket > 0 ? detail.substring(0, bracket) : detail;
+    }
+
+    private boolean isMaterialOiSqueeze(long ceOiChange, long peOiChange) {
+        long floor = config.getMinSqueezeOiDelta();
+        return ceOiChange < 0 && peOiChange < 0
+                && Math.abs(ceOiChange) >= floor
+                && Math.abs(peOiChange) >= floor;
+    }
+
+    /** Reason suffix: opScore=72 when entryCase already carries the operator label. */
+    private String formatOperatorEntryTag(String entryCase, String blockDetail) {
+        if (blockDetail == null || blockDetail.isBlank() || !blockDetail.startsWith("CASE")) {
+            return "";
+        }
+        String scoreSuffix = operatorScoreSuffix(blockDetail);
+        if (scoreSuffix.isEmpty()) {
+            return " operator=" + blockDetail;
+        }
+        if (entryCase != null && blockDetail.startsWith(entryCase + "[")) {
+            return " opScore=" + scoreSuffix;
+        }
+        return " operator=" + blockDetail;
+    }
+
+    /** Tune CSV blockDetail: score only when entryCase column already has the operator label. */
+    private String diagnosticsBlockDetail(String entryCase, String blockDetail) {
+        if (blockDetail == null || blockDetail.isBlank()) {
+            return "";
+        }
+        if (entryCase != null && blockDetail.startsWith(entryCase + "[")) {
+            String scoreSuffix = operatorScoreSuffix(blockDetail);
+            return scoreSuffix.isEmpty() ? blockDetail : "score=" + scoreSuffix;
+        }
+        return blockDetail;
+    }
+
+    /** Extract numeric score from CASE2_OPERATOR[score=72]. */
+    private String operatorScoreSuffix(String blockDetail) {
+        int scoreIdx = blockDetail.indexOf("score=");
+        if (scoreIdx < 0) {
+            return "";
+        }
+        int start = scoreIdx + "score=".length();
+        int end = blockDetail.indexOf(']', start);
+        if (end < 0) {
+            end = blockDetail.length();
+        }
+        String score = blockDetail.substring(start, end).trim();
+        return score.isEmpty() ? "" : score;
     }
 
     private String describeCase(int mDir, int oiDir, int pcrDir, boolean oiAvail) {

@@ -62,9 +62,11 @@ public class StrategyConfiguration {
             OiChangeTracker oiChangeTracker,
             OptionChainAnalyzer optionChainAnalyzer,
             StrategySignalCsvRecorder signalCsvRecorder,
-            com.algo.trade.underlying.UnderlyingConfigService underlyingConfigService
+            com.algo.trade.underlying.UnderlyingConfigService underlyingConfigService,
+            com.algo.trade.strategy.oimomentum.OperatorFrameworkService operatorFrameworkService
     ) {
         return new RuleBasedOptionsStrategy(properties, globalConfigService, vwapIndicator, emaIndicator, volumeSpikeDetector, breakoutDetector,
-                volatilityFilter, oiChangeTracker, optionChainAnalyzer, signalCsvRecorder, underlyingConfigService);
+                volatilityFilter, oiChangeTracker, optionChainAnalyzer, signalCsvRecorder, underlyingConfigService,
+                operatorFrameworkService);
     }
 }

@@ -88,8 +88,13 @@ public class IVRankTracker {
     public double getIVPercentile(IndexType indexType) {
         List<IVSample> samples = getSamples(indexType);
         if (samples.size() < 20) return 50.0;
-        double current = samples.getLast().iv();
-        long below = samples.stream().filter(s -> s.iv() < current).count();
+        // Guard against null samples produced during OOM recovery or partial snapshot writes
+        IVSample last = samples.getLast();
+        if (last == null) return 50.0;
+        double current = last.iv();
+        long below = samples.stream()
+                .filter(s -> s != null && s.iv() < current)
+                .count();
         return ((double) below / samples.size()) * 100.0;
     }
 

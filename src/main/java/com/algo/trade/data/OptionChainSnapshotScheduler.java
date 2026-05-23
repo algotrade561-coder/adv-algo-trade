@@ -7,6 +7,7 @@ import com.algo.trade.marketdata.ExpiryCalendar;
 import com.algo.trade.marketdata.LiveInstrumentCache;
 import com.algo.trade.monitoring.SchedulerRegistry;
 import com.algo.trade.risk.MarketGuard;
+import com.algo.trade.strategy.oimomentum.OperatorFrameworkService;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -39,6 +40,7 @@ public class OptionChainSnapshotScheduler {
     private final MarketGuard marketGuard;
     private final SnapshotFileWriter snapshotFileWriter;
     private final SchedulerRegistry schedulerRegistry;
+    private final OperatorFrameworkService operatorFrameworkService;
 
     @Value("${snapshot.enabled:true}")
     private boolean enabled;
@@ -53,12 +55,14 @@ public class OptionChainSnapshotScheduler {
                                          ExpiryCalendar expiryCalendar,
                                          MarketGuard marketGuard,
                                          SnapshotFileWriter snapshotFileWriter,
-                                         SchedulerRegistry schedulerRegistry) {
+                                         SchedulerRegistry schedulerRegistry,
+                                         OperatorFrameworkService operatorFrameworkService) {
         this.liveInstrumentCache = liveInstrumentCache;
         this.expiryCalendar = expiryCalendar;
         this.marketGuard = marketGuard;
         this.snapshotFileWriter = snapshotFileWriter;
         this.schedulerRegistry = schedulerRegistry;
+        this.operatorFrameworkService = operatorFrameworkService;
     }
 
     @PostConstruct
@@ -91,6 +95,8 @@ public class OptionChainSnapshotScheduler {
                     captured++;
                     log.info("[ChainSnapshot] Captured: {} spot={} strikes={}",
                             indexType, snapshot.get().spot(), snapshot.get().strikes().size());
+                    // Feed into Operator Framework for institutional accumulation analysis
+                    operatorFrameworkService.onChainSnapshot(indexType, snapshot.get());
                 }
             } catch (Exception e) {
                 log.error("[ChainSnapshot] Capture failed for {}: {}", underlyingName, e.getMessage());

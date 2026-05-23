@@ -143,6 +143,7 @@ public class ConfigSeedLoader {
         cfg.setMaxOpenPositionsPerStrategy(integer(map, "maxOpenPositionsPerStrategy", 1));
         cfg.setDailyProfitTarget(decimal(map, "dailyProfitTarget", "0"));
         cfg.setMaxLotsPerTrade(integer(map, "maxLotsPerTrade", 1));
+        cfg.setMinEnvironmentScore(integer(map, "minEnvironmentScore", 50));
         cfg.setMlVirtualTradeThreshold(decimal(map, "mlVirtualTradeThreshold", "45"));
         // Execution tuning
         cfg.setLimitOrderCancelMinutes(integer(map, "limitOrderCancelMinutes", 1));

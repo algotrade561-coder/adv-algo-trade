@@ -586,7 +586,10 @@ final class SignalTuningCsvLoader {
             double atmPeLast,
             double vix,
             long daysToExpiry,
-            boolean expiryDay
+            boolean expiryDay,
+            boolean restFallbackActive,
+            long maxAtmOiStaleSec,
+            long wsTickAgeSec
     ) {
     }
 
@@ -799,7 +802,10 @@ final class SignalTuningCsvLoader {
                     parseDoubleOrNull(r.get("atmPeLast")) != null ? parseDoubleOrNull(r.get("atmPeLast")) : 0,
                     parseDoubleOrNull(r.get("vix")) != null ? parseDoubleOrNull(r.get("vix")) : 0,
                     longValue(r.get("daysToExpiry")),
-                    bool(r.get("isExpiryDay"))
+                    bool(r.get("isExpiryDay")),
+                    bool(r.get("restFallbackActive")),
+                    longValue(r.get("maxAtmOiStaleSec")),
+                    longValue(r.get("wsTickAgeSec"))
             ));
         }
     }

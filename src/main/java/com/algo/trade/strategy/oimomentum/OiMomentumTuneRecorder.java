@@ -6,6 +6,7 @@ import com.algo.trade.domain.Quote;
 import com.algo.trade.domain.StrategyDecision;
 import com.algo.trade.domain.UnderlyingSymbol;
 import com.algo.trade.marketdata.LiveInstrumentCache;
+import com.algo.trade.marketdata.OiRestFallbackService;
 import com.algo.trade.domain.OptionInstrument;
 import com.algo.trade.persistence.TradeEntity;
 import com.algo.trade.reporting.SignalDecisionKey;
@@ -49,7 +50,8 @@ public class OiMomentumTuneRecorder {
             "momentumDir", "momentumType", "momentumMagnitudePct", "pcr", "pcrDir",
             "oiDir", "ceOiChange", "peOiChange", "oiAvailable", "oiAdvanced",
             "spot", "atm", "spot30mHigh", "spot30mLow", "rangePct30m", "breakoutDistancePct",
-            "atmCeLast", "atmPeLast", "vix", "daysToExpiry", "isExpiryDay"
+            "atmCeLast", "atmPeLast", "vix", "daysToExpiry", "isExpiryDay",
+            "restFallbackActive", "maxAtmOiStaleSec", "wsTickAgeSec"
     ) + System.lineSeparator();
 
     private static final String EXIT_HEADER = String.join(",",
@@ -70,9 +72,13 @@ public class OiMomentumTuneRecorder {
     private static final Duration MATRIX_REJECT_SAMPLE_INTERVAL = Duration.ofSeconds(5);
 
     private final LiveInstrumentCache liveInstrumentCache;
+    private final OiRestFallbackService oiRestFallbackService;
 
-    public OiMomentumTuneRecorder(LiveInstrumentCache liveInstrumentCache) {
+    public OiMomentumTuneRecorder(LiveInstrumentCache liveInstrumentCache,
+                                  @org.springframework.beans.factory.annotation.Autowired(required = false)
+                                  OiRestFallbackService oiRestFallbackService) {
         this.liveInstrumentCache = liveInstrumentCache;
+        this.oiRestFallbackService = oiRestFallbackService;
     }
 
     public String recordBuy(StrategyDecision decision, OiMomentumEntryDiagnostics diag,
@@ -136,7 +142,7 @@ public class OiMomentumTuneRecorder {
         }
         try {
             Files.createDirectories(DIR);
-            String row = rejectRow(now, indexType, rejectReason, partial);
+            String row = buildRejectRow(now, indexType, rejectReason, partial);
             append(REJECTS, REJECT_HEADER, row);
             return now;
         } catch (IOException ex) {
@@ -145,8 +151,8 @@ public class OiMomentumTuneRecorder {
         return lastSampleTime;
     }
 
-    private static String rejectRow(Instant now, IndexType indexType, String rejectReason,
-                                    OiMomentumEntryDiagnostics partial) {
+    private String buildRejectRow(Instant now, IndexType indexType, String rejectReason,
+                                  OiMomentumEntryDiagnostics partial) {
         return String.join(",",
                 csv(IstDateTimes.formatInstant(now)),
                 csv(IstDateTimes.formatLocalTime(java.time.LocalTime.now(java.time.ZoneId.of("Asia/Kolkata")))),
@@ -174,7 +180,10 @@ public class OiMomentumTuneRecorder {
                 csv(partial != null ? partial.atmPeLast() : ""),
                 csv(partial != null ? partial.vix() : ""),
                 csv(partial != null ? partial.daysToExpiry() : ""),
-                csv(partial != null ? partial.expiryDay() : "")
+                csv(partial != null ? partial.expiryDay() : ""),
+                csv(oiRestFallbackService != null && oiRestFallbackService.isRestFallbackActive()),
+                csv(oiRestFallbackService != null ? oiRestFallbackService.getMaxAtmOiSampleAgeSec(indexType) : ""),
+                csv(oiRestFallbackService != null ? oiRestFallbackService.getWsTickAgeSec() : "")
         ) + System.lineSeparator();
     }
 

@@ -17,6 +17,8 @@ public class OIMomentumConfig {
     private double minOiChangePercent = 1.5;             // Minimum OI change to confirm
     private double pcrBullishThreshold = 1.2;            // PCR > 1.2 = bullish
     private double pcrBearishThreshold = 0.8;            // PCR < 0.8 = bearish
+    /** Min |ceΔ| and |peΔ| for CASE3 squeeze range bypass (both must be negative). */
+    private long minSqueezeOiDelta = 100_000L;
 
     // ── Trade Throttling ──
     private int maxTradesPerDay = 30;                    // Hard cap
@@ -59,6 +61,8 @@ public class OIMomentumConfig {
     public void setPcrBullishThreshold(double v) { this.pcrBullishThreshold = v; }
     public double getPcrBearishThreshold() { return pcrBearishThreshold; }
     public void setPcrBearishThreshold(double v) { this.pcrBearishThreshold = v; }
+    public long getMinSqueezeOiDelta() { return minSqueezeOiDelta; }
+    public void setMinSqueezeOiDelta(long v) { this.minSqueezeOiDelta = v; }
     public int getMaxTradesPerDay() { return maxTradesPerDay; }
     public void setMaxTradesPerDay(int v) { this.maxTradesPerDay = v; }
     public int getSoftTargetTradesPerDay() { return softTargetTradesPerDay; }

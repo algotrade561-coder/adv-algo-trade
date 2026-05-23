@@ -3,6 +3,7 @@ package com.algo.trade.strategy;
 import com.algo.trade.config.GlobalConfigService;
 import com.algo.trade.config.TradingProperties;
 import com.algo.trade.domain.Candle;
+import com.algo.trade.domain.IndexType;
 import com.algo.trade.domain.OptionType;
 import com.algo.trade.domain.SignalType;
 import com.algo.trade.domain.StrategyDecision;
@@ -13,6 +14,7 @@ import com.algo.trade.indicator.RsiIndicator;
 import com.algo.trade.indicator.VolatilityFilter;
 import com.algo.trade.indicator.VolumeSpikeDetector;
 import com.algo.trade.indicator.VwapIndicator;
+import com.algo.trade.strategy.oimomentum.OperatorFrameworkService;
 import java.math.BigDecimal;
 import java.math.MathContext;
 import java.time.LocalTime;
@@ -45,6 +47,7 @@ public class RuleBasedOptionsStrategy {
     private final StrategySignalCsvRecorder signalCsvRecorder;
     private final RsiIndicator rsiIndicator;
     private final com.algo.trade.underlying.UnderlyingConfigService underlyingConfigService;
+    private final OperatorFrameworkService operatorFrameworkService;
 
     public RuleBasedOptionsStrategy(
             TradingProperties properties,
@@ -57,7 +60,8 @@ public class RuleBasedOptionsStrategy {
             OiChangeTracker oiChangeTracker,
             OptionChainAnalyzer optionChainAnalyzer,
             StrategySignalCsvRecorder signalCsvRecorder,
-            com.algo.trade.underlying.UnderlyingConfigService underlyingConfigService
+            com.algo.trade.underlying.UnderlyingConfigService underlyingConfigService,
+            OperatorFrameworkService operatorFrameworkService
     ) {
         this.properties = properties;
         this.globalConfigService = globalConfigService;
@@ -71,6 +75,26 @@ public class RuleBasedOptionsStrategy {
         this.signalCsvRecorder = signalCsvRecorder;
         this.rsiIndicator = new RsiIndicator();
         this.underlyingConfigService = underlyingConfigService;
+        this.operatorFrameworkService = operatorFrameworkService;
+    }
+
+    /** Production constructor without operator framework (tests / backtest). */
+    public RuleBasedOptionsStrategy(
+            TradingProperties properties,
+            GlobalConfigService globalConfigService,
+            VwapIndicator vwapIndicator,
+            EmaIndicator emaIndicator,
+            VolumeSpikeDetector volumeSpikeDetector,
+            BreakoutDetector breakoutDetector,
+            VolatilityFilter volatilityFilter,
+            OiChangeTracker oiChangeTracker,
+            OptionChainAnalyzer optionChainAnalyzer,
+            StrategySignalCsvRecorder signalCsvRecorder,
+            com.algo.trade.underlying.UnderlyingConfigService underlyingConfigService
+    ) {
+        this(properties, globalConfigService, vwapIndicator, emaIndicator, volumeSpikeDetector, breakoutDetector,
+                volatilityFilter, oiChangeTracker, optionChainAnalyzer, signalCsvRecorder, underlyingConfigService,
+                null);
     }
 
     /** Backtest/test constructor — no GlobalConfigService, falls back to YAML properties. */
@@ -235,6 +259,14 @@ public class RuleBasedOptionsStrategy {
                 ivPassed, liquidityPassed, rsiPassed,
                 oiEvaluation.priceOiBuildUp(), oiEvaluation.chainBuildUp(), oiEvaluation.imbalanceSupports(),
                 request.underlying());
+        int operatorBonus = resolveOperatorConfidenceBonus(request);
+        if (operatorBonus > 0) {
+            confidenceScore = confidenceScore.add(BigDecimal.valueOf(operatorBonus));
+            if (confidenceScore.compareTo(BigDecimal.valueOf(100)) > 0) {
+                confidenceScore = BigDecimal.valueOf(100);
+            }
+        }
+        int operatorScoreForLog = operatorBonus > 0 ? resolveOperatorScore(request) : -1;
 
         List<String> reasons = new ArrayList<>();
         addReason(reasons, vwapPassed, "Trend condition passed", "Trend condition failed");
@@ -252,6 +284,10 @@ public class RuleBasedOptionsStrategy {
         addReason(reasons, liquidityPassed, "Liquidity filter passed", "Liquidity filter failed");
         addReason(reasons, timePassed, "Entry time window passed", "Entry time window failed");
         addReason(reasons, rsiPassed, "RSI momentum gate passed", "RSI momentum gate failed");
+        if (operatorBonus > 0) {
+            reasons.add("Operator institutional bonus: +" + operatorBonus + "pts (operatorScore="
+                    + operatorScoreForLog + ")");
+        }
         addReason(reasons, confidenceScore.compareTo(cfgMinSignalScorePercent()) >= 0,
                 "Signal score passed: " + confidenceScore + "%",
                 "Signal score failed: " + confidenceScore + "%");
@@ -592,6 +628,27 @@ public class RuleBasedOptionsStrategy {
             return BigDecimal.valueOf((long) score * 100 / maxScore);
         }
         return BigDecimal.valueOf(score);
+    }
+
+    /**
+     * Add operator-framework conviction to DIRECTIONAL_BUY score when chain snapshots
+     * show institutional buildup aligned with the side being evaluated (CE=+1, PE=−1).
+     */
+    private int resolveOperatorConfidenceBonus(StrategyEvaluationRequest request) {
+        if (operatorFrameworkService == null) {
+            return 0;
+        }
+        int momentumDir = request.optionType() == OptionType.CE ? 1 : -1;
+        IndexType indexType = IndexType.from(request.underlying());
+        return operatorFrameworkService.getConfidenceBonus(indexType, momentumDir);
+    }
+
+    private int resolveOperatorScore(StrategyEvaluationRequest request) {
+        if (operatorFrameworkService == null) {
+            return -1;
+        }
+        IndexType indexType = IndexType.from(request.underlying());
+        return operatorFrameworkService.getOperatorSignal(indexType).getScore();
     }
 
     private BigDecimal distancePercent(BigDecimal price, BigDecimal level) {
