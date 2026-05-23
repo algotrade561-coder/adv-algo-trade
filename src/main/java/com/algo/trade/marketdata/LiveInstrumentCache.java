@@ -103,6 +103,7 @@ public class LiveInstrumentCache {
         if (inst == null) return;
 
         inst.setLastPrice(price);
+        inst.updateHigh5mLow5m(price); // maintain clock-aligned 5-min high/low for snapshots and live reads
         inst.setLastTickTimeMs(System.currentTimeMillis());
         if (volume > 0) inst.setVolume(volume);
         if (oi > 0) {
@@ -223,7 +224,14 @@ public class LiveInstrumentCache {
             long prev = inst.getOpenInterest();
             if (prev > 0) inst.setPrevOpenInterest(prev);
             inst.setOpenInterest(oi);
-            inst.sampleOiIfDue(); // feeds OI ring buffer → resolves CASE5_SKIP
+            // Seed the ring buffer with a back-dated anchor on the first REST injection.
+            // Without this, getOiChangeSince(3) returns 0 for 3 full minutes (needs a
+            // sample ≥3 min old) — keeping oiAvailable=false even after REST data arrives.
+            // The back-dated anchor gives the strategy an immediate lookback reference.
+            if (inst.isOiRingBufferEmpty()) {
+                inst.seedOiRingBuffer(oi, System.currentTimeMillis() - 180_000L);
+            }
+            inst.sampleOiIfDue(); // writes current OI at now; feeds OI ring buffer → resolves CASE5_SKIP
         }
         double underlying = futuresPriceCache.getOrDefault(inst.getIndexType(), 0.0);
         if (underlying > 0 && lastPrice > 0) {

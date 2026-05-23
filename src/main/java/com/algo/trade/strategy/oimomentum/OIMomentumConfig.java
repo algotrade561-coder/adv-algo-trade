@@ -14,39 +14,69 @@ public class OIMomentumConfig {
     private int rolling30MinWindowSeconds = 1800;        // 30-min rolling window
 
     // ── Entry Filters ──
-    private double minOiChangePercent = 1.5;             // Minimum OI change to confirm
-    private double pcrBullishThreshold = 1.2;            // PCR > 1.2 = bullish
-    private double pcrBearishThreshold = 0.8;            // PCR < 0.8 = bearish
+    /**
+     * @deprecated Not wired — config.getMinOiChangePercent() is never called in
+     *   OIMomentumStrategy. oiAvailable is set by raw zero-check, not this threshold.
+     *   Kept for backward-compat; see minSqueezeOiDelta for the active floor.
+     */
+    @Deprecated
+    private double minOiChangePercent = 1.5;
+    private double pcrBullishThreshold = 1.1;            // PCR > 1.1 = bullish (was 1.2 — dead zone too wide)
+    private double pcrBearishThreshold = 0.9;            // PCR < 0.9 = bearish (was 0.8 — dead zone too wide)
     /** Min |ceΔ| and |peΔ| for CASE3 squeeze range bypass (both must be negative). */
     private long minSqueezeOiDelta = 100_000L;
 
+    // ── Entry Window ──
+    /**
+     * When new entries are permitted each day (IST, HH:mm).
+     * Was hardcoded to 09:30–14:30 in isEntryWindow(); now configurable.
+     * 09:25 avoids the erratic first-candle noise while capturing most of opening.
+     * 14:55 allows closing-session momentum entries (14:30–15:00 is high-volume).
+     */
+    private String entryWindowStart = "09:25";
+    private String entryWindowEnd = "14:55";
+
     // ── Trade Throttling ──
-    private int maxTradesPerDay = 30;                    // Hard cap
-    private int softTargetTradesPerDay = 15;             // Soft target
-    private int maxReversalsPerDay = 3;                  // Max direction flips
-    private int cooldownAfterSlSeconds = 120;            // 2 min cooldown after SL
+    private int maxTradesPerDay = 20;                    // Hard cap per index
+    private int softTargetTradesPerDay = 15;             // Soft target per index
+    private int maxReversalsPerDay = 3;                  // Max direction flips per index
+    private int cooldownAfterSlSeconds = 90;             // Cooldown after SL hit (was 120)
     private int minimumHoldTimeSeconds = 45;             // Don't exit before 45s
-    private int consecutiveLossPause = 3;                // Pause after 3 consecutive losses
-    private int middayTradeReductionPercent = 50;        // Reduce entries 12:00-13:30
+    private int consecutiveLossPause = 3;                // Pause after N consecutive losses
+    /**
+     * % of softTargetTradesPerDay allowed during midday window before throttling kicks in.
+     * e.g. 50 → allow softTarget * 0.50 = 7 trades before midday throttle engages.
+     * Previously the code hardcoded /2 (50%), ignoring this field — now wired properly.
+     */
+    private int middayTradeReductionPercent = 50;
 
     // ── Exit Parameters ──
-    private double stopLossPercent = 15;                 // Delta-adjusted SL
-    private double targetPercent = 25;                   // Delta-adjusted target
-    private double trailingActivationPercent = 12;       // Trailing starts at +12%
+    private double stopLossPercent = 15;                 // Option premium SL %
+    /**
+     * @deprecated Not used in OIMomentumStrategy — trailing stop handles profit-taking.
+     *   No fixed target is enforced. Kept for YAML backward-compat; has no runtime effect.
+     */
+    @Deprecated
+    private double targetPercent = 25;
+    private double trailingActivationPercent = 8;        // Trailing starts at +8% (was 12 — left orphan zone)
     private double trailingGapPercent = 8;               // Trail gap from peak
     private int squareoffHour = 15;
     private int squareoffMinute = 10;
 
     // ── Session Windows ──
-    private String openingSessionStart = "09:16";
+    private String openingSessionStart = "09:16";        // Reference only; entry start controlled by entryWindowStart
     private String openingSessionEnd = "10:00";
     private String middayStart = "12:00";
-    private String middayEnd = "13:30";
+    private String middayEnd = "13:00";                  // Was "13:30" — shortened dead zone by 30 min
+    /**
+     * @deprecated Not read by OIMomentumStrategy — entry cutoff now controlled by entryWindowEnd.
+     */
+    @Deprecated
     private String closingSessionStart = "15:00";
 
     // ── Enabled/Paper ──
     private boolean enabled = true;
-    private boolean paperTrading = true;
+    private boolean paperTrading = false;
 
     // Getters and setters
     public double getMomentumThresholdPercent() { return momentumThresholdPercent; }
@@ -97,8 +127,12 @@ public class OIMomentumConfig {
     public void setMiddayStart(String v) { this.middayStart = v; }
     public String getMiddayEnd() { return middayEnd; }
     public void setMiddayEnd(String v) { this.middayEnd = v; }
-    public String getClosingSessionStart() { return closingSessionStart; }
-    public void setClosingSessionStart(String v) { this.closingSessionStart = v; }
+    @Deprecated public String getClosingSessionStart() { return closingSessionStart; }
+    @Deprecated public void setClosingSessionStart(String v) { this.closingSessionStart = v; }
+    public String getEntryWindowStart() { return entryWindowStart; }
+    public void setEntryWindowStart(String v) { this.entryWindowStart = v; }
+    public String getEntryWindowEnd() { return entryWindowEnd; }
+    public void setEntryWindowEnd(String v) { this.entryWindowEnd = v; }
     public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean v) { this.enabled = v; }
     public boolean isPaperTrading() { return paperTrading; }

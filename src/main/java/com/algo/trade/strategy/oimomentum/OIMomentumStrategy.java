@@ -122,6 +122,10 @@ public class OIMomentumStrategy {
     private volatile LocalTime middayStart = null;
     private volatile LocalTime middayEnd = null;
 
+    /** Parsed entry window boundaries — re-parsed once per day when config.entryWindowStart/End changes. */
+    private volatile LocalTime entryWindowStart = null;
+    private volatile LocalTime entryWindowEnd = null;
+
     private volatile LocalDate currentDay = null;
 
     // ── Executor ──
@@ -330,9 +334,11 @@ public class OIMomentumStrategy {
                         state.peakPrice = 0;
                     }
                 }
-                // Parse midday times once per day (P2 #20)
+                // Parse session boundary times once per day (P2 #20)
                 middayStart = LocalTime.parse(config.getMiddayStart());
                 middayEnd = LocalTime.parse(config.getMiddayEnd());
+                entryWindowStart = LocalTime.parse(config.getEntryWindowStart());
+                entryWindowEnd = LocalTime.parse(config.getEntryWindowEnd());
                 // Reset Operator Framework baseline for new trading day
                 if (operatorFrameworkService != null) {
                     operatorFrameworkService.resetForNewDay();
@@ -502,8 +508,13 @@ public class OIMomentumStrategy {
         }
 
         // ── Midday reduction ──
+        // middayTradeReductionPercent (default 50) = fraction of softTarget allowed before
+        // throttling during the midday window. e.g. 50% of 15 = 7 trades max before midday throttle.
+        // Previously this was hardcoded as softTargetTradesPerDay / 2 (ignoring the config value).
         LocalTime now = LocalTime.now(IST);
-        if (isMidday(now) && state.tradesToday.get() >= config.getSoftTargetTradesPerDay() / 2) {
+        int middayThreshold = Math.max(1,
+                (int) Math.round(config.getSoftTargetTradesPerDay() * config.getMiddayTradeReductionPercent() / 100.0));
+        if (isMidday(now) && state.tradesToday.get() >= middayThreshold) {
             recordThrottleReject(indexType, state, "midday_reduction");
             return;
         }
@@ -740,7 +751,7 @@ public class OIMomentumStrategy {
     /**
      * Derive OI direction from CE/PE change vs opening baseline.
      *
-     * Two signals are recognized:
+     * Three signals are recognized:
      *
      * (A) Fresh buildup — strongest signal:
      *   PE growing faster than CE (peΔ > ceΔ, peΔ > 0) → operators writing PE support → bullish (+1)
@@ -750,9 +761,30 @@ public class OIMomentumStrategy {
      *   PE unwinding faster → put holders cashing out as spot falls → bearish continuation (-1, buy PE)
      *   CE unwinding faster → call holders exiting as spot rises → bullish continuation (+1, buy CE)
      *
-     * Returns 0 when no clear directional bias exists (mixed or zero changes).
+     * (C) Asymmetry guard — distribution masquerading as accumulation:
+     *   When one side is unwinding much faster (>2×) than the other side is building,
+     *   the dominant signal is institutional distribution / closing, not fresh accumulation.
+     *   Firing in this state has historically produced losing entries (e.g. 2026-05-22 11:46
+     *   ceOiChange=-3.6M, peOiChange=+1.4M → false bullish, -10.9% loss).
+     *   Return 0 (ambiguous) so the strategy skips rather than taking a bad trade.
+     *   Guard only activates when the unwinding side exceeds 500k contracts (significance floor).
+     *
+     * Returns 0 when no clear directional bias exists (mixed, zero, or ambiguous changes).
      */
     private int oiDir(long ceOiChange, long peOiChange) {
+        // (C) Asymmetry guard: large one-sided unwind swamps a small build on the other side.
+        final long MIN_SIGNIFICANT = 500_000L;
+        if (ceOiChange < 0 && peOiChange > 0
+                && Math.abs(ceOiChange) >= MIN_SIGNIFICANT
+                && Math.abs(ceOiChange) > 2 * peOiChange) {
+            return 0; // CE mass exit dwarfs PE build — ambiguous distribution signal, skip
+        }
+        if (peOiChange < 0 && ceOiChange > 0
+                && Math.abs(peOiChange) >= MIN_SIGNIFICANT
+                && Math.abs(peOiChange) > 2 * ceOiChange) {
+            return 0; // PE mass exit dwarfs CE build — ambiguous distribution signal, skip
+        }
+
         // (A) Primary: fresh OI buildup
         if (peOiChange > ceOiChange && peOiChange > 0) return 1;
         if (ceOiChange > peOiChange && ceOiChange > 0) return -1;
@@ -1275,10 +1307,19 @@ public class OIMomentumStrategy {
         return now.isAfter(LocalTime.of(9, 15)) && now.isBefore(LocalTime.of(20, 30));
     }
 
-    /** Entry window — new entries only allowed until squareoff window. */
+    /**
+     * Entry window — new entries permitted between entryWindowStart and entryWindowEnd (IST).
+     * Defaults 09:25–14:55 from config; overrides the previous hardcoded 09:30–14:30.
+     * The squareoffHour/squareoffMinute cutoff in detectEntry() provides the final gate
+     * (no entries within 10 min of squareoff), so entryWindowEnd can safely reach 14:55.
+     */
     private boolean isEntryWindow() {
         LocalTime now = LocalTime.now(IST);
-        return now.isAfter(LocalTime.of(9, 30)) && now.isBefore(LocalTime.of(14, 30));
+        LocalTime start = (entryWindowStart != null) ? entryWindowStart
+                : LocalTime.parse(config.getEntryWindowStart());
+        LocalTime end = (entryWindowEnd != null) ? entryWindowEnd
+                : LocalTime.parse(config.getEntryWindowEnd());
+        return !now.isBefore(start) && now.isBefore(end);
     }
 
     private boolean isMidday(LocalTime now) {

@@ -18,7 +18,9 @@ import org.springframework.stereotype.Component;
 import java.time.*;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Captures option chain snapshots every 5 minutes during market hours.
@@ -47,6 +49,30 @@ public class OptionChainSnapshotScheduler {
 
     @Value("${snapshot.strikes-each-side:10}")
     private int strikesEachSide;
+
+    /**
+     * Per-strike OI from the previous snapshot cycle, keyed by "INDEX|strike|CE_or_PE".
+     * Used to compute a true 5-minute OI delta in buildStrikeData() instead of relying
+     * on OptionInstrument.prevOpenInterest which is a transient WS field and almost always
+     * stale at snapshot time (analysis showed 99.6% zero OI change before this fix).
+     *
+     * Cleared on each new trading day — prevents Friday OI leaking into Monday's first
+     * snapshot and producing bogus 5-min deltas for the Operator Framework.
+     */
+    private final Map<String, Long> prevSnapshotOiCache = new ConcurrentHashMap<>();
+
+    /**
+     * Per-strike LTP from the previous snapshot cycle, keyed by "INDEX|strike|CE_or_PE".
+     * Used to derive 5-minute option price high/low between consecutive snapshots,
+     * fixing the "always zero high5m/low5m" bug caused by the clock-reset coinciding
+     * with the snapshot fire time.
+     *
+     * Cleared on each new trading day alongside prevSnapshotOiCache.
+     */
+    private final Map<String, Double> prevSnapshotLtpCache = new ConcurrentHashMap<>();
+
+    /** Trading date of the last successful snapshot cycle — used to detect day rollover. */
+    private volatile LocalDate lastCaptureDay = null;
 
     @Value("${snapshot.underlyings:NIFTY,BANKNIFTY,SENSEX}")
     private List<String> enabledUnderlyings;
@@ -85,6 +111,15 @@ public class OptionChainSnapshotScheduler {
             return;
         }
 
+        // Day-boundary clear — prevents Friday OI/LTP leaking into Monday's first snapshot delta
+        LocalDate today = LocalDate.now(IST);
+        if (lastCaptureDay != null && !today.equals(lastCaptureDay)) {
+            prevSnapshotOiCache.clear();
+            prevSnapshotLtpCache.clear();
+            log.info("[ChainSnapshot] New trading day {} — cleared cross-day OI/LTP snapshot caches", today);
+        }
+        lastCaptureDay = today;
+
         int captured = 0;
         for (String underlyingName : enabledUnderlyings) {
             try {
@@ -114,14 +149,16 @@ public class OptionChainSnapshotScheduler {
     public Optional<ChainSnapshot> captureForUnderlying(IndexType indexType) {
         double spot = liveInstrumentCache.getFuturesPrice(indexType);
         if (spot <= 0) {
-            log.debug("[ChainSnapshot] No spot price for {}, skipping", indexType);
+            log.warn("[ChainSnapshot] No spot price for {} — snapshot skipped. "
+                    + "Check WS subscription includes the {} spot token.", indexType, indexType);
             return Optional.empty();
         }
 
         LocalDate expiry = expiryCalendar.getCurrentWeeklyExpiry(indexType);
         List<OptionInstrument> fullChain = liveInstrumentCache.getStrikeChain(indexType, expiry);
         if (fullChain.isEmpty()) {
-            log.debug("[ChainSnapshot] Empty chain for {} expiry={}", indexType, expiry);
+            log.warn("[ChainSnapshot] Empty instrument chain for {} expiry={} — snapshot skipped. "
+                    + "Instruments may not be loaded or subscription is missing.", indexType, expiry);
             return Optional.empty();
         }
 
@@ -170,15 +207,69 @@ public class OptionChainSnapshotScheduler {
         return !time.isBefore(MARKET_OPEN) && !time.isAfter(MARKET_CLOSE);
     }
 
+    /**
+     * Build a StrikeData record using cross-snapshot deltas for OI and price range.
+     *
+     * OI change — computed as current OI minus the OI from the PREVIOUS snapshot, not
+     * OptionInstrument.prevOpenInterest (a transient WS field that is stale at capture time).
+     * This gives a true 5-minute OI delta that the Operator Framework can use for
+     * accumulation/distribution analysis.
+     *
+     * 5m high/low — derived from min/max of {current LTP, previous snapshot LTP}.
+     * This replaces OptionInstrument.high5m/low5m which were always zero because the
+     * clock-aligned window reset coincided with the snapshot cadence.
+     *
+     * Both caches are updated at the end of each call so the next snapshot has a baseline.
+     */
     private ChainSnapshot.StrikeData buildStrikeData(int strike, OptionInstrument ce, OptionInstrument pe) {
-        long ceOiChange = ce.getOpenInterest() - ce.getPrevOpenInterest();
-        long peOiChange = pe.getOpenInterest() - pe.getPrevOpenInterest();
+        String idxName = ce.getIndexType().name();
+        String ceKey = idxName + "|" + strike + "|CE";
+        String peKey = idxName + "|" + strike + "|PE";
+
+        // ── 5-min OI delta (snapshot-to-snapshot) ────────────────────────────
+        long currentCeOi = ce.getOpenInterest();
+        long currentPeOi = pe.getOpenInterest();
+        Long prevCeOi = prevSnapshotOiCache.get(ceKey);
+        Long prevPeOi = prevSnapshotOiCache.get(peKey);
+        long ceOiChange = (prevCeOi != null && prevCeOi > 0 && currentCeOi > 0)
+                ? currentCeOi - prevCeOi : 0;
+        long peOiChange = (prevPeOi != null && prevPeOi > 0 && currentPeOi > 0)
+                ? currentPeOi - prevPeOi : 0;
+
+        // ── 5-min price range (snapshot-to-snapshot) ─────────────────────────
+        double currentCeLtp = ce.getLastPrice();
+        double currentPeLtp = pe.getLastPrice();
+        Double prevCeLtp = prevSnapshotLtpCache.get(ceKey);
+        Double prevPeLtp = prevSnapshotLtpCache.get(peKey);
+        // High = max of current and previous LTP; Low = min. Falls back to live
+        // OptionInstrument high5m/low5m if no prior snapshot exists yet.
+        double ceHigh5m, ceLow5m, peHigh5m, peLow5m;
+        if (prevCeLtp != null && prevCeLtp > 0 && currentCeLtp > 0) {
+            ceHigh5m = Math.max(currentCeLtp, prevCeLtp);
+            ceLow5m  = Math.min(currentCeLtp, prevCeLtp);
+        } else {
+            ceHigh5m = ce.getHigh5m();
+            ceLow5m  = ce.getLow5m();
+        }
+        if (prevPeLtp != null && prevPeLtp > 0 && currentPeLtp > 0) {
+            peHigh5m = Math.max(currentPeLtp, prevPeLtp);
+            peLow5m  = Math.min(currentPeLtp, prevPeLtp);
+        } else {
+            peHigh5m = pe.getHigh5m();
+            peLow5m  = pe.getLow5m();
+        }
+
+        // ── Update caches for next snapshot ──────────────────────────────────
+        if (currentCeOi > 0)  prevSnapshotOiCache.put(ceKey, currentCeOi);
+        if (currentPeOi > 0)  prevSnapshotOiCache.put(peKey, currentPeOi);
+        if (currentCeLtp > 0) prevSnapshotLtpCache.put(ceKey, currentCeLtp);
+        if (currentPeLtp > 0) prevSnapshotLtpCache.put(peKey, currentPeLtp);
 
         return new ChainSnapshot.StrikeData(
                 strike,
                 // CE
-                ce.getLastPrice(),
-                ce.getOpenInterest(),
+                currentCeLtp,
+                currentCeOi,
                 ce.getVolume(),
                 ce.getImpliedVolatility(),
                 ce.getDelta(),
@@ -188,11 +279,11 @@ public class OptionChainSnapshotScheduler {
                 ce.getBestBid(),
                 ce.getBestAsk(),
                 ceOiChange,
-                ce.getHigh5m(),
-                ce.getLow5m(),
+                ceHigh5m,
+                ceLow5m,
                 // PE
-                pe.getLastPrice(),
-                pe.getOpenInterest(),
+                currentPeLtp,
+                currentPeOi,
                 pe.getVolume(),
                 pe.getImpliedVolatility(),
                 pe.getDelta(),
@@ -202,8 +293,8 @@ public class OptionChainSnapshotScheduler {
                 pe.getBestBid(),
                 pe.getBestAsk(),
                 peOiChange,
-                pe.getHigh5m(),
-                pe.getLow5m()
+                peHigh5m,
+                peLow5m
         );
     }
 

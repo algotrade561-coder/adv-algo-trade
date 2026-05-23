@@ -256,29 +256,12 @@ oi-rest-fallback:
   # Events: reports/entry-signals/oi-rest-fallback-events.csv (ACTIVATED, BATCH_OK, RESTORED)
 
 # ── OI Momentum Strategy ──────────────────────────────────────────────────
+# All strategy tuning lives in OIMomentumConfig.java (single source of truth).
+# Override specific values here only when you need a per-environment deviation
+# from the Java defaults (e.g. force paper-trading in staging).
 oi-momentum:
   enabled: true
-  paper-trading: true
-  momentum-threshold-percent: 0.08
-  spike-threshold-percent: 0.40
-  rolling30-min-window-seconds: 1800
-  min-oi-change-percent: 1.5
-  pcr-bullish-threshold: 1.2
-  pcr-bearish-threshold: 0.8
-  min-squeeze-oi-delta: 100000
-  max-trades-per-day: 20
-  soft-target-trades-per-day: 15
-  max-reversals-per-day: 3
-  cooldown-after-sl-seconds: 120
-  minimum-hold-time-seconds: 45
-  consecutive-loss-pause: 3
-  midday-trade-reduction-percent: 50
-  stop-loss-percent: 15
-  target-percent: 25
-  trailing-activation-percent: 12
-  trailing-gap-percent: 8
-  squareoff-hour: 15
-  squareoff-minute: 10
+  paper-trading: false
 
 # ── Signal tuning (EOD HTML from reports/entry-signals CSVs) ───────────────
 # Scheduler off by default — heavy on heap (t3.small). CSV capture during live session still runs.

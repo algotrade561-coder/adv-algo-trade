@@ -132,20 +132,36 @@ public class OptionInstrument {
     public void setLast5mResetMs(long v) { this.last5mResetMs = v; }
     
     /**
-     * Update 5-minute high/low tracking.
-     * Call this on every tick to maintain rolling 5-minute high/low.
+     * Update 5-minute high/low tracking, aligned to wall-clock 5-minute boundaries
+     * (09:15, 09:20, 09:25 ...). Clock-alignment ensures the snapshot scheduler
+     * (also on a 5-min cadence) always captures values from a mid-window period
+     * rather than from a just-reset window — fixing the "always zero" bug where
+     * the snapshot fired at the same instant as the rolling reset.
      */
     public void updateHigh5mLow5m(double price) {
         long now = System.currentTimeMillis();
-        // Reset every 5 minutes
-        if (now - last5mResetMs > 300_000) { // 5 minutes
+        long boundary = clockAligned5mBoundaryMs(now);
+        if (boundary != last5mResetMs) {
+            // New 5-min window started — reset to current price as both high and low
             high5m = price;
             low5m = price;
-            last5mResetMs = now;
+            last5mResetMs = boundary;
         } else {
             if (price > high5m) high5m = price;
             if (price < low5m || low5m == 0) low5m = price;
         }
+    }
+
+    /**
+     * Returns the epoch-ms of the start of the current 5-minute clock boundary in IST
+     * (e.g. 09:15:00, 09:20:00, 09:25:00 ...).
+     */
+    private static long clockAligned5mBoundaryMs(long nowMs) {
+        java.time.ZonedDateTime zdt = java.time.Instant.ofEpochMilli(nowMs)
+                .atZone(java.time.ZoneId.of("Asia/Kolkata"));
+        int alignedMinute = (zdt.getMinute() / 5) * 5;
+        return zdt.withMinute(alignedMinute).withSecond(0).withNano(0)
+                .toInstant().toEpochMilli();
     }
 
     // ── OI Time-Series Ring Buffer (1-minute slots, 5 slots = 5-min lookback) ──
@@ -154,6 +170,27 @@ public class OptionInstrument {
     private final long[] oiHistoryTimestamps = new long[OI_HISTORY_SLOTS];
     private volatile int oiHistoryIndex = 0;
     private volatile long lastOiSampleMs = 0;
+
+    /** True when no OI sample has ever been written (all timestamps are zero). */
+    public boolean isOiRingBufferEmpty() {
+        for (long ts : oiHistoryTimestamps) {
+            if (ts > 0) return false;
+        }
+        return true;
+    }
+
+    /**
+     * Write a single OI anchor entry directly into the ring buffer at the given timestamp,
+     * bypassing the 60-second gate. Used by OiRestFallbackService to back-date a baseline
+     * so that getOiChangeSince() has an immediate reference point after first REST injection.
+     * Does NOT update lastOiSampleMs — the normal sampleOiIfDue() can still run afterwards.
+     */
+    public void seedOiRingBuffer(long oi, long timestampMs) {
+        if (oi <= 0 || timestampMs <= 0) return;
+        oiHistory[oiHistoryIndex] = oi;
+        oiHistoryTimestamps[oiHistoryIndex] = timestampMs;
+        oiHistoryIndex = (oiHistoryIndex + 1) % OI_HISTORY_SLOTS;
+    }
 
     /**
      * Record OI sample every 60 seconds (called from updateOptionMarketData flow).
