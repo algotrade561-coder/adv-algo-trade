@@ -48,6 +48,17 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
     @org.springframework.beans.factory.annotation.Autowired
     private com.algo.trade.monitoring.SchedulerRegistry schedulerRegistry;
 
+    /**
+     * Underlyings to always subscribe for WS option ticks — independent of the global
+     * scan state (tradingStateService.enabledUnderlyings()). Includes SENSEX so that
+     * OI data flows for OI_MOMENTUM even when SENSEX is not in the main scan list.
+     *
+     * Default: NIFTY,BANKNIFTY,SENSEX. Override in YAML:
+     *   trading.ws.option-underlyings: NIFTY,BANKNIFTY,SENSEX,FINNIFTY
+     */
+    @org.springframework.beans.factory.annotation.Value("${trading.ws.option-underlyings:NIFTY,BANKNIFTY,SENSEX}")
+    private java.util.List<String> wsOptionUnderlyings;
+
     /** Debounce: minimum 30s between resubscriptions to prevent thrashing. */
     private volatile long lastResubscribeTimeMs = 0;
     private static final long RESUBSCRIBE_DEBOUNCE_MS = 30_000;
@@ -103,7 +114,7 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
 
             // Quick check: has any underlying's ATM drifted beyond threshold?
             boolean needsResub = false;
-            for (var underlying : tradingStateService.enabledUnderlyings()) {
+            for (var underlying : allOptionSubscriptionUnderlyings()) {
                 var indexType = com.algo.trade.domain.IndexType.from(underlying);
                 double currentSpot = liveInstrumentCache.getFuturesPrice(indexType);
                 if (currentSpot <= 0) continue;
@@ -300,7 +311,7 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
                         Thread.sleep(2000);
                         attemptMs += 2000;
                         optionTokens.clear();
-                        for (var underlying : tradingStateService.enabledUnderlyings()) {
+                        for (var underlying : allOptionSubscriptionUnderlyings()) {
                             var indexType = com.algo.trade.domain.IndexType.from(underlying);
                             var expiry = instrumentCache.nearestExpiry(underlying, java.time.LocalDate.now(properties.timezone()))
                                     .orElseGet(() -> new com.algo.trade.marketdata.ExpiryCalendar().getCurrentWeeklyExpiry(indexType));
@@ -460,6 +471,24 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
         }
     }
 
+    /**
+     * Union of trading-state enabled underlyings and the WS option subscription list.
+     * Trading-state drives the scan loop; wsOptionUnderlyings adds any extras needed
+     * purely for OI/PCR data (e.g. SENSEX when it is not in the global scan set).
+     */
+    private java.util.Set<com.algo.trade.domain.UnderlyingSymbol> allOptionSubscriptionUnderlyings() {
+        java.util.Set<com.algo.trade.domain.UnderlyingSymbol> result =
+                new java.util.LinkedHashSet<>(tradingStateService.enabledUnderlyings());
+        for (String name : wsOptionUnderlyings) {
+            try {
+                result.add(com.algo.trade.domain.UnderlyingSymbol.valueOf(name.trim().toUpperCase()));
+            } catch (IllegalArgumentException ignored) {
+                log.warn("[WS] Unknown underlying in trading.ws.option-underlyings: '{}' — skipped", name);
+            }
+        }
+        return result;
+    }
+
     private boolean isMarketHours() {
         var ist = java.time.ZoneId.of("Asia/Kolkata");
         var now = java.time.LocalTime.now(ist);
@@ -505,7 +534,7 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
         // anyMoved=true also when lastSubscribedAtm is empty (startup subscription failed — recover now)
         boolean anyMoved = lastSubscribedAtm.isEmpty();
 
-        for (var underlying : tradingStateService.enabledUnderlyings()) {
+        for (var underlying : allOptionSubscriptionUnderlyings()) {
             var indexType = com.algo.trade.domain.IndexType.from(underlying);
             double currentSpot = liveInstrumentCache.getFuturesPrice(indexType);
             if (currentSpot <= 0) continue;

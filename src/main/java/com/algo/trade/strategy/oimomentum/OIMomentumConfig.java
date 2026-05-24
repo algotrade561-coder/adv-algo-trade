@@ -74,6 +74,41 @@ public class OIMomentumConfig {
     @Deprecated
     private String closingSessionStart = "15:00";
 
+    // ── Adaptive Bias Engine (Stage 1) ────────────────────────────────────────
+    /**
+     * Minimum bias confidence score (0–100) required before an entry is allowed.
+     *
+     * Threshold calibration:
+     *   Case 1 (M+OI+PCR align): raw 75 → passes easily at 45
+     *   Case 2 (M+PCR, no OI):   raw 40 → needs BAL(+15) to reach 55; passes at 45 without BAL
+     *   Case 3 (M+OI, PCR 0):    raw 55 → passes at 45; survives DECAY(-10) at 45
+     *
+     * Lowered from 55 → 45: threshold of 55 was inadvertently blocking Case 2 (max raw 40)
+     * and Case 3 with any decay (55−20=35). All genuine Case 1 setups still score 60–90.
+     */
+    private int biasConfidenceThreshold = 45;
+    /**
+     * Consecutive ticks where bias score ≥ threshold AND same direction before entry.
+     * 2 ticks = 2 seconds — sufficient at 1-second tick rate to filter single-tick noise
+     * while not delaying genuine momentum signals.
+     * Reduced from 3: the extra second adds latency without materially improving quality.
+     */
+    private int biasConfirmationTicks = 2;
+    /**
+     * Seconds after the last OI advancement before the OI contribution starts decaying.
+     * Raised from 90 → 180: NSE OI is sampled once per minute into the ring buffer.
+     * At 90s, a single delayed OI sample (ring buffer up to 60s late at open) triggers decay.
+     * 180s = 3 OI update cycles — genuinely stale before penalising.
+     */
+    private int biasDecaySeconds = 180;
+    /**
+     * Score points deducted when OI signal is stale (past biasDecaySeconds).
+     * Reduced from 20 → 10: softer penalty preserves valid Case 1/3 setups through brief
+     * OI quiet periods (midday lulls, early morning). -20 was eliminating Case 3 entirely
+     * (55 − 20 = 35, always below threshold).
+     */
+    private int biasDecayPenalty = 10;
+
     // ── Enabled/Paper ──
     private boolean enabled = true;
     private boolean paperTrading = false;
@@ -137,4 +172,14 @@ public class OIMomentumConfig {
     public void setEnabled(boolean v) { this.enabled = v; }
     public boolean isPaperTrading() { return paperTrading; }
     public void setPaperTrading(boolean v) { this.paperTrading = v; }
+
+    // Bias engine getters/setters
+    public int getBiasConfidenceThreshold() { return biasConfidenceThreshold; }
+    public void setBiasConfidenceThreshold(int v) { this.biasConfidenceThreshold = v; }
+    public int getBiasConfirmationTicks() { return biasConfirmationTicks; }
+    public void setBiasConfirmationTicks(int v) { this.biasConfirmationTicks = v; }
+    public int getBiasDecaySeconds() { return biasDecaySeconds; }
+    public void setBiasDecaySeconds(int v) { this.biasDecaySeconds = v; }
+    public int getBiasDecayPenalty() { return biasDecayPenalty; }
+    public void setBiasDecayPenalty(int v) { this.biasDecayPenalty = v; }
 }

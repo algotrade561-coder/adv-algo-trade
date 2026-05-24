@@ -241,6 +241,12 @@ public class StrategyExecutionPipeline {
                         + "|" + enriched.optionType().map(Enum::name).orElse("")).hashCode(), 16);
         recordMlShadow(enriched, ctx, trendCandles, decisionKey, "0");
 
+        // Compute ATR before execution so ExecutionEngine can use adaptive position sizing.
+        // Uses the same candle resolution as the strategy's candleTimeframe.
+        Timeframe csvTfForAtr = resolveTimeframe(config.getCandleTimeframe(), Timeframe.ONE_MINUTE);
+        Double atrForSizing = computeAtr(ctx.candles(csvTfForAtr), 14);
+        config.setAtrValue(atrForSizing != null ? atrForSizing : 0.0);
+
         boolean executed = executeSignal(enriched, config, ctx.underlying());
         if (executed && !config.isPaperTrading()) {
             weeklyExposureTracker.recordTrade(estimatedCost(enriched, config, ctx.underlying()));

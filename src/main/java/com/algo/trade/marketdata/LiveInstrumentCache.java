@@ -109,6 +109,12 @@ public class LiveInstrumentCache {
         if (oi > 0) {
             if (inst.getOpenInterest() > 0) inst.setPrevOpenInterest(inst.getOpenInterest());
             inst.setOpenInterest(oi);
+            // Seed a back-dated anchor on the first WS OI tick so getOiChangeSince(3min)
+            // returns a non-zero delta immediately instead of waiting 3 real minutes.
+            // Mirrors the same logic in applyRestQuoteData().
+            if (inst.isOiRingBufferEmpty()) {
+                inst.seedOiRingBuffer(oi, System.currentTimeMillis() - 180_000L);
+            }
             inst.sampleOiIfDue(); // Feed OI ring buffer for time-series lookback
         }
         if (bestBid > 0) inst.setBestBid(bestBid);

@@ -182,6 +182,17 @@ public class StrategyConfig {
     public void setMaxCapitalPerTrade(BigDecimal v) { this.maxCapitalPerTrade = v; }
 
     /**
+     * ATR value (14-period, in underlying points) computed at signal-evaluation time.
+     * Not persisted — set by StrategyExecutionPipeline before calling ExecutionEngine
+     * so that RiskEngine.calculateQuantityWithATR() can use it for adaptive position sizing.
+     * 0 = ATR not available; ExecutionEngine falls back to fixed stopLossPercent sizing.
+     */
+    @Transient
+    private double atrValue = 0.0;
+    public double getAtrValue() { return atrValue; }
+    public void setAtrValue(double v) { this.atrValue = v; }
+
+    /**
      * Returns the OTM strike count for the given index, falling back to the scalar
      * {@link #otmStrikes} when no per-index override is configured.
      */

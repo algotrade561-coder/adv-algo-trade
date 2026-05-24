@@ -229,7 +229,13 @@ public class ExecutionEngine {
             return ExecutionResult.rejected(risk.reasons());
         }
 
-        var sizing = riskEngine.calculateQuantity(optionPremium, lotSize, stopLossPercent);
+        // Use ATR-adaptive sizing when available (set by StrategyExecutionPipeline before this call).
+        // ATR converts the underlying's volatility into an option SL % that scales with market conditions.
+        // Falls back to fixed stopLossPercent when ATR is 0 (e.g. insufficient candle history).
+        double atr = effectiveConfig.getAtrValue();
+        var sizing = atr > 0
+                ? riskEngine.calculateQuantityWithATR(optionPremium, lotSize, atr)
+                : riskEngine.calculateQuantity(optionPremium, lotSize, stopLossPercent);
         if (!sizing.allowed()) {
             log.warn("Entry execution rejected by position sizing: reason={}, riskAmount={}, estimatedCost={}",
                     sizing.reason(), sizing.riskAmount(), sizing.estimatedCost());
@@ -378,7 +384,10 @@ public class ExecutionEngine {
             return ExecutionResult.rejected(List.of("Trading engine is stopped"));
         }
 
-        var sizing = riskEngine.calculateQuantity(optionPremium, lotSize, stopLossPercent);
+        double atrPaper = effectiveConfig.getAtrValue();
+        var sizing = atrPaper > 0
+                ? riskEngine.calculateQuantityWithATR(optionPremium, lotSize, atrPaper)
+                : riskEngine.calculateQuantity(optionPremium, lotSize, stopLossPercent);
         if (!sizing.allowed()) {
             updateExecutionStage(savedDecision, "PAPER_SIZING_REJECTED", sizing.reason());
             return ExecutionResult.rejected(List.of(sizing.reason()));

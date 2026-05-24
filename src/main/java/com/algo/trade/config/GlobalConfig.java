@@ -340,7 +340,7 @@ public class GlobalConfig {
     public BigDecimal getMinSignalScorePercent() { return minSignalScorePercent; }
     public void setMinSignalScorePercent(BigDecimal minSignalScorePercent) { this.minSignalScorePercent = minSignalScorePercent; }
 
-    public int getMinEnvironmentScore() { return minEnvironmentScore != null ? minEnvironmentScore : 55; }
+    public int getMinEnvironmentScore() { return minEnvironmentScore != null ? minEnvironmentScore : 50; }
     public void setMinEnvironmentScore(Integer minEnvironmentScore) { this.minEnvironmentScore = minEnvironmentScore; }
 
     public boolean isCeOiSupportRequired() { return ceOiSupportRequired; }

@@ -73,6 +73,29 @@ public class ConfigSeedLoader {
         } catch (Exception e) {
             log.warn("Config seed from {} failed: {} — falling back to Java defaults", SEED_FILE, e.getMessage());
         }
+        patchStaleGlobalConfigValues();
+    }
+
+    /**
+     * Targeted in-place patches for GlobalConfig rows that may contain stale defaults
+     * from previous versions.  Safe to run on every startup — only updates if the old
+     * value is still present (idempotent).
+     *
+     * Add new entries here whenever a default changes and DB rows exist that need updating.
+     */
+    private void patchStaleGlobalConfigValues() {
+        globalConfigRepository.findById(1L).ifPresent(cfg -> {
+            boolean patched = false;
+            // min_environment_score: old default was 55, correct value is 50
+            if (cfg.getMinEnvironmentScore() == 55) {
+                cfg.setMinEnvironmentScore(50);
+                log.info("Patched GlobalConfig.minEnvironmentScore: 55 → 50");
+                patched = true;
+            }
+            if (patched) {
+                globalConfigRepository.save(cfg);
+            }
+        });
     }
 
     // ── GlobalConfig ─────────────────────────────────────────────────────────

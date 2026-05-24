@@ -91,6 +91,14 @@ public class OIMomentumStrategy {
         volatile Instant lastRejectSampleTime = null;
         volatile String lastRejectReason = "";
         volatile double lastRangePct30m = 0;
+        // ── Adaptive Bias Engine (Stage 1) ──────────────────────────────────
+        /** Consecutive ticks where bias score ≥ threshold AND same direction. */
+        volatile int confirmationCount = 0;
+        /** Direction of the current confirmation streak (+1 bullish, -1 bearish). */
+        volatile int lastConfirmedDir = 0;
+        /** Timestamp of the last OI advancement tick — used for bias decay. */
+        volatile Instant lastOiTickTime = null;
+        // ────────────────────────────────────────────────────────────────────
         final AtomicInteger tradesToday = new AtomicInteger(0);
         final AtomicInteger reversalsToday = new AtomicInteger(0);
         final AtomicInteger consecutiveLosses = new AtomicInteger(0);
@@ -329,6 +337,10 @@ public class OIMomentumStrategy {
                     state.reversalsToday.set(0);
                     state.consecutiveLosses.set(0);
                     state.dailyPnl = 0;
+                    // Reset bias engine state for new day
+                    state.confirmationCount = 0;
+                    state.lastConfirmedDir = 0;
+                    state.lastOiTickTime = null;
                     if (state.activeTradeId == null) {
                         state.activeDirection = 0;
                         state.peakPrice = 0;
@@ -400,6 +412,7 @@ public class OIMomentumStrategy {
             if (state.oiAdvanced) {
                 state.lastOiCeChange = oiChange[0];
                 state.lastOiPeChange = oiChange[1];
+                state.lastOiTickTime = Instant.now(); // bias decay anchor
             }
         }
 
@@ -610,12 +623,51 @@ public class OIMomentumStrategy {
                 indexType, state, momentum, oiDirection, pcrDirection, pcr, ceOiChange, peOiChange,
                 oiAvailable, spot, atm, entryCase, null, diagBlockDetail);
         if (eval.direction() != 0) {
-            String operatorTag = formatOperatorEntryTag(entryCase, eval.blockDetail());
-            String reason = String.format("M:%s OI:%d PCR:%.2f(%d) case=%s%s",
-                    momentum.type(), oiDirection, pcr, pcrDirection, entryCase, operatorTag);
-            enter(indexType, state, eval.direction(), reason, spot, diag);
-            enteredCount.incrementAndGet();
+            // ── Adaptive Bias Engine (Stage 1) ────────────────────────────
+            BiasScore bias = computeBiasScore(indexType, state, momentum.direction(),
+                    oiDirection, pcrDirection, oiAvailable, ceOiChange, peOiChange, atm);
+
+            if (bias.score() >= config.getBiasConfidenceThreshold()) {
+                // Accumulate 3-tick confirmation in same direction
+                if (momentum.direction() == state.lastConfirmedDir) {
+                    state.confirmationCount++;
+                } else {
+                    // Direction changed or first signal — reset streak
+                    state.confirmationCount = 1;
+                    state.lastConfirmedDir = momentum.direction();
+                }
+                log.debug("[OIMomentum][{}] Bias OK: score={} ticks={}/{} case={} signals={}",
+                        indexType, bias.score(), state.confirmationCount,
+                        config.getBiasConfirmationTicks(), entryCase, bias.primarySignal());
+
+                if (state.confirmationCount >= config.getBiasConfirmationTicks()) {
+                    // Full confirmation — enter
+                    state.confirmationCount = 0;
+                    state.lastConfirmedDir = 0;
+                    String operatorTag = formatOperatorEntryTag(entryCase, eval.blockDetail());
+                    String reason = String.format("M:%s OI:%d PCR:%.2f(%d) case=%s bias=%.0f ticks=%d%s",
+                            momentum.type(), oiDirection, pcr, pcrDirection, entryCase,
+                            bias.score(), config.getBiasConfirmationTicks(), operatorTag);
+                    enter(indexType, state, eval.direction(), reason, spot, diag);
+                    enteredCount.incrementAndGet();
+                }
+                // else: still accumulating — no entry yet, no reject record
+            } else {
+                // Bias score below threshold — reset confirmation, record low-confidence reject
+                state.confirmationCount = 0;
+                state.lastConfirmedDir = 0;
+                rejectedCount.incrementAndGet();
+                String rejectReason = String.format("low_bias:%.0f<%d [%s] case=%s",
+                        bias.score(), config.getBiasConfidenceThreshold(), bias.primarySignal(), entryCase);
+                state.lastRejectReason = rejectReason;
+                state.lastRejectSampleTime = tuneRecorder.recordReject(indexType, state.lastRejectSampleTime,
+                        rejectReason, diag);
+            }
+            // ──────────────────────────────────────────────────────────────
         } else {
+            // Matrix blocked — reset confirmation streak
+            state.confirmationCount = 0;
+            state.lastConfirmedDir = 0;
             rejectedCount.incrementAndGet();
             String rejectReason = eval.blockDetail().isBlank()
                     ? "matrix_skip:" + entryCase
@@ -1296,6 +1348,126 @@ public class OIMomentumStrategy {
         state.peakPrice = 0;
         state.lastEntryDecisionKey = null;
         state.lastEntryDiagnostics = null;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // ADAPTIVE BIAS ENGINE (Stage 1)
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * Lightweight value type returned by computeBiasScore().
+     *
+     * @param direction    The direction the bias engine is scoring (+1 bullish, -1 bearish).
+     * @param score        Composite confidence score 0–100. Threshold in OIMomentumConfig.
+     * @param primarySignal Human-readable list of which signals contributed (for tune CSV).
+     */
+    private record BiasScore(int direction, float score, String primarySignal) {
+        boolean isActionable(float threshold) { return score >= threshold; }
+    }
+
+    /**
+     * Computes a composite bias confidence score (0–100) synthesising five Stage 1 signals:
+     *
+     *   [+30] Momentum signal fires (always true when called from detectEntry).
+     *   [+25] OI direction aligns with momentum direction (–10 if actively opposes).
+     *   [+20] PCR direction aligns (–5 if actively opposes).
+     *   [+15] OI balance ratio confirms: PE OI dominant (>1.3×) = bullish; CE dominant = bearish.
+     *   [–20] Opening noise dampener: before 09:30 IST, signals are unreliable.
+     *   [–20] Bias decay: OI has not advanced for more than biasDecaySeconds.
+     *
+     * Phase 2 additions (OI wall +10, expiry buildup +15, VIX scaling) will extend this method.
+     */
+    private BiasScore computeBiasScore(IndexType indexType, IndexState state,
+                                       int momentumDir, int oiDir, int pcrDir,
+                                       boolean oiAvailable, long ceOiChange, long peOiChange,
+                                       int atm) {
+        float score = 0;
+        StringBuilder sig = new StringBuilder();
+
+        // ── [+30] Momentum base — always present when this method is called ──
+        score += 30;
+        sig.append("M(+30)");
+
+        // ── [+25 / –10] OI direction ──────────────────────────────────────────
+        if (oiAvailable) {
+            if (oiDir == momentumDir) {
+                score += 25;
+                sig.append(" OI✓(+25)");
+            } else if (oiDir != 0) {
+                score -= 10;  // OI actively opposes momentum
+                sig.append(" OI✗(-10)");
+            }
+            // oiDir == 0 (ambiguous) → no bonus, no penalty
+        }
+
+        // ── [+20 / –5] PCR direction ──────────────────────────────────────────
+        if (pcrDir == momentumDir) {
+            score += 20;
+            sig.append(" PCR✓(+20)");
+        } else if (pcrDir != 0) {
+            score -= 5;
+            sig.append(" PCR✗(-5)");
+        }
+
+        // ── [+15] OI balance ratio — absolute CE vs PE OI at ATM ± 3 strikes ──
+        // PE OI dominant (ratio < 0.77) = operators writing puts = floor = bullish
+        // CE OI dominant (ratio > 1.30) = operators writing calls = ceiling = bearish
+        long[] totalOi = getAtmTotalOi(indexType, atm, 3);
+        if (totalOi[0] > 0 && totalOi[1] > 0) {
+            double cePerPe = (double) totalOi[0] / totalOi[1];
+            if (momentumDir > 0 && cePerPe < 0.77) {
+                score += 15; // PE OI dominant = bullish confirmation
+                sig.append(" BAL✓(+15)");
+            } else if (momentumDir < 0 && cePerPe > 1.30) {
+                score += 15; // CE OI dominant = bearish confirmation
+                sig.append(" BAL✓(+15)");
+            } else {
+                sig.append(String.format(" BAL=%.2f", cePerPe));
+            }
+        }
+
+        // ── [–20] Opening noise dampener — first 10 min after 09:20 are unreliable ──
+        LocalTime now = LocalTime.now(IST);
+        if (now.isBefore(LocalTime.of(9, 30))) {
+            score -= 20;
+            sig.append(" OPEN_NOISE(-20)");
+        }
+
+        // ── [–20] Bias decay — OI has been stale for longer than biasDecaySeconds ──
+        if (state.lastOiTickTime != null) {
+            long staleSecs = Duration.between(state.lastOiTickTime, Instant.now()).getSeconds();
+            if (staleSecs > config.getBiasDecaySeconds()) {
+                score -= config.getBiasDecayPenalty();
+                sig.append(String.format(" DECAY(%ds,-%d)", staleSecs, config.getBiasDecayPenalty()));
+            }
+        } else if (!oiAvailable) {
+            // No OI data at all — partial staleness penalty
+            score -= 10;
+            sig.append(" NO_OI(-10)");
+        }
+
+        return new BiasScore(momentumDir, Math.max(0f, score), sig.toString());
+    }
+
+    /**
+     * Returns [totalCeOI, totalPeOI] — the sum of current open interest across
+     * ATM ± strikesEachSide strikes. Used for the OI balance ratio signal.
+     * Uses the live option cache (no external call). O(n) over subscribed options.
+     */
+    private long[] getAtmTotalOi(IndexType indexType, int atm, int strikesEachSide) {
+        long ceTotal = 0;
+        long peTotal = 0;
+        int interval = indexType.strikeInterval();
+        int maxDiff = strikesEachSide * interval;
+        for (OptionInstrument opt : liveInstrumentCache.allOptions()) {
+            if (opt.getIndexType() != indexType) continue;
+            if (Math.abs(opt.getStrikePrice() - atm) > maxDiff) continue;
+            long oi = opt.getOpenInterest();
+            if (oi <= 0) continue;
+            if ("CE".equals(opt.getOptionType())) ceTotal += oi;
+            else if ("PE".equals(opt.getOptionType())) peTotal += oi;
+        }
+        return new long[]{ceTotal, peTotal};
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

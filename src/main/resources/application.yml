@@ -50,6 +50,14 @@ trading:
       FINNIFTY: "NSE:257801"
       MIDCPNIFTY: "NSE:288009"
 
+  # ── WebSocket Option Subscription ──────────────────────────────────────
+  # Underlyings whose option chains are always subscribed for WS tick data,
+  # independently of the global scan underlyings (enabledUnderlyings in DB).
+  # Ensures OI/PCR data flows for OI_MOMENTUM even if an underlying is not
+  # in the active scan set (e.g. SENSEX when paused from the admin UI).
+  ws:
+    option-underlyings: NIFTY,BANKNIFTY,SENSEX
+
   # ── Strike Selection ────────────────────────────────────────────────────
   strike:
     selection-mode: ATM          # ATM | ONE_STRIKE_ITM | ONE_STRIKE_OTM
