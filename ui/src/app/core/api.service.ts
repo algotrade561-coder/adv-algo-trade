@@ -98,6 +98,7 @@ export interface GlobalConfigDto {
   maxHoldMinutes: number;
   vwapExitEnabled: boolean;
   globalExitOverride: boolean;
+  manageSyncedTrades: boolean;
   // Risk
   totalCapital: number;
   maxRiskPerTradePercent: number;

@@ -125,6 +125,20 @@ public class GlobalConfig {
     /** When true, global exit config (SL, target, trailing, maxHold) overrides per-strategy exit config. */
     private boolean globalExitOverride = false;
 
+    /**
+     * Controls whether trades imported by PositionSynchronizer (tradeId prefix "SYNC-")
+     * are managed by exit monitors.
+     *
+     * Default: FALSE — manual orders placed alongside the algo are tracked but NOT auto-closed
+     * by SL/target/trailing/maxHold rules. FailSafeSquareoffDaemon still runs at EOD.
+     *
+     * Set to TRUE (via the Settings UI or position-sync.manage-synced-trades in YAML) if you
+     * want the algo's exit monitors to also enforce SL/target/squareoff on manual trades —
+     * useful for crash-recovery scenarios where the system re-discovers its own positions.
+     */
+    @Column(columnDefinition = "BOOLEAN DEFAULT FALSE")
+    private boolean manageSyncedTrades = false;
+
     // ── Risk Fields ───────────────────────────────────────────
 
     @Column(precision = 19, scale = 4)
@@ -427,6 +441,9 @@ public class GlobalConfig {
 
     public boolean isGlobalExitOverride() { return globalExitOverride; }
     public void setGlobalExitOverride(boolean globalExitOverride) { this.globalExitOverride = globalExitOverride; }
+
+    public boolean isManageSyncedTrades() { return manageSyncedTrades; }
+    public void setManageSyncedTrades(boolean manageSyncedTrades) { this.manageSyncedTrades = manageSyncedTrades; }
 
     // Risk getters/setters
 

@@ -98,6 +98,11 @@ public class OIMomentumStrategy {
         volatile int lastConfirmedDir = 0;
         /** Timestamp of the last OI advancement tick — used for bias decay. */
         volatile Instant lastOiTickTime = null;
+        // ── Re-entry Boost ───────────────────────────────────────────────────
+        /** Time of the last profitable exit — used to reduce confirmation ticks for same-direction re-entry. */
+        volatile Instant lastProfitableExitTime = null;
+        /** Direction of the last profitable exit (+1 or -1). */
+        volatile int lastProfitableExitDirection = 0;
         // ────────────────────────────────────────────────────────────────────
         final AtomicInteger tradesToday = new AtomicInteger(0);
         final AtomicInteger reversalsToday = new AtomicInteger(0);
@@ -201,8 +206,16 @@ public class OIMomentumStrategy {
         }
         // Reconcile state from DB on startup
         reconcileFromDb();
-        log.info("[OIMomentum] Started 1-second execution loop — candidates: {}, enabled from DB at runtime",
-                CANDIDATE_INDICES);
+        // Parse session boundary times at startup so isEntryWindow() / isMidday() don't
+        // fall back to repeated LocalTime.parse() on every tick before the first day-rollover.
+        // (The day-change block in tick() also sets these, but never fires on day 1 because
+        //  reconcileFromDb() already sets currentDay = today.)
+        entryWindowStart = LocalTime.parse(config.getEntryWindowStart());
+        entryWindowEnd   = LocalTime.parse(config.getEntryWindowEnd());
+        middayStart      = LocalTime.parse(config.getMiddayStart());
+        middayEnd        = LocalTime.parse(config.getMiddayEnd());
+        log.info("[OIMomentum] Started 1-second execution loop — candidates: {}, enabled from DB at runtime, entryWindow={}-{}",
+                CANDIDATE_INDICES, entryWindowStart, entryWindowEnd);
     }
 
     /**
@@ -452,8 +465,11 @@ public class OIMomentumStrategy {
             IndexState s = indexStates.get(idx);
             double spot = liveInstrumentCache.getFuturesPrice(idx);
             double pcr = liveInstrumentCache.getRealtimePcr(idx);
+            // Use live 30-min range from detector rather than s.lastRangePct30m (which is only
+            // updated inside detectEntry and stays 0 until the entry window opens at 09:25).
+            double liveRange30m = computeRangePct30m(idx);
             sb.append(String.format(" | %s: spot=%.0f pcr=%.2f range30m=%.2f%% trades=%d active=%s lastReject=%s pnl=%.0f",
-                    idx.name(), spot, pcr, s.lastRangePct30m, s.tradesToday.get(),
+                    idx.name(), spot, pcr, liveRange30m, s.tradesToday.get(),
                     s.activeTradeId != null ? s.activeTradeId.substring(0, Math.min(8, s.activeTradeId.length())) : "-",
                     s.lastRejectReason != null && !s.lastRejectReason.isBlank() ? s.lastRejectReason : "-",
                     s.dailyPnl));
@@ -583,10 +599,20 @@ public class OIMomentumStrategy {
             }
         }
 
-        // ── Momentum Detection ──
+        // ── Momentum Detection — primary 30M, then 15M, then 5M ──
         TickMomentumDetector.MomentumSignal momentum = momentumDetector.detect(
                 indexType, config.getMomentumThresholdPercent());
-        if (!momentum.isPresent()) return; // No momentum — wait
+
+        if (!momentum.isPresent() && config.isMultiTimeframeEnabled()) {
+            // 15-min window — catches intraday trends not yet visible on 30M range
+            momentum = momentumDetector.detectInWindow(indexType, config.getMomentumThresholdPercent(), 15);
+        }
+        if (!momentum.isPresent() && config.isMultiTimeframeEnabled()) {
+            // 5-min window — short burst early signal; uses shorter threshold to catch quick moves
+            momentum = momentumDetector.detectInWindow(indexType, config.getShortTimeframeThresholdPct(), 5);
+        }
+
+        if (!momentum.isPresent()) return; // No momentum on any timeframe — wait
         momentumSignalCount.incrementAndGet();
 
         // ── OI Analysis (only when OI has actually advanced — P0 #1) ──
@@ -628,7 +654,7 @@ public class OIMomentumStrategy {
                     oiDirection, pcrDirection, oiAvailable, ceOiChange, peOiChange, atm);
 
             if (bias.score() >= config.getBiasConfidenceThreshold()) {
-                // Accumulate 3-tick confirmation in same direction
+                // Accumulate confirmation ticks in same direction
                 if (momentum.direction() == state.lastConfirmedDir) {
                     state.confirmationCount++;
                 } else {
@@ -636,11 +662,22 @@ public class OIMomentumStrategy {
                     state.confirmationCount = 1;
                     state.lastConfirmedDir = momentum.direction();
                 }
-                log.debug("[OIMomentum][{}] Bias OK: score={} ticks={}/{} case={} signals={}",
-                        indexType, bias.score(), state.confirmationCount,
-                        config.getBiasConfirmationTicks(), entryCase, bias.primarySignal());
 
-                if (state.confirmationCount >= config.getBiasConfirmationTicks()) {
+                // Re-entry boost: after a profitable exit in the same direction within the
+                // boost window, reduce required confirmation ticks to 1. Rationale: a just-profitable
+                // trade proves the direction is live; operators don't reverse instantly.
+                boolean reEntryBoost = config.isReEntryBoostEnabled()
+                        && state.lastProfitableExitTime != null
+                        && state.lastProfitableExitDirection == momentum.direction()
+                        && Duration.between(state.lastProfitableExitTime, Instant.now()).getSeconds()
+                                < config.getReEntryBoostWindowSeconds();
+                int requiredTicks = reEntryBoost ? 1 : config.getBiasConfirmationTicks();
+
+                log.debug("[OIMomentum][{}] Bias OK: score={} ticks={}/{} case={} reEntryBoost={} signals={}",
+                        indexType, bias.score(), state.confirmationCount,
+                        requiredTicks, entryCase, reEntryBoost, bias.primarySignal());
+
+                if (state.confirmationCount >= requiredTicks) {
                     // Full confirmation — enter
                     state.confirmationCount = 0;
                     state.lastConfirmedDir = 0;
@@ -874,6 +911,7 @@ public class OIMomentumStrategy {
             // Bypass narrow-range guard when:
             // (a) breakout momentum — tight range is the setup, not a skip reason
             // (b) dual-negative OI squeeze with material |Δ| on both legs (not WS noise)
+            // Any timeframe breakout bypasses the narrow-range guard (30M, 15M, 5M)
             boolean isBreakout = momentumType != null &&
                     (momentumType.contains("HIGH_BREAK") || momentumType.contains("LOW_BREAK"));
             boolean isOiSqueeze = isMaterialOiSqueeze(ceOiChange, peOiChange);
@@ -1044,10 +1082,22 @@ public class OIMomentumStrategy {
         double slPercent = trade.getAppliedStopLossPercent() != null
                 ? trade.getAppliedStopLossPercent().doubleValue()
                 : config.getStopLossPercent();
+
+        // Break-even stop: once peak profit ≥ trigger, floor SL to 0% (entry price).
+        // Prevents "went up 5%, came all the way back to a loss" trades.
+        // Enabled when breakEvenTriggerPercent > 0 (default 0 = off).
+        double beTrigger = config.getBreakEvenTriggerPercent();
+        if (beTrigger > 0 && peakPct >= beTrigger) {
+            slPercent = Math.min(slPercent, 0.0); // SL can't be below 0 (entry price)
+        }
+
         if (profitPct <= -slPercent) {
-            closePosition(indexType, state, trade, currentPrice, "STOP_LOSS");
-            state.lastSlTime = Instant.now();
-            state.consecutiveLosses.incrementAndGet();
+            String reason = (beTrigger > 0 && peakPct >= beTrigger) ? "BREAK_EVEN_STOP" : "STOP_LOSS";
+            closePosition(indexType, state, trade, currentPrice, reason);
+            if ("STOP_LOSS".equals(reason)) {
+                state.lastSlTime = Instant.now();
+                state.consecutiveLosses.incrementAndGet();
+            }
             updateDailyPnl(state, profitPct, trade);
             return;
         }
@@ -1327,6 +1377,11 @@ public class OIMomentumStrategy {
 
     private void closePosition(IndexType indexType, IndexState state, TradeEntity trade, double currentPrice, String reason) {
         boolean reversal = reason != null && reason.contains("REVERSE");
+        // Track profitable exits for re-entry boost
+        if (trade.getEntryPrice() != null && currentPrice > trade.getEntryPrice().doubleValue()) {
+            state.lastProfitableExitTime = Instant.now();
+            state.lastProfitableExitDirection = state.activeDirection;
+        }
         try {
             tuneRecorder.recordExit(state.lastEntryDecisionKey, indexType, trade, currentPrice, reason,
                     state.lastEntryDiagnostics, reversal);
@@ -1409,10 +1464,11 @@ public class OIMomentumStrategy {
             sig.append(" PCR✗(-5)");
         }
 
-        // ── [+15] OI balance ratio — absolute CE vs PE OI at ATM ± 3 strikes ──
+        // ── [+15] OI balance ratio — absolute CE vs PE OI at ATM ± 5 strikes ──
         // PE OI dominant (ratio < 0.77) = operators writing puts = floor = bullish
         // CE OI dominant (ratio > 1.30) = operators writing calls = ceiling = bearish
-        long[] totalOi = getAtmTotalOi(indexType, atm, 3);
+        // Expanded from ±3 to ±5 strikes for better representation of operator positioning.
+        long[] totalOi = getAtmTotalOi(indexType, atm, 5);
         if (totalOi[0] > 0 && totalOi[1] > 0) {
             double cePerPe = (double) totalOi[0] / totalOi[1];
             if (momentumDir > 0 && cePerPe < 0.77) {
@@ -1426,14 +1482,20 @@ public class OIMomentumStrategy {
             }
         }
 
-        // ── [–20] Opening noise dampener — first 10 min after 09:20 are unreliable ──
+        // ── [–10/–20] Opening noise dampener — first 10 min after market open ──
+        // CASE3 (momentum + OI aligned) is a genuine signal even early; only penalise -10.
+        // CASE5 / CASE2 (weak or ambiguous) get the full -20 to avoid first-candle fakeouts.
+        // Previously applied -20 uniformly, which blocked all CASE3 setups until 09:30
+        // even when OI was clearly building (e.g. today: PE OI +1.9M at ATM, score=75 from OperatorFW).
         LocalTime now = LocalTime.now(IST);
         if (now.isBefore(LocalTime.of(9, 30))) {
-            score -= 20;
-            sig.append(" OPEN_NOISE(-20)");
+            boolean oiConfirmed = oiAvailable && oiDir == momentumDir;
+            int noisePenalty = oiConfirmed ? 10 : 20; // CASE1/3 → -10; CASE2/5 → -20
+            score -= noisePenalty;
+            sig.append(String.format(" OPEN_NOISE(-%d)", noisePenalty));
         }
 
-        // ── [–20] Bias decay — OI has been stale for longer than biasDecaySeconds ──
+        // ── [–biasDecayPenalty] Bias decay — OI has been stale for longer than biasDecaySeconds ──
         if (state.lastOiTickTime != null) {
             long staleSecs = Duration.between(state.lastOiTickTime, Instant.now()).getSeconds();
             if (staleSecs > config.getBiasDecaySeconds()) {
@@ -1441,9 +1503,90 @@ public class OIMomentumStrategy {
                 sig.append(String.format(" DECAY(%ds,-%d)", staleSecs, config.getBiasDecayPenalty()));
             }
         } else if (!oiAvailable) {
-            // No OI data at all — partial staleness penalty
-            score -= 10;
-            sig.append(" NO_OI(-10)");
+            // No OI data at all — use configurable penalty (was hardcoded to 10)
+            score -= config.getBiasDecayPenalty();
+            sig.append(String.format(" NO_OI(-%d)", config.getBiasDecayPenalty()));
+        }
+
+        // ── [+0..+20] Operator Framework conviction bonus ─────────────────────────
+        // Chain-level accumulation since open (5-min snapshot window) — bridges the gap
+        // between institutional footprints visible in the chain and 1-second WS ticks.
+        // May 22 example: PE OI at 23750 grew 619% by 11:30 — operator conviction was obvious
+        // from chain data while WS ticks still showed zero delta.
+        if (config.isOperatorBonusEnabled() && operatorFrameworkService != null) {
+            int opBonus = operatorFrameworkService.getConfidenceBonus(indexType, momentumDir);
+            if (opBonus > 0) {
+                score += opBonus;
+                sig.append(String.format(" OP(+%d)", opBonus));
+            }
+        }
+
+        // ── [+8] Bid-ask order book imbalance ─────────────────────────────────────
+        // When the ATM option in the momentum direction has bid qty >> ask qty,
+        // institutional buyers are lifting the ask — early accumulation footprint.
+        if (config.isBidAskImbalanceEnabled()) {
+            double bookImbalance = getAtmDirectionalBookImbalance(indexType, atm, momentumDir);
+            if (bookImbalance >= config.getBidAskImbalanceThreshold()) {
+                score += 8;
+                sig.append(String.format(" BOOK(+8,%.2f)", bookImbalance));
+            } else if (bookImbalance > 0) {
+                sig.append(String.format(" BOOK=%.2f", bookImbalance));
+            }
+        }
+
+        // ── [+8] IV Skew — implied volatility differential ────────────────────────
+        // CE IV rising relative to PE IV = operators buying calls = early bullish signal.
+        // PE IV rising relative to CE IV = put protection demand = bearish signal.
+        // Normal skew (PE IV > CE IV) is baseline; deviation indicates fresh direction.
+        if (config.isIvSkewEnabled()) {
+            double ivSkew = getAtmIvSkew(indexType, atm); // positive = CE IV dominant
+            if (momentumDir > 0 && ivSkew > config.getIvSkewThreshold()) {
+                score += 8;
+                sig.append(String.format(" SKEW_BULL(+8,%.2f)", ivSkew));
+            } else if (momentumDir < 0 && ivSkew < -config.getIvSkewThreshold()) {
+                score += 8;
+                sig.append(String.format(" SKEW_BEAR(+8,%.2f)", ivSkew));
+            } else if (Math.abs(ivSkew) > 0.05) {
+                sig.append(String.format(" SKEW=%.2f", ivSkew));
+            }
+        }
+
+        // ── [+10] OI velocity / acceleration ──────────────────────────────────────
+        // Compares the 1-minute OI delta rate to the average 3-minute per-minute rate.
+        // When operators are ramping up NOW (rate accelerating ≥ 1.5×), it signals
+        // fresh institutional entry — a stronger early warning than a steady OI build.
+        if (config.isOiVelocityEnabled() && oiAvailable && oiDir == momentumDir) {
+            long[] oi1m = liveInstrumentCache.getAtmOiChange(indexType, atm, 1, 3);
+            long oneMinTotal = Math.abs(oi1m[0]) + Math.abs(oi1m[1]);
+            long threeMinTotal = Math.abs(ceOiChange) + Math.abs(peOiChange);
+            long avgPerMin = threeMinTotal / 3;
+            if (avgPerMin > 100_000 && oneMinTotal >= (long)(avgPerMin * config.getOiAccelerationMultiplier())) {
+                score += 10;
+                sig.append(String.format(" OI_ACCEL(+10,1m=%d,avg=%d)", oneMinTotal, avgPerMin));
+            }
+        }
+
+        // ── [+10] Max pain proximity — operators have incentive to push toward max pain ──
+        // Max pain = strike where total option-writer losses are minimised. Since operators
+        // are net short options, they collectively push spot toward max pain before expiry.
+        // Spot below max pain → bullish operator pressure; above → bearish.
+        if (config.isMaxPainEnabled()) {
+            int maxPainStrike = computeMaxPain(indexType);
+            if (maxPainStrike > 0) {
+                double spotNow = liveInstrumentCache.getFuturesPrice(indexType);
+                if (spotNow > 0) {
+                    double distPct = (maxPainStrike - spotNow) / spotNow * 100;
+                    if (momentumDir > 0 && distPct >= config.getMaxPainMinDistancePct()) {
+                        score += 10;
+                        sig.append(String.format(" MAXPAIN↑(+10,mp=%d,dist=%.2f%%)", maxPainStrike, distPct));
+                    } else if (momentumDir < 0 && distPct <= -config.getMaxPainMinDistancePct()) {
+                        score += 10;
+                        sig.append(String.format(" MAXPAIN↓(+10,mp=%d,dist=%.2f%%)", maxPainStrike, distPct));
+                    } else {
+                        sig.append(String.format(" MAXPAIN=%d", maxPainStrike));
+                    }
+                }
+            }
         }
 
         return new BiasScore(momentumDir, Math.max(0f, score), sig.toString());
@@ -1468,6 +1611,88 @@ public class OIMomentumStrategy {
             else if ("PE".equals(opt.getOptionType())) peTotal += oi;
         }
         return new long[]{ceTotal, peTotal};
+    }
+
+    /**
+     * Bid/(bid+ask) ratio for the ATM option in the momentum direction.
+     * Returns -1 if no book data available.
+     * Direction +1 = CE option, -1 = PE option.
+     * Ratio > 0.60 means buyers dominate (institutional accumulation pressure).
+     */
+    private double getAtmDirectionalBookImbalance(IndexType indexType, int atm, int momentumDir) {
+        String targetType = momentumDir > 0 ? "CE" : "PE";
+        for (OptionInstrument opt : liveInstrumentCache.allOptions()) {
+            if (opt.getIndexType() != indexType) continue;
+            if (opt.getStrikePrice() != atm) continue;
+            if (!targetType.equals(opt.getOptionType())) continue;
+            long bidQty = opt.getBestBidQty();
+            long askQty = opt.getBestAskQty();
+            if (bidQty <= 0 && askQty <= 0) return -1;
+            return (double) bidQty / Math.max(1L, bidQty + askQty);
+        }
+        return -1;
+    }
+
+    /**
+     * (CE IV − PE IV) / avg_IV for the ATM strike.
+     * Positive = CE IV premium over PE IV = unusual call demand = bullish operator footprint.
+     * Negative = PE IV premium = protective put buying = bearish.
+     * Returns 0 if either IV is unavailable.
+     */
+    private double getAtmIvSkew(IndexType indexType, int atm) {
+        double ceIv = 0, peIv = 0;
+        for (OptionInstrument opt : liveInstrumentCache.allOptions()) {
+            if (opt.getIndexType() != indexType || opt.getStrikePrice() != atm) continue;
+            if ("CE".equals(opt.getOptionType())) ceIv = opt.getImpliedVolatility();
+            else if ("PE".equals(opt.getOptionType())) peIv = opt.getImpliedVolatility();
+        }
+        if (ceIv <= 0 || peIv <= 0) return 0;
+        double avg = (ceIv + peIv) / 2.0;
+        return avg > 0 ? (ceIv - peIv) / avg : 0;
+    }
+
+    /**
+     * Compute max pain strike: the spot price at which total option-writer losses are minimised.
+     *
+     * Formula: for each candidate strike S, compute:
+     *   pain(S) = Σ_K [ max(0, S−K) × CE_OI(K) + max(0, K−S) × PE_OI(K) ]
+     * Max pain = argmin(pain(S)) over all strikes in the chain.
+     *
+     * Operators are net short options (they wrote most of the OI), so they collectively
+     * benefit from spot expiring at max pain — they nudge the market toward it,
+     * especially in the final 2 hours before expiry.
+     *
+     * Returns 0 if chain data is insufficient (< 5 active strikes).
+     */
+    private int computeMaxPain(IndexType indexType) {
+        // Collect ATM ± 10 strike OI from cache
+        java.util.Map<Integer, long[]> strikeOi = new java.util.HashMap<>();
+        for (OptionInstrument opt : liveInstrumentCache.allOptions()) {
+            if (opt.getIndexType() != indexType) continue;
+            if (opt.getOpenInterest() <= 0) continue;
+            long[] oi = strikeOi.computeIfAbsent(opt.getStrikePrice(), k -> new long[2]);
+            if ("CE".equals(opt.getOptionType())) oi[0] = opt.getOpenInterest();
+            else if ("PE".equals(opt.getOptionType())) oi[1] = opt.getOpenInterest();
+        }
+        if (strikeOi.size() < 5) return 0; // Not enough chain data
+
+        int minPainStrike = 0;
+        long minPain = Long.MAX_VALUE;
+        for (int testSpot : strikeOi.keySet()) {
+            long totalPain = 0;
+            for (java.util.Map.Entry<Integer, long[]> e : strikeOi.entrySet()) {
+                int k = e.getKey();
+                long ceOi = e.getValue()[0];
+                long peOi = e.getValue()[1];
+                if (testSpot > k) totalPain += (long)(testSpot - k) * ceOi; // call writer pain
+                if (k > testSpot) totalPain += (long)(k - testSpot) * peOi; // put writer pain
+            }
+            if (totalPain < minPain) {
+                minPain = totalPain;
+                minPainStrike = testSpot;
+            }
+        }
+        return minPainStrike;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

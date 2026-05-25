@@ -162,6 +162,90 @@ public class TickMomentumDetector {
     }
 
     /**
+     * Detect momentum within a shorter rolling window (e.g. 5 or 15 minutes).
+     *
+     * Complements the primary 30M detector by catching intraday trend momentum that
+     * hasn't yet broken the 30-minute range. A 5-minute breakout with strong OI
+     * confirmation is an early-entry signal used by operators before price overruns
+     * the 30M level.
+     *
+     * Signal labels: "5M_HIGH_BREAK", "15M_HIGH_BREAK", etc.
+     * Minimum 60 seconds of data required; excludes the last 5 seconds (same as detect()).
+     *
+     * @param windowMinutes  5 or 15 — the rolling window size
+     * @param thresholdPct   minimum breakout distance (percent above/below the window high/low)
+     */
+    public MomentumSignal detectInWindow(IndexType indexType, double thresholdPct, int windowMinutes) {
+        double spot = liveInstrumentCache.getFuturesPrice(indexType);
+        if (spot <= 0) return MomentumSignal.NONE;
+
+        Deque<PriceSample> history = priceHistory.get(indexType);
+        if (history == null || history.size() < 60) return MomentumSignal.NONE; // need 60 s minimum
+
+        long now = System.currentTimeMillis();
+        long windowMs = (long) windowMinutes * 60_000L;
+        long fiveSecsAgo = now - 5_000L;
+
+        double high = 0, low = Double.MAX_VALUE;
+        int sampleCount = 0;
+        for (PriceSample sample : history) {
+            long age = now - sample.timestamp;
+            if (age > windowMs) continue;          // outside window
+            if (sample.timestamp > fiveSecsAgo) continue; // skip last 5 seconds (noise)
+            if (sample.price > high) high = sample.price;
+            if (sample.price < low) low = sample.price;
+            sampleCount++;
+        }
+        // Need at least half of the expected samples (30 per minute) to have a reliable window
+        if (sampleCount < windowMinutes * 15 || high <= 0 || low == Double.MAX_VALUE) {
+            return MomentumSignal.NONE;
+        }
+
+        // Breakout above the short-window high
+        if (spot > high) {
+            double breakoutPct = (spot - high) / high * 100;
+            if (breakoutPct > thresholdPct) {
+                return new MomentumSignal(1, windowMinutes + "M_HIGH_BREAK", breakoutPct, spot);
+            }
+        }
+        // Breakdown below the short-window low
+        if (spot < low) {
+            double breakdownPct = (low - spot) / low * 100;
+            if (breakdownPct > thresholdPct) {
+                return new MomentumSignal(-1, windowMinutes + "M_LOW_BREAK", breakdownPct, spot);
+            }
+        }
+        return MomentumSignal.NONE;
+    }
+
+    /**
+     * Returns the N-minute rolling high for an index.
+     * Used for position-level stop logic and operator zone tracking.
+     */
+    public double getRollingHighInWindow(IndexType indexType, int windowMinutes) {
+        Deque<PriceSample> history = priceHistory.get(indexType);
+        if (history == null || history.isEmpty()) return 0;
+        long now = System.currentTimeMillis();
+        long windowMs = (long) windowMinutes * 60_000L;
+        return history.stream()
+                .filter(s -> (now - s.timestamp) <= windowMs)
+                .mapToDouble(s -> s.price).max().orElse(0);
+    }
+
+    /**
+     * Returns the N-minute rolling low for an index.
+     */
+    public double getRollingLowInWindow(IndexType indexType, int windowMinutes) {
+        Deque<PriceSample> history = priceHistory.get(indexType);
+        if (history == null || history.isEmpty()) return 0;
+        long now = System.currentTimeMillis();
+        long windowMs = (long) windowMinutes * 60_000L;
+        return history.stream()
+                .filter(s -> (now - s.timestamp) <= windowMs)
+                .mapToDouble(s -> s.price).min().orElse(0);
+    }
+
+    /**
      * Get current spot price for an index.
      */
     public double getSpot(IndexType indexType) {

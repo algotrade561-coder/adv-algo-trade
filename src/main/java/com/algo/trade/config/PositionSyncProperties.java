@@ -10,12 +10,14 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
 @ConfigurationProperties(prefix = "position-sync")
 public record PositionSyncProperties(
         /**
-         * When true (default), SYNC'd trades are fully managed by exit monitors —
-         * intended for crash-recovery where the system re-discovers its own positions.
+         * Default false: manual SYNC'd trades are tracked but NOT auto-managed by exit monitors.
+         * Set true if you want exit monitors (SL/target/maxHold/squareoff) to manage SYNC'd
+         * positions — primarily intended for crash-recovery of algo-placed positions.
+         * FailSafeSquareoffDaemon always runs at EOD regardless.
          *
-         * Set to false when you place manual trades alongside the system and don't want
-         * the exit monitors (SL/target/maxHold/squareoff) to touch those positions.
-         * FailSafeSquareoffDaemon always runs regardless of this flag.
+         * This value only seeds the GlobalConfig row on FIRST boot (empty DB). After that,
+         * the runtime value comes from the GlobalConfig DB row and is editable from the
+         * Settings UI (manage-synced-trades toggle).
          */
-        @DefaultValue("true") boolean manageSyncedTrades
+        @DefaultValue("false") boolean manageSyncedTrades
 ) {}

@@ -220,6 +220,15 @@ import { ApiService, GlobalConfigDto } from '../core/api.service';
               <span>VWAP Reversal Exit <span class="toggle-hint">Close profitable long positions when spot crosses back through VWAP</span></span>
               <mat-slide-toggle [(ngModel)]="config.vwapExitEnabled" color="primary"></mat-slide-toggle>
             </div>
+            <div class="toggle-row">
+              <span>Manage Synced (Manual) Trades
+                <span class="toggle-hint">When ON, broker-imported SYNC trades are managed by exit monitors (SL/target/trailing/maxHold/squareoff). Turn OFF if you place manual orders alongside the algo and don't want exit monitors touching them — FailSafe squareoff still runs.</span>
+              </span>
+              <mat-slide-toggle [(ngModel)]="config.manageSyncedTrades" color="primary"></mat-slide-toggle>
+            </div>
+            @if (!config.manageSyncedTrades) {
+              <div class="override-banner">ℹ️ Manual-trade management is OFF — broker-imported SYNC- trades will be tracked but not auto-closed by SL/target/trailing/maxHold. EOD FailSafe squareoff still applies.</div>
+            }
             <mat-form-field appearance="outline">
               <mat-label>Max Hold Minutes (0 = no limit)</mat-label>
               <input matInput type="number" min="0" [(ngModel)]="config.maxHoldMinutes">

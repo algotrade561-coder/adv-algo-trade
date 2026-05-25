@@ -29,6 +29,7 @@ public class GapAndGoStrategy {
 
     private static final Logger log = LoggerFactory.getLogger(GapAndGoStrategy.class);
     private static final ZoneId IST = ZoneId.of("Asia/Kolkata");
+    private static final LocalTime NSE_MARKET_OPEN = LocalTime.of(9, 15);
     private static final LocalTime ENTRY_START = LocalTime.of(9, 20);
     private static final LocalTime ENTRY_CUTOFF = LocalTime.of(9, 45);
     private static final double MIN_BODY_PERCENT = 0.40;
@@ -67,8 +68,15 @@ public class GapAndGoStrategy {
         }
 
         LocalDate today = LocalDate.now(IST);
+        // FIX: filter by date AND time >= 09:15 to exclude NSE pre-market candles
+        // (pre-open session 08:15-09:08 sends indicative prices with H=L=O=C, volume=0,
+        // which caused sessionCandles.get(0) to always fail the firstCandleNoTicks guard)
         List<Candle> sessionCandles = candles5m.stream()
-                .filter(c -> c.timestamp().atZone(IST).toLocalDate().equals(today))
+                .filter(c -> {
+                    ZonedDateTime zdt = c.timestamp().atZone(IST);
+                    return zdt.toLocalDate().equals(today)
+                            && !zdt.toLocalTime().isBefore(NSE_MARKET_OPEN);
+                })
                 .sorted(Comparator.comparing(Candle::timestamp))
                 .toList();
 
@@ -202,26 +210,30 @@ public class GapAndGoStrategy {
 
     /**
      * Fetch previous day's closing price via REST historical API.
-     * Cached per index for the entire day (only fetches once).
+     * Only caches successful results — failures are NOT cached so the next
+     * evaluation tick will retry the REST call automatically.
      * Also stores into LiveInstrumentCache so other components benefit.
      */
     private double fetchPreviousDayClose(IndexType idx) {
+        // Only return cached value if it's a real price (> 0).
+        // A cached 0.0 from a previous failure must NOT short-circuit retries.
         Double cached = prevCloseCache.get(idx);
-        if (cached != null) return cached;
+        if (cached != null && cached > 0) return cached;
 
         try {
             String spotKey = tradingProperties.symbols().spotHistoricalKeys().get(
                     com.algo.trade.domain.UnderlyingSymbol.valueOf(idx.name()));
             if (spotKey == null || spotKey.isBlank()) {
-                log.debug("[GapAndGo] No spot historical key configured for {}", idx);
+                // Config is missing — no point retrying, cache the miss permanently.
+                log.warn("[GapAndGo] No spot historical key configured for {} — check tradingProperties.symbols.spotHistoricalKeys", idx);
                 prevCloseCache.put(idx, 0.0);
                 return 0;
             }
 
             LocalDate today = LocalDate.now(IST);
-            // Fetch last 3 days of daily candles to find the most recent trading day
+            // Go back 5 days to safely cover weekends and public holidays
             Instant from = today.minusDays(5).atStartOfDay(IST).toInstant();
-            Instant to = today.atStartOfDay(IST).toInstant(); // up to midnight today (excludes today)
+            Instant to = today.atStartOfDay(IST).toInstant(); // midnight today (excludes today's candles)
             var request = new com.algo.trade.domain.HistoricalDataRequest(
                     spotKey, from, to, com.algo.trade.domain.Timeframe.FIVE_MINUTE, false);
             var candles = marketDataService.historicalCandles(request);
@@ -229,15 +241,18 @@ public class GapAndGoStrategy {
             if (!candles.isEmpty()) {
                 double close = candles.getLast().close().doubleValue();
                 prevCloseCache.put(idx, close);
-                // Also seed into LiveInstrumentCache for other components
+                // Seed into LiveInstrumentCache so other components (e.g. AlgoFlowOrchestrator) benefit
                 liveInstrumentCache.setPreviousDayClose(idx, close);
                 log.info("[GapAndGo] Fetched previous day close for {}: {} (REST fallback)", idx, close);
                 return close;
             }
+            // Empty response — transient (holiday calendar gap, data vendor issue).
+            // Do NOT cache so the next evaluation tick retries automatically.
+            log.warn("[GapAndGo] REST returned no candles for {} between {} and {} — will retry next tick", idx, from, to);
         } catch (Exception e) {
-            log.warn("[GapAndGo] Failed to fetch previous day close for {}: {}", idx, e.getMessage());
+            // Transient error (network, timeout). Do NOT cache so next tick retries.
+            log.warn("[GapAndGo] Failed to fetch previous day close for {} — will retry next tick: {}", idx, e.getMessage());
         }
-        prevCloseCache.put(idx, 0.0);
         return 0;
     }
 }

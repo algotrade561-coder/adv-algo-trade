@@ -463,7 +463,7 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
                     double prevClose = candles.getLast().close().doubleValue();
                     liveInstrumentCache.setPreviousDayClose(idx, prevClose);
                 } else {
-                    log.debug("No previous day candles for {}: key={}", idx, spotKey);
+                    log.warn("No previous day candles for {}: key={} — gap detection will have no prevClose reference", idx, spotKey);
                 }
             } catch (Exception e) {
                 log.warn("Failed to fetch previous day close for {}: {}", idx, e.getMessage());

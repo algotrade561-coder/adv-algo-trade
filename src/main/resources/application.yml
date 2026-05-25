@@ -188,11 +188,15 @@ logging:
     com.algo.trade: DEBUG
 
 # ── Position Sync ─────────────────────────────────────────────────────────
-# manage-synced-trades: true  → SYNC'd positions are managed by SL/target/maxHold/squareoff (crash recovery)
-# manage-synced-trades: false → SYNC'd positions are tracked only; exit monitors skip them (manual trading)
+# manage-synced-trades: false (default) → manual SYNC'd positions are tracked only;
+#                                          exit monitors do not auto-close them (manual trading mode).
+# manage-synced-trades: true            → manual SYNC'd positions are managed by SL/target/maxHold/squareoff
+#                                          (intended for crash-recovery of algo-placed positions).
+# Note: this YAML value only seeds the GlobalConfig row on FIRST boot (empty DB).
+# After that, the value is sourced from the GlobalConfig DB row and is editable from the Settings UI.
 # FailSafeSquareoffDaemon always closes everything at 15:20 regardless of this flag.
 position-sync:
-  manage-synced-trades: true
+  manage-synced-trades: false
 
 # ── Tail Hedge ────────────────────────────────────────────────────────────
 tail-hedge:
@@ -264,12 +268,49 @@ oi-rest-fallback:
   # Events: reports/entry-signals/oi-rest-fallback-events.csv (ACTIVATED, BATCH_OK, RESTORED)
 
 # ── OI Momentum Strategy ──────────────────────────────────────────────────
-# All strategy tuning lives in OIMomentumConfig.java (single source of truth).
-# Override specific values here only when you need a per-environment deviation
-# from the Java defaults (e.g. force paper-trading in staging).
+# Java defaults are the single source of truth. Override here for live session tuning.
+# Targeting 20+ quality trades/day across NIFTY + BANKNIFTY + SENSEX.
 oi-momentum:
   enabled: true
   paper-trading: false
+
+  # ── Entry sensitivity ────────────────────────────────────────────────────
+  momentum-threshold-percent: 0.06       # was 0.08 — catch smaller clean moves
+  bias-confidence-threshold: 40          # 5pt more room for operator-confirmed entries
+  bias-confirmation-ticks: 2             # re-entry boost reduces to 1 automatically
+
+  # ── Throughput ────────────────────────────────────────────────────────────
+  soft-target-trades-per-day: 20
+  max-trades-per-day: 25
+  midday-trade-reduction-percent: 70     # allow more midday entries (12:00–13:00)
+  cooldown-after-sl-seconds: 60
+  consecutive-loss-pause: 4
+
+  # ── Exit (backtest-optimised: Trail5/5 + SL12 outperforms Trail8/8 + SL15) ─
+  # 47-trade sensitivity sweep on NIFTY: net P&L +₹3,575 vs -₹5,281 baseline.
+  # Trail activation at 5% captures profit 3pp sooner; SL at 12% cuts cleaner.
+  stop-loss-percent: 12                  # was 15 — tighter cut, no win-rate hit
+  trailing-activation-percent: 5        # was 8  — start trailing 3pp sooner
+  trailing-gap-percent: 5               # was 8  — tighter trail from peak
+  # Break-even stop: once peak ≥ N%, floor SL to 0% (entry price).
+  # Modest P&L benefit (+₹145) but strong W/L improvement (0.69→0.90).
+  # Enable after first week of live data to validate.
+  break-even-trigger-percent: 0         # 0 = off; set to 5.0 to enable
+
+  # ── Operator / advanced signals ──────────────────────────────────────────
+  operator-bonus-enabled: true
+  bid-ask-imbalance-enabled: true
+  iv-skew-enabled: true
+  oi-velocity-enabled: true
+  max-pain-enabled: true
+  # Multi-timeframe: backtest shows 5M adds 0 trades (subsumed by 15M cascade).
+  # 15M adds 9 trades but all net-negative: WR 57%, AvgW ₹860 vs AvgL ₹1,598 = -₹2,710.
+  # 30M alone: WR 68%, net +₹21,660, PF 1.74. Disabling sub-30M windows.
+  multi-timeframe-enabled: false         # was true — 5M/15M hurt quality, 30M dominates
+
+  # ── Re-entry boost ────────────────────────────────────────────────────────
+  re-entry-boost-enabled: true
+  re-entry-boost-window-seconds: 300     # 5-min window for same-direction re-entry after profit
 
 # ── Signal tuning (EOD HTML from reports/entry-signals CSVs) ───────────────
 # Scheduler off by default — heavy on heap (t3.small). CSV capture during live session still runs.

@@ -142,7 +142,7 @@ public class LivePositionExitMonitor {
         List<TradeEntity> openTrades = tradeRepository.findByStatus(TradeStatus.OPEN);
         if (openTrades.isEmpty()) return;
         for (TradeEntity trade : openTrades) {
-            if (!positionSyncProperties.manageSyncedTrades() && trade.getTradeId().startsWith("SYNC-")) continue;
+            if (!globalConfigService.isManageSyncedTrades() && trade.getTradeId().startsWith("SYNC-")) continue;
             try {
                 evaluate(trade);
             } catch (Exception e) {
@@ -177,7 +177,7 @@ public class LivePositionExitMonitor {
 
         log.debug("[ExitMonitor-Backup] Evaluating {} open trades via scheduled backup", openTrades.size());
         for (TradeEntity trade : openTrades) {
-            if (!positionSyncProperties.manageSyncedTrades() && trade.getTradeId().startsWith("SYNC-")) continue;
+            if (!globalConfigService.isManageSyncedTrades() && trade.getTradeId().startsWith("SYNC-")) continue;
             try {
                 evaluate(trade);
             } catch (Exception e) {
@@ -269,7 +269,14 @@ public class LivePositionExitMonitor {
         }
 
         // ── Time-based exits (after liquidity; do not require a live quote) ─────
-        if (config.getMaxHoldMinutes() > 0 && trade.getEntryTime() != null) {
+        // SYNC- trades are manual orders imported by PositionSynchronizer. They have no
+        // strategyType set (for LONG entries), so resolveConfig() falls back to
+        // DIRECTIONAL_BUY's config and an algo's maxHoldMinutes would otherwise cut them
+        // off arbitrarily. Manual trades should be governed only by SL/target/squareoff —
+        // never by a strategy's hold-time window. Other exit layers (liquidity, SL,
+        // target, trailing, squareoff) still apply.
+        boolean isSyncTrade = trade.getTradeId() != null && trade.getTradeId().startsWith("SYNC-");
+        if (!isSyncTrade && config.getMaxHoldMinutes() > 0 && trade.getEntryTime() != null) {
             long holdMinutes = java.time.Duration.between(trade.getEntryTime(), java.time.Instant.now()).toMinutes();
             if (holdMinutes >= config.getMaxHoldMinutes()) {
                 BigDecimal exitPrice = resolveExitPrice(trade);
@@ -283,6 +290,12 @@ public class LivePositionExitMonitor {
                         trade.getInstrumentKey(), holdMinutes, config.getMaxHoldMinutes(), holdProfitPct));
                 close(trade, exitPrice, "MAX_HOLD_TIME");
                 return;
+            }
+        } else if (isSyncTrade && config.getMaxHoldMinutes() > 0 && trade.getEntryTime() != null) {
+            long holdMinutes = java.time.Duration.between(trade.getEntryTime(), java.time.Instant.now()).toMinutes();
+            if (holdMinutes >= config.getMaxHoldMinutes()) {
+                log.debug("[ExitMonitor] Skipping MAX_HOLD_TIME for manual SYNC trade: tradeId={} instrument={} hold={}min configMax={}min",
+                        trade.getTradeId(), trade.getInstrumentKey(), holdMinutes, config.getMaxHoldMinutes());
             }
         }
 

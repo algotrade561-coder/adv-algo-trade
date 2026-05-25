@@ -964,7 +964,7 @@ public class ExecutionEngine {
     private int openTradeCount() {
         int openTrades = (int) tradeRepository.findByStatus(TradeStatus.OPEN).stream()
                 .filter(t -> !t.isPaperTrade())
-                .filter(t -> positionSyncProperties.manageSyncedTrades() || !t.getTradeId().startsWith("SYNC-"))
+                .filter(t -> globalConfigService.isManageSyncedTrades() || !t.getTradeId().startsWith("SYNC-"))
                 .count();
         // Also count pending limit orders as "open" — they'll become trades when filled
         int pendingOrders = orderRepository.findByStatusIn(
@@ -1083,14 +1083,14 @@ public class ExecutionEngine {
     private int tradesToday() {
         return (int) tradeRepository.findByEntryTimeBetween(todayStart(), tomorrowStart()).stream()
                 .filter(t -> !t.isPaperTrade())
-                .filter(t -> positionSyncProperties.manageSyncedTrades() || !t.getTradeId().startsWith("SYNC-"))
+                .filter(t -> globalConfigService.isManageSyncedTrades() || !t.getTradeId().startsWith("SYNC-"))
                 .count();
     }
 
     private BigDecimal dailyPnl() {
         return tradeRepository.findByEntryTimeBetween(todayStart(), tomorrowStart()).stream()
                 .filter(t -> !t.isPaperTrade())
-                .filter(t -> positionSyncProperties.manageSyncedTrades() || !t.getTradeId().startsWith("SYNC-"))
+                .filter(t -> globalConfigService.isManageSyncedTrades() || !t.getTradeId().startsWith("SYNC-"))
                 .map(t -> {
                     BigDecimal booked = t.getRealizedPnl() != null ? t.getRealizedPnl() : BigDecimal.ZERO;
                     if (t.getStatus() == TradeStatus.OPEN) {
@@ -1115,7 +1115,7 @@ public class ExecutionEngine {
                         todayStart().minus(Duration.ofDays(30)), tomorrowStart()).stream()
                 .filter(trade -> trade.getStatus() == TradeStatus.CLOSED)
                 .filter(trade -> !trade.isPaperTrade())
-                .filter(trade -> positionSyncProperties.manageSyncedTrades() || !trade.getTradeId().startsWith("SYNC-"))
+                .filter(trade -> globalConfigService.isManageSyncedTrades() || !trade.getTradeId().startsWith("SYNC-"))
                 .sorted((a, b) -> b.getEntryTime().compareTo(a.getEntryTime()))
                 .limit(20) // only need to check recent trades
                 .toList();

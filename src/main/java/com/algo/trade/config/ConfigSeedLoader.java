@@ -155,6 +155,7 @@ public class ConfigSeedLoader {
         cfg.setMaxHoldMinutes(integer(map, "maxHoldMinutes", 0));
         cfg.setVwapExitEnabled(bool(map, "vwapExitEnabled", false));
         cfg.setGlobalExitOverride(bool(map, "globalExitOverride", false));
+        cfg.setManageSyncedTrades(bool(map, "manageSyncedTrades", false));
         // Risk
         cfg.setTotalCapital(decimal(map, "totalCapital", "80000"));
         cfg.setMaxRiskPerTradePercent(decimal(map, "maxRiskPerTradePercent", "20"));

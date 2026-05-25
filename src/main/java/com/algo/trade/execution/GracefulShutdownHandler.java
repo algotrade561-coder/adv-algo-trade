@@ -1,6 +1,7 @@
 package com.algo.trade.execution;
 
 import com.algo.trade.broker.zerodha.KiteWebSocketClient;
+import com.algo.trade.config.GlobalConfigService;
 import com.algo.trade.config.PositionSyncProperties;
 import com.algo.trade.domain.TradeStatus;
 import com.algo.trade.notification.TelegramAlertService;
@@ -30,7 +31,7 @@ public class GracefulShutdownHandler {
     private final KiteWebSocketClient webSocketClient;
     private final TelegramAlertService alertService;
     private final com.algo.trade.marketdata.MarketDataService marketDataService;
-    private final PositionSyncProperties positionSyncProperties;
+    private final GlobalConfigService globalConfigService;
     private final com.algo.trade.monitoring.ErrorEventService errorEventService;
 
     public GracefulShutdownHandler(TradeRepository tradeRepository,
@@ -38,6 +39,7 @@ public class GracefulShutdownHandler {
                                     KiteWebSocketClient webSocketClient,
                                     TelegramAlertService alertService,
                                     com.algo.trade.marketdata.MarketDataService marketDataService,
+                                    GlobalConfigService globalConfigService,
                                     PositionSyncProperties positionSyncProperties,
                                     com.algo.trade.monitoring.ErrorEventService errorEventService) {
         this.tradeRepository = tradeRepository;
@@ -45,8 +47,14 @@ public class GracefulShutdownHandler {
         this.webSocketClient = webSocketClient;
         this.alertService = alertService;
         this.marketDataService = marketDataService;
-        this.positionSyncProperties = positionSyncProperties;
+        this.globalConfigService = globalConfigService;
         this.errorEventService = errorEventService;
+        // positionSyncProperties is no longer used at runtime here; the GlobalConfig cache
+        // is the authoritative source. Keeping the constructor parameter avoids breaking
+        // existing test wiring, but the field is intentionally not retained.
+        if (positionSyncProperties == null) {
+            log.debug("PositionSyncProperties not provided — relying on GlobalConfig cache");
+        }
     }
 
     @EventListener
@@ -67,8 +75,8 @@ public class GracefulShutdownHandler {
         if (!openTrades.isEmpty()) {
             log.warn("[Shutdown] {} open trades to close", openTrades.size());
             for (TradeEntity trade : openTrades) {
-                if (!positionSyncProperties.manageSyncedTrades() && trade.getTradeId().startsWith("SYNC-")) {
-                    log.info("[Shutdown] Skipping SYNC trade (manage-synced-trades=false): tradeId={}", trade.getTradeId());
+                if (!globalConfigService.isManageSyncedTrades() && trade.getTradeId().startsWith("SYNC-")) {
+                    log.info("[Shutdown] Skipping SYNC trade (manageSyncedTrades=false): tradeId={}", trade.getTradeId());
                     continue;
                 }
                 try {

@@ -94,6 +94,7 @@ public class GlobalConfigController {
         m.put("forcedExitTime", c.getForcedExitTime());
         m.put("partialProfitBookingEnabled", c.isPartialProfitBookingEnabled());
         m.put("maxHoldMinutes", c.getMaxHoldMinutes());
+        m.put("manageSyncedTrades", c.isManageSyncedTrades());
         // Risk fields
         m.put("totalCapital", c.getTotalCapital());
         m.put("maxRiskPerTradePercent", c.getMaxRiskPerTradePercent());

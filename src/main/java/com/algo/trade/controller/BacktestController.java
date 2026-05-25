@@ -8,6 +8,7 @@ import com.algo.trade.backtest.BacktestMonthDiagnosticsService;
 import com.algo.trade.backtest.BacktestRunResult;
 import com.algo.trade.backtest.BacktestSuiteService;
 import com.algo.trade.backtest.HistoricalDataDownloadService;
+import com.algo.trade.backtest.OIMomentumBacktestService;
 import com.algo.trade.backtest.StrategyVerificationResult;
 import com.algo.trade.backtest.VerifyAllRequest;
 import com.algo.trade.backtest.VerifyAllResult;
@@ -55,11 +56,17 @@ public class BacktestController {
     private final BacktestSuiteService suiteService;
     private final InstrumentCache instrumentCache;
     private final VerifyAllService verifyAllService;
+    private final OIMomentumBacktestService oimBacktestService;
+
+    /** Stores the HTML from the most recent OI Momentum backtest for GET /backtest/oi-momentum/report. */
+    private volatile String lastOimReport = null;
+    /** Path where the last OI Momentum backtest HTML was persisted. */
+    private volatile Path lastOimReportPath = null;
 
     public BacktestController(BacktestResultRepository backtestResultRepository, BacktestEngine backtestEngine,
                                HistoricalDataDownloadService downloadService, BacktestMonthDiagnosticsService diagnosticsService, TradingProperties properties,
                                BacktestSuiteService suiteService, InstrumentCache instrumentCache,
-                               VerifyAllService verifyAllService) {
+                               VerifyAllService verifyAllService, OIMomentumBacktestService oimBacktestService) {
         this.backtestResultRepository = backtestResultRepository;
         this.backtestEngine = backtestEngine;
         this.downloadService = downloadService;
@@ -68,6 +75,7 @@ public class BacktestController {
         this.suiteService = suiteService;
         this.instrumentCache = instrumentCache;
         this.verifyAllService = verifyAllService;
+        this.oimBacktestService = oimBacktestService;
     }
 
     @PostMapping("/backtest/run")
@@ -1273,6 +1281,134 @@ public class BacktestController {
     }
 
     record VerifyTodayRequest(LocalDate date, UnderlyingSymbol underlying) {}
+
+    // ── OI Momentum Backtest Endpoints ───────────────────────────────────────
+
+    /**
+     * Runs the OI Momentum strategy backtest against Global Datafeeds 1-min option CSVs.
+     *
+     * <pre>
+     * POST /backtest/oi-momentum
+     * {
+     *   "underlying": "NIFTY",        // NIFTY | BANKNIFTY | SENSEX  (default: NIFTY)
+     *   "from": "2025-05-01",         // default: one year before today
+     *   "to":   "2026-05-24"          // default: today
+     * }
+     * </pre>
+     *
+     * All strategy parameters (SL, trail, bias threshold, multi-timeframe toggle, etc.)
+     * are read live from {@code OIMomentumConfig} / {@code application.yml} so every run
+     * reflects your latest tuned values without recompiling.
+     *
+     * <p>The HTML report is saved to {@code data/backtest/results/oi-momentum/} and is
+     * accessible via {@code GET /backtest/oi-momentum/report}.
+     */
+    @PostMapping("/backtest/oi-momentum")
+    public ResponseEntity<?> runOiMomentumBacktest(
+            @RequestBody(required = false) OiMomentumBacktestRequest request) {
+
+        LocalDate today = LocalDate.now();
+        LocalDate from = (request != null && request.from() != null) ? request.from() : today.minusYears(1);
+        LocalDate to   = (request != null && request.to()   != null) ? request.to()   : today;
+        String underlying = (request != null && request.underlying() != null
+                && !request.underlying().isBlank()) ? request.underlying().toUpperCase() : "NIFTY";
+
+        log.info("[OIMomentumBacktest] Endpoint called: underlying={}, from={}, to={}", underlying, from, to);
+
+        // Validate date range
+        if (from.isAfter(to)) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "status", "error",
+                    "message", "'from' must be before 'to'. Got from=" + from + ", to=" + to));
+        }
+        if (!hasTradingDays(from, to)) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "status", "error",
+                    "message", "No trading days in range " + from + " to " + to));
+        }
+
+        Path byDayDir = resolveGlobalDatafeedsByDayDir();
+        if (!Files.isDirectory(byDayDir)) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "status", "error",
+                    "message", "Global-datafeeds by-day directory not found: " + byDayDir
+                            + ". Run GlobalDataFeedsOptionConverter to populate it first."));
+        }
+
+        try {
+            long startMs = System.currentTimeMillis();
+            OIMomentumBacktestService.BacktestRequest req =
+                    new OIMomentumBacktestService.BacktestRequest(from, to, underlying, byDayDir);
+            OIMomentumBacktestService.OIMomentumBacktestResult result = oimBacktestService.run(req);
+            long timeTakenMs = System.currentTimeMillis() - startMs;
+
+            // Persist HTML report to disk
+            Path reportDir = Path.of(properties.backtest().outputDirectory(), "oi-momentum");
+            Files.createDirectories(reportDir);
+            String reportFileName = "oi-momentum-" + underlying + "-" + from + "-" + to + ".html";
+            Path reportPath = reportDir.resolve(reportFileName);
+            Files.writeString(reportPath, result.htmlReport());
+            lastOimReport = result.htmlReport();
+            lastOimReportPath = reportPath;
+
+            log.info("[OIMomentumBacktest] Completed in {}ms, trades={}, net={}",
+                    timeTakenMs, result.trades().size(), result.metrics().get("netPnlInr"));
+
+            // Build response: metrics + meta
+            Map<String, Object> response = new LinkedHashMap<>(result.metrics());
+            response.put("status", "ok");
+            response.put("underlying", result.underlying());
+            response.put("from", result.from().toString());
+            response.put("to", result.to().toString());
+            response.put("totalDays", result.totalDays());
+            response.put("activeDays", result.activeDays());
+            response.put("timeTakenMs", timeTakenMs);
+            response.put("reportPath", reportPath.toString());
+            response.put("reportUrl", "/backtest/oi-momentum/report");
+            return ResponseEntity.ok(response);
+
+        } catch (IOException ex) {
+            log.error("[OIMomentumBacktest] I/O error: {}", ex.getMessage(), ex);
+            return ResponseEntity.internalServerError().body(Map.of(
+                    "status", "error", "message", ex.getMessage()));
+        } catch (RuntimeException ex) {
+            log.error("[OIMomentumBacktest] Failed: {}", ex.getMessage(), ex);
+            return ResponseEntity.internalServerError().body(Map.of(
+                    "status", "error", "message", ex.getMessage()));
+        }
+    }
+
+    /**
+     * Returns the HTML report from the most recently completed OI Momentum backtest.
+     * Run {@code POST /backtest/oi-momentum} first.
+     */
+    @GetMapping(value = "/backtest/oi-momentum/report", produces = MediaType.TEXT_HTML_VALUE)
+    public ResponseEntity<String> oiMomentumReport() {
+        // Try in-memory first (same JVM session)
+        if (lastOimReport != null) {
+            log.info("[OIMomentumBacktest] Serving in-memory HTML report");
+            return ResponseEntity.ok().contentType(MediaType.TEXT_HTML).body(lastOimReport);
+        }
+        // Fall back to most-recently written file in the report dir
+        Path reportDir = Path.of(properties.backtest().outputDirectory(), "oi-momentum");
+        try {
+            if (Files.isDirectory(reportDir)) {
+                java.util.Optional<Path> latest = Files.list(reportDir)
+                        .filter(p -> p.toString().endsWith(".html"))
+                        .max(java.util.Comparator.comparingLong(p -> p.toFile().lastModified()));
+                if (latest.isPresent()) {
+                    log.info("[OIMomentumBacktest] Serving report from file: {}", latest.get());
+                    return ResponseEntity.ok().contentType(MediaType.TEXT_HTML)
+                            .body(Files.readString(latest.get()));
+                }
+            }
+        } catch (IOException ex) {
+            log.warn("[OIMomentumBacktest] Could not read report from disk: {}", ex.getMessage());
+        }
+        return ResponseEntity.<String>notFound().build();
+    }
+
+    public record OiMomentumBacktestRequest(String underlying, LocalDate from, LocalDate to) {}
 
     @GetMapping("/backtest/results/{id}")
     public ResponseEntity<BacktestResultEntity> result(@PathVariable String id) {

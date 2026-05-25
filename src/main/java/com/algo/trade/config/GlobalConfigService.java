@@ -25,11 +25,15 @@ public class GlobalConfigService {
 
     private final GlobalConfigRepository repository;
     private final TradingProperties tradingProperties;
+    private final PositionSyncProperties positionSyncProperties;
     private volatile GlobalConfig cached;
 
-    public GlobalConfigService(GlobalConfigRepository repository, TradingProperties tradingProperties) {
+    public GlobalConfigService(GlobalConfigRepository repository,
+                                TradingProperties tradingProperties,
+                                PositionSyncProperties positionSyncProperties) {
         this.repository = repository;
         this.tradingProperties = tradingProperties;
+        this.positionSyncProperties = positionSyncProperties;
     }
 
     @PostConstruct
@@ -40,8 +44,12 @@ public class GlobalConfigService {
             log.info("GlobalConfig loaded from database (id=1)");
         } else {
             GlobalConfig seeded = new GlobalConfig(tradingProperties);
+            // Seed manage-synced-trades from position-sync.* YAML for first-boot installs.
+            // Subsequent runtime changes via the Settings UI take precedence and persist.
+            seeded.setManageSyncedTrades(positionSyncProperties.manageSyncedTrades());
             cached = repository.save(seeded);
-            log.info("GlobalConfig seeded from TradingProperties (YAML defaults)");
+            log.info("GlobalConfig seeded from TradingProperties (YAML defaults), manageSyncedTrades={}",
+                    seeded.isManageSyncedTrades());
         }
         log.info("[Config] Effective runtime config: cooldown={}min, maxOpenTrades={}, maxTradesPerDay={}, entryCutoff={}, forcedExit={}, maxDailyLoss={}%, envScore={}",
             cached.getCooldownMinutes(), cached.getMaxOpenTrades(), cached.getMaxTradesPerDay(),
@@ -147,6 +155,14 @@ public class GlobalConfigService {
 
     public int getMaxHoldMinutes() { return cached.getMaxHoldMinutes(); }
 
+    /**
+     * Hot-path accessor for the runtime "manage synced trades" toggle.
+     * Authoritative source for ExecutionEngine / LivePositionExitMonitor /
+     * GracefulShutdownHandler. Initial value comes from position-sync.* YAML
+     * on first boot; thereafter editable from the Settings UI.
+     */
+    public boolean isManageSyncedTrades() { return cached.isManageSyncedTrades(); }
+
     // ── Risk accessors ────────────────────────────────────────
 
     public BigDecimal getTotalCapital() { return cached.getTotalCapital(); }
@@ -205,6 +221,7 @@ public class GlobalConfigService {
      */
     public GlobalConfig resetToDefaults() {
         GlobalConfig defaults = new GlobalConfig(tradingProperties);
+        defaults.setManageSyncedTrades(positionSyncProperties.manageSyncedTrades());
         defaults.setId(1L);
         cached = repository.save(defaults);
         log.info("GlobalConfig reset to TradingProperties defaults");
