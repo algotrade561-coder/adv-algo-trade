@@ -1410,6 +1410,71 @@ public class BacktestController {
 
     public record OiMomentumBacktestRequest(String underlying, LocalDate from, LocalDate to) {}
 
+    /**
+     * Side-by-side comparison of the current production bias formula (V1) against the two
+     * graded-BAL candidates (V2 symmetric, V3 reward-only) over the same date range and
+     * underlying. Use this to decide whether the graded-BAL rework is worth shipping
+     * before touching production code.
+     *
+     * <pre>
+     * POST /backtest/oi-momentum/compare-bias
+     * {
+     *   "underlying": "NIFTY",        // NIFTY | BANKNIFTY | SENSEX (default NIFTY)
+     *   "from": "2026-01-28",         // default: 1 year before today
+     *   "to":   "2026-04-27"          // default: today
+     * }
+     * </pre>
+     *
+     * Response carries each variant's headline metrics plus the V2/V3 deltas vs V1.
+     */
+    @PostMapping("/backtest/oi-momentum/compare-bias")
+    public ResponseEntity<?> compareOiMomentumBias(
+            @RequestBody(required = false) OiMomentumBacktestRequest request) {
+
+        LocalDate today = LocalDate.now();
+        LocalDate from = (request != null && request.from() != null) ? request.from() : today.minusYears(1);
+        LocalDate to   = (request != null && request.to()   != null) ? request.to()   : today;
+        String underlying = (request != null && request.underlying() != null
+                && !request.underlying().isBlank()) ? request.underlying().toUpperCase() : "NIFTY";
+
+        log.info("[OIMomentumBacktest] Compare bias endpoint: underlying={}, from={}, to={}",
+                underlying, from, to);
+
+        if (from.isAfter(to)) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "status", "error",
+                    "message", "'from' must be before 'to'. Got from=" + from + ", to=" + to));
+        }
+        Path byDayDir = resolveGlobalDatafeedsByDayDir();
+        if (!Files.isDirectory(byDayDir)) {
+            return ResponseEntity.badRequest().body(Map.of(
+                    "status", "error",
+                    "message", "Global-datafeeds by-day directory not found: " + byDayDir));
+        }
+
+        try {
+            long startMs = System.currentTimeMillis();
+            OIMomentumBacktestService.BacktestRequest base =
+                    new OIMomentumBacktestService.BacktestRequest(from, to, underlying, byDayDir);
+            OIMomentumBacktestService.BiasComparisonResult cmp =
+                    oimBacktestService.compareBiasVariants(base);
+            long timeTakenMs = System.currentTimeMillis() - startMs;
+
+            Map<String, Object> response = new LinkedHashMap<>();
+            response.put("status", "ok");
+            response.put("underlying", underlying);
+            response.put("from", from.toString());
+            response.put("to", to.toString());
+            response.put("timeTakenMs", timeTakenMs);
+            response.putAll(cmp.diffSummary());
+            return ResponseEntity.ok(response);
+        } catch (RuntimeException ex) {
+            log.error("[OIMomentumBacktest] compare-bias failed: {}", ex.getMessage(), ex);
+            return ResponseEntity.internalServerError().body(Map.of(
+                    "status", "error", "message", ex.getMessage()));
+        }
+    }
+
     @GetMapping("/backtest/results/{id}")
     public ResponseEntity<BacktestResultEntity> result(@PathVariable String id) {
         log.info("Backtest result requested: id={}", id);

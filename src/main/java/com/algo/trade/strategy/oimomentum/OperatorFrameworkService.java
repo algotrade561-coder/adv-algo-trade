@@ -47,12 +47,40 @@ public class OperatorFrameworkService {
     private static final LocalTime MARKET_OPEN = LocalTime.of(9, 15);
 
     private final OperatorAccumulationDetector detector;
+    private final OperatorBaselineStore baselineStore;
 
     private final ConcurrentHashMap<IndexType, Boolean> openingBaselineSet = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<IndexType, Instant> lastAnalysisTime = new ConcurrentHashMap<>();
 
-    public OperatorFrameworkService(OperatorAccumulationDetector detector) {
+    public OperatorFrameworkService(OperatorAccumulationDetector detector,
+                                    OperatorBaselineStore baselineStore) {
         this.detector = detector;
+        this.baselineStore = baselineStore;
+    }
+
+    /**
+     * On startup, if a baseline file for today already exists on disk (i.e. an earlier
+     * JVM instance captured the 09:15 baseline before crashing/restarting), restore it
+     * into the detector so the rest of the session continues with the original opening
+     * reference instead of falling back to a stale "Late opening baseline".
+     */
+    @jakarta.annotation.PostConstruct
+    void restoreBaselineFromDisk() {
+        Map<IndexType, Map<Integer, OperatorAccumulationDetector.StrikeSnapshot>> persisted =
+                baselineStore.loadToday();
+        if (persisted.isEmpty()) {
+            return;
+        }
+        for (Map.Entry<IndexType, Map<Integer, OperatorAccumulationDetector.StrikeSnapshot>> e
+                : persisted.entrySet()) {
+            IndexType index = e.getKey();
+            Map<Integer, OperatorAccumulationDetector.StrikeSnapshot> snap = e.getValue();
+            if (snap == null || snap.isEmpty()) continue;
+            detector.registerOpeningSnapshot(index, snap);
+            openingBaselineSet.put(index, true);
+            log.info("[OperatorFW] Recovered opening baseline for {} from disk ({} strikes) "
+                    + "- restart will not degrade operator framework", index, snap.size());
+        }
     }
 
     /**
@@ -74,6 +102,9 @@ public class OperatorFrameworkService {
             }
             detector.registerOpeningSnapshot(index, strikeMap);
             openingBaselineSet.put(index, true);
+            // Persist immediately so a subsequent restart recovers this baseline
+            // instead of falling back to a mid-day "Late opening baseline".
+            baselineStore.save(index, snapshot.timestamp().atZone(IST).toLocalDate(), strikeMap);
             if (snapshotTime.isBefore(OPENING_WINDOW_END)) {
                 log.info("[OperatorFW] Opening baseline registered for {} at {} spot={}",
                         index, snapshotTime, snapshot.spot());

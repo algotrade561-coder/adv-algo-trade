@@ -65,6 +65,25 @@ public interface StrategyDecisionRepository extends JpaRepository<StrategyDecisi
            "GROUP BY s.firstFailedFilter ORDER BY COUNT(s) DESC")
     List<Object[]> countByFirstFailedFilterSince(java.time.Instant since);
 
+    /**
+     * Per-strategy NO_TRADE blockers grouped by firstFailedFilter — used by the EOD
+     * Daily Blocker Summary to surface the dominant blocker per strategy. Returns rows
+     * of (strategyType, firstFailedFilter, count) ordered so the top blocker for each
+     * strategy comes first.
+     */
+    @Query("SELECT s.strategyType, s.firstFailedFilter, COUNT(s) FROM StrategyDecisionEntity s " +
+           "WHERE s.signalType = 'NO_TRADE' AND s.timestamp >= :since " +
+           "AND s.firstFailedFilter IS NOT NULL " +
+           "GROUP BY s.strategyType, s.firstFailedFilter " +
+           "ORDER BY s.strategyType ASC, COUNT(s) DESC")
+    List<Object[]> countByStrategyAndFirstFailedFilterSince(java.time.Instant since);
+
+    /** Per-strategy entry-signal counts (BUY_CE / BUY_PE) since a given instant. */
+    @Query("SELECT s.strategyType, COUNT(s) FROM StrategyDecisionEntity s " +
+           "WHERE s.signalType IN ('BUY_CE','BUY_PE') AND s.timestamp >= :since " +
+           "GROUP BY s.strategyType")
+    List<Object[]> countEntriesByStrategySince(java.time.Instant since);
+
     /** Entry signals since a given instant — for strategy scorecard computation. */
     @Query("SELECT s FROM StrategyDecisionEntity s WHERE " +
            "s.signalType IN ('BUY_CE','BUY_PE') AND s.timestamp >= :since " +

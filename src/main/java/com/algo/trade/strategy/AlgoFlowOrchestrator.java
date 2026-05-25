@@ -320,21 +320,33 @@ public class AlgoFlowOrchestrator {
                     passed.add("VOLUME_DELTA:" + deltaSnapshot.bias() + "(delta=" + String.format("%.1f", deltaSnapshot.deltaPercent()) + "%)");
                 }
 
-                // Range-bound detection — skip directional strategies in choppy markets
-                if (rangeBoundDetector.isRangeBound(candles1m)) {
+                // Range-bound detection — skip directional strategies in choppy markets.
+                // Expose the underlying ATR-compression and directional-efficiency metrics
+                // (atrRatio, efficiency) in the passed/failed strings on both branches so
+                // the regime gate's sensitivity can be tuned against days that *should*
+                // have traded but were blocked.
+                com.algo.trade.indicator.RangeBoundDetector.Result rb =
+                        rangeBoundDetector.evaluate(candles1m);
+                String metrics = String.format("atr=%.2f eff=%.2f",
+                        Double.isNaN(rb.atrRatio()) ? 0.0 : rb.atrRatio(),
+                        Double.isNaN(rb.efficiency()) ? 0.0 : rb.efficiency());
+                if (rb.rangeBound()) {
                     // Only block directional buying strategies, not spreads or event-driven
                     if (!strategyType.isSellingStrategy()
                             && strategyType != StrategyType.EVENT_DRIVEN_BUY
                             && strategyType != StrategyType.LONG_STRADDLE
                             && strategyType != StrategyType.LONG_STRANGLE) {
-                        failed.add("RANGE_BOUND:CHOPPY_MARKET");
+                        failed.add("RANGE_BOUND:CHOPPY_MARKET[" + metrics + "]");
+                        log.info("[AlgoFlow] Range-bound block: strategy={} underlying={} {}",
+                                strategyType, underlying, metrics);
                         return EntryDecision.blocked(
-                                "Market is range-bound/choppy — directional strategies blocked",
+                                "Market is range-bound/choppy — directional strategies blocked "
+                                        + "[" + metrics + "]",
                                 passed, failed);
                     }
-                    passed.add("RANGE_BOUND:CHOPPY(allowed_for_" + strategyType.name() + ")");
+                    passed.add("RANGE_BOUND:CHOPPY[" + metrics + "](allowed_for_" + strategyType.name() + ")");
                 } else {
-                    passed.add("RANGE_BOUND:TRENDING");
+                    passed.add("RANGE_BOUND:TRENDING[" + metrics + "]");
                 }
             } else {
                 passed.add("VOLUME:NO_DATA");

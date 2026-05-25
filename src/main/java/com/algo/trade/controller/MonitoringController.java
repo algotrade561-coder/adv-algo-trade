@@ -47,6 +47,7 @@ public class MonitoringController {
     private final com.algo.trade.monitoring.PositionStrengthService positionStrengthService;
     private final com.algo.trade.commodity.BrentCrudeService brentCrudeService;
     private final com.algo.trade.monitoring.HedgeCostTracker hedgeCostTracker;
+    private final com.algo.trade.reporting.DailyBlockerSummaryService dailyBlockerSummaryService;
 
     public MonitoringController(ReportingService reportingService,
                                  DailyReportBundleService dailyReportBundleService,
@@ -59,7 +60,8 @@ public class MonitoringController {
                                  com.algo.trade.monitoring.PositionStrengthService positionStrengthService,
                                  com.algo.trade.indicator.IVRankTracker ivRankTracker,
                                  com.algo.trade.commodity.BrentCrudeService brentCrudeService,
-                                 com.algo.trade.monitoring.HedgeCostTracker hedgeCostTracker) {
+                                 com.algo.trade.monitoring.HedgeCostTracker hedgeCostTracker,
+                                 com.algo.trade.reporting.DailyBlockerSummaryService dailyBlockerSummaryService) {
         this.reportingService = reportingService;
         this.dailyReportBundleService = dailyReportBundleService;
         this.marketGuard = marketGuard;
@@ -72,6 +74,21 @@ public class MonitoringController {
         this.ivRankTracker = ivRankTracker;
         this.brentCrudeService = brentCrudeService;
         this.hedgeCostTracker = hedgeCostTracker;
+        this.dailyBlockerSummaryService = dailyBlockerSummaryService;
+    }
+
+    /**
+     * Manually run the Daily Blocker Summary for a specific date. Useful for replaying
+     * a past day to verify fix outcomes without waiting for the 15:35 IST cron.
+     * Date format: yyyy-MM-dd. Defaults to today (IST) if omitted.
+     */
+    @GetMapping({"/reports/blocker-summary", "/monitoring/reports/blocker-summary"})
+    public com.algo.trade.reporting.DailyBlockerSummaryService.DigestPayload blockerSummary(
+            @RequestParam(value = "date", required = false) String dateStr) {
+        LocalDate date = (dateStr == null || dateStr.isBlank())
+                ? LocalDate.now(ZoneId.of("Asia/Kolkata"))
+                : LocalDate.parse(dateStr);
+        return dailyBlockerSummaryService.runSummary(date);
     }
 
     @GetMapping("/market")

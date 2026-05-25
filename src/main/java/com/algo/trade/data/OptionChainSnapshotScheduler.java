@@ -6,6 +6,7 @@ import com.algo.trade.domain.OptionInstrument;
 import com.algo.trade.marketdata.ExpiryCalendar;
 import com.algo.trade.marketdata.LiveInstrumentCache;
 import com.algo.trade.monitoring.SchedulerRegistry;
+import com.algo.trade.notification.TelegramAlertService;
 import com.algo.trade.risk.MarketGuard;
 import com.algo.trade.strategy.oimomentum.OperatorFrameworkService;
 import jakarta.annotation.PostConstruct;
@@ -21,6 +22,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Captures option chain snapshots every 5 minutes during market hours.
@@ -43,12 +45,34 @@ public class OptionChainSnapshotScheduler {
     private final SnapshotFileWriter snapshotFileWriter;
     private final SchedulerRegistry schedulerRegistry;
     private final OperatorFrameworkService operatorFrameworkService;
+    private final TelegramAlertService telegramAlertService;
 
     @Value("${snapshot.enabled:true}")
     private boolean enabled;
 
     @Value("${snapshot.strikes-each-side:10}")
     private int strikesEachSide;
+
+    /**
+     * Threshold for the empty-chain escalation: alert the operator after this many
+     * consecutive failed chain captures for the same underlying during market hours.
+     * Default 3 = 15 min of silent failures before the first alert.
+     */
+    @Value("${snapshot.empty-chain.alert-after-consecutive:3}")
+    private int emptyChainAlertAfter;
+
+    /** Minimum gap between repeated alerts for the same underlying, to avoid spam. */
+    @Value("${snapshot.empty-chain.alert-cooldown-minutes:60}")
+    private int emptyChainAlertCooldownMinutes;
+
+    /** Consecutive empty-chain captures per underlying. Reset when a snapshot succeeds. */
+    private final Map<IndexType, AtomicInteger> consecutiveEmptyChains = new ConcurrentHashMap<>();
+
+    /** Last alert time per underlying (throttle). */
+    private final Map<IndexType, Instant> lastEmptyChainAlert = new ConcurrentHashMap<>();
+
+    /** True once the pre-market chain-resolution validation has run for today. */
+    private volatile LocalDate preOpenValidationDay = null;
 
     /**
      * Per-strike OI from the previous snapshot cycle, keyed by "INDEX|strike|CE_or_PE".
@@ -82,13 +106,15 @@ public class OptionChainSnapshotScheduler {
                                          MarketGuard marketGuard,
                                          SnapshotFileWriter snapshotFileWriter,
                                          SchedulerRegistry schedulerRegistry,
-                                         OperatorFrameworkService operatorFrameworkService) {
+                                         OperatorFrameworkService operatorFrameworkService,
+                                         TelegramAlertService telegramAlertService) {
         this.liveInstrumentCache = liveInstrumentCache;
         this.expiryCalendar = expiryCalendar;
         this.marketGuard = marketGuard;
         this.snapshotFileWriter = snapshotFileWriter;
         this.schedulerRegistry = schedulerRegistry;
         this.operatorFrameworkService = operatorFrameworkService;
+        this.telegramAlertService = telegramAlertService;
     }
 
     @PostConstruct
@@ -128,10 +154,14 @@ public class OptionChainSnapshotScheduler {
                 if (snapshot.isPresent()) {
                     snapshotFileWriter.write(snapshot.get());
                     captured++;
+                    consecutiveEmptyChains.computeIfAbsent(indexType,
+                            k -> new AtomicInteger(0)).set(0);
                     log.info("[ChainSnapshot] Captured: {} spot={} strikes={}",
                             indexType, snapshot.get().spot(), snapshot.get().strikes().size());
                     // Feed into Operator Framework for institutional accumulation analysis
                     operatorFrameworkService.onChainSnapshot(indexType, snapshot.get());
+                } else {
+                    handleEmptyChain(indexType);
                 }
             } catch (Exception e) {
                 log.error("[ChainSnapshot] Capture failed for {}: {}", underlyingName, e.getMessage());
@@ -194,6 +224,129 @@ public class OptionChainSnapshotScheduler {
         );
 
         return Optional.of(snapshot);
+    }
+
+    /**
+     * Pre-market validation: at 09:00 IST (15 minutes before the open) check that every
+     * enabled underlying has a non-empty option chain for its resolved current weekly
+     * expiry. Any failure is escalated immediately so we have a 15-minute window to
+     * intervene before the first real snapshot cycle.
+     *
+     * <p>Idempotent for the day — if invoked multiple times (e.g. via fixedRate retries),
+     * subsequent calls within the same trading date are skipped.
+     */
+    @Scheduled(cron = "${snapshot.preopen-validation-cron:0 0 9 * * MON-FRI}",
+               zone = "Asia/Kolkata")
+    public void preOpenChainValidation() {
+        LocalDate today = LocalDate.now(IST);
+        if (today.equals(preOpenValidationDay)) {
+            return;
+        }
+        if (!enabled || !schedulerRegistry.isEnabled(TASK_NAME)) {
+            return;
+        }
+        if (!liveInstrumentCache.isReady()) {
+            log.warn("[ChainSnapshot] Pre-open validation skipped: LiveInstrumentCache not ready");
+            return;
+        }
+        preOpenValidationDay = today;
+        validateChainResolution();
+    }
+
+    /**
+     * Verify each enabled underlying resolves to a non-empty option chain for the
+     * configured expiry. Emits an immediate Telegram alert on any failure so the
+     * operator can react before market open instead of discovering the gap from
+     * silent {@code warn}-and-skip messages mid-session.
+     *
+     * <p>Public so it can be wired to a health endpoint or manually invoked.
+     */
+    public void validateChainResolution() {
+        for (String underlyingName : enabledUnderlyings) {
+            IndexType indexType;
+            try {
+                indexType = IndexType.fromName(underlyingName);
+            } catch (Exception e) {
+                log.error("[ChainSnapshot] Pre-open validation: unknown underlying '{}'", underlyingName);
+                continue;
+            }
+            try {
+                LocalDate expiry = expiryCalendar.getCurrentWeeklyExpiry(indexType);
+                int strikes = liveInstrumentCache.getStrikeChain(indexType, expiry).size();
+                if (strikes == 0) {
+                    String msg = String.format(
+                            "\uD83D\uDEA8 PRE-OPEN: %s option chain empty for expiry=%s. "
+                                    + "Operator Framework will run blind on this underlying today \u2014 "
+                                    + "verify expiry resolution and instrument subscription before 09:15.",
+                            indexType, expiry);
+                    log.error("[ChainSnapshot] {}", msg);
+                    try {
+                        telegramAlertService.systemAlert(msg);
+                    } catch (Exception alertErr) {
+                        log.warn("[ChainSnapshot] Pre-open alert dispatch failed: {}", alertErr.getMessage());
+                    }
+                } else {
+                    log.info("[ChainSnapshot] Pre-open validation OK: {} expiry={} strikes={}",
+                            indexType, expiry, strikes);
+                }
+            } catch (Exception e) {
+                log.error("[ChainSnapshot] Pre-open validation failed for {}: {}",
+                        indexType, e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * Track a failed chain capture for an underlying. After
+     * {@code snapshot.empty-chain.alert-after-consecutive} consecutive failures during
+     * market hours, raise a Telegram alert (throttled by
+     * {@code snapshot.empty-chain.alert-cooldown-minutes}). Triggered exclusively by the
+     * captureForUnderlying() empty paths — never on transient exceptions, which are
+     * logged separately at the call site.
+     */
+    private void handleEmptyChain(IndexType indexType) {
+        int count = consecutiveEmptyChains.computeIfAbsent(indexType,
+                k -> new AtomicInteger(0)).incrementAndGet();
+        if (count < emptyChainAlertAfter) {
+            return;
+        }
+        Instant lastAlert = lastEmptyChainAlert.get(indexType);
+        Instant now = Instant.now();
+        if (lastAlert != null
+                && now.isBefore(lastAlert.plusSeconds(emptyChainAlertCooldownMinutes * 60L))) {
+            return;
+        }
+        lastEmptyChainAlert.put(indexType, now);
+        LocalDate expiry = safeResolveExpiry(indexType);
+        String msg = String.format(
+                "\u26A0\uFE0F Chain snapshot empty for %s (%dx consecutive, expiry=%s). "
+                        + "Operator Framework cannot analyse this underlying \u2014 verify expiry "
+                        + "resolution and instrument subscription.",
+                indexType, count, expiry);
+        log.error("[ChainSnapshot] {}", msg);
+        try {
+            telegramAlertService.systemAlert(msg);
+        } catch (Exception alertErr) {
+            log.warn("[ChainSnapshot] Empty-chain alert dispatch failed: {}", alertErr.getMessage());
+        }
+    }
+
+    private LocalDate safeResolveExpiry(IndexType indexType) {
+        try {
+            return expiryCalendar.getCurrentWeeklyExpiry(indexType);
+        } catch (Exception ignore) {
+            return null;
+        }
+    }
+
+    /**
+     * Read-only view of consecutive empty-chain counts per underlying. Intended for
+     * health endpoints / status dashboards. 0 means "last capture succeeded".
+     */
+    public Map<IndexType, Integer> getConsecutiveEmptyChains() {
+        Map<IndexType, Integer> view = new java.util.EnumMap<>(IndexType.class);
+        consecutiveEmptyChains.forEach((k, v) -> view.put(k, v.get()));
+        return view;
     }
 
     /**

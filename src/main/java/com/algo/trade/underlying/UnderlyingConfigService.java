@@ -42,8 +42,28 @@ public class UnderlyingConfigService {
     @PostConstruct
     void init() {
         ensureDefaults();
+        migrateIndexVolumeSpikeMode();
         syncFromGlobalConfig();
         refreshCache();
+    }
+
+    /**
+     * One-time idempotent migration: indices have no traded underlying volume,
+     * so the OI Shift Trap / volume-spike gates run on a permanent zero in NORMAL mode.
+     * Flip any index row still on the legacy NORMAL default to OI_PROXY.
+     * Operators who deliberately set DISABLED or another mode are untouched.
+     */
+    private void migrateIndexVolumeSpikeMode() {
+        for (UnderlyingSymbol symbol : UnderlyingSymbol.values()) {
+            repository.findById(symbol).ifPresent(config -> {
+                if ("NORMAL".equals(config.getVolumeSpikeMode())) {
+                    config.setVolumeSpikeMode("OI_PROXY");
+                    repository.save(config);
+                    log.info("[Migration] {} volumeSpikeMode NORMAL\u2192OI_PROXY "
+                            + "(indices have no traded volume)", symbol);
+                }
+            });
+        }
     }
 
     // ── Cache management ──────────────────────────────────────
@@ -251,11 +271,19 @@ public class UnderlyingConfigService {
                 cfg.setHasWeeklyExpiry(true);
                 cfg.setExpiryPreference("NEAREST");
                 cfg.setMaxDteForBuying(5);
+                // NIFTY is an index — underlying carries no traded volume.
+                // OI_PROXY substitutes option OI change for the volume gate.
+                cfg.setVolumeSpikeMode("OI_PROXY");
+                cfg.setNormalizeScoreForNoVolume(true);
             }
             case SENSEX -> {
                 cfg.setHasWeeklyExpiry(true);
                 cfg.setExpiryPreference("NEAREST");
                 cfg.setMaxDteForBuying(5);
+                // SENSEX is an index — underlying carries no traded volume.
+                // OI_PROXY substitutes option OI change for the volume gate.
+                cfg.setVolumeSpikeMode("OI_PROXY");
+                cfg.setNormalizeScoreForNoVolume(true);
             }
         }
         return cfg;

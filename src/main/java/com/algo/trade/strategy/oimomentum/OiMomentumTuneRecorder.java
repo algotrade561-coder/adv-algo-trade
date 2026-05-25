@@ -74,6 +74,13 @@ public class OiMomentumTuneRecorder {
     private final LiveInstrumentCache liveInstrumentCache;
     private final OiRestFallbackService oiRestFallbackService;
 
+    /**
+     * Per-JVM cache of files whose existing header has been verified against the
+     * current code's expected header. Avoids hitting disk on every reject write.
+     * Entry is added after a successful header match (or after rotation/fresh write).
+     */
+    private final java.util.Set<Path> headerVerified = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
     public OiMomentumTuneRecorder(LiveInstrumentCache liveInstrumentCache,
                                   @org.springframework.beans.factory.annotation.Autowired(required = false)
                                   OiRestFallbackService oiRestFallbackService) {
@@ -272,14 +279,75 @@ public class OiMomentumTuneRecorder {
         }
     }
 
+    /**
+     * Append rows to a CSV, writing the header when the file is fresh and rotating the
+     * existing file when its header no longer matches the current code's header.
+     *
+     * <p>Schema-drift rotation: prior to this guard, header lines were written once at
+     * file creation and never refreshed when new columns were added in code. This caused
+     * downstream parsers that read by column index to silently mis-align every row.
+     *
+     * <p>On drift the stale file is renamed to {@code <name>.legacy-<timestamp>.csv} and
+     * a fresh file is started with the current header. The check is performed once per
+     * JVM lifetime per file (cached in {@link #headerVerified}) to avoid per-row disk I/O.
+     */
     private void append(Path path, String header, String rows) throws IOException {
         if (rows == null || rows.isEmpty()) {
             return;
         }
+        boolean writeHeader = false;
         if (Files.notExists(path) || Files.size(path) == 0) {
+            writeHeader = true;
+        } else if (!headerVerified.contains(path)) {
+            String existing = readFirstLine(path);
+            String expected = stripTrailingNewline(header);
+            if (!expected.equals(existing)) {
+                Path backup = rotateLegacy(path);
+                log.warn("[OiMomentumTune] CSV schema drift at {} \u2014 rotated to {} and started fresh "
+                        + "(existing header={} cols, expected={} cols)",
+                        path, backup, countCols(existing), countCols(expected));
+                writeHeader = true;
+            }
+        }
+        if (writeHeader) {
             Files.writeString(path, header, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
         }
+        headerVerified.add(path);
         Files.writeString(path, rows, StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+    }
+
+    private static String readFirstLine(Path path) throws IOException {
+        try (java.util.stream.Stream<String> lines = Files.lines(path)) {
+            return lines.findFirst().orElse("");
+        }
+    }
+
+    private static String stripTrailingNewline(String s) {
+        if (s == null) return "";
+        int end = s.length();
+        while (end > 0 && (s.charAt(end - 1) == '\n' || s.charAt(end - 1) == '\r')) {
+            end--;
+        }
+        return s.substring(0, end);
+    }
+
+    private static int countCols(String headerLine) {
+        if (headerLine == null || headerLine.isEmpty()) return 0;
+        int n = 1;
+        for (int i = 0; i < headerLine.length(); i++) {
+            if (headerLine.charAt(i) == ',') n++;
+        }
+        return n;
+    }
+
+    private static Path rotateLegacy(Path path) throws IOException {
+        String fileName = path.getFileName().toString();
+        String stem = fileName.endsWith(".csv") ? fileName.substring(0, fileName.length() - 4) : fileName;
+        String stamp = java.time.LocalDateTime.now()
+                .format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"));
+        Path backup = path.resolveSibling(stem + ".legacy-" + stamp + ".csv");
+        Files.move(path, backup);
+        return backup;
     }
 
     private static String csv(Object value) {

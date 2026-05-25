@@ -461,6 +461,7 @@ public class OIMomentumStrategy {
     /** Periodic summary log showing all indices. */
     private void logPeriodicSummary() {
         StringBuilder sb = new StringBuilder("[OIMomentum] Status:");
+        int pending = 0;
         for (IndexType idx : getEnabledIndices()) {
             IndexState s = indexStates.get(idx);
             double spot = liveInstrumentCache.getFuturesPrice(idx);
@@ -473,10 +474,26 @@ public class OIMomentumStrategy {
                     s.activeTradeId != null ? s.activeTradeId.substring(0, Math.min(8, s.activeTradeId.length())) : "-",
                     s.lastRejectReason != null && !s.lastRejectReason.isBlank() ? s.lastRejectReason : "-",
                     s.dailyPnl));
+            pending += s.confirmationCount;
         }
-        sb.append(String.format(" | evals=%d momentum=%d rejected=%d entered=%d",
-                evalCount.get(), momentumSignalCount.get(), rejectedCount.get(), enteredCount.get()));
+        // Invariant: momentum == entered + rejected + pending. Each momentum tick must
+        // resolve to exactly one of:
+        //   (a) matrix-skip / low-bias  -> rejected++
+        //   (b) bias passed, still accumulating confirmation ticks -> confirmationCount++
+        //   (c) bias passed and confirmation complete -> entered++ (and confirmationCount reset to 0)
+        // Drift here points at a missed counter increment somewhere in detectEntry; warn
+        // loudly so it doesn't go unnoticed.
+        int momentum = momentumSignalCount.get();
+        int entered = enteredCount.get();
+        int rejected = rejectedCount.get();
+        int expected = entered + rejected + pending;
+        sb.append(String.format(" | evals=%d momentum=%d rejected=%d entered=%d pending=%d",
+                evalCount.get(), momentum, rejected, entered, pending));
         log.info(sb.toString());
+        if (momentum != expected) {
+            log.warn("[OIMomentum] Counter invariant broken: momentum={} != entered({}) + rejected({}) + pending({}) = {}",
+                    momentum, entered, rejected, pending, expected);
+        }
     }
 
     /** P1 #8: Cache strategy config per underlying for 30 seconds to avoid DB hit every tick. */
@@ -686,7 +703,10 @@ public class OIMomentumStrategy {
                             momentum.type(), oiDirection, pcr, pcrDirection, entryCase,
                             bias.score(), config.getBiasConfirmationTicks(), operatorTag);
                     enter(indexType, state, eval.direction(), reason, spot, diag);
-                    enteredCount.incrementAndGet();
+                    // NOTE: enteredCount is incremented inside enterWithGates only on a
+                    // confirmed entry (paper fill / live fill / pending order). Internal
+                    // gate rejections (max_trades_day, sl_cooldown, etc.) no longer
+                    // produce a spurious entered++ here.
                 }
                 // else: still accumulating — no entry yet, no reject record
             } else {
@@ -1303,6 +1323,7 @@ public class OIMomentumStrategy {
                 state.lastEntryTime = Instant.now();
                 state.peakPrice = premium.doubleValue();
                 state.tradesToday.incrementAndGet();
+                enteredCount.incrementAndGet();
                 log.info("[OIMomentum][{}] ENTRY PENDING: order accepted, waiting for fill — instrument={}, reason={}",
                         indexType, instrumentKey, reason);
                 return;
@@ -1314,6 +1335,7 @@ public class OIMomentumStrategy {
             state.lastEntryTime = Instant.now();
             state.peakPrice = premium.doubleValue();
             state.tradesToday.incrementAndGet();
+            enteredCount.incrementAndGet();
             log.info("[OIMomentum][{}] ENTRY: direction={}, instrument={}, premium=₹{}, reason={}, trades={}",
                     indexType, direction > 0 ? "BULLISH" : "BEARISH", instrumentKey, premium, reason, state.tradesToday.get());
             if (telegramAlertService != null) {

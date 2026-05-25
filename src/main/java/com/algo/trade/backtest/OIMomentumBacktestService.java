@@ -45,12 +45,41 @@ public class OIMomentumBacktestService {
 
     // ── Public API ──────────────────────────────────────────────────────────────
 
+    /**
+     * Pluggable bias-score formulas for side-by-side evaluation. Only the BAL term varies;
+     * every other contribution (M, OI, PCR, open-noise, decay) is identical across variants.
+     *
+     * <ul>
+     *   <li>{@link #V1_BINARY_BAL} — current production formula. BAL is +15 only when the
+     *       CE/PE ratio strongly confirms momentum (r&lt;0.77 bullish or r&gt;1.30 bearish);
+     *       zero contribution everywhere else.</li>
+     *   <li>{@link #V2_GRADED_BAL_SYMMETRIC} — graded linear BAL on alignment, capped
+     *       [-15, +20]. Rewards partial alignment <em>and</em> penalises partial conflict.</li>
+     *   <li>{@link #V3_GRADED_BAL_REWARD_ONLY} — strict superset of V1: graded linear BAL
+     *       capped [0, +20]. Awards partial credit for alignment but never penalises
+     *       conflict, so this variant can only add trades, never remove them via BAL.</li>
+     * </ul>
+     */
+    public enum BiasVariant {
+        V1_BINARY_BAL,
+        V2_GRADED_BAL_SYMMETRIC,
+        V3_GRADED_BAL_REWARD_ONLY
+    }
+
     public record BacktestRequest(
             LocalDate from,
             LocalDate to,
             String underlying,          // "NIFTY", "BANKNIFTY", etc. — filters CSV instrument keys
-            Path byDayDir               // path to global-datafeeds/by-day/
-    ) {}
+            Path byDayDir,              // path to global-datafeeds/by-day/
+            BiasVariant biasVariant     // null → defaults to V1_BINARY_BAL
+    ) {
+        public BacktestRequest(LocalDate from, LocalDate to, String underlying, Path byDayDir) {
+            this(from, to, underlying, byDayDir, BiasVariant.V1_BINARY_BAL);
+        }
+        public BiasVariant biasVariantOrDefault() {
+            return biasVariant == null ? BiasVariant.V1_BINARY_BAL : biasVariant;
+        }
+    }
 
     public record OIMomentumBacktestResult(
             LocalDate from,
@@ -64,11 +93,90 @@ public class OIMomentumBacktestService {
     ) {}
 
     /**
+     * Bundle of three runs (V1/V2/V3) over the same window, with deltas of V2 and V3
+     * against V1. Use this to decide whether the graded-BAL rework is worth shipping.
+     */
+    public record BiasComparisonResult(
+            LocalDate from,
+            LocalDate to,
+            String underlying,
+            OIMomentumBacktestResult v1,
+            OIMomentumBacktestResult v2,
+            OIMomentumBacktestResult v3,
+            Map<String, Object> diffSummary
+    ) {}
+
+    /**
      * Run the backtest over the given date range.
      */
+    /**
+     * Run the backtest under all three {@link BiasVariant}s over the same window and
+     * return a single bundle ready for side-by-side decisioning. Each variant gets its
+     * own full result (with its own HTML report); {@link BiasComparisonResult#diffSummary()}
+     * carries the headline deltas of V2 / V3 vs V1.
+     */
+    public BiasComparisonResult compareBiasVariants(BacktestRequest base) {
+        OIMomentumBacktestResult v1 = run(withVariant(base, BiasVariant.V1_BINARY_BAL));
+        OIMomentumBacktestResult v2 = run(withVariant(base, BiasVariant.V2_GRADED_BAL_SYMMETRIC));
+        OIMomentumBacktestResult v3 = run(withVariant(base, BiasVariant.V3_GRADED_BAL_REWARD_ONLY));
+        Map<String, Object> diff = buildDiff(v1, v2, v3);
+        return new BiasComparisonResult(
+                base.from(), base.to(), base.underlying(), v1, v2, v3, diff);
+    }
+
+    private BacktestRequest withVariant(BacktestRequest base, BiasVariant variant) {
+        return new BacktestRequest(base.from(), base.to(), base.underlying(), base.byDayDir(), variant);
+    }
+
+    private Map<String, Object> buildDiff(OIMomentumBacktestResult v1,
+                                          OIMomentumBacktestResult v2,
+                                          OIMomentumBacktestResult v3) {
+        Map<String, Object> d = new LinkedHashMap<>();
+        d.put("v1", summary(v1));
+        d.put("v2", summary(v2));
+        d.put("v3", summary(v3));
+        d.put("v2_vs_v1", deltaPair(v1, v2));
+        d.put("v3_vs_v1", deltaPair(v1, v3));
+        return d;
+    }
+
+    private static Map<String, Object> summary(OIMomentumBacktestResult r) {
+        Map<String, Object> s = new LinkedHashMap<>();
+        s.put("variant", r.metrics().getOrDefault("config_biasVariant", "?"));
+        s.put("trades", r.trades().size());
+        s.put("activeDays", r.activeDays());
+        s.put("winRate", r.metrics().getOrDefault("winRate", 0.0));
+        s.put("netPnlInr", r.metrics().getOrDefault("netPnlInr", 0.0));
+        s.put("profitFactor", r.metrics().getOrDefault("profitFactor", 0.0));
+        s.put("maxDrawdownInr", r.metrics().getOrDefault("maxDrawdownInr", 0.0));
+        s.put("avgWinInr", r.metrics().getOrDefault("avgWinInr", 0.0));
+        s.put("avgLossInr", r.metrics().getOrDefault("avgLossInr", 0.0));
+        return s;
+    }
+
+    private static Map<String, Object> deltaPair(OIMomentumBacktestResult base,
+                                                 OIMomentumBacktestResult other) {
+        Map<String, Object> d = new LinkedHashMap<>();
+        d.put("deltaTrades", other.trades().size() - base.trades().size());
+        d.put("deltaNetPnlInr", round2(asDouble(other.metrics().get("netPnlInr"))
+                - asDouble(base.metrics().get("netPnlInr"))));
+        d.put("deltaWinRatePct", round2(asDouble(other.metrics().get("winRate"))
+                - asDouble(base.metrics().get("winRate"))));
+        d.put("deltaProfitFactor", round2(asDouble(other.metrics().get("profitFactor"))
+                - asDouble(base.metrics().get("profitFactor"))));
+        d.put("deltaMaxDrawdownInr", round2(asDouble(other.metrics().get("maxDrawdownInr"))
+                - asDouble(base.metrics().get("maxDrawdownInr"))));
+        return d;
+    }
+
+    private static double asDouble(Object o) {
+        return o instanceof Number n ? n.doubleValue() : 0.0;
+    }
+
     public OIMomentumBacktestResult run(BacktestRequest request) {
-        log.info("[OIMomentumBacktest] Starting: underlying={}, from={}, to={}",
-                request.underlying(), request.from(), request.to());
+        BiasVariant variant = request.biasVariantOrDefault();
+        log.info("[OIMomentumBacktest] Starting: underlying={}, from={}, to={}, biasVariant={}",
+                request.underlying(), request.from(), request.to(), variant);
 
         List<Path> dayFiles = collectDayFiles(request.byDayDir(), request.from(), request.to());
         log.info("[OIMomentumBacktest] Found {} day files", dayFiles.size());
@@ -84,7 +192,7 @@ public class OIMomentumBacktestService {
                     daySummaries.add(new DaySummary(dateStr, 0, 0, 0, 0.0));
                     continue;
                 }
-                List<OIMomentumBacktestTrade> dayTrades = simulateDay(dateStr, dayData);
+                List<OIMomentumBacktestTrade> dayTrades = simulateDay(dateStr, dayData, variant);
                 allTrades.addAll(dayTrades);
                 double dayPnl = dayTrades.stream().mapToDouble(OIMomentumBacktestTrade::pnlInr).sum();
                 int wins = (int) dayTrades.stream().filter(OIMomentumBacktestTrade::win).count();
@@ -96,6 +204,7 @@ public class OIMomentumBacktestService {
         }
 
         Map<String, Object> metrics = computeMetrics(allTrades, daySummaries);
+        metrics.put("config_biasVariant", variant.name());
         String html = buildHtml(request, allTrades, daySummaries, metrics);
 
         int activeDays = (int) daySummaries.stream().filter(d -> d.trades() > 0).count();
@@ -184,7 +293,7 @@ public class OIMomentumBacktestService {
 
     private static final int STRIKE_INTERVAL = 50; // NIFTY default; good enough for all indices
 
-    private List<OIMomentumBacktestTrade> simulateDay(String dateStr, DayData day) {
+    private List<OIMomentumBacktestTrade> simulateDay(String dateStr, DayData day, BiasVariant variant) {
         List<OIMomentumBacktestTrade> trades = new ArrayList<>();
 
         // Per-day state
@@ -366,7 +475,7 @@ public class OIMomentumBacktestService {
             // ── Bias score ─────────────────────────────────────────────────────
             boolean openNoise = hm < 9 * 60 + 30;
             double bias = biasScore(md, oiDir, pcrDir, oiAvailable,
-                    totalCeOi, totalPeOi, latestOiChange, barIdx, openNoise);
+                    totalCeOi, totalPeOi, latestOiChange, barIdx, openNoise, variant);
             if (bias < config.getBiasConfidenceThreshold()) { confCount = 0; confDir = 0; continue; }
 
             // ── Confirmation ticks ─────────────────────────────────────────────
@@ -518,20 +627,53 @@ public class OIMomentumBacktestService {
     // ── Bias score ──────────────────────────────────────────────────────────────
 
     private double biasScore(int md, int od, int pcd, boolean oiAv,
-                             long tce, long tpe, long lastOiChange, int barIdx, boolean openNoise) {
+                             long tce, long tpe, long lastOiChange, int barIdx, boolean openNoise,
+                             BiasVariant variant) {
         double s = 30.0;
         if (oiAv) s += (od == md ? 25 : (od != 0 ? -10 : 0));
         s += (pcd == md ? 20 : (pcd != 0 ? -5 : 0));
-        // BAL: CE/PE OI balance
-        if (tce > 0 && tpe > 0) {
-            double r = (double) tce / tpe;
-            if (md > 0 && r < 0.77) s += 15;
-            else if (md < 0 && r > 1.30) s += 15;
-        }
+        s += balContribution(md, tce, tpe, variant);
         if (openNoise) s -= 20;
         if (lastOiChange == 0) s -= config.getBiasDecayPenalty();
         else if ((barIdx - lastOiChange) > 10) s -= config.getBiasDecayPenalty();
         return Math.max(0.0, s);
+    }
+
+    /**
+     * BAL term — the only piece that differs across {@link BiasVariant} options.
+     *
+     * <p>Encoded the same way the diagnostic frames it: {@code align} is positive when CE/PE
+     * OI confirms momentum direction, negative when it conflicts, zero at perfect balance.
+     * For bullish momentum we want PE OI to dominate (r &lt; 1); for bearish we want CE
+     * (r &gt; 1). The variant then maps {@code align} to a point contribution:
+     *
+     * <ul>
+     *   <li>V1: step function at align ≈ +0.30 (r=0.77 / r=1.30) → flat +15, else 0.</li>
+     *   <li>V2: linear with slope 60, clamped to [-15, +20]. A modest alignment
+     *       (r=0.90 bullish) earns +6 instead of 0; a clear conflict (r=1.30 bullish)
+     *       loses -15 instead of contributing 0.</li>
+     *   <li>V3: same slope/cap as V2 but floored at 0 — keeps V1's "no penalty for
+     *       conflict" semantics while still rewarding partial alignment.</li>
+     * </ul>
+     */
+    private double balContribution(int md, long tce, long tpe, BiasVariant variant) {
+        if (tce <= 0 || tpe <= 0) return 0.0;
+        double r = (double) tce / tpe;
+        return switch (variant) {
+            case V1_BINARY_BAL -> {
+                if (md > 0 && r < 0.77) yield 15.0;
+                else if (md < 0 && r > 1.30) yield 15.0;
+                else yield 0.0;
+            }
+            case V2_GRADED_BAL_SYMMETRIC -> {
+                double align = (md > 0) ? (1.0 - r) : (md < 0 ? (r - 1.0) : 0.0);
+                yield Math.max(-15.0, Math.min(20.0, align * 60.0));
+            }
+            case V3_GRADED_BAL_REWARD_ONLY -> {
+                double align = (md > 0) ? (1.0 - r) : (md < 0 ? (r - 1.0) : 0.0);
+                yield Math.max(0.0, Math.min(20.0, align * 60.0));
+            }
+        };
     }
 
     // ── Spot reconstruction ─────────────────────────────────────────────────────
@@ -657,7 +799,7 @@ public class OIMomentumBacktestService {
         try { return Long.parseLong(s.trim()); } catch (Exception e) { return 0; }
     }
 
-    private double round2(double v) {
+    private static double round2(double v) {
         return Math.round(v * 100.0) / 100.0;
     }
 
