@@ -559,10 +559,17 @@ public class AlgoFlowOrchestrator {
         if (mcEnd == null) mcEnd = LocalTime.parse(middayChopEnd);
         LocalTime pcCutoff = LocalTime.parse(preCloseCutoff);
 
+        // Before the morning-momentum window opens (e.g. 09:15–09:15:59 when mmStart=09:16).
+        // Treat as POST_OPEN so we don't fall through to PRE_EXPIRY for a few seconds.
+        if (time.isBefore(mmStart)) {
+            return SessionWindow.POST_OPEN;
+        }
+
         if (!time.isBefore(mmStart) && !time.isAfter(mmEnd)) {
             return SessionWindow.MORNING_MOMENTUM;
         }
-        if (time.isAfter(mmEnd) && time.isBefore(LocalTime.of(11, 0))) {
+        // Gap-free: POST_OPEN runs from the end of morning-momentum until midday-chop starts.
+        if (time.isAfter(mmEnd) && time.isBefore(mcStart)) {
             return SessionWindow.POST_OPEN;
         }
         if (!time.isBefore(mcStart) && !time.isAfter(mcEnd)) {

@@ -76,7 +76,7 @@ public class OIPriceActionFilter {
                 double spot = liveInstrumentCache.getFuturesPrice(idx);
                 if (spot <= 0) continue;
 
-                LocalDate expiry = expiryCalendar.getCurrentWeeklyExpiry(idx);
+                LocalDate expiry = expiryCalendar.getCurrentExpiry(idx);
                 List<OptionInstrument> chain = liveInstrumentCache.getStrikeChain(idx, expiry);
                 if (chain.isEmpty()) continue;
 

@@ -133,7 +133,7 @@ public class SchedulerWatchdog {
             // Use instrument cache's nearest expiry (matches actual Zerodha contracts)
             var underlying = com.algo.trade.domain.UnderlyingSymbol.valueOf(idx.name());
             java.time.LocalDate expiry = instrumentCache.nearestExpiry(underlying, java.time.LocalDate.now())
-                    .orElseGet(() -> expiryCalendar.getCurrentWeeklyExpiry(idx));
+                    .orElseGet(() -> expiryCalendar.getCurrentExpiry(idx));
             long count = liveInstrumentCache.getStrikeChain(idx, expiry).stream()
                     .filter(o -> o.getLastPrice() > 0 && o.getLastTickTimeMs() > 0)
                     .count();

@@ -25,7 +25,7 @@ import java.util.Optional;
  *   5. Graduated confidence score
  */
 @Component
-public class GapAndGoStrategy {
+public class GapAndGoStrategy implements TimeBoundedStrategy {
 
     private static final Logger log = LoggerFactory.getLogger(GapAndGoStrategy.class);
     private static final ZoneId IST = ZoneId.of("Asia/Kolkata");
@@ -51,6 +51,12 @@ public class GapAndGoStrategy {
         this.liveInstrumentCache = liveInstrumentCache;
         this.marketDataService = marketDataService;
         this.tradingProperties = tradingProperties;
+    }
+
+    @Override
+    public boolean validNow(LocalTime marketTime) {
+        if (marketTime == null) return true;
+        return !marketTime.isBefore(ENTRY_START) && !marketTime.isAfter(ENTRY_CUTOFF);
     }
 
     public Optional<StrategyDecision> evaluate(List<Candle> candles5m, LocalTime marketTime,

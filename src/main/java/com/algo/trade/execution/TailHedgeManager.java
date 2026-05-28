@@ -171,7 +171,7 @@ public class TailHedgeManager {
         }
 
         // Look up hedge instrument
-        LocalDate expiry = expiryCalendar.getCurrentWeeklyExpiry(indexType);
+        LocalDate expiry = expiryCalendar.getCurrentExpiry(indexType);
         Optional<Instrument> hedgeInstrumentOpt = instrumentCache.findOption(
                 underlying, expiry, BigDecimal.valueOf(hedgeStrike), hedgeOptionType);
 

@@ -134,7 +134,7 @@ public class VolumeDeltaTracker {
 
         LocalDate expiry;
         try {
-            expiry = expiryCalendar.getCurrentWeeklyExpiry(idx);
+            expiry = expiryCalendar.getCurrentExpiry(idx);
         } catch (Exception e) {
             return List.of();
         }

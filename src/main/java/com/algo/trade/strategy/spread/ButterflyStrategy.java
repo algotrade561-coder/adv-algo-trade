@@ -57,13 +57,13 @@ public class ButterflyStrategy extends AbstractSpreadStrategy {
         var candles = ctx.trendCandles();
         if (candles == null || candles.size() < 20) {
             log.debug("Butterfly: insufficient candles for range analysis");
-            return false;
+            return rejectEntry("insufficientTrendCandles(n=" + (candles == null ? 0 : candles.size()) + ")");
         }
 
         // IV Rank > 40 — butterfly benefits from IV contraction (sell 2x ATM)
         if (ctx.ivRank() < 40) {
             log.debug("Butterfly: IV rank {:.1f} < 40 (need elevated IV for premium selling), skipping", ctx.ivRank());
-            return false;
+            return rejectEntry("ivRankTooLow(ivRank=" + String.format("%.1f", ctx.ivRank()) + ",min=40.0)");
         }
 
         // Range-bound check: price must be within 1% of 20-period SMA (consolidating)
@@ -74,13 +74,13 @@ public class ButterflyStrategy extends AbstractSpreadStrategy {
         double deviation = Math.abs(closes[closes.length - 1] - sma) / sma * 100;
         if (deviation > 1.0) {
             log.debug("Butterfly: price deviation {:.2f}% from SMA > 1% (not range-bound), skipping", deviation);
-            return false;
+            return rejectEntry("notRangeBound(deviation=" + String.format("%.2f", deviation) + "%)");
         }
 
         // MarketGuard safe for short premium (butterfly has net short gamma)
         if (!marketGuard.isSafeForShortPremium()) {
             log.debug("Butterfly: MarketGuard blocks short premium");
-            return false;
+            return rejectEntry("marketGuardShortPremium");
         }
 
         // DTE >= 2 — don't sell near expiry (gamma risk on the 2x short ATM leg)
@@ -88,14 +88,16 @@ public class ButterflyStrategy extends AbstractSpreadStrategy {
         long dte = expiryCalendar.daysToExpiry(indexType);
         if (dte < 2) {
             log.debug("Butterfly: DTE={} < 2 (too close to expiry), skipping", dte);
-            return false;
+            return rejectEntry("dteTooLow(dte=" + dte + ")");
         }
 
         // Time window — enter before 12:00 PM
-        java.time.LocalTime now = java.time.LocalTime.now(java.time.ZoneId.of("Asia/Kolkata"));
+        java.time.LocalTime now = ctx.marketTime() != null
+                ? ctx.marketTime()
+                : java.time.LocalTime.now(java.time.ZoneId.of("Asia/Kolkata"));
         if (now.isAfter(java.time.LocalTime.of(12, 0))) {
             log.debug("Butterfly: after 12:00 PM, skipping");
-            return false;
+            return rejectEntry("outsideEntryWindow(now=" + now + ")");
         }
 
         log.info("Butterfly: entry filters passed — ivRank={:.1f}, deviation={:.2f}%, dte={}", ctx.ivRank(), deviation, dte);
@@ -127,6 +129,7 @@ public class ButterflyStrategy extends AbstractSpreadStrategy {
 
         if (lowerKey == null || middleKey == null || upperKey == null) {
             log.warn("Butterfly: could not find all 3 instruments");
+            rejectEntryLegs("missingInstruments(lower=" + lowerWing + ",mid=" + atm + ",upper=" + upperWing + ")");
             return List.of();
         }
 

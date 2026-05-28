@@ -49,7 +49,6 @@ trading:
       SENSEX: "BSE:265"
       FINNIFTY: "NSE:257801"
       MIDCPNIFTY: "NSE:288009"
-
   # ── WebSocket Option Subscription ──────────────────────────────────────
   # Underlyings whose option chains are always subscribed for WS tick data,
   # independently of the global scan underlyings (enabledUnderlyings in DB).
@@ -317,6 +316,28 @@ oi-momentum:
 # On-demand: POST /advalgotrade/reports/signal-tuning/generate (or run locally after downloading reports).
 signal-tuning:
   scheduler-enabled: false
+
+# ── Trading Calendar (Exchange Holidays) ───────────────────────────────────
+# Only include weekday trading holidays here. If a festival falls on Sat/Sun,
+# omit it (markets are closed anyway and it does not affect expiry adjustment).
+expiry:
+  holidays:
+    # 2026 (NSE trading holidays — weekdays only)
+    - 2026-01-26  # Republic Day
+    - 2026-03-03  # Holi
+    - 2026-03-26  # Shri Ram Navami
+    - 2026-03-31  # Shri Mahavir Jayanti
+    - 2026-04-03  # Good Friday
+    - 2026-04-14  # Dr. Baba Saheb Ambedkar Jayanti
+    - 2026-05-01  # Maharashtra Day
+    - 2026-05-28  # Bakri Id (prepones SENSEX weekly expiry)
+    - 2026-06-26  # Muharram
+    - 2026-09-14  # Ganesh Chaturthi
+    - 2026-10-02  # Mahatma Gandhi Jayanti
+    - 2026-10-20  # Dussehra
+    - 2026-11-10  # Diwali - Balipratipada
+    - 2026-11-24  # Prakash Gurpurb Sri Guru Nanak Dev
+    - 2026-12-25  # Christmas
 
 server:
   port: 8089

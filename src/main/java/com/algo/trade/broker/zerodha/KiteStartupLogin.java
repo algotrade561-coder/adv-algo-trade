@@ -38,6 +38,7 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
     private final com.algo.trade.marketdata.MarketDataService marketDataService;
     private final com.algo.trade.marketdata.LiveCandleBuilder candleBuilder;
     private final com.algo.trade.persistence.TradeRepository tradeRepository;
+    private final com.algo.trade.marketdata.ExpiryCalendar expiryCalendar;
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.algo.trade.commodity.McxCrudeOilService mcxCrudeOilService;
@@ -73,7 +74,8 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
             com.algo.trade.marketdata.InstrumentCache instrumentCache,
             com.algo.trade.marketdata.MarketDataService marketDataService,
             com.algo.trade.marketdata.LiveCandleBuilder candleBuilder,
-            com.algo.trade.persistence.TradeRepository tradeRepository
+            com.algo.trade.persistence.TradeRepository tradeRepository,
+            com.algo.trade.marketdata.ExpiryCalendar expiryCalendar
     ) {
         this.properties = properties;
         this.tokenStore = tokenStore;
@@ -85,6 +87,7 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
         this.marketDataService = marketDataService;
         this.candleBuilder = candleBuilder;
         this.tradeRepository = tradeRepository;
+        this.expiryCalendar = expiryCalendar;
     }
 
     @Override
@@ -314,7 +317,7 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
                         for (var underlying : allOptionSubscriptionUnderlyings()) {
                             var indexType = com.algo.trade.domain.IndexType.from(underlying);
                             var expiry = instrumentCache.nearestExpiry(underlying, java.time.LocalDate.now(properties.timezone()))
-                                    .orElseGet(() -> new com.algo.trade.marketdata.ExpiryCalendar().getCurrentWeeklyExpiry(indexType));
+                                    .orElseGet(() -> expiryCalendar.getCurrentExpiry(indexType));
                             var subscriptionTokens = liveInstrumentCache.getSubscriptionTokens(indexType, expiry, 10);
                             if (subscriptionTokens.isEmpty()) {
                                 // Spot not arrived via WS yet — try REST quote
@@ -559,7 +562,7 @@ public class KiteStartupLogin implements ApplicationRunner, Ordered {
 
             try {
                 var expiry = instrumentCache.nearestExpiry(underlying, java.time.LocalDate.now(properties.timezone()))
-                        .orElseGet(() -> new com.algo.trade.marketdata.ExpiryCalendar().getCurrentWeeklyExpiry(indexType));
+                        .orElseGet(() -> expiryCalendar.getCurrentExpiry(indexType));
                 var tokens = liveInstrumentCache.getSubscriptionTokens(indexType, expiry, 10);
                 newOptionTokens.addAll(tokens);
             } catch (Exception e) {

@@ -216,7 +216,7 @@ public class StraddleAdjustmentEngine {
         LocalDate expiry = straddlePosition.legs().stream()
                 .map(SpreadLeg::expiry)
                 .findFirst()
-                .orElse(expiryCalendar.getCurrentWeeklyExpiry(indexType));
+                .orElse(expiryCalendar.getCurrentExpiry(indexType));
 
         Optional<Instrument> hedgeInstrumentOpt = instrumentCache.findOption(
                 underlying, expiry, BigDecimal.valueOf(hedgeStrike), hedgeType);

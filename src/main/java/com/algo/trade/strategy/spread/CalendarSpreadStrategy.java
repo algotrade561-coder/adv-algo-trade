@@ -56,13 +56,13 @@ public class CalendarSpreadStrategy extends AbstractSpreadStrategy {
         var candles = ctx.trendCandles();
         if (candles == null || candles.size() < 20) {
             log.debug("CalendarSpread: insufficient candles for range analysis");
-            return false;
+            return rejectEntry("insufficientTrendCandles(n=" + (candles == null ? 0 : candles.size()) + ")");
         }
 
         // IV Rank > 30 — calendar benefits from front-month IV being higher than back-month
         if (ctx.ivRank() < 30) {
             log.debug("CalendarSpread: IV rank {:.1f} < 30 (need moderate IV), skipping", ctx.ivRank());
-            return false;
+            return rejectEntry("ivRankTooLow(ivRank=" + String.format("%.1f", ctx.ivRank()) + ",min=30.0)");
         }
 
         // Range-bound check: BB bandwidth < 3% (not trending strongly)
@@ -76,13 +76,13 @@ public class CalendarSpreadStrategy extends AbstractSpreadStrategy {
         double bandwidth = (stdDev * 4) / sma * 100;
         if (bandwidth > 3.0) {
             log.debug("CalendarSpread: BB bandwidth {:.2f}% > 3% (too volatile for calendar), skipping", bandwidth);
-            return false;
+            return rejectEntry("tooVolatile(bw=" + String.format("%.2f", bandwidth) + "%)");
         }
 
         // MarketGuard safe for short premium (selling near-expiry leg)
         if (!marketGuard.isSafeForShortPremium()) {
             log.debug("CalendarSpread: MarketGuard blocks short premium");
-            return false;
+            return rejectEntry("marketGuardShortPremium");
         }
 
         // DTE >= 2 — don't sell near-expiry leg too close to expiry
@@ -90,14 +90,16 @@ public class CalendarSpreadStrategy extends AbstractSpreadStrategy {
         long dte = expiryCalendar.daysToExpiry(indexType);
         if (dte < 2) {
             log.debug("CalendarSpread: DTE={} < 2 (too close to expiry), skipping", dte);
-            return false;
+            return rejectEntry("dteTooLow(dte=" + dte + ")");
         }
 
         // Time window — enter before 12:00 PM
-        java.time.LocalTime now = java.time.LocalTime.now(java.time.ZoneId.of("Asia/Kolkata"));
+        java.time.LocalTime now = ctx.marketTime() != null
+                ? ctx.marketTime()
+                : java.time.LocalTime.now(java.time.ZoneId.of("Asia/Kolkata"));
         if (now.isAfter(java.time.LocalTime.of(12, 0))) {
             log.debug("CalendarSpread: after 12:00 PM, skipping");
-            return false;
+            return rejectEntry("outsideEntryWindow(now=" + now + ")");
         }
 
         log.info("CalendarSpread: entry filters passed — ivRank={:.1f}, bandwidth={:.2f}%, dte={}", ctx.ivRank(), bandwidth, dte);
@@ -122,6 +124,7 @@ public class CalendarSpreadStrategy extends AbstractSpreadStrategy {
 
         if (sellKey == null || buyKey == null) {
             log.warn("CalendarSpread: could not find instruments for ATM={}", atm);
+            rejectEntryLegs("missingInstruments(atm=" + atm + ",near=" + nearExpiry + ",far=" + farExpiry + ")");
             return List.of();
         }
 

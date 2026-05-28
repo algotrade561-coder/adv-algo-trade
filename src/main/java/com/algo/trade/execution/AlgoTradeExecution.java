@@ -491,6 +491,18 @@ public class AlgoTradeExecution {
         }
 
         // ── All other strategies — unified path ──
+        // Optional optimization: skip time-bounded strategies outside their own windows.
+        // This reduces wasted evaluations and makes blocker summaries more meaningful.
+        com.algo.trade.strategy.TimeBoundedStrategy timeBounded = switch (type) {
+            case GAP_AND_GO -> gapAndGoStrategy;
+            case EXPIRY_GAMMA -> expiryGammaStrategy;
+            case EXPIRY_REVERSAL -> expiryReversalStrategy;
+            default -> null;
+        };
+        if (timeBounded != null && !timeBounded.validNow(marketTime)) {
+            return 0;
+        }
+
         Timeframe candleTf = resolveTimeframe(config.getCandleTimeframe(), Timeframe.ONE_MINUTE);
         Timeframe trendTf = resolveTimeframe(config.getTrendTimeframe(), Timeframe.FIVE_MINUTE);
         List<Candle> strategyCandles = candleCache.computeIfAbsent(candleTf,
@@ -545,11 +557,14 @@ public class AlgoTradeExecution {
                         com.algo.trade.domain.IndexType.from(underlying);
                 com.algo.trade.domain.SpreadEvaluationContext spreadCtx =
                         new com.algo.trade.domain.SpreadEvaluationContext(
-                                spotPrice, ivRank, null, config, underlying, spreadIdx, trendCandles);
+                                spotPrice, ivRank, null, config, underlying, spreadIdx, marketTime, trendCandles);
                 var spreadEntryResult = spreadStrategy.evaluateAndEnter(spreadCtx);
                 if (spreadEntryResult.isEmpty()) {
+                    String reason = spreadStrategy.consumeLastEntryRejectReason();
                     diagHolder[0] = new com.algo.trade.strategy.StrategyDiagnostics(
-                            "spreadEntryConditionNotMet:" + type.name(),
+                            (reason != null && !reason.isBlank())
+                                    ? ("spreadEntryBlocked:" + reason)
+                                    : ("spreadEntryConditionNotMet:" + type.name()),
                             null, null, null, null, null, null, null, null);
                 }
                 yield spreadEntryResult;
@@ -1041,7 +1056,15 @@ public class AlgoTradeExecution {
                 String.join("; ", decision.reasons()));
         entity.setStrategyType("DIRECTIONAL_BUY");
         entity.setExecutionStage("NO_TRADE");
-        entity.setExecutionReason(String.join("; ", decision.reasons()));
+        String reason = String.join("; ", decision.reasons());
+        entity.setExecutionReason(reason);
+        // Bucket the dominant blocker for diagnostics / EOD summaries.
+        // DIRECTIONAL_BUY commonly gets blocked by the min-score gate, but previously this
+        // was only present as a free-form reason string and never surfaced in blocker reports.
+        if (reason.contains("Signal score failed")) {
+            int min = globalConfigService != null ? globalConfigService.getMinSignalScorePercent().intValue() : 0;
+            entity.setFirstFailedFilter("scoreTooLow(score=" + decision.confidenceScore() + ",min=" + min + ")");
+        }
         decisionRepository.save(entity);
     }
 

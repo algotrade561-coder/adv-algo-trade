@@ -48,7 +48,7 @@ public class DiagonalSpreadStrategy extends AbstractSpreadStrategy {
         // Require at least 21 candles for EMA computation
         if (ctx.trendCandles() == null || ctx.trendCandles().size() < 21) {
             log.debug("DiagonalSpread: insufficient candles");
-            return false;
+            return rejectEntry("insufficientTrendCandles(n=" + (ctx.trendCandles() == null ? 0 : ctx.trendCandles().size()) + ")");
         }
 
         // EMA crossover must be established (not just touching)
@@ -60,19 +60,19 @@ public class DiagonalSpreadStrategy extends AbstractSpreadStrategy {
         double emaGapPct = ema9.subtract(ema21).abs().doubleValue() / ema21.doubleValue() * 100;
         if (emaGapPct < 0.1) {
             log.debug("DiagonalSpread: EMA gap {:.3f}% < 0.1% (no clear trend), skipping", emaGapPct);
-            return false;
+            return rejectEntry("emaGapTooSmall(gap=" + String.format("%.3f", emaGapPct) + "%)");
         }
 
         // IV Rank check — diagonal benefits from selling high near-term IV
         if (ctx.ivRank() < 30) {
             log.debug("DiagonalSpread: IV rank {:.1f} < 30 (need moderate IV for selling near leg), skipping", ctx.ivRank());
-            return false;
+            return rejectEntry("ivRankTooLow(ivRank=" + String.format("%.1f", ctx.ivRank()) + ",min=30.0)");
         }
 
         // MarketGuard safe for short premium (selling near-expiry leg)
         if (!marketGuard.isSafeForShortPremium()) {
             log.debug("DiagonalSpread: MarketGuard blocks short premium");
-            return false;
+            return rejectEntry("marketGuardShortPremium");
         }
 
         // DTE >= 2 — don't sell near-expiry leg too close to expiry
@@ -80,14 +80,16 @@ public class DiagonalSpreadStrategy extends AbstractSpreadStrategy {
         long dte = expiryCalendar.daysToExpiry(indexType);
         if (dte < 2) {
             log.debug("DiagonalSpread: DTE={} < 2 (too close to expiry), skipping", dte);
-            return false;
+            return rejectEntry("dteTooLow(dte=" + dte + ")");
         }
 
         // Time window — enter before 12:00 PM
-        java.time.LocalTime now = java.time.LocalTime.now(java.time.ZoneId.of("Asia/Kolkata"));
+        java.time.LocalTime now = ctx.marketTime() != null
+                ? ctx.marketTime()
+                : java.time.LocalTime.now(java.time.ZoneId.of("Asia/Kolkata"));
         if (now.isAfter(java.time.LocalTime.of(12, 0))) {
             log.debug("DiagonalSpread: after 12:00 PM, skipping");
-            return false;
+            return rejectEntry("outsideEntryWindow(now=" + now + ")");
         }
 
         log.debug("DiagonalSpread: entry passed — emaGap={:.3f}%, ivRank={:.1f}, dte={}", emaGapPct, ctx.ivRank(), dte);
@@ -127,6 +129,7 @@ public class DiagonalSpreadStrategy extends AbstractSpreadStrategy {
 
         if (sellKey == null || buyKey == null) {
             log.warn("DiagonalSpread: could not find instruments for sell={} or buy ATM={}", sellStrike, atm);
+            rejectEntryLegs("missingInstruments(sell=" + sellStrike + ",buyAtm=" + atm + ")");
             return List.of();
         }
 

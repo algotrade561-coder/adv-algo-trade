@@ -50,7 +50,7 @@ public class BearPutSpreadStrategy extends AbstractSpreadStrategy {
         List<Candle> candles = ctx.trendCandles();
         if (candles == null || candles.size() < 21) {
             log.debug("BearPutSpread: insufficient candles for EMA computation");
-            return false;
+            return rejectEntry("insufficientTrendCandles(n=" + (candles == null ? 0 : candles.size()) + ")");
         }
 
         List<BigDecimal> closes = candles.stream()
@@ -64,14 +64,14 @@ public class BearPutSpreadStrategy extends AbstractSpreadStrategy {
         boolean bearish = ema9.compareTo(ema21) < 0;
         if (!bearish) {
             log.debug("BearPutSpread: EMA9={} >= EMA21={}, not bearish", ema9, ema21);
-            return false;
+            return rejectEntry("emaNotBearish(ema9=" + ema9 + ",ema21=" + ema21 + ")");
         }
 
         // Trend strength: EMA gap must be > 0.1% of price (avoid flat crossovers)
         double emaGapPct = ema21.subtract(ema9).doubleValue() / ema21.doubleValue() * 100;
         if (emaGapPct < 0.1) {
             log.debug("BearPutSpread: EMA gap {:.3f}% < 0.1% (weak crossover), skipping", emaGapPct);
-            return false;
+            return rejectEntry("emaGapTooSmall(gap=" + String.format("%.3f", emaGapPct) + "%)");
         }
 
         // Volume confirmation: latest candle volume > average of last 5
@@ -81,14 +81,14 @@ public class BearPutSpreadStrategy extends AbstractSpreadStrategy {
                     .mapToLong(Candle::volume).average().orElse(0);
             if (latestVol < avgVol * 1.1) {
                 log.debug("BearPutSpread: volume {} < 1.1x avg {:.0f}, skipping", latestVol, avgVol);
-                return false;
+                return rejectEntry("lowVolume(latest=" + latestVol + ",avg5=" + String.format("%.0f", avgVol) + ")");
             }
         }
 
         // IV Rank < 50 — don't buy expensive spreads
         if (ctx.ivRank() > 50) {
             log.debug("BearPutSpread: IV rank {:.1f} > 50 (premiums expensive), skipping", ctx.ivRank());
-            return false;
+            return rejectEntry("ivRankTooHigh(ivRank=" + String.format("%.1f", ctx.ivRank()) + ",max=50.0)");
         }
 
         log.debug("BearPutSpread: entry passed — EMA9={}, EMA21={}, gap={:.3f}%", ema9, ema21, emaGapPct);
@@ -113,6 +113,7 @@ public class BearPutSpreadStrategy extends AbstractSpreadStrategy {
 
         if (buyKey == null || sellKey == null) {
             log.warn("BearPutSpread: could not find instruments for ATM={} or sell strike={}", atm, sellStrike);
+            rejectEntryLegs("missingInstruments(buyAtm=" + atm + ",sell=" + sellStrike + ")");
             return List.of();
         }
 

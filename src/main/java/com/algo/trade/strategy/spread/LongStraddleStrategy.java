@@ -54,15 +54,17 @@ public class LongStraddleStrategy extends AbstractSpreadStrategy {
         long dte = expiryCalendar.daysToExpiry(indexType);
         if (dte < 2) {
             log.debug("LongStraddle: DTE={} < 2, theta too high — skipping", dte);
-            return false;
+            return rejectEntry("dteTooLow(dte=" + dte + ")");
         }
 
-        // ── Filter 1: IV Rank must be low (< 30) — buy when premiums are cheap ──
-        double maxIvRank = Math.min(ctx.config().getMaxIvRankForBuying().doubleValue(), 30.0);
+        // ── Filter 1: IV Rank must be low — buy when premiums are cheap ──
+        // NOTE: Do not clamp the configured threshold. Operators must be able to raise it.
+        double maxIvRank = ctx.config().getMaxIvRankForBuying() != null
+                ? ctx.config().getMaxIvRankForBuying().doubleValue() : 30.0;
         if (ctx.ivRank() >= maxIvRank) {
             log.debug("LongStraddle: IV rank {} >= max {}, skipping",
                     String.format("%.1f", ctx.ivRank()), maxIvRank);
-            return false;
+            return rejectEntry("ivRankTooHigh(ivRank=" + String.format("%.1f", ctx.ivRank()) + ",max=" + String.format("%.1f", maxIvRank) + ")");
         }
 
         // ── Filter 2: Bollinger Band squeeze — only enter when bands are tight ──
@@ -72,7 +74,7 @@ public class LongStraddleStrategy extends AbstractSpreadStrategy {
             if (bandwidth >= 0 && bandwidth > BB_SQUEEZE_THRESHOLD_PCT) {
                 log.debug("LongStraddle: BB bandwidth {}% > {}% (no squeeze), skipping",
                         String.format("%.2f", bandwidth), BB_SQUEEZE_THRESHOLD_PCT);
-                return false;
+                return rejectEntry("noSqueeze(bw=" + String.format("%.2f", bandwidth) + "%)");
             }
             if (bandwidth >= 0) {
                 log.debug("LongStraddle: BB squeeze detected, bandwidth={}%", String.format("%.2f", bandwidth));
@@ -83,15 +85,17 @@ public class LongStraddleStrategy extends AbstractSpreadStrategy {
         boolean isPreEvent = marketGuard.isPreEventDay() || marketGuard.isEventDay();
         if (!isPreEvent && (candles.size() < 20)) {
             log.debug("LongStraddle: not pre-event and insufficient candle data for squeeze, skipping");
-            return false;
+            return rejectEntry("insufficientTrendCandlesForSqueeze(n=" + candles.size() + ")");
         }
 
         // ── Filter 4: Time window — first 90 min or pre-event only ──
-        java.time.LocalTime now = java.time.LocalTime.now(java.time.ZoneId.of("Asia/Kolkata"));
+        java.time.LocalTime now = ctx.marketTime() != null
+                ? ctx.marketTime()
+                : java.time.LocalTime.now(java.time.ZoneId.of("Asia/Kolkata"));
         boolean earlySession = now.isBefore(java.time.LocalTime.of(10, 45));
         if (!earlySession && !isPreEvent) {
             log.debug("LongStraddle: outside entry window (after 10:45 and not pre-event), skipping");
-            return false;
+            return rejectEntry("outsideEntryWindow(now=" + now + ")");
         }
 
         // P1 #4: VIX gate — allow event-day entries even with VIX > 20
@@ -100,7 +104,7 @@ public class LongStraddleStrategy extends AbstractSpreadStrategy {
         if (!isPreEvent && vix > 20) {
             log.debug("LongStraddle: VIX={} > 20 and not pre-event (premiums expensive), skipping",
                     String.format("%.1f", vix));
-            return false;
+            return rejectEntry("vixTooHigh(vix=" + String.format("%.1f", vix) + ")");
         }
 
         log.info("LongStraddle: all entry filters passed — ivRank={}, vix={}, preEvent={}, earlySession={}, dte={}",

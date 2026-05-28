@@ -89,6 +89,13 @@ public abstract class AbstractSpreadStrategy {
     // ── In-memory cache (session + recovered from DB) ─────────────────────
     private final ConcurrentHashMap<String, PositionGroup> activePositions = new ConcurrentHashMap<>();
 
+    /**
+     * Thread-local entry rejection reason for diagnostics.
+     * Spread strategies historically returned only Optional.empty() with a single opaque blocker.
+     * This channel lets the scheduler report the dominant "why" without changing the public API.
+     */
+    private final ThreadLocal<String> lastEntryRejectReason = new ThreadLocal<>();
+
     @Autowired
     private StrategyConfigService strategyConfigService;
 
@@ -225,11 +232,13 @@ public abstract class AbstractSpreadStrategy {
      * @return a {@link StrategyDecision} wrapped in Optional, or empty if entry is skipped
      */
     public final Optional<StrategyDecision> evaluateAndEnter(SpreadEvaluationContext ctx) {
+        lastEntryRejectReason.remove();
         StrategyConfig config = ctx.config();
 
         // 1. Disabled guard
         if (isDisabled(config)) {
             log.debug("{} is disabled — skipping evaluation", strategyType().displayName());
+            lastEntryRejectReason.set("disabled");
             return Optional.empty();
         }
 
@@ -240,6 +249,7 @@ public abstract class AbstractSpreadStrategy {
         if (hasOpenForUnderlying) {
             log.debug("{} already has an open position for {} — skipping entry",
                     strategyType().displayName(), ctx.underlying());
+            lastEntryRejectReason.set("alreadyHasOpenPosition");
             return Optional.empty();
         }
 
@@ -247,6 +257,7 @@ public abstract class AbstractSpreadStrategy {
         if (spreadEntryGate != null && !spreadEntryGate.tryAcquire(ctx.underlying(), strategyType())) {
             log.debug("{} entry blocked by cross-strategy gate for {}",
                     strategyType().displayName(), ctx.underlying());
+            lastEntryRejectReason.set("crossStrategyGate");
             return Optional.empty();
         }
 
@@ -256,6 +267,7 @@ public abstract class AbstractSpreadStrategy {
             if (correlationBlock.isPresent()) {
                 log.info("{} entry blocked: {}", strategyType().displayName(), correlationBlock.get());
                 if (spreadEntryGate != null) spreadEntryGate.release(ctx.underlying());
+                lastEntryRejectReason.set("correlationGate(" + correlationBlock.get() + ")");
                 return Optional.empty();
             }
         }
@@ -272,6 +284,7 @@ public abstract class AbstractSpreadStrategy {
             if (guardBlock != null) {
                 log.info("{} entry blocked by MarketGuard: {}", strategyType().displayName(), guardBlock);
                 if (spreadEntryGate != null) spreadEntryGate.release(ctx.underlying());
+                lastEntryRejectReason.set("marketGuard(" + guardBlock + ")");
                 return Optional.empty();
             }
         }
@@ -284,6 +297,7 @@ public abstract class AbstractSpreadStrategy {
                 log.info("{} entry blocked by portfolio Greeks cap: gamma={} vega={}",
                         strategyType().displayName(), greeks.netGamma(), greeks.netVega());
                 if (spreadEntryGate != null) spreadEntryGate.release(ctx.underlying());
+                lastEntryRejectReason.set("portfolioGreeksCap(gamma=" + greeks.netGamma() + ",vega=" + greeks.netVega() + ")");
                 return Optional.empty();
             }
         }
@@ -291,6 +305,9 @@ public abstract class AbstractSpreadStrategy {
         // 2. Subclass entry condition
         if (!shouldEnter(ctx)) {
             log.debug("{} shouldEnter=false — skipping", strategyType().displayName());
+            if (lastEntryRejectReason.get() == null) {
+                lastEntryRejectReason.set("shouldEnter=false");
+            }
             return Optional.empty();
         }
 
@@ -298,6 +315,7 @@ public abstract class AbstractSpreadStrategy {
         List<SpreadLeg> legs = constructLegs(ctx);
         if (legs == null || legs.isEmpty()) {
             log.debug("{} constructLegs returned empty — skipping", strategyType().displayName());
+            lastEntryRejectReason.set("constructLegsEmpty");
             return Optional.empty();
         }
 
@@ -307,6 +325,7 @@ public abstract class AbstractSpreadStrategy {
         if (quotes.size() < legs.size()) {
             log.warn("{} could not fetch quotes for all legs ({}/{})", strategyType().displayName(),
                     quotes.size(), legs.size());
+            lastEntryRejectReason.set("missingQuotes(" + quotes.size() + "/" + legs.size() + ")");
             return Optional.empty();
         }
 
@@ -316,6 +335,7 @@ public abstract class AbstractSpreadStrategy {
             Quote q = quotes.get(leg.instrumentKey());
             if (q == null) {
                 log.warn("{} missing quote for leg {}", strategyType().displayName(), leg.instrumentKey());
+                lastEntryRejectReason.set("missingQuote(" + leg.instrumentKey() + ")");
                 return Optional.empty();
             }
             entryPrices.put(leg.instrumentKey(), q.lastPrice());
@@ -336,6 +356,7 @@ public abstract class AbstractSpreadStrategy {
                     log.info("{} entry skipped: cannot compute premium per lot (lots={})",
                             strategyType().displayName(), adaptiveLots);
                     if (spreadEntryGate != null) spreadEntryGate.release(ctx.underlying());
+                    lastEntryRejectReason.set("invalidPremiumPerLot(lots=" + adaptiveLots + ")");
                     return Optional.empty();
                 }
                 int affordableLots = cap.divide(premiumPerLot, 0, java.math.RoundingMode.DOWN).intValue();
@@ -343,6 +364,7 @@ public abstract class AbstractSpreadStrategy {
                     log.info("{} entry skipped: cannot afford 1 lot at ₹{}/lot (cap ₹{})",
                             strategyType().displayName(), premiumPerLot, cap);
                     if (spreadEntryGate != null) spreadEntryGate.release(ctx.underlying());
+                    lastEntryRejectReason.set("cannotAffordOneLot(premiumPerLot=" + premiumPerLot + ",cap=" + cap + ")");
                     return Optional.empty();
                 }
                 if (affordableLots < adaptiveLots) {
@@ -403,6 +425,36 @@ public abstract class AbstractSpreadStrategy {
                 strategyType().displayName(), groupId, sizedLegs.size(), netPremium,
                 isCreditStrategy ? "credit received" : "debit paid");
         return Optional.of(decision);
+    }
+
+    /**
+     * Subclasses can call this to set a specific entry rejection reason while returning false.
+     */
+    protected final boolean rejectEntry(String reason) {
+        if (reason != null && !reason.isBlank()) {
+            lastEntryRejectReason.set(reason);
+        }
+        return false;
+    }
+
+    /**
+     * Subclasses can call this from {@link #constructLegs(SpreadEvaluationContext)} to set a
+     * specific reason before returning an empty leg list.
+     */
+    protected final void rejectEntryLegs(String reason) {
+        if (reason != null && !reason.isBlank()) {
+            lastEntryRejectReason.set(reason);
+        }
+    }
+
+    /**
+     * Read and clear the last entry rejection reason for this thread.
+     * Used by the scheduler to report spread blockers.
+     */
+    public final String consumeLastEntryRejectReason() {
+        String r = lastEntryRejectReason.get();
+        lastEntryRejectReason.remove();
+        return r;
     }
 
     // ── Exit API ──────────────────────────────────────────────────────────
@@ -558,9 +610,9 @@ public abstract class AbstractSpreadStrategy {
         return indexType.roundToATM(spotPrice.doubleValue());
     }
 
-    /** Current weekly expiry date for the given index. */
+    /** Current expiry date for the given index (weekly or monthly-only). */
     protected final LocalDate currentWeeklyExpiry(IndexType indexType) {
-        return expiryCalendar.getCurrentWeeklyExpiry(indexType);
+        return expiryCalendar.getCurrentExpiry(indexType);
     }
 
     /** Next weekly expiry date for the given index. */

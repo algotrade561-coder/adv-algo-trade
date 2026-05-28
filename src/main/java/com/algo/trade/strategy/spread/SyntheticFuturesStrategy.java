@@ -70,7 +70,7 @@ public class SyntheticFuturesStrategy extends AbstractSpreadStrategy {
     protected boolean shouldEnter(SpreadEvaluationContext ctx) {
         if (candles == null || candles.size() < 22) {
             log.debug("SyntheticFutures: insufficient candles for EMA crossover detection");
-            return false;
+            return rejectEntry("insufficientCandles(n=" + (candles == null ? 0 : candles.size()) + ")");
         }
 
         List<BigDecimal> closes = candles.stream()
@@ -92,27 +92,27 @@ public class SyntheticFuturesStrategy extends AbstractSpreadStrategy {
 
         if (!crossAbove && !crossBelow) {
             log.debug("SyntheticFutures: no EMA crossover detected");
-            return false;
+            return rejectEntry("noEmaCrossover");
         }
 
         // EMA gap strength: must be > 0.15% to confirm strong trend
         double emaGapPct = ema9Current.subtract(ema21Current).abs().doubleValue() / ema21Current.doubleValue() * 100;
         if (emaGapPct < 0.15) {
             log.debug("SyntheticFutures: EMA gap {:.3f}% < 0.15% (weak crossover), skipping", emaGapPct);
-            return false;
+            return rejectEntry("emaGapTooSmall(gap=" + String.format("%.3f", emaGapPct) + "%)");
         }
 
         // MarketGuard safe for short premium (synthetic has a SELL leg)
         if (!marketGuard.isSafeForShortPremium()) {
             log.debug("SyntheticFutures: MarketGuard blocks short premium (SELL leg)");
-            return false;
+            return rejectEntry("marketGuardShortPremium");
         }
 
         // Time window — enter before 14:00 (need time for the move to develop)
-        LocalTime now = LocalTime.now(IST);
+        LocalTime now = ctx.marketTime() != null ? ctx.marketTime() : LocalTime.now(IST);
         if (now.isAfter(LocalTime.of(14, 0))) {
             log.debug("SyntheticFutures: after 14:00, skipping");
-            return false;
+            return rejectEntry("outsideEntryWindow(now=" + now + ")");
         }
 
         if (crossAbove) {
@@ -141,6 +141,7 @@ public class SyntheticFuturesStrategy extends AbstractSpreadStrategy {
 
         if (ceKey == null || peKey == null) {
             log.warn("SyntheticFutures: could not find CE or PE instruments for ATM={}", atm);
+            rejectEntryLegs("missingInstruments(atm=" + atm + ")");
             return List.of();
         }
 

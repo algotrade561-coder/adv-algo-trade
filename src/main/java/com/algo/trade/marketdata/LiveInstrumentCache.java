@@ -134,7 +134,7 @@ public class LiveInstrumentCache {
         futuresPriceCache.put(indexType, price);
         // Record ATM IV for IV rank tracking
         try {
-            LocalDate expiry = expiryCalendar.getCurrentWeeklyExpiry(indexType);
+            LocalDate expiry = expiryCalendar.getCurrentExpiry(indexType);
             int atm = indexType.roundToATM(price);
             getOption(indexType, atm, "CE", expiry).ifPresent(ce -> {
                 if (ce.getImpliedVolatility() > 0) {

@@ -1,6 +1,7 @@
 package com.algo.trade.marketdata;
 
 import com.algo.trade.domain.IndexType;
+import com.algo.trade.config.MarketCalendarProperties;
 import org.springframework.stereotype.Component;
 
 import java.time.DayOfWeek;
@@ -18,26 +19,12 @@ import java.util.List;
 @Component
 public class ExpiryCalendar {
 
-    private static final List<LocalDate> HOLIDAYS = List.of(
-        LocalDate.of(2025, 1, 26), LocalDate.of(2025, 3, 14),
-        LocalDate.of(2025, 4, 14), LocalDate.of(2025, 4, 18),
-        LocalDate.of(2025, 5, 1),  LocalDate.of(2025, 8, 15),
-        LocalDate.of(2025, 10, 2), LocalDate.of(2025, 10, 24),
-        LocalDate.of(2025, 11, 5), LocalDate.of(2025, 12, 25),
-        LocalDate.of(2026, 1, 26), LocalDate.of(2026, 3, 3),
-        LocalDate.of(2026, 4, 3),  LocalDate.of(2026, 4, 14),
-        // 2026 holidays (NSE tentative — verify with NSE circular)
-        LocalDate.of(2026, 5, 1),  // Maharashtra Day
-        LocalDate.of(2026, 7, 17), // Muharram
-        LocalDate.of(2026, 8, 15), // Independence Day
-        LocalDate.of(2026, 9, 25), // Milad-un-Nabi
-        LocalDate.of(2026, 10, 2), // Mahatma Gandhi Jayanti
-        LocalDate.of(2026, 10, 13),// Dussehra
-        LocalDate.of(2026, 11, 2), // Diwali (Laxmi Puja)
-        LocalDate.of(2026, 11, 3), // Diwali (Balipratipada)
-        LocalDate.of(2026, 11, 19),// Guru Nanak Jayanti
-        LocalDate.of(2026, 12, 25) // Christmas
-    );
+    private final List<LocalDate> holidays;
+
+    public ExpiryCalendar(MarketCalendarProperties calendarProperties) {
+        List<LocalDate> cfg = calendarProperties != null ? calendarProperties.getHolidays() : null;
+        this.holidays = (cfg == null) ? List.of() : List.copyOf(cfg);
+    }
 
     /**
      * Get the current/next weekly expiry for an index.
@@ -45,12 +32,15 @@ public class ExpiryCalendar {
      * After 15:00 on expiry day, returns next week's expiry.
      */
     public LocalDate getCurrentWeeklyExpiry(IndexType indexType) {
-        LocalDate today = LocalDate.now();
+        return getCurrentWeeklyExpiry(indexType, LocalDate.now(), LocalTime.now());
+    }
+
+    LocalDate getCurrentWeeklyExpiry(IndexType indexType, LocalDate today, LocalTime now) {
         DayOfWeek expiryDay = indexType.expiryDay();
         LocalDate candidate = today;
         for (int i = 0; i < 7; i++) {
             if (candidate.getDayOfWeek() == expiryDay) {
-                if (candidate.equals(today) && LocalTime.now().isAfter(LocalTime.of(15, 0))) {
+                if (candidate.equals(today) && now.isAfter(LocalTime.of(15, 0))) {
                     candidate = adjustForHoliday(candidate.plusWeeks(1));
                 } else {
                     candidate = adjustForHoliday(candidate);
@@ -60,6 +50,31 @@ public class ExpiryCalendar {
             candidate = candidate.plusDays(1);
         }
         return candidate;
+    }
+
+    /**
+     * Returns the current expiry for an index, handling:
+     * - Weekly indices: next weekly expiry (with holiday preponement).
+     * - Monthly-only indices: last <expiryDay> of the month (with holiday preponement).
+     *
+     * <p>For monthly-only indices, if the resolved monthly expiry has already passed for the
+     * current session (after 15:00 on expiry day), this rolls forward to next month.
+     */
+    public LocalDate getCurrentExpiry(IndexType indexType) {
+        return getCurrentExpiry(indexType, LocalDate.now(), LocalTime.now());
+    }
+
+    LocalDate getCurrentExpiry(IndexType indexType, LocalDate today, LocalTime now) {
+        if (indexType.hasWeeklyExpiry()) {
+            return getCurrentWeeklyExpiry(indexType, today, now);
+        }
+        LocalDate candidate = getMonthlyExpiry(indexType, today.getYear(), today.getMonthValue());
+        // If we've crossed the monthly expiry session (post 15:00), roll to next month.
+        if (candidate.isBefore(today) || (candidate.equals(today) && now.isAfter(LocalTime.of(15, 0)))) {
+            LocalDate next = today.plusMonths(1);
+            candidate = getMonthlyExpiry(indexType, next.getYear(), next.getMonthValue());
+        }
+        return adjustForHoliday(candidate);
     }
 
     public LocalDate getNextWeeklyExpiry(IndexType indexType) {
@@ -77,8 +92,12 @@ public class ExpiryCalendar {
     }
 
     public boolean isExpiryDay(IndexType indexType) {
-        return LocalDate.now().getDayOfWeek() == indexType.expiryDay()
-                && !isHoliday(LocalDate.now());
+        return isExpiryDay(indexType, LocalDate.now(), LocalTime.now());
+    }
+
+    boolean isExpiryDay(IndexType indexType, LocalDate today, LocalTime now) {
+        if (isHoliday(today)) return false;
+        return today.equals(getCurrentExpiry(indexType, today, now));
     }
 
     /** After 14:00 on expiry day — gamma risk is extreme, no new entries. */
@@ -97,26 +116,29 @@ public class ExpiryCalendar {
     }
 
     public boolean isNearExpiry(IndexType indexType, int daysThreshold) {
-        long days = ChronoUnit.DAYS.between(LocalDate.now(), getCurrentWeeklyExpiry(indexType));
+        long days = ChronoUnit.DAYS.between(LocalDate.now(), getCurrentExpiry(indexType));
         return days <= daysThreshold;
     }
 
     public long daysToExpiry(IndexType indexType) {
-        return ChronoUnit.DAYS.between(LocalDate.now(), getCurrentWeeklyExpiry(indexType));
+        return ChronoUnit.DAYS.between(LocalDate.now(), getCurrentExpiry(indexType));
     }
 
     public List<LocalDate> getUpcomingExpiries(IndexType indexType, int weeks) {
         List<LocalDate> expiries = new ArrayList<>();
-        LocalDate current = getCurrentWeeklyExpiry(indexType);
+        LocalDate current = getCurrentExpiry(indexType);
         for (int i = 0; i < weeks; i++) {
             expiries.add(current);
+            // Monthly-only indices still return a sequence of upcoming "expiry sessions" for visibility.
+            // For weekly indices, this is weekly cadence; for monthly-only, this will hop by weeks from
+            // the current monthly expiry date (used only for display/diagnostics).
             current = adjustForHoliday(current.plusWeeks(1));
         }
         return expiries;
     }
 
     public boolean isHoliday(LocalDate date) {
-        return HOLIDAYS.contains(date)
+        return holidays.contains(date)
                 || date.getDayOfWeek() == DayOfWeek.SATURDAY
                 || date.getDayOfWeek() == DayOfWeek.SUNDAY;
     }

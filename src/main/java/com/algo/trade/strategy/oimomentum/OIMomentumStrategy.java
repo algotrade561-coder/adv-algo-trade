@@ -1254,7 +1254,7 @@ public class OIMomentumStrategy {
 
         int atm = indexType.roundToATM(spot);
         OptionType optType = direction > 0 ? OptionType.CE : OptionType.PE;
-        LocalDate expiry = expiryCalendar.getCurrentWeeklyExpiry(indexType);
+        LocalDate expiry = expiryCalendar.getCurrentExpiry(indexType);
         UnderlyingSymbol underlying = UnderlyingSymbol.valueOf(indexType.name());
 
         Optional<Instrument> instOpt = instrumentCache.findOption(

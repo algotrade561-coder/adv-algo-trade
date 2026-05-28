@@ -25,7 +25,7 @@ import java.util.Optional;
  *   5. Graduated confidence score
  */
 @Component
-public class ExpiryGammaStrategy {
+public class ExpiryGammaStrategy implements TimeBoundedStrategy {
 
     private static final Logger log = LoggerFactory.getLogger(ExpiryGammaStrategy.class);
     private static final LocalTime GAMMA_START = LocalTime.of(9, 30);
@@ -40,6 +40,12 @@ public class ExpiryGammaStrategy {
 
     public ExpiryGammaStrategy(ExpiryCalendar expiryCalendar) {
         this.expiryCalendar = expiryCalendar;
+    }
+
+    @Override
+    public boolean validNow(LocalTime marketTime) {
+        if (marketTime == null) return true;
+        return !marketTime.isBefore(GAMMA_START) && !marketTime.isAfter(GAMMA_CUTOFF);
     }
 
     public Optional<StrategyDecision> evaluate(List<Candle> candles1m, LocalTime marketTime,

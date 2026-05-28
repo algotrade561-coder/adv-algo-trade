@@ -3,6 +3,7 @@ package com.algo.trade.domain;
 import com.algo.trade.strategy.StrategyConfig;
 
 import java.math.BigDecimal;
+import java.time.LocalTime;
 import java.util.List;
 
 /**
@@ -17,5 +18,6 @@ public record SpreadEvaluationContext(
         StrategyConfig config,
         UnderlyingSymbol underlying,
         IndexType indexType,
+        LocalTime marketTime,
         List<Candle> trendCandles
 ) {}

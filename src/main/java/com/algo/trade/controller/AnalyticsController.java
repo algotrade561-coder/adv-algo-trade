@@ -65,7 +65,7 @@ public class AnalyticsController {
     public Map<String, Object> oiHeatmap(@PathVariable String index,
                                           @RequestParam(defaultValue = "15") int strikes) {
         IndexType idx = IndexType.valueOf(index.toUpperCase());
-        LocalDate expiry = expiryCalendar.getCurrentWeeklyExpiry(idx);
+        LocalDate expiry = expiryCalendar.getCurrentExpiry(idx);
         double spot = liveInstrumentCache.getFuturesPrice(idx);
         int atm = idx.roundToATM(spot);
 

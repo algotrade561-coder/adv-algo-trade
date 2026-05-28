@@ -184,7 +184,7 @@ public class OptionChainSnapshotScheduler {
             return Optional.empty();
         }
 
-        LocalDate expiry = expiryCalendar.getCurrentWeeklyExpiry(indexType);
+        LocalDate expiry = expiryCalendar.getCurrentExpiry(indexType);
         List<OptionInstrument> fullChain = liveInstrumentCache.getStrikeChain(indexType, expiry);
         if (fullChain.isEmpty()) {
             log.warn("[ChainSnapshot] Empty instrument chain for {} expiry={} — snapshot skipped. "
@@ -271,7 +271,7 @@ public class OptionChainSnapshotScheduler {
                 continue;
             }
             try {
-                LocalDate expiry = expiryCalendar.getCurrentWeeklyExpiry(indexType);
+                LocalDate expiry = expiryCalendar.getCurrentExpiry(indexType);
                 int strikes = liveInstrumentCache.getStrikeChain(indexType, expiry).size();
                 if (strikes == 0) {
                     String msg = String.format(
@@ -333,7 +333,7 @@ public class OptionChainSnapshotScheduler {
 
     private LocalDate safeResolveExpiry(IndexType indexType) {
         try {
-            return expiryCalendar.getCurrentWeeklyExpiry(indexType);
+            return expiryCalendar.getCurrentExpiry(indexType);
         } catch (Exception ignore) {
             return null;
         }

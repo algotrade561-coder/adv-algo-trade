@@ -190,7 +190,7 @@ public class OiRestFallbackService {
 
         int atm = indexType.roundToATM(spot);
         int interval = indexType.strikeInterval();
-        LocalDate expiry = expiryCalendar.getCurrentWeeklyExpiry(indexType);
+        LocalDate expiry = expiryCalendar.getCurrentExpiry(indexType);
 
         for (int i = -strikesEachSide; i <= strikesEachSide; i++) {
             int strike = atm + (i * interval);
@@ -223,7 +223,7 @@ public class OiRestFallbackService {
 
                     int atm = indexType.roundToATM(spot);
                     int interval = indexType.strikeInterval();
-                    LocalDate expiry = expiryCalendar.getCurrentWeeklyExpiry(indexType);
+                    LocalDate expiry = expiryCalendar.getCurrentExpiry(indexType);
 
                     for (int i = -strikesEachSide; i <= strikesEachSide; i++) {
                         int strike = atm + (i * interval);
@@ -277,7 +277,7 @@ public class OiRestFallbackService {
         long maxAgeMs = 0;
         int atm = indexType.roundToATM(spot);
         int interval = indexType.strikeInterval();
-        LocalDate expiry = expiryCalendar.getCurrentWeeklyExpiry(indexType);
+        LocalDate expiry = expiryCalendar.getCurrentExpiry(indexType);
 
         for (int i = -strikesEachSide; i <= strikesEachSide; i++) {
             int strike = atm + (i * interval);

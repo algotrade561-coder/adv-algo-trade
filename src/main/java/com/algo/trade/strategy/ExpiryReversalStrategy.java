@@ -31,7 +31,7 @@ import java.util.Optional;
  * check would reject.
  */
 @Component
-public class ExpiryReversalStrategy {
+public class ExpiryReversalStrategy implements TimeBoundedStrategy {
 
     private static final Logger log = LoggerFactory.getLogger(ExpiryReversalStrategy.class);
     private static final int NEAR_EXPIRY_DAYS = 1;
@@ -45,6 +45,12 @@ public class ExpiryReversalStrategy {
 
     public ExpiryReversalStrategy(ExpiryCalendar expiryCalendar) {
         this.expiryCalendar = expiryCalendar;
+    }
+
+    @Override
+    public boolean validNow(LocalTime marketTime) {
+        if (marketTime == null) return true;
+        return !marketTime.isAfter(CUTOFF_TIME);
     }
 
     public Optional<StrategyDecision> evaluate(List<Candle> candles1m, LocalTime marketTime,

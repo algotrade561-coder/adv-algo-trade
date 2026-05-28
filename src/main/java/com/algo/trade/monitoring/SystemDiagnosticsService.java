@@ -278,7 +278,7 @@ public class SystemDiagnosticsService {
                 // Fall back to ExpiryCalendar's weekly expiry if instrument cache has no data
                 var underlying = com.algo.trade.domain.UnderlyingSymbol.valueOf(idx.name());
                 LocalDate expiry = instrumentCache.nearestExpiry(underlying, LocalDate.now())
-                        .orElseGet(() -> expiryCalendar.getCurrentWeeklyExpiry(idx));
+                        .orElseGet(() -> expiryCalendar.getCurrentExpiry(idx));
                 var chain = liveInstrumentCache.getStrikeChain(idx, expiry);
                 dataHealth.put(key + "OptionChainSize", chain.size());
                 long optionsWithOI = chain.stream().filter(o -> o.getOpenInterest() > 0).count();

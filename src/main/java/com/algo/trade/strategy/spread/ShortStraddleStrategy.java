@@ -58,11 +58,11 @@ public class ShortStraddleStrategy extends AbstractSpreadStrategy {
         if (ctx.ivRank() < MIN_IV_RANK_FOR_SHORT_STRADDLE) {
             log.debug("ShortStraddle: IV rank {} < {}, skipping (need elevated IV to sell premium)",
                     ctx.ivRank(), MIN_IV_RANK_FOR_SHORT_STRADDLE);
-            return false;
+            return rejectEntry("ivRankTooLow(ivRank=" + String.format("%.1f", ctx.ivRank()) + ",min=" + String.format("%.1f", MIN_IV_RANK_FOR_SHORT_STRADDLE) + ")");
         }
         if (!marketGuard.isSafeForShortPremium()) {
             log.debug("ShortStraddle: MarketGuard blocks short premium");
-            return false;
+            return rejectEntry("marketGuardShortPremium");
         }
 
         // Range-bound check: price within 1% of 20-period SMA
@@ -75,7 +75,7 @@ public class ShortStraddleStrategy extends AbstractSpreadStrategy {
             double deviation = Math.abs(closes[closes.length - 1] - sma) / sma * 100;
             if (deviation > 1.0) {
                 log.debug("ShortStraddle: price deviation {:.2f}% from SMA > 1% (trending), skipping", deviation);
-                return false;
+                return rejectEntry("trending(deviation=" + String.format("%.2f", deviation) + "%)");
             }
         }
 
@@ -84,14 +84,16 @@ public class ShortStraddleStrategy extends AbstractSpreadStrategy {
         long dte = expiryCalendar.daysToExpiry(indexType);
         if (dte < 2) {
             log.debug("ShortStraddle: DTE={} < 2 (too close to expiry), skipping", dte);
-            return false;
+            return rejectEntry("dteTooLow(dte=" + dte + ")");
         }
 
         // Time window — enter before 12:00 PM
-        java.time.LocalTime now = java.time.LocalTime.now(java.time.ZoneId.of("Asia/Kolkata"));
+        java.time.LocalTime now = ctx.marketTime() != null
+                ? ctx.marketTime()
+                : java.time.LocalTime.now(java.time.ZoneId.of("Asia/Kolkata"));
         if (now.isAfter(java.time.LocalTime.of(12, 0))) {
             log.debug("ShortStraddle: after 12:00 PM, skipping");
-            return false;
+            return rejectEntry("outsideEntryWindow(now=" + now + ")");
         }
 
         log.info("ShortStraddle: entry filters passed — ivRank={:.1f}, dte={}", ctx.ivRank(), dte);
@@ -114,6 +116,7 @@ public class ShortStraddleStrategy extends AbstractSpreadStrategy {
 
         if (sellCeKey == null || sellPeKey == null) {
             log.warn("ShortStraddle: could not find ATM={} CE or PE instruments", atm);
+            rejectEntryLegs("missingInstruments(atm=" + atm + ")");
             return List.of();
         }
 
@@ -127,6 +130,7 @@ public class ShortStraddleStrategy extends AbstractSpreadStrategy {
             if (combined.compareTo(minPremium) < 0) {
                 log.debug("ShortStraddle: combined premium {} < minCombinedPremium {}, skipping",
                         combined, minPremium);
+                rejectEntryLegs("minCombinedPremiumNotMet(combined=" + combined + ",min=" + minPremium + ")");
                 return List.of();
             }
         }

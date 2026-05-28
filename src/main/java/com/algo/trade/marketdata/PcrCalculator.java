@@ -86,7 +86,7 @@ public class PcrCalculator {
     }
 
     private double computeFullChainPcr(IndexType indexType) {
-        LocalDate expiry = expiryCalendar.getCurrentWeeklyExpiry(indexType);
+        LocalDate expiry = expiryCalendar.getCurrentExpiry(indexType);
         List<OptionInstrument> fullChain = liveInstrumentCache.getStrikeChain(indexType, expiry);
         if (fullChain.isEmpty()) {
             log.debug("[PcrCalculator] No instruments in cache for {} expiry {}", indexType, expiry);

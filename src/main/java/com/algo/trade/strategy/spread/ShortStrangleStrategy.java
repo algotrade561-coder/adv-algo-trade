@@ -54,11 +54,11 @@ public class ShortStrangleStrategy extends AbstractSpreadStrategy {
     protected boolean shouldEnter(SpreadEvaluationContext ctx) {
         if (ctx.ivRank() <= 50) {
             log.debug("ShortStrangle: IV rank {} <= 50, skipping", ctx.ivRank());
-            return false;
+            return rejectEntry("ivRankTooLow(ivRank=" + String.format("%.1f", ctx.ivRank()) + ",min=50.0)");
         }
         if (!marketGuard.isSafeForShortPremium()) {
             log.debug("ShortStrangle: MarketGuard blocks short premium");
-            return false;
+            return rejectEntry("marketGuardShortPremium");
         }
 
         // Range-bound check: price within 1.5% of 20-period SMA
@@ -71,7 +71,7 @@ public class ShortStrangleStrategy extends AbstractSpreadStrategy {
             double deviation = Math.abs(closes[closes.length - 1] - sma) / sma * 100;
             if (deviation > 1.5) {
                 log.debug("ShortStrangle: price deviation {:.2f}% from SMA > 1.5% (trending), skipping", deviation);
-                return false;
+                return rejectEntry("trending(deviation=" + String.format("%.2f", deviation) + "%)");
             }
         }
 
@@ -80,14 +80,16 @@ public class ShortStrangleStrategy extends AbstractSpreadStrategy {
         long dte = expiryCalendar.daysToExpiry(indexType);
         if (dte < 2) {
             log.debug("ShortStrangle: DTE={} < 2 (too close to expiry), skipping", dte);
-            return false;
+            return rejectEntry("dteTooLow(dte=" + dte + ")");
         }
 
         // Time window — enter before 12:00 PM
-        java.time.LocalTime now = java.time.LocalTime.now(java.time.ZoneId.of("Asia/Kolkata"));
+        java.time.LocalTime now = ctx.marketTime() != null
+                ? ctx.marketTime()
+                : java.time.LocalTime.now(java.time.ZoneId.of("Asia/Kolkata"));
         if (now.isAfter(java.time.LocalTime.of(12, 0))) {
             log.debug("ShortStrangle: after 12:00 PM, skipping");
-            return false;
+            return rejectEntry("outsideEntryWindow(now=" + now + ")");
         }
 
         log.info("ShortStrangle: entry filters passed — ivRank={:.1f}, dte={}", ctx.ivRank(), dte);
@@ -115,6 +117,7 @@ public class ShortStrangleStrategy extends AbstractSpreadStrategy {
 
         if (sellCeKey == null || sellPeKey == null) {
             log.warn("ShortStrangle: could not find instruments for CE={} or PE={}", sellCeStrike, sellPeStrike);
+            rejectEntryLegs("missingInstruments(ce=" + sellCeStrike + ",pe=" + sellPeStrike + ")");
             return List.of();
         }
 

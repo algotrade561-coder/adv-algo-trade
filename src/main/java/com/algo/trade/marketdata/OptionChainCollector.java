@@ -64,7 +64,7 @@ public class OptionChainCollector {
         double spot = spotQuote.get().lastPrice().doubleValue();
         int atm = indexType.roundToATM(spot);
         int interval = indexType.strikeInterval();
-        LocalDate expiry = expiryCalendar.getCurrentWeeklyExpiry(indexType);
+        LocalDate expiry = expiryCalendar.getCurrentExpiry(indexType);
 
         // Collect ATM ± 15 strikes
         List<Map<String, Object>> strikes = new ArrayList<>();

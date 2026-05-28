@@ -56,13 +56,13 @@ public class IronCondorStrategy extends AbstractSpreadStrategy {
         // ── Filter 1: IV Rank > 40 — need elevated IV for premium selling to be profitable ──
         if (ctx.ivRank() <= 40) {
             log.debug("IronCondor: IV rank {} <= 40, skipping", ctx.ivRank());
-            return false;
+            return rejectEntry("ivRankTooLow(ivRank=" + String.format("%.1f", ctx.ivRank()) + ",min=40.0)");
         }
 
         // ── Filter 2: MarketGuard safe for short premium ──
         if (!marketGuard.isSafeForShortPremium()) {
             log.debug("IronCondor: MarketGuard blocks short premium");
-            return false;
+            return rejectEntry("marketGuardShortPremium");
         }
 
         // ── Filter 3: Range-bound check — BB bandwidth < 3.5% ──
@@ -78,14 +78,14 @@ public class IronCondorStrategy extends AbstractSpreadStrategy {
             double bandwidth = (stdDev * 4) / sma * 100;
             if (bandwidth > 3.5) {
                 log.debug("IronCondor: BB bandwidth {:.2f}% > 3.5% (too volatile), skipping", bandwidth);
-                return false;
+                return rejectEntry("tooVolatile(bw=" + String.format("%.2f", bandwidth) + "%)");
             }
 
             // ── Filter 4: Price within 1.5% of SMA (not trending strongly) ──
             double deviation = Math.abs(closes[closes.length - 1] - sma) / sma * 100;
             if (deviation > 1.5) {
                 log.debug("IronCondor: price deviation {:.2f}% from SMA > 1.5% (trending), skipping", deviation);
-                return false;
+                return rejectEntry("trending(deviation=" + String.format("%.2f", deviation) + "%)");
             }
         }
 
@@ -94,14 +94,16 @@ public class IronCondorStrategy extends AbstractSpreadStrategy {
         long dte = expiryCalendar.daysToExpiry(indexType);
         if (dte < 2) {
             log.debug("IronCondor: DTE={} < 2 (too close to expiry), skipping", dte);
-            return false;
+            return rejectEntry("dteTooLow(dte=" + dte + ")");
         }
 
         // ── Filter 6: Time window — enter before 12:00 PM only ──
-        java.time.LocalTime now = java.time.LocalTime.now(java.time.ZoneId.of("Asia/Kolkata"));
+        java.time.LocalTime now = ctx.marketTime() != null
+                ? ctx.marketTime()
+                : java.time.LocalTime.now(java.time.ZoneId.of("Asia/Kolkata"));
         if (now.isAfter(java.time.LocalTime.of(12, 0))) {
             log.debug("IronCondor: after 12:00 PM, skipping");
-            return false;
+            return rejectEntry("outsideEntryWindow(now=" + now + ")");
         }
 
         log.info("IronCondor: all entry filters passed — ivRank={:.1f}, dte={}, time={}",
@@ -141,6 +143,8 @@ public class IronCondorStrategy extends AbstractSpreadStrategy {
 
         if (sellCeKey == null || buyCeKey == null || sellPeKey == null || buyPeKey == null) {
             log.warn("IronCondor: could not find all 4 instruments");
+            rejectEntryLegs("missingInstruments(sellCe=" + sellCeStrike + ",buyCe=" + buyCeStrike
+                    + ",sellPe=" + sellPeStrike + ",buyPe=" + buyPeStrike + ")");
             return List.of();
         }
 

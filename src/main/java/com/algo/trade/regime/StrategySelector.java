@@ -195,7 +195,7 @@ public class StrategySelector {
             double spot = liveInstrumentCache.getFuturesPrice(indexType);
             if (spot <= 0) return 3.0; // default
             int atm = indexType.roundToATM(spot);
-            java.time.LocalDate expiry = expiryCalendar.getCurrentWeeklyExpiry(indexType);
+            java.time.LocalDate expiry = expiryCalendar.getCurrentExpiry(indexType);
             var chain = liveInstrumentCache.getStrikeChain(indexType, expiry);
             if (chain.isEmpty()) return 3.0;
 
@@ -232,7 +232,7 @@ public class StrategySelector {
             double spot = liveInstrumentCache.getFuturesPrice(indexType);
             if (spot <= 0) return 0;
             int atm = indexType.roundToATM(spot);
-            java.time.LocalDate expiry = expiryCalendar.getCurrentWeeklyExpiry(indexType);
+            java.time.LocalDate expiry = expiryCalendar.getCurrentExpiry(indexType);
 
             var atmCe = liveInstrumentCache.getOption(indexType, atm, "CE", expiry);
             var atmPe = liveInstrumentCache.getOption(indexType, atm, "PE", expiry);
