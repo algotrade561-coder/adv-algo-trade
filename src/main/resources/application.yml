@@ -293,8 +293,7 @@ oi-momentum:
   trailing-gap-percent: 5               # was 8  — tighter trail from peak
   # Break-even stop: once peak ≥ N%, floor SL to 0% (entry price).
   # Modest P&L benefit (+₹145) but strong W/L improvement (0.69→0.90).
-  # Enable after first week of live data to validate.
-  break-even-trigger-percent: 0         # 0 = off; set to 5.0 to enable
+  break-even-trigger-percent: 6         # GO-LIVE: profit ratchet active at +6%
 
   # ── Operator / advanced signals ──────────────────────────────────────────
   operator-bonus-enabled: true
@@ -310,6 +309,37 @@ oi-momentum:
   # ── Re-entry boost ────────────────────────────────────────────────────────
   re-entry-boost-enabled: true
   re-entry-boost-window-seconds: 300     # 5-min window for same-direction re-entry after profit
+
+  # ── V3 OPERATOR pipeline (GO-LIVE) ──────────────────────────────────────
+  # NOTE: these YAML values are the initial seed. Once OiMomentumRuntimeConfigService
+  # has run, any UI-driven change at /advalgotrade/v3-control.html persists to DB
+  # and overrides these. To revert to YAML defaults, delete the row from
+  # oi_momentum_runtime_config table.
+  v3-enabled: true
+  v3-shadow-mode: false                    # binding — V3 picks strike + sizes lots
+  # Hard safety rails — all on for go-live. Disable via UI if a session goes wrong.
+  anti-pyramid-enabled: true               # block same-strike re-entry after a loss
+  anti-pyramid-cooldown-minutes: 5
+  expiry-otm-cutoff-enabled: true          # block OTM after 14:45 on expiry day
+  expiry-otm-cutoff-time: "14:45"
+  daily-loss-limit-rupees: 0               # 0 = disabled; absolute rupee floor
+  daily-loss-multiplier-of-avg-loser: 3    # halt at -3× avg-loser today
+  consecutive-loss-halt-count: 5           # halt after 5 losses in a row
+
+  # ── V3 recorder + external feeds (only used when v3-enabled: true) ──
+  v3:
+    decision-log-enabled: true
+    decision-log-dir: data/v3-decisions
+
+    # FII/DII data: prefer NSE API, fall back to manual properties file.
+    # Set fii-dii-api-enabled: false in firewalled environments.
+    fii-dii-api-enabled: true
+    fii-dii-api-url: https://www.nseindia.com/api/fiidiiTradeReact
+    fii-dii-api-referrer: https://www.nseindia.com/reports/fii-dii
+    fii-dii-api-timeout-seconds: 10
+    # Manual file used when the API is disabled / down / returns no data.
+    # Format (key=value):  fii.net.crore=1234.5  dii.net.crore=-567.8
+    fii-dii-file: data/v3-fii-dii.properties
 
 # ── Signal tuning (EOD HTML from reports/entry-signals CSVs) ───────────────
 # Scheduler off by default — heavy on heap (t3.small). CSV capture during live session still runs.

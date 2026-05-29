@@ -122,6 +122,67 @@ export interface GlobalConfigDto {
   maxEntriesPerScan: number;
 }
 
+/** Live OI Momentum / V3 operator controls (DB-backed, no restart). */
+export interface OiMomentumRuntimeConfigDto {
+  enabled: boolean;
+  paperTrading: boolean;
+  v3Enabled: boolean;
+  v3ShadowMode: boolean;
+  antiPyramidEnabled: boolean;
+  antiPyramidCooldownMinutes: number;
+  expiryOtmCutoffEnabled: boolean;
+  expiryOtmCutoffTime: string;
+  dailyLossLimitRupees: number;
+  dailyLossMultiplierOfAvgLoser: number;
+  consecutiveLossHaltCount: number;
+  breakEvenTriggerPercent: number;
+  maxTradesPerDay: number;
+  updatedAt: string;
+  updatedBy: string;
+  updatedReason: string;
+}
+
+export interface OiMomentumSettingsUpdate extends Partial<OiMomentumRuntimeConfigDto> {
+  reason: string;
+}
+
+export interface OiMomentumIndexHaltDto {
+  haltedForDay: boolean;
+  consecutiveLosses: number;
+  consecutiveLossPauseThreshold: number;
+  consecutiveLossHaltThreshold: number;
+  inLossPause: boolean;
+  slCooldownRemainingSeconds: number;
+  cooldownAfterSlSeconds: number;
+  tradesToday: number;
+  maxTradesPerDay: number;
+  atTradeCap: boolean;
+  dailyPnl: number;
+  totalLossesToday: number;
+  totalLossesPnl: number;
+  blocked: boolean;
+}
+
+export interface OiMomentumHaltStatusDto {
+  strategyEnabled: boolean;
+  indices: Record<string, OiMomentumIndexHaltDto>;
+  note?: string;
+}
+
+export interface OiMomentumHaltActionRequest {
+  indices?: string[];
+  clearHaltedForDay?: boolean;
+  clearConsecutiveLosses?: boolean;
+  clearSlCooldown?: boolean;
+  resetTradesToday?: boolean;
+  reason: string;
+}
+
+export interface OiMomentumHaltActionResponse {
+  result: Record<string, unknown>;
+  haltStatus: OiMomentumHaltStatusDto;
+}
+
 @Injectable({ providedIn: 'root' })
 export class ApiService {
   private readonly base = '/advalgotrade';
@@ -258,6 +319,26 @@ export class ApiService {
   getGlobalConfig(): Observable<GlobalConfigDto> { return this.http.get<GlobalConfigDto>(`${this.base}/global-config`); }
   updateGlobalConfig(config: GlobalConfigDto): Observable<GlobalConfigDto> { return this.http.put<GlobalConfigDto>(`${this.base}/global-config`, config); }
   resetGlobalConfig(): Observable<GlobalConfigDto> { return this.http.post<GlobalConfigDto>(`${this.base}/global-config/reset`, {}); }
+
+  // ── OI Momentum V3 runtime (operator, no restart) ───────────────────────
+  getOiMomentumSettings(): Observable<OiMomentumRuntimeConfigDto> {
+    return this.http.get<OiMomentumRuntimeConfigDto>(`${this.base}/oi-momentum/settings`);
+  }
+  updateOiMomentumSettings(body: OiMomentumSettingsUpdate): Observable<OiMomentumRuntimeConfigDto> {
+    return this.http.post<OiMomentumRuntimeConfigDto>(`${this.base}/oi-momentum/settings`, body);
+  }
+  killOiMomentum(reason?: string): Observable<OiMomentumRuntimeConfigDto> {
+    return this.http.post<OiMomentumRuntimeConfigDto>(`${this.base}/oi-momentum/settings/kill`, { reason: reason ?? '' });
+  }
+  getOiMomentumHalts(): Observable<OiMomentumHaltStatusDto> {
+    return this.http.get<OiMomentumHaltStatusDto>(`${this.base}/oi-momentum/settings/halts`);
+  }
+  resumeOiMomentumHalts(body: OiMomentumHaltActionRequest): Observable<OiMomentumHaltActionResponse> {
+    return this.http.post<OiMomentumHaltActionResponse>(`${this.base}/oi-momentum/settings/resume`, body);
+  }
+  extendOiMomentumHalts(body: OiMomentumHaltActionRequest): Observable<OiMomentumHaltActionResponse> {
+    return this.http.post<OiMomentumHaltActionResponse>(`${this.base}/oi-momentum/settings/halts/extend`, body);
+  }
 
   // ── Underlying config ───────────────────────────────────────────────────
   getUnderlyingConfigs(): Observable<UnderlyingConfigDto[]> { return this.http.get<UnderlyingConfigDto[]>(`${this.base}/underlying-config`); }

@@ -199,6 +199,75 @@ public class OIMomentumConfig {
     private boolean reEntryBoostEnabled = true;
     private int reEntryBoostWindowSeconds = 300;
 
+    // ── v3 Quality Improvements (audit 2026-05-28) ─────────────────────────
+    // Each feature defaults OFF so existing live behaviour is unchanged after deploy.
+    // Enable one at a time via YAML, monitor 1–2 sessions, then enable next.
+
+    /**
+     * Anti-pyramid: block re-entry on a strike whose previous close on this index
+     * was a loss within antiPyramidCooldownMinutes. Prevents averaging into losers
+     * (e.g. NIFTY 23950 CE −₹3,900 pyramid on 2026-05-27 at 11:49 + 11:51).
+     * Default OFF.
+     */
+    private boolean antiPyramidEnabled = false;
+    private int antiPyramidCooldownMinutes = 5;
+
+    /**
+     * Expiry-day OTM late cutoff: on the resolved expiry day, block all new entries
+     * after expiryOtmCutoffTime. Prevents the SENSEX 75800 PE ₹38 → ₹0.95 theta-cliff
+     * pattern (2026-05-27 14:55–15:08). Default OFF.
+     */
+    private boolean expiryOtmCutoffEnabled = false;
+    private String expiryOtmCutoffTime = "14:45";
+
+    /**
+     * Daily loss circuit-breaker: halt all entries for the rest of the day when
+     * cumulative dailyPnl drops below −dailyLossLimitRupees. Set 0 to disable.
+     * Independent of dailyLossMultiplierOfAvgLoser — either trigger halts.
+     * Default 0 (disabled).
+     */
+    private double dailyLossLimitRupees = 0;
+
+    /**
+     * Daily loss circuit-breaker (adaptive): halt all entries when cumulative
+     * dailyPnl drops below −(multiplier × avg-loser-today). Avg-loser is the mean
+     * of negative-PnL exits so far today. Recommended: 3.0. Set 0 to disable.
+     * Default 0 (disabled).
+     */
+    private double dailyLossMultiplierOfAvgLoser = 0;
+
+    /**
+     * Consecutive-loss HARD halt: halt all entries for the rest of the day when
+     * consecutiveLosses reaches this count. Distinct from consecutiveLossPause
+     * (which is a soft pause). Set 0 to disable. Recommended: 5.
+     * Default 0 (disabled).
+     */
+    private int consecutiveLossHaltCount = 0;
+
+    /**
+     * V3 OPERATOR pipeline master switch. When true, the entry path is routed through
+     * V3EntryPipeline (regime → time-mode → OI signal → 4-gate → multi-strike picker →
+     * conviction sizer). When false, the existing legacy pipeline is used.
+     *
+     * <p><b>Important (review #46):</b> the V3 pipeline (and its
+     * {@link com.algo.trade.strategy.oimomentum.v3.V3DecisionRecorder}) is invoked
+     * <i>only</i> when this flag is true. When v3-enabled is false, no V3 decisions
+     * are evaluated and no rows are written to {@code data/v3-decisions/YYYY-MM-DD.csv}.
+     * To collect V3 decision telemetry without affecting live entries, enable v3 AND
+     * set {@code v3-shadow-mode: true}.
+     *
+     * <p>Default OFF (legacy live). Set true to route entries through V3.
+     */
+    private boolean v3Enabled = false;
+
+    /**
+     * Run V3 in shadow mode: pipeline evaluates and logs every decision, but the
+     * actual entry still uses legacy logic. Use this to validate v3 decisions against
+     * live behaviour before flipping v3Enabled=true.
+     * Default false. Has no effect if v3Enabled is false.
+     */
+    private boolean v3ShadowMode = false;
+
     // ── Enabled/Paper ──
     private boolean enabled = true;
     private boolean paperTrading = false;
@@ -230,6 +299,26 @@ public class OIMomentumConfig {
     public void setReEntryBoostEnabled(boolean v) { this.reEntryBoostEnabled = v; }
     public int getReEntryBoostWindowSeconds() { return reEntryBoostWindowSeconds; }
     public void setReEntryBoostWindowSeconds(int v) { this.reEntryBoostWindowSeconds = v; }
+
+    // ── v3 Quality Improvements getters/setters ──
+    public boolean isAntiPyramidEnabled() { return antiPyramidEnabled; }
+    public void setAntiPyramidEnabled(boolean v) { this.antiPyramidEnabled = v; }
+    public int getAntiPyramidCooldownMinutes() { return antiPyramidCooldownMinutes; }
+    public void setAntiPyramidCooldownMinutes(int v) { this.antiPyramidCooldownMinutes = v; }
+    public boolean isExpiryOtmCutoffEnabled() { return expiryOtmCutoffEnabled; }
+    public void setExpiryOtmCutoffEnabled(boolean v) { this.expiryOtmCutoffEnabled = v; }
+    public String getExpiryOtmCutoffTime() { return expiryOtmCutoffTime; }
+    public void setExpiryOtmCutoffTime(String v) { this.expiryOtmCutoffTime = v; }
+    public double getDailyLossLimitRupees() { return dailyLossLimitRupees; }
+    public void setDailyLossLimitRupees(double v) { this.dailyLossLimitRupees = v; }
+    public double getDailyLossMultiplierOfAvgLoser() { return dailyLossMultiplierOfAvgLoser; }
+    public void setDailyLossMultiplierOfAvgLoser(double v) { this.dailyLossMultiplierOfAvgLoser = v; }
+    public int getConsecutiveLossHaltCount() { return consecutiveLossHaltCount; }
+    public void setConsecutiveLossHaltCount(int v) { this.consecutiveLossHaltCount = v; }
+    public boolean isV3Enabled() { return v3Enabled; }
+    public void setV3Enabled(boolean v) { this.v3Enabled = v; }
+    public boolean isV3ShadowMode() { return v3ShadowMode; }
+    public void setV3ShadowMode(boolean v) { this.v3ShadowMode = v; }
 
     // Getters and setters
     public double getMomentumThresholdPercent() { return momentumThresholdPercent; }

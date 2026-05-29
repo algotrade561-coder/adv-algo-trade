@@ -108,6 +108,18 @@ public class OIMomentumStrategy {
         final AtomicInteger reversalsToday = new AtomicInteger(0);
         final AtomicInteger consecutiveLosses = new AtomicInteger(0);
         volatile double dailyPnl = 0;
+        // ── v3 Quality (feature-flagged) ─────────────────────────────────────
+        /** Strike of currently-active position (0 when flat). Set at entry. */
+        volatile int activeStrike = 0;
+        /** Total of negative PnL closes today (for adaptive circuit-breaker). */
+        volatile double totalLossesPnl = 0;
+        /** Count of negative PnL closes today (for adaptive circuit-breaker). */
+        final AtomicInteger totalLossesCount = new AtomicInteger(0);
+        /** Trip-once flag — once true, no further entries this trading day. */
+        volatile boolean haltedForDay = false;
+        /** Per-strike last-loss timestamp for anti-pyramid check. */
+        final java.util.concurrent.ConcurrentHashMap<Integer, Instant> lastLossExitByStrike =
+                new java.util.concurrent.ConcurrentHashMap<>();
     }
 
     /** P1 #8: Cached config per underlying to avoid DB hit every tick. */
@@ -162,6 +174,14 @@ public class OIMomentumStrategy {
 
     @org.springframework.beans.factory.annotation.Autowired
     private com.algo.trade.underlying.UnderlyingConfigService underlyingConfigService;
+
+    /** V3 OPERATOR pipeline — optional, only used when {@code v3-enabled} is true. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.strategy.oimomentum.v3.V3EntryPipeline v3EntryPipeline;
+
+    /** V3 market context — optional, populated by the OptionChainSnapshotScheduler. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.strategy.oimomentum.v3.MarketContextService v3MarketContext;
 
     public OIMomentumStrategy(OIMomentumConfig config,
                                TickMomentumDetector momentumDetector,
@@ -327,6 +347,7 @@ public class OIMomentumStrategy {
     private void tick() {
         try {
             if (shuttingDown) return;
+            if (!config.isEnabled()) return; // runtime/DB master switch (UI + kill)
             if (!isMarketHours()) return;
             if (tradingStateService.killSwitchEnabled()) return;
             if (!tradingStateService.running()) return;
@@ -350,6 +371,11 @@ public class OIMomentumStrategy {
                     state.reversalsToday.set(0);
                     state.consecutiveLosses.set(0);
                     state.dailyPnl = 0;
+                    // v3 quality: reset halt + loss-tracker for new trading day
+                    state.haltedForDay = false;
+                    state.totalLossesPnl = 0;
+                    state.totalLossesCount.set(0);
+                    state.lastLossExitByStrike.clear();
                     // Reset bias engine state for new day
                     state.confirmationCount = 0;
                     state.lastConfirmedDir = 0;
@@ -537,6 +563,35 @@ public class OIMomentumStrategy {
     private void detectEntry(IndexType indexType, IndexState state) {
         evalCount.incrementAndGet();
         state.lastRangePct30m = computeRangePct30m(indexType);
+
+        // ── v3 Quality Gates (feature-flagged, default OFF) ──
+        // Circuit-breaker halt (tripped once, locks for the day).
+        if (state.haltedForDay) {
+            recordThrottleReject(indexType, state, "halted_for_day");
+            return;
+        }
+        // Consecutive-loss HARD halt (distinct from soft consecutiveLossPause).
+        if (config.getConsecutiveLossHaltCount() > 0
+                && state.consecutiveLosses.get() >= config.getConsecutiveLossHaltCount()) {
+            state.haltedForDay = true;
+            recordThrottleReject(indexType, state,
+                    "consecutive_loss_halt:" + state.consecutiveLosses.get());
+            return;
+        }
+        // Expiry-day OTM late cutoff: on resolved expiry day, block entries past cutoff.
+        if (config.isExpiryOtmCutoffEnabled() && expiryCalendar.isExpiryDay(indexType)) {
+            try {
+                LocalTime cutoff = LocalTime.parse(config.getExpiryOtmCutoffTime());
+                if (LocalTime.now(IST).isAfter(cutoff)) {
+                    recordThrottleReject(indexType, state, "expiry_otm_late_cutoff");
+                    return;
+                }
+            } catch (Exception ex) {
+                log.warn("[OIMomentum] Invalid expiryOtmCutoffTime '{}': {}",
+                        config.getExpiryOtmCutoffTime(), ex.getMessage());
+            }
+        }
+
         // ── Throttle checks ──
         if (state.tradesToday.get() >= config.getMaxTradesPerDay()) {
             recordThrottleReject(indexType, state, "max_trades_day");
@@ -1201,6 +1256,49 @@ public class OIMomentumStrategy {
     private void updateDailyPnl(IndexState state, double profitPct, TradeEntity trade) {
         double pnl = (profitPct / 100.0) * trade.getEntryPrice().doubleValue() * trade.getQuantity();
         state.dailyPnl += pnl;
+        // v3 adaptive circuit-breaker: track loser stats for avg-loser threshold.
+        if (pnl < 0) {
+            state.totalLossesPnl += pnl;
+            state.totalLossesCount.incrementAndGet();
+        }
+        checkDailyCircuitBreaker(state);
+    }
+
+    /**
+     * v3 daily loss circuit-breaker. Two independent triggers, either trips the day-halt:
+     *   (a) absolute rupee floor: dailyPnl < -dailyLossLimitRupees (when > 0).
+     *   (b) adaptive multiple-of-avg-loser: dailyPnl < -(mult × avg-loser).
+     * Once tripped, state.haltedForDay = true and detectEntry() short-circuits.
+     */
+    private void checkDailyCircuitBreaker(IndexState state) {
+        if (state.haltedForDay) return;
+        double limit = config.getDailyLossLimitRupees();
+        if (limit > 0 && state.dailyPnl < -limit) {
+            state.haltedForDay = true;
+            log.warn("[OIMomentum] Day halted — dailyPnl={} < -{} (absolute floor)",
+                    String.format("%.0f", state.dailyPnl), String.format("%.0f", limit));
+            if (telegramAlertService != null) {
+                telegramAlertService.systemAlert(String.format(
+                        "🛑 OIMomentum: day halted — P&L ₹%.0f hit absolute floor ₹-%.0f",
+                        state.dailyPnl, limit));
+            }
+            return;
+        }
+        double mult = config.getDailyLossMultiplierOfAvgLoser();
+        int lossCount = state.totalLossesCount.get();
+        if (mult > 0 && lossCount > 0) {
+            double avgLoser = Math.abs(state.totalLossesPnl) / lossCount;
+            if (state.dailyPnl < -(mult * avgLoser)) {
+                state.haltedForDay = true;
+                log.warn("[OIMomentum] Day halted — dailyPnl={} < -{}×avgLoser({})",
+                        String.format("%.0f", state.dailyPnl), mult, String.format("%.0f", avgLoser));
+                if (telegramAlertService != null) {
+                    telegramAlertService.systemAlert(String.format(
+                            "🛑 OIMomentum: day halted — P&L ₹%.0f below %.1f×avg-loser (₹%.0f)",
+                            state.dailyPnl, mult, avgLoser));
+                }
+            }
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -1253,7 +1351,103 @@ public class OIMomentumStrategy {
         boolean paperMode = (dbConfig != null) ? dbConfig.isPaperTrading() : config.isPaperTrading();
 
         int atm = indexType.roundToATM(spot);
-        OptionType optType = direction > 0 ? OptionType.CE : OptionType.PE;
+        // Anti-pyramid is now checked AFTER V3 picks the actual entry strike (see
+        // below) so the cooldown lookup uses the entry strike rather than rounded ATM.
+        // Review fix #45.
+
+        // ── V3 OPERATOR pipeline integration ──────────────────────────────
+        // When v3Enabled, run the full operator pipeline and use its decision for
+        // strike/lots. When v3ShadowMode, log the v3 decision but still use legacy.
+        // Recording (review #51): the V3DecisionRecord is written to the CSV ONLY
+        // when v3Enabled is true (the pipeline itself is gated by that flag). When
+        // v3Enabled is false the recorder never sees a row.
+        int v3OverrideStrike = atm;
+        int v3OverrideLots = -1;  // -1 means "use legacy lots" (units: LOT COUNT, not shares)
+        OptionType v3OverrideType = null;
+        if (config.isV3Enabled() && v3EntryPipeline != null && v3MarketContext != null) {
+            try {
+                // baseLots semantically = LOT COUNT (not share count). The V3
+                // ConvictionSizer scales from this baseline up to maxLotsPerTrade
+                // (from GlobalConfig) based on conviction. We then multiply the
+                // returned lot count by indexType.lotSize() below to convert to the
+                // share quantity the executionEngine / broker expect — guaranteeing
+                // the broker only sees exact multiples of the contract lot size.
+                int baseLots = 1;
+                var v3Snap = v3MarketContext.getLatestSnapshot(indexType);
+                // P0a: pass a QuoteResolver so V3 can fetch the live quote for whatever
+                // strike the multi-strike picker chooses, not just ATM.
+                com.algo.trade.strategy.oimomentum.v3.V3EntryPipeline.QuoteResolver resolver =
+                        (ix, strike, ot) -> {
+                            try {
+                                String key = instrumentCache.findOption(
+                                        UnderlyingSymbol.valueOf(ix.name()),
+                                        expiryCalendar.getCurrentExpiry(ix),
+                                        BigDecimal.valueOf(strike), ot
+                                ).map(i -> i.instrumentKey()).orElse(null);
+                                if (key == null) return null;
+                                return marketDataService.quote(key).orElse(null);
+                            } catch (Exception qre) {
+                                log.debug("[OIMomentum][{}] quote resolve failed for {} {}: {}",
+                                        ix, strike, ot, qre.getMessage());
+                                return null;
+                            }
+                        };
+
+                var v3Decision = v3EntryPipeline.evaluate(
+                        indexType, direction, reason,
+                        diagnostics != null ? diagnostics.momentumMagnitudePct() : 0.0,
+                        spot, diagnostics != null ? diagnostics.vix() : 0.0,
+                        v3Snap, resolver, baseLots);
+
+                if (config.isV3ShadowMode()) {
+                    log.info("[OIMomentum][{}] V3 SHADOW: {} reason={} pattern={} gates={}/4 lots={}",
+                            indexType, v3Decision.skip() ? "SKIP" : "ENTER", v3Decision.reason(),
+                            v3Decision.pattern() != null ? v3Decision.pattern().name() : "-",
+                            v3Decision.gateVerdict() != null ? v3Decision.gateVerdict().passedCount() : 0,
+                            v3Decision.lots());
+                } else {
+                    // Live V3 — its decision is binding.
+                    if (v3Decision.skip()) {
+                        recordGateReject(indexType, state, "v3_skip:" + v3Decision.reason(), diagnostics);
+                        return;
+                    }
+                    v3OverrideStrike = v3Decision.strike();
+                    v3OverrideType = v3Decision.optionType();
+                    v3OverrideLots = v3Decision.lots();
+                    log.info("[OIMomentum][{}] V3 LIVE: ENTER strike={} type={} lots={} ({} shares) pattern={} gates={}/4",
+                            indexType, v3OverrideStrike, v3OverrideType, v3OverrideLots,
+                            v3OverrideLots * indexType.lotSize(),
+                            v3Decision.pattern().name(),
+                            v3Decision.gateVerdict().passedCount());
+                }
+            } catch (Exception v3ex) {
+                log.warn("[OIMomentum][{}] V3 pipeline error (falling back to legacy): {}",
+                        indexType, v3ex.getMessage());
+            }
+        }
+
+        OptionType optType = v3OverrideType != null ? v3OverrideType
+                : (direction > 0 ? OptionType.CE : OptionType.PE);
+        if (v3OverrideStrike != atm) atm = v3OverrideStrike;
+
+        // ── v3 Anti-pyramid (review fix #45) ──
+        // Block same-strike re-entry if previous close on that strike was a loss
+        // within antiPyramidCooldownMinutes. Lookup now uses the ENTRY strike (either
+        // ATM in legacy mode, or the V3-picked strike when V3 is live), not just the
+        // spot-rounded ATM.
+        if (config.isAntiPyramidEnabled()) {
+            Instant lastLoss = state.lastLossExitByStrike.get(atm);
+            if (lastLoss != null) {
+                long mins = Duration.between(lastLoss, Instant.now()).toMinutes();
+                if (mins < config.getAntiPyramidCooldownMinutes()) {
+                    recordGateReject(indexType, state,
+                            "anti_pyramid_cooldown:strike=" + atm + ",mins=" + mins,
+                            diagnostics);
+                    return;
+                }
+            }
+        }
+
         LocalDate expiry = expiryCalendar.getCurrentExpiry(indexType);
         UnderlyingSymbol underlying = UnderlyingSymbol.valueOf(indexType.name());
 
@@ -1288,7 +1482,15 @@ public class OIMomentumStrategy {
         }
 
         BigDecimal premium = quoteOpt.get().lastPrice();
-        int lotSize = indexType.lotSize();
+        // Compute final SHARE COUNT to send to the broker:
+        //  • Legacy path (V3 off, V3 shadow, or V3 errored)   → one contract = indexType.lotSize() shares.
+        //  • V3 live path → V3 returns a LOT COUNT (1..maxLotsPerTrade); convert
+        //    to share count by multiplying by indexType.lotSize(). This guarantees
+        //    the broker always sees a quantity that is an exact multiple of the
+        //    contract lot size (a hard requirement at Zerodha / Upstox / etc.).
+        int lotSize = (v3OverrideLots > 0 && config.isV3Enabled() && !config.isV3ShadowMode())
+                ? v3OverrideLots * indexType.lotSize()
+                : indexType.lotSize();
 
         // Build decision for execution
         StrategyDecision decision = new StrategyDecision(
@@ -1320,6 +1522,7 @@ public class OIMomentumStrategy {
             if (state.activeTradeId == null && result.accepted()) {
                 state.pendingEntryInstrumentKey = instrumentKey;
                 state.activeDirection = direction;
+                state.activeStrike = atm;
                 state.lastEntryTime = Instant.now();
                 state.peakPrice = premium.doubleValue();
                 state.tradesToday.incrementAndGet();
@@ -1332,6 +1535,7 @@ public class OIMomentumStrategy {
 
         if (state.activeTradeId != null) {
             state.activeDirection = direction;
+            state.activeStrike = atm;
             state.lastEntryTime = Instant.now();
             state.peakPrice = premium.doubleValue();
             state.tradesToday.incrementAndGet();
@@ -1404,6 +1608,19 @@ public class OIMomentumStrategy {
             state.lastProfitableExitTime = Instant.now();
             state.lastProfitableExitDirection = state.activeDirection;
         }
+        // v3 Anti-pyramid: record losing strike + time for cooldown enforcement.
+        // Computed pre-clear so we have entry price & quantity in hand.
+        try {
+            if (config.isAntiPyramidEnabled() && trade.getEntryPrice() != null
+                    && state.activeStrike > 0) {
+                double pnlForAntiPyramid = (currentPrice - trade.getEntryPrice().doubleValue()) * trade.getQuantity();
+                if (pnlForAntiPyramid < 0) {
+                    state.lastLossExitByStrike.put(state.activeStrike, Instant.now());
+                }
+            }
+        } catch (Exception ex) {
+            log.debug("[OIMomentum][{}] anti-pyramid record failed: {}", indexType, ex.getMessage());
+        }
         try {
             tuneRecorder.recordExit(state.lastEntryDecisionKey, indexType, trade, currentPrice, reason,
                     state.lastEntryDiagnostics, reversal);
@@ -1422,6 +1639,7 @@ public class OIMomentumStrategy {
         }
         state.activeTradeId = null;
         state.activeDirection = 0;
+        state.activeStrike = 0;
         state.peakPrice = 0;
         state.lastEntryDecisionKey = null;
         state.lastEntryDiagnostics = null;
@@ -1772,7 +1990,162 @@ public class OIMomentumStrategy {
             result.put(prefix + "_lastRejectReason", s.lastRejectReason != null ? s.lastRejectReason : "");
             result.put(prefix + "_lastRangePct30m", String.format("%.3f", s.lastRangePct30m));
             result.put(prefix + "_oiAdvanced", s.oiAdvanced);
+            // Halt visibility (review: UI control)
+            result.put(prefix + "_haltedForDay", s.haltedForDay);
+            result.put(prefix + "_inSlCooldown", s.lastSlTime != null
+                    && Duration.between(s.lastSlTime, Instant.now()).getSeconds()
+                       < config.getCooldownAfterSlSeconds());
+            result.put(prefix + "_inLossPause", s.consecutiveLosses.get()
+                    >= config.getConsecutiveLossPause());
+            result.put(prefix + "_atTradeCap", s.tradesToday.get() >= config.getMaxTradesPerDay());
         }
         return result;
+    }
+
+    // ── Halt control API ─────────────────────────────────────────────────
+
+    /**
+     * Snapshot of all halt states across enabled indices. Used by the UI to render
+     * per-index halt badges and decide which Resume/Extend buttons to enable.
+     */
+    public java.util.Map<String, Object> getHaltStatus() {
+        var out = new java.util.LinkedHashMap<String, Object>();
+        out.put("strategyEnabled", config.isEnabled());
+        var perIndex = new java.util.LinkedHashMap<String, Object>();
+        for (IndexType idx : getEnabledIndices()) {
+            IndexState s = indexStates.get(idx);
+            if (s == null) continue;
+            var detail = new java.util.LinkedHashMap<String, Object>();
+            detail.put("haltedForDay", s.haltedForDay);
+            detail.put("consecutiveLosses", s.consecutiveLosses.get());
+            detail.put("consecutiveLossPauseThreshold", config.getConsecutiveLossPause());
+            detail.put("consecutiveLossHaltThreshold", config.getConsecutiveLossHaltCount());
+            detail.put("inLossPause", s.consecutiveLosses.get() >= config.getConsecutiveLossPause());
+            long slCooldownRemaining = s.lastSlTime == null ? 0
+                    : Math.max(0, config.getCooldownAfterSlSeconds()
+                          - Duration.between(s.lastSlTime, Instant.now()).getSeconds());
+            detail.put("slCooldownRemainingSeconds", slCooldownRemaining);
+            detail.put("cooldownAfterSlSeconds", config.getCooldownAfterSlSeconds());
+            detail.put("tradesToday", s.tradesToday.get());
+            detail.put("maxTradesPerDay", config.getMaxTradesPerDay());
+            detail.put("atTradeCap", s.tradesToday.get() >= config.getMaxTradesPerDay());
+            detail.put("dailyPnl", s.dailyPnl);
+            detail.put("totalLossesToday", s.totalLossesCount.get());
+            detail.put("totalLossesPnl", s.totalLossesPnl);
+            // Composite "is currently blocked from new entries?" flag — convenient for UI
+            boolean blocked = s.haltedForDay
+                    || s.consecutiveLosses.get() >= config.getConsecutiveLossPause()
+                    || s.tradesToday.get() >= config.getMaxTradesPerDay()
+                    || slCooldownRemaining > 0;
+            detail.put("blocked", blocked);
+            perIndex.put(idx.name(), detail);
+        }
+        out.put("indices", perIndex);
+        return out;
+    }
+
+    /**
+     * Resume trading for the named indices (empty/null = all) by clearing the halt
+     * fields the operator asks about. Audited via WARN + Telegram.
+     *
+     * @param indices       indices to clear; null/empty resumes ALL enabled
+     * @param clearHaltedForDay clear the haltedForDay flag
+     * @param clearConsecutiveLosses reset consecutiveLosses counter to 0
+     * @param clearSlCooldown skip the SL cooldown by clearing lastSlTime
+     * @param resetTradesToday zero tradesToday counter (trade-cap recovery)
+     * @param operatorEmail email from OAuth principal — recorded for audit
+     * @param reason   min 5 chars
+     * @return per-index summary of what was cleared
+     */
+    public synchronized java.util.Map<String, Object> resumeHalts(
+            java.util.Set<IndexType> indices,
+            boolean clearHaltedForDay, boolean clearConsecutiveLosses, boolean clearSlCooldown,
+            boolean resetTradesToday,
+            String operatorEmail, String reason) {
+        if (reason == null || reason.trim().length() < 5) {
+            throw new IllegalArgumentException("reason must be at least 5 characters");
+        }
+        var target = (indices == null || indices.isEmpty()) ? getEnabledIndices()
+                : indices;
+        var report = new java.util.LinkedHashMap<String, Object>();
+        for (IndexType idx : target) {
+            IndexState s = indexStates.get(idx);
+            if (s == null) continue;
+            var detail = new java.util.LinkedHashMap<String, Object>();
+            if (clearHaltedForDay) {
+                detail.put("haltedForDay.was", s.haltedForDay);
+                s.haltedForDay = false;
+                detail.put("haltedForDay.now", false);
+            }
+            if (clearConsecutiveLosses) {
+                int prev = s.consecutiveLosses.getAndSet(0);
+                detail.put("consecutiveLosses.was", prev);
+                detail.put("consecutiveLosses.now", 0);
+            }
+            if (clearSlCooldown) {
+                detail.put("lastSlTime.was", s.lastSlTime != null ? s.lastSlTime.toString() : "null");
+                s.lastSlTime = null;
+                detail.put("lastSlTime.now", "null");
+            }
+            if (resetTradesToday) {
+                int prev = s.tradesToday.getAndSet(0);
+                detail.put("tradesToday.was", prev);
+                detail.put("tradesToday.now", 0);
+            }
+            report.put(idx.name(), detail);
+        }
+        log.warn("[OIMomentum] HALT RESUME by={} reason='{}' indices={} clearHaltedForDay={} "
+                + "clearConsecutiveLosses={} clearSlCooldown={} resetTradesToday={}",
+                operatorEmail, reason, target, clearHaltedForDay,
+                clearConsecutiveLosses, clearSlCooldown, resetTradesToday);
+        if (telegramAlertService != null) {
+            try {
+                telegramAlertService.systemAlert(String.format(
+                        "▶️ OI Momentum HALT RESUMED by %s%n  Indices: %s%n  Cleared: %s%s%s%n  Reason: %s",
+                        operatorEmail, target,
+                        clearHaltedForDay ? "haltedForDay " : "",
+                        clearConsecutiveLosses ? "consecutiveLosses " : "",
+                        clearSlCooldown ? "slCooldown " : "",
+                        resetTradesToday ? "tradesToday " : "",
+                        reason));
+            } catch (Exception ex) {
+                log.debug("[OIMomentum] resume telegram failed: {}", ex.getMessage());
+            }
+        }
+        return report;
+    }
+
+    /**
+     * Extend the halt — proactively flip {@code haltedForDay} to true for the named
+     * indices (empty = all). Use when the operator wants to stop trading on an index
+     * for the rest of the session without disabling the whole strategy.
+     */
+    public synchronized java.util.Map<String, Object> extendHalts(
+            java.util.Set<IndexType> indices, String operatorEmail, String reason) {
+        if (reason == null || reason.trim().length() < 5) {
+            throw new IllegalArgumentException("reason must be at least 5 characters");
+        }
+        var target = (indices == null || indices.isEmpty()) ? getEnabledIndices()
+                : indices;
+        var report = new java.util.LinkedHashMap<String, Object>();
+        for (IndexType idx : target) {
+            IndexState s = indexStates.get(idx);
+            if (s == null) continue;
+            boolean wasHalted = s.haltedForDay;
+            s.haltedForDay = true;
+            report.put(idx.name(), java.util.Map.of("wasHalted", wasHalted, "nowHalted", true));
+        }
+        log.warn("[OIMomentum] HALT EXTENDED by={} reason='{}' indices={}",
+                operatorEmail, reason, target);
+        if (telegramAlertService != null) {
+            try {
+                telegramAlertService.systemAlert(String.format(
+                        "⛔ OI Momentum HALT EXTENDED by %s%n  Indices: %s halted for rest of day%n  Reason: %s",
+                        operatorEmail, target, reason));
+            } catch (Exception ex) {
+                log.debug("[OIMomentum] extend-halt telegram failed: {}", ex.getMessage());
+            }
+        }
+        return report;
     }
 }

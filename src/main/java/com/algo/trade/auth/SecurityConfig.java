@@ -106,7 +106,7 @@ public class SecurityConfig {
                     String xhrHeader = request.getHeader("X-Requested-With");
                     boolean isApiCall = (accept != null && accept.contains("application/json"))
                             || "XMLHttpRequest".equals(xhrHeader)
-                            || request.getRequestURI().matches(".*/(?:global-config|trading|strategies|ml|analytics|diagnostics|monitoring|backtest|performance).*");
+                            || request.getRequestURI().matches(".*/(?:global-config|oi-momentum|trading|strategies|ml|analytics|diagnostics|monitoring|backtest|performance).*");
                     if (isApiCall) {
                         response.setStatus(401);
                         response.setContentType("application/json");

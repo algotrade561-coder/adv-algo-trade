@@ -1,3 +1,4 @@
+import { DecimalPipe } from '@angular/common';
 import { ChangeDetectorRef, Component, OnInit, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
@@ -6,21 +7,265 @@ import { MatSlideToggleModule } from '@angular/material/slide-toggle';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { MatSelectModule } from '@angular/material/select';
-import { ApiService, GlobalConfigDto } from '../core/api.service';
+import { MatCheckboxModule } from '@angular/material/checkbox';
+import {
+  ApiService,
+  GlobalConfigDto,
+  OiMomentumHaltStatusDto,
+  OiMomentumIndexHaltDto,
+  OiMomentumRuntimeConfigDto
+} from '../core/api.service';
 
 @Component({
   selector: 'app-settings-page',
   standalone: true,
-  imports: [FormsModule, MatButtonModule, MatIconModule, MatSlideToggleModule,
-    MatFormFieldModule, MatInputModule, MatSelectModule],
+  imports: [DecimalPipe, FormsModule, MatButtonModule, MatIconModule, MatSlideToggleModule,
+    MatFormFieldModule, MatInputModule, MatSelectModule, MatCheckboxModule],
   template: `
     <section class="page">
       <div class="row">
         <div>
           <h1 class="page-title">Settings</h1>
-          <p class="page-subtitle">Global entry, exit, and risk parameters. Changes take effect immediately.</p>
+          <p class="page-subtitle">OI Momentum V3 operator controls and global entry/exit/risk parameters. Runtime changes apply immediately.</p>
         </div>
       </div>
+
+      @if (oiMsg()) { <div class="toast-ok">{{ oiMsg() }}</div> }
+      @if (oiError()) { <div class="toast-warn">{{ oiError() }}</div> }
+
+      @if (!oiLoaded) {
+        <div style="text-align:center;padding:24px;color:var(--muted)">Loading OI Momentum settings…</div>
+      }
+
+      @if (oiConfig) {
+        <div class="section-hdr clickable" (click)="oiOpen = !oiOpen">
+          <mat-icon class="icon-v3">bolt</mat-icon>
+          <div>
+            <h2>OI Momentum V3</h2>
+            <p>Global enable, shadow/live V3, and safety limits — no app restart</p>
+          </div>
+          <span class="v3-mode-pill" [class.live]="v3Mode() === 'live'" [class.shadow]="v3Mode() === 'shadow'">{{ v3ModeLabel() }}</span>
+          <span class="spacer"></span>
+          <mat-icon>{{ oiOpen ? 'expand_less' : 'expand_more' }}</mat-icon>
+        </div>
+
+        @if (oiOpen) {
+          <div class="v3-panel">
+            <div class="form-grid">
+              <div class="toggle-row">
+                <span>Strategy enabled<small class="toggle-hint">Master switch for OI Momentum entries</small></span>
+                <mat-slide-toggle [(ngModel)]="oiConfig.enabled" color="primary"></mat-slide-toggle>
+              </div>
+              <div class="toggle-row">
+                <span>Paper trading<small class="toggle-hint">Log orders without broker execution</small></span>
+                <mat-slide-toggle [(ngModel)]="oiConfig.paperTrading" color="primary"></mat-slide-toggle>
+              </div>
+              <div class="toggle-row v3-toggle">
+                <span>V3 enabled<small class="toggle-hint">Use V3 entry pipeline when on</small></span>
+                <mat-slide-toggle [(ngModel)]="oiConfig.v3Enabled" color="primary"></mat-slide-toggle>
+              </div>
+              <div class="toggle-row v3-toggle">
+                <span>V3 shadow mode<small class="toggle-hint">Evaluate and log V3 decisions without live entries</small></span>
+                <mat-slide-toggle [(ngModel)]="oiConfig.v3ShadowMode" color="primary"
+                  [disabled]="!oiConfig.v3Enabled"></mat-slide-toggle>
+              </div>
+            </div>
+
+            <div class="section-hdr clickable sub-hdr" (click)="v3SafetyOpen = !v3SafetyOpen">
+              <mat-icon class="icon-risk">shield</mat-icon>
+              <div>
+                <h2>Safety limits</h2>
+                <p>Loss halts, anti-pyramid, expiry cutoff, trade cap</p>
+              </div>
+              <span class="spacer"></span>
+              <mat-icon>{{ v3SafetyOpen ? 'expand_less' : 'expand_more' }}</mat-icon>
+            </div>
+            @if (v3SafetyOpen) {
+              <div class="form-grid">
+                <div class="toggle-row">
+                  <span>Anti-pyramid<small class="toggle-hint">Block re-entry on same strike after exit</small></span>
+                  <mat-slide-toggle [(ngModel)]="oiConfig.antiPyramidEnabled" color="primary"></mat-slide-toggle>
+                </div>
+                <mat-form-field appearance="outline">
+                  <mat-label>Anti-pyramid cooldown (min)</mat-label>
+                  <input matInput type="number" min="0" max="240" [(ngModel)]="oiConfig.antiPyramidCooldownMinutes">
+                </mat-form-field>
+                <div class="toggle-row">
+                  <span>Expiry OTM cutoff<small class="toggle-hint">Stop far-OTM entries near expiry</small></span>
+                  <mat-slide-toggle [(ngModel)]="oiConfig.expiryOtmCutoffEnabled" color="primary"></mat-slide-toggle>
+                </div>
+                <mat-form-field appearance="outline">
+                  <mat-label>Expiry OTM cutoff time</mat-label>
+                  <input matInput placeholder="14:30" [(ngModel)]="oiConfig.expiryOtmCutoffTime">
+                  <mat-hint>HH:mm IST</mat-hint>
+                </mat-form-field>
+                <mat-form-field appearance="outline">
+                  <mat-label>Daily loss limit (₹)</mat-label>
+                  <input matInput type="number" min="0" step="500" [(ngModel)]="oiConfig.dailyLossLimitRupees">
+                  <mat-hint>0 = use percent-based limit from YAML</mat-hint>
+                </mat-form-field>
+                <mat-form-field appearance="outline">
+                  <mat-label>Daily loss × avg loser</mat-label>
+                  <input matInput type="number" min="0" step="0.5" [(ngModel)]="oiConfig.dailyLossMultiplierOfAvgLoser">
+                  <mat-hint>0 = disabled</mat-hint>
+                </mat-form-field>
+                <mat-form-field appearance="outline">
+                  <mat-label>Consecutive loss halt</mat-label>
+                  <input matInput type="number" min="0" max="20" [(ngModel)]="oiConfig.consecutiveLossHaltCount">
+                  <mat-hint>0 = disabled</mat-hint>
+                </mat-form-field>
+                <mat-form-field appearance="outline">
+                  <mat-label>Break-even trigger %</mat-label>
+                  <input matInput type="number" min="0" max="50" step="0.5" [(ngModel)]="oiConfig.breakEvenTriggerPercent">
+                  <mat-hint>0 = disabled</mat-hint>
+                </mat-form-field>
+                <mat-form-field appearance="outline">
+                  <mat-label>Max trades per day</mat-label>
+                  <input matInput type="number" min="1" max="50" [(ngModel)]="oiConfig.maxTradesPerDay">
+                </mat-form-field>
+              </div>
+            }
+
+            <div class="section-hdr clickable sub-hdr" (click)="haltsOpen = !haltsOpen">
+              <mat-icon class="icon-risk">pause_circle</mat-icon>
+              <div>
+                <h2>Session halts (per index)</h2>
+                <p>Day halt, loss pause, SL cooldown, trade cap — resume or extend</p>
+              </div>
+              @if (haltStatus && anyIndexBlocked()) {
+                <span class="halt-alert-pill">Blocked</span>
+              }
+              <span class="spacer"></span>
+              <button mat-stroked-button type="button" class="hdr-btn" (click)="loadHalts($event)">
+                <mat-icon>refresh</mat-icon>
+              </button>
+              <mat-icon>{{ haltsOpen ? 'expand_less' : 'expand_more' }}</mat-icon>
+            </div>
+
+            @if (haltsOpen) {
+              <div class="halt-panel">
+                @if (!haltStatus) {
+                  <p class="yaml-note">Loading halt status…</p>
+                } @else if (!haltStatus.strategyEnabled) {
+                  <p class="yaml-note">Strategy master switch is off — enable above to trade.</p>
+                }
+
+                <div class="halt-options">
+                  <span class="halt-options-label">On resume, clear:</span>
+                  <mat-checkbox [(ngModel)]="resumeClearHalted" color="primary">Day halt</mat-checkbox>
+                  <mat-checkbox [(ngModel)]="resumeClearLosses" color="primary">Consecutive losses</mat-checkbox>
+                  <mat-checkbox [(ngModel)]="resumeClearSlCooldown" color="primary">SL cooldown</mat-checkbox>
+                  <mat-checkbox [(ngModel)]="resumeResetTrades" color="primary">Trade count</mat-checkbox>
+                </div>
+
+                <table class="halt-table">
+                  <thead>
+                    <tr>
+                      <th>Index</th>
+                      <th>Day halt</th>
+                      <th>Losses</th>
+                      <th>SL cooldown</th>
+                      <th>Trades</th>
+                      <th>P&amp;L</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    @for (row of haltIndexRows(); track row.name) {
+                      <tr [class.row-blocked]="row.h.blocked">
+                        <td class="idx-name">{{ row.name }}</td>
+                        <td>
+                          <span class="halt-chip" [class.active]="row.h.haltedForDay">Day halt</span>
+                        </td>
+                        <td>
+                          <span class="halt-chip" [class.active]="row.h.inLossPause">
+                            {{ row.h.consecutiveLosses }}/{{ row.h.consecutiveLossPauseThreshold }}
+                            @if (row.h.consecutiveLossHaltThreshold > 0) {
+                              <small>(halt {{ row.h.consecutiveLossHaltThreshold }})</small>
+                            }
+                          </span>
+                        </td>
+                        <td>
+                          @if (row.h.slCooldownRemainingSeconds > 0) {
+                            <span class="halt-chip active">{{ row.h.slCooldownRemainingSeconds }}s</span>
+                          } @else {
+                            <span class="halt-chip">—</span>
+                          }
+                        </td>
+                        <td>
+                          <span class="halt-chip" [class.active]="row.h.atTradeCap">
+                            {{ row.h.tradesToday }}/{{ row.h.maxTradesPerDay }}
+                          </span>
+                        </td>
+                        <td class="pnl-cell" [class.neg]="row.h.dailyPnl < 0">{{ row.h.dailyPnl | number:'1.0-0' }}</td>
+                        <td class="halt-actions">
+                          <button mat-stroked-button type="button" (click)="resumeOi([row.name])"
+                            [disabled]="!row.h.blocked">
+                            Resume
+                          </button>
+                          <button mat-stroked-button type="button" color="warn" (click)="extendOi([row.name])">
+                            Extend
+                          </button>
+                        </td>
+                      </tr>
+                    }
+                  </tbody>
+                </table>
+
+                <p class="yaml-note halt-help">
+                  <strong>Resume</strong> clears selected flags (uses change reason above).
+                  <strong>Extend</strong> sets day-halt for the index until manual resume or midnight rollover.
+                  Trade cap: raise <em>Max trades per day</em> and Save, or resume with <em>Trade count</em> checked.
+                </p>
+
+                <div class="actions oi-actions halt-bulk-actions">
+                  <button mat-stroked-button type="button" (click)="resumeOi()" [disabled]="!anyIndexBlocked()">
+                    <mat-icon>play_arrow</mat-icon> Resume all blocked
+                  </button>
+                  <button mat-stroked-button type="button" color="warn" (click)="extendOi()">
+                    <mat-icon>pause</mat-icon> Extend halt (all indices)
+                  </button>
+                  <button mat-stroked-button type="button" (click)="bumpMaxTrades()">
+                    <mat-icon>trending_up</mat-icon> +5 max trades (save)
+                  </button>
+                </div>
+              </div>
+            }
+
+            <p class="yaml-note">
+              Momentum thresholds, PCR, stop/trail %, entry windows, and V3 pipeline constants stay in
+              <code>application.yml</code> — restart required to change those.
+            </p>
+
+            <mat-form-field appearance="outline" class="reason-field">
+              <mat-label>Change reason (required)</mat-label>
+              <input matInput [(ngModel)]="oiChangeReason" minlength="5" placeholder="e.g. shadow week after poor NIFTY session">
+              <mat-hint>Min 5 characters — recorded in audit log</mat-hint>
+            </mat-form-field>
+
+            @if (oiConfig.updatedAt) {
+              <p class="audit-line">
+                Last update: {{ oiConfig.updatedAt }} by {{ oiConfig.updatedBy || '—' }}
+                @if (oiConfig.updatedReason) { — {{ oiConfig.updatedReason }} }
+              </p>
+            }
+
+            <div class="actions oi-actions">
+              <button mat-flat-button color="primary" (click)="saveOi()">
+                <mat-icon>save</mat-icon> Save OI Momentum
+              </button>
+              <button mat-stroked-button color="warn" (click)="killOi()">
+                <mat-icon>block</mat-icon> Emergency kill
+              </button>
+              <button mat-stroked-button (click)="loadOi()">
+                <mat-icon>refresh</mat-icon> Reload
+              </button>
+            </div>
+          </div>
+        }
+
+        <hr class="section-divider" />
+      }
 
       @if (msg()) { <div class="toast-ok">{{ msg() }}</div> }
       @if (error()) { <div class="toast-warn">{{ error() }}</div> }
@@ -365,6 +610,54 @@ import { ApiService, GlobalConfigDto } from '../core/api.service';
     .icon-entry { color: var(--accent); font-size: 22px; width: 22px; height: 22px; }
     .icon-exit { color: var(--warn); font-size: 22px; width: 22px; height: 22px; }
     .icon-risk { color: var(--bad); font-size: 22px; width: 22px; height: 22px; }
+    .icon-v3 { color: var(--accent); font-size: 22px; width: 22px; height: 22px; }
+    .v3-mode-pill {
+      font-size: 11px; font-weight: 700; padding: 4px 10px; border-radius: 999px;
+      background: rgba(255,255,255,.08); color: var(--muted); border: 1px solid var(--line);
+    }
+    .v3-mode-pill.shadow { color: var(--warn); border-color: rgba(242,189,75,.4); background: rgba(242,189,75,.08); }
+    .v3-mode-pill.live { color: var(--ok); border-color: rgba(69,209,140,.4); background: rgba(69,209,140,.08); }
+    .v3-panel { margin-bottom: 8px; }
+    .sub-hdr { margin-top: 8px; border: none; background: transparent; padding-left: 0; }
+    .yaml-note { font-size: 12px; color: var(--muted); margin: 12px 0; line-height: 1.5; }
+    .yaml-note code { font-size: 11px; color: var(--text); }
+    .reason-field { width: 100%; max-width: 560px; display: block; margin-top: 8px; }
+    .audit-line { font-size: 11px; color: var(--muted); margin: 0 0 12px; }
+    .oi-actions { margin-top: 0; padding-bottom: 8px; }
+    .section-divider { border: none; border-top: 1px solid var(--line); margin: 28px 0 24px; }
+    .halt-alert-pill {
+      font-size: 11px; font-weight: 700; padding: 4px 10px; border-radius: 999px;
+      color: var(--bad); border: 1px solid rgba(255,100,100,.4); background: rgba(255,100,100,.08);
+    }
+    .hdr-btn { margin-right: 4px; min-width: auto; padding: 0 8px; }
+    .halt-panel { margin-bottom: 16px; }
+    .halt-options {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px;
+      padding: 12px 16px; margin-bottom: 12px; border: 1px solid var(--line); border-radius: 8px;
+      background: rgba(0,0,0,.08); font-size: 13px;
+    }
+    .halt-options-label { color: var(--muted); font-size: 12px; margin-right: 4px; }
+    .halt-table {
+      width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 12px;
+    }
+    .halt-table th, .halt-table td {
+      padding: 10px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: middle;
+    }
+    .halt-table th { color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase; }
+    .halt-table tr.row-blocked { background: rgba(255,100,100,.04); }
+    .idx-name { font-weight: 700; color: var(--ink); }
+    .halt-chip {
+      display: inline-block; padding: 3px 8px; border-radius: 6px; font-size: 11px;
+      color: var(--muted); border: 1px solid var(--line); background: rgba(255,255,255,.03);
+    }
+    .halt-chip.active { color: var(--warn); border-color: rgba(242,189,75,.45); background: rgba(242,189,75,.1); }
+    .halt-chip small { opacity: .8; margin-left: 4px; }
+    .pnl-cell { font-variant-numeric: tabular-nums; }
+    .pnl-cell.neg { color: var(--bad); }
+    .halt-actions { white-space: nowrap; }
+    .halt-actions button { margin-right: 6px; font-size: 12px; }
+    .halt-help { margin-top: 0; }
+    .halt-bulk-actions { flex-wrap: wrap; }
 
     .form-grid {
       display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px;
@@ -387,16 +680,177 @@ import { ApiService, GlobalConfigDto } from '../core/api.service';
 })
 export class SettingsPageComponent implements OnInit {
   config!: GlobalConfigDto;
+  oiConfig!: OiMomentumRuntimeConfigDto;
   loaded = false;
+  oiLoaded = false;
   msg = signal('');
   error = signal('');
+  oiMsg = signal('');
+  oiError = signal('');
+  oiChangeReason = '';
   entryOpen = true;
   exitOpen = true;
   riskOpen = true;
+  oiOpen = true;
+  v3SafetyOpen = false;
+  haltsOpen = true;
+  haltStatus: OiMomentumHaltStatusDto | null = null;
+  resumeClearHalted = true;
+  resumeClearLosses = true;
+  resumeClearSlCooldown = false;
+  resumeResetTrades = false;
 
   constructor(private api: ApiService, private cd: ChangeDetectorRef) {}
 
-  ngOnInit() { setTimeout(() => this.load(), 0); }
+  ngOnInit() {
+    setTimeout(() => {
+      this.load();
+      this.loadOi();
+      this.loadHalts();
+    }, 0);
+  }
+
+  haltIndexRows(): { name: string; h: OiMomentumIndexHaltDto }[] {
+    if (!this.haltStatus?.indices) return [];
+    return Object.entries(this.haltStatus.indices)
+      .map(([name, h]) => ({ name, h }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  anyIndexBlocked(): boolean {
+    return this.haltIndexRows().some(r => r.h.blocked);
+  }
+
+  loadHalts(event?: Event) {
+    event?.stopPropagation();
+    this.api.getOiMomentumHalts().subscribe({
+      next: s => { this.haltStatus = s; this.cd.detectChanges(); },
+      error: () => { /* non-fatal */ }
+    });
+  }
+
+  v3Mode(): 'off' | 'legacy' | 'shadow' | 'live' {
+    if (!this.oiConfig?.enabled) return 'off';
+    if (!this.oiConfig.v3Enabled) return 'legacy';
+    if (this.oiConfig.v3ShadowMode) return 'shadow';
+    return 'live';
+  }
+
+  v3ModeLabel(): string {
+    switch (this.v3Mode()) {
+      case 'off': return 'Disabled';
+      case 'legacy': return 'V2 path';
+      case 'shadow': return 'V3 shadow';
+      case 'live': return 'V3 live';
+    }
+  }
+
+  private oiReasonOrError(): string | null {
+    const reason = (this.oiChangeReason ?? '').trim();
+    if (reason.length < 5) {
+      this.oiError.set('Change reason is required (at least 5 characters)');
+      return null;
+    }
+    return reason;
+  }
+
+  resumeOi(indices?: string[]) {
+    const reason = this.oiReasonOrError();
+    if (!reason) return;
+    this.oiMsg.set('');
+    this.oiError.set('');
+    this.api.resumeOiMomentumHalts({
+      indices: indices?.length ? indices : undefined,
+      clearHaltedForDay: this.resumeClearHalted,
+      clearConsecutiveLosses: this.resumeClearLosses,
+      clearSlCooldown: this.resumeClearSlCooldown,
+      resetTradesToday: this.resumeResetTrades,
+      reason
+    }).subscribe({
+      next: r => {
+        this.haltStatus = r.haltStatus;
+        this.oiMsg.set(indices?.length
+          ? `Resumed halts for ${indices.join(', ')}`
+          : 'Resumed halts for all indices');
+        this.cd.detectChanges();
+      },
+      error: (e: any) => this.oiError.set(e?.error?.error ?? 'Resume failed')
+    });
+  }
+
+  extendOi(indices?: string[]) {
+    const reason = this.oiReasonOrError();
+    if (!reason) return;
+    const label = indices?.length ? indices.join(', ') : 'all indices';
+    if (!confirm(`Extend day-halt for ${label} for the rest of the session?`)) return;
+    this.oiMsg.set('');
+    this.oiError.set('');
+    this.api.extendOiMomentumHalts({
+      indices: indices?.length ? indices : undefined,
+      reason
+    }).subscribe({
+      next: r => {
+        this.haltStatus = r.haltStatus;
+        this.oiMsg.set(`Extended day-halt: ${label}`);
+        this.cd.detectChanges();
+      },
+      error: (e: any) => this.oiError.set(e?.error?.error ?? 'Extend halt failed')
+    });
+  }
+
+  bumpMaxTrades() {
+    if (!this.oiConfig) return;
+    const reason = this.oiReasonOrError();
+    if (!reason) return;
+    this.oiConfig.maxTradesPerDay = (this.oiConfig.maxTradesPerDay ?? 0) + 5;
+    this.saveOi();
+  }
+
+  loadOi() {
+    this.oiMsg.set('');
+    this.oiError.set('');
+    this.api.getOiMomentumSettings().subscribe({
+      next: c => { this.oiConfig = c; this.oiLoaded = true; this.loadHalts(); this.cd.detectChanges(); },
+      error: (e: any) => {
+        this.oiError.set(e?.error?.error ?? 'Failed to load OI Momentum settings');
+        this.cd.detectChanges();
+      }
+    });
+  }
+
+  saveOi() {
+    this.oiMsg.set('');
+    this.oiError.set('');
+    const reason = this.oiReasonOrError();
+    if (!reason) return;
+    const body = { ...this.oiConfig, reason };
+    this.api.updateOiMomentumSettings(body).subscribe({
+      next: c => {
+        this.oiConfig = c;
+        this.oiChangeReason = '';
+        this.oiMsg.set('OI Momentum settings saved');
+        this.loadHalts();
+        this.cd.detectChanges();
+      },
+      error: (e: any) => this.oiError.set(e?.error?.error ?? 'Failed to save OI Momentum settings')
+    });
+  }
+
+  killOi() {
+    if (!confirm('Emergency kill: disable OI Momentum and V3 immediately. Continue?')) return;
+    this.oiMsg.set('');
+    this.oiError.set('');
+    const reason = (this.oiChangeReason ?? '').trim();
+    this.api.killOiMomentum(reason.length >= 5 ? reason : undefined).subscribe({
+      next: c => {
+        this.oiConfig = c;
+        this.oiChangeReason = '';
+        this.oiMsg.set('OI Momentum kill switch applied');
+        this.cd.detectChanges();
+      },
+      error: (e: any) => this.oiError.set(e?.error?.error ?? 'Kill switch failed')
+    });
+  }
 
   load() {
     this.msg.set(''); this.error.set('');

@@ -101,6 +101,10 @@ public class OptionChainSnapshotScheduler {
     @Value("${snapshot.underlyings:NIFTY,BANKNIFTY,SENSEX}")
     private List<String> enabledUnderlyings;
 
+    /** V3 market context — optional; fed each snapshot for gamma-wall / max-pain analysis. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.strategy.oimomentum.v3.MarketContextService v3MarketContext;
+
     public OptionChainSnapshotScheduler(LiveInstrumentCache liveInstrumentCache,
                                          ExpiryCalendar expiryCalendar,
                                          MarketGuard marketGuard,
@@ -160,6 +164,25 @@ public class OptionChainSnapshotScheduler {
                             indexType, snapshot.get().spot(), snapshot.get().strikes().size());
                     // Feed into Operator Framework for institutional accumulation analysis
                     operatorFrameworkService.onChainSnapshot(indexType, snapshot.get());
+                    // V3 OPERATOR: cache snapshot + record ATM IV + VIX for context service
+                    if (v3MarketContext != null) {
+                        try {
+                            v3MarketContext.recordSnapshot(indexType, snapshot.get());
+                            v3MarketContext.recordVix(snapshot.get().vix());
+                            // ATM IV = avg of ATM CE+PE
+                            var strikes = snapshot.get().strikes();
+                            int atm = snapshot.get().atmStrike();
+                            for (var s : strikes) {
+                                if (s.strike() == atm) {
+                                    double atmIv = (s.ceIV() + s.peIV()) / 2.0;
+                                    if (atmIv > 0) v3MarketContext.recordAtmIv(indexType, atmIv);
+                                    break;
+                                }
+                            }
+                        } catch (Exception ctxEx) {
+                            log.debug("[V3Context] feed failed for {}: {}", indexType, ctxEx.getMessage());
+                        }
+                    }
                 } else {
                     handleEmptyChain(indexType);
                 }
