@@ -274,15 +274,15 @@ public class OIMomentumConfig {
     /**
      * P0-2: filter baseline CASE 1-5 by time-of-day mode. When true, AFTERNOON_POSITION
      * (13:30–14:45) + LAST_HOUR (14:45–15:10) entries are skipped, and MIDDAY_DISCIPLINE
-     * (11:30–13:30) requires 4-of-4 alignment.
+     * (11:30–13:30) requires 4-of-4 alignment. LIVE-mode default ON.
      */
-    private boolean legacyTimeOfDayModeEnabled = false;
+    private boolean legacyTimeOfDayModeEnabled = true;
 
-    /** P0-1: enable CASE 0 (OI-led entry that fires before any price breakout). */
-    private boolean case0Enabled = false;
+    /** P0-1: enable CASE 0 (OI-led entry that fires before any price breakout). LIVE default ON. */
+    private boolean case0Enabled = true;
 
-    /** CASE 0 shadow mode — record but do not bind. Default ON so first deploy is safe. */
-    private boolean case0ShadowMode = true;
+    /** CASE 0 shadow mode — record but do not bind. LIVE default OFF (entries actually placed). */
+    private boolean case0ShadowMode = false;
 
     /** CASE 0 minimum operator score. Replay calibration: 80. */
     private int case0OpScoreThreshold = 80;
@@ -293,8 +293,8 @@ public class OIMomentumConfig {
     /** CASE 0 minimum |PCR slope per 5 min| in the operator direction. */
     private double case0PcrSlopeMinAbs = 0.02;
 
-    /** P1-3: enable CASE 4 watch-list bonus (+5 to next aligned signal within 20 min). */
-    private boolean case4WatchlistBonusEnabled = false;
+    /** P1-3: enable CASE 4 watch-list bonus (+5 to next aligned signal within 20 min). LIVE default ON. */
+    private boolean case4WatchlistBonusEnabled = true;
 
     // ── Enabled/Paper ──
     private boolean enabled = true;

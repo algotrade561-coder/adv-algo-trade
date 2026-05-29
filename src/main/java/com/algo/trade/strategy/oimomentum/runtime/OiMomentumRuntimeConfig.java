@@ -96,24 +96,24 @@ public class OiMomentumRuntimeConfig {
      * has no value. The literal must match the Java initial value above.</p>
      */
     @Column(name = "legacy_tod_mode_enabled", nullable = false)
-    @ColumnDefault("false")
-    private boolean legacyTimeOfDayModeEnabled = false;
+    @ColumnDefault("true")
+    private boolean legacyTimeOfDayModeEnabled = true;
 
     /**
      * P0-1: enable CASE 0 (OI-led entry) — fires before any price breakout when the chain
      * is screaming. Strict thresholds (replay: 91% 30m win on 12 fires in 12 days).
      */
     @Column(name = "case0_enabled", nullable = false)
-    @ColumnDefault("false")
-    private boolean case0Enabled = false;
+    @ColumnDefault("true")
+    private boolean case0Enabled = true;
 
     /**
-     * CASE 0 shadow mode — evaluate and log but do not bind. Use for first 5 sessions
-     * to validate fire frequency in production before flipping live.
+     * CASE 0 shadow mode — evaluate and log but do not bind. LIVE-mode default is
+     * {@code false}: CASE 0 actually places entries.
      */
     @Column(name = "case0_shadow_mode", nullable = false)
-    @ColumnDefault("true")
-    private boolean case0ShadowMode = true;
+    @ColumnDefault("false")
+    private boolean case0ShadowMode = false;
 
     /** CASE 0 minimum operator score. Replay calibration: 80. Loose alternative: 70. */
     @Column(name = "case0_op_score_threshold", nullable = false)
@@ -136,8 +136,8 @@ public class OiMomentumRuntimeConfig {
      * marginally over momentum-direction in CASE 4 (53.6% vs 46.4% at 60m).
      */
     @Column(name = "case4_watchlist_bonus_enabled", nullable = false)
-    @ColumnDefault("false")
-    private boolean case4WatchlistBonusEnabled = false;
+    @ColumnDefault("true")
+    private boolean case4WatchlistBonusEnabled = true;
 
     /** When this row was last modified (audit). */
     @Column(name = "updated_at", nullable = false)

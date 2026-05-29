@@ -326,15 +326,15 @@ oi-momentum:
   daily-loss-multiplier-of-avg-loser: 3    # halt at -3× avg-loser today
   consecutive-loss-halt-count: 5           # halt after 5 losses in a row
 
-  # ── Legacy enhancements (29 May 2026 — see OI_MOMENTUM_EMPIRICAL_REPLAY_RESULTS.md)
-  # Default: OFF. Flip via /advalgotrade/v3-control.html after one shadow session.
-  legacy-time-of-day-mode-enabled: false   # P0-2: filter afternoon/last-hour entries
-  case0-enabled: false                     # P0-1: OI-led entry (no breakout required)
-  case0-shadow-mode: true                  # safe-default: log only on first deploy
+  # ── Legacy enhancements — LIVE (29 May 2026, see OI_MOMENTUM_EMPIRICAL_REPLAY_RESULTS.md)
+  # All four flips ON at boot; disable via Settings page if a session goes wrong.
+  legacy-time-of-day-mode-enabled: true    # P0-2: filter afternoon/last-hour entries (replay 48%→58% win)
+  case0-enabled: true                      # P0-1: OI-led entry (no breakout required)
+  case0-shadow-mode: false                 # LIVE: CASE 0 binds entries (not log-only)
   case0-op-score-threshold: 80             # strict (replay 91% 30m win); loose=70
   case0-coil-max-pct: 0.10                 # strict; loose=0.15
   case0-pcr-slope-min-abs: 0.02            # PCR direction-of-tilt requirement
-  case4-watchlist-bonus-enabled: false     # P1-3: +5 bias on next OI-aligned signal
+  case4-watchlist-bonus-enabled: true      # P1-3: +5 bias on next OI-aligned signal
   # Detection-row CSV — captures every momentum-cycle row for end-of-day analysis.
   legacy-decision-log-enabled: true
   legacy-decision-log-dir: data/oi-decisions

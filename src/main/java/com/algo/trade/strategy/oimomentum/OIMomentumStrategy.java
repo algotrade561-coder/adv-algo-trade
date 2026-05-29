@@ -187,6 +187,15 @@ public class OIMomentumStrategy {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private Case0OiLedDetector case0Detector;
 
+    /**
+     * Source of the {@code maxLotsPerTrade} cap used for conviction-based lot sizing
+     * on legacy CASE 1-5 + CASE 0 entries. Optional so unit-test wirings without the
+     * full Spring context can construct OIMomentumStrategy. When null, conviction
+     * sizing falls back to 1 lot (legacy behavior).
+     */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.config.GlobalConfigService globalConfigService;
+
     /** Legacy detection CSV recorder — captures every momentum evaluation cycle. Optional. */
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private LegacyDetectionRecorder legacyRecorder;
@@ -919,6 +928,106 @@ public class OIMomentumStrategy {
                     pcr, pcrDirection, momentum.direction(), momentum.type(), momentum.magnitude(),
                     0, entryCase, "SKIP", rejectReason, 0);
         }
+    }
+
+    // ── Conviction-based lot sizing for legacy + CASE 0 paths ─────────────────
+    //
+    // Both paths produce a single "conviction score" (op_score for CASE 0, bias_score
+    // for legacy) at the time enter() is called, and that score is embedded in the
+    // reason string. computeLegacyLotCount() recovers it and maps to a lot count in
+    // [1, maxLotsPerTrade] using {@link #convictionToLotCount}.
+
+    /**
+     * Recover the conviction score embedded in {@code reason}, classify the path, and
+     * return the lot count to use. SPIKE / REVERSE entries (no embedded score) default
+     * to 1 lot — those paths are event-driven and shouldn't conviction-scale.
+     */
+    private int computeLegacyLotCount(String reason) {
+        if (reason == null) return 1;
+        int maxLots = globalConfigService != null
+                ? Math.max(1, globalConfigService.getMaxLotsPerTrade())
+                : 1;
+        if (maxLots == 1) return 1; // operator wants single-lot only — skip the math.
+
+        // CASE 0 path: "CASE0_OI_LED opScore=NN ..."  — threshold = case0OpScoreThreshold.
+        if (reason.startsWith("CASE0_OI_LED")) {
+            int op = parseScoreToken(reason, "opScore=");
+            if (op > 0) {
+                int thr = config.getCase0OpScoreThreshold();
+                return convictionToLotCount(op, thr, maxLots);
+            }
+            return 1;
+        }
+
+        // SPIKE + REVERSE: event-driven, no conviction score → single lot.
+        if (reason.startsWith("SPIKE:") || reason.startsWith("REVERSE")) {
+            return 1;
+        }
+
+        // Legacy CASE 1-5: "M:... bias=NN ticks=..." — threshold = biasConfidenceThreshold.
+        int bias = parseScoreToken(reason, "bias=");
+        if (bias > 0) {
+            int thr = config.getBiasConfidenceThreshold();
+            return convictionToLotCount(bias, thr, maxLots);
+        }
+        return 1;
+    }
+
+    /**
+     * Parse "{token}NN" or "{token}NN.NN" out of {@code text}. Returns -1 when not found
+     * or unparseable.
+     */
+    private static int parseScoreToken(String text, String token) {
+        int idx = text.indexOf(token);
+        if (idx < 0) return -1;
+        int start = idx + token.length();
+        int end = start;
+        while (end < text.length()) {
+            char c = text.charAt(end);
+            if ((c >= '0' && c <= '9') || c == '.' || c == '-') end++;
+            else break;
+        }
+        if (end == start) return -1;
+        try {
+            // bias is a double in the reason string; cast is fine since we only need an integer score.
+            return (int) Math.round(Double.parseDouble(text.substring(start, end)));
+        } catch (NumberFormatException ex) {
+            return -1;
+        }
+    }
+
+    /**
+     * Linear conviction → lot-count scaler.
+     *
+     * <pre>
+     *   delta = clamp((score - threshold) / (100 - threshold), 0, 1)
+     *   lots  = 1 + round((maxLotsPerTrade - 1) × delta)
+     * </pre>
+     *
+     * <p>Examples (maxLotsPerTrade = 10, threshold = 80 for CASE 0):
+     *   score=80 → 1 lot (threshold floor);
+     *   score=90 → ~6 lots;
+     *   score=100 → 10 lots.</p>
+     *
+     * <p>For legacy CASE 1-5 (threshold = 65 = biasConfidenceThreshold):
+     *   bias=65 → 1 lot;
+     *   bias=82 → ~5 lots;
+     *   bias=100 → 10 lots.</p>
+     *
+     * <p>Score values below {@code threshold} can't reach this code path (the entry would
+     * have been skipped upstream), but the clamp keeps the formula safe regardless.</p>
+     */
+    private static int convictionToLotCount(double score, int threshold, int maxLotsPerTrade) {
+        if (maxLotsPerTrade <= 1) return 1;
+        double room = 100.0 - threshold;
+        if (room <= 0) return maxLotsPerTrade;       // misconfigured threshold; fall back to cap
+        double delta = (score - threshold) / room;
+        if (delta < 0) delta = 0;
+        if (delta > 1) delta = 1;
+        int lots = 1 + (int) Math.round((maxLotsPerTrade - 1) * delta);
+        if (lots < 1) lots = 1;
+        if (lots > maxLotsPerTrade) lots = maxLotsPerTrade;
+        return lots;
     }
 
     /**
@@ -1726,14 +1835,19 @@ public class OIMomentumStrategy {
 
         BigDecimal premium = quoteOpt.get().lastPrice();
         // Compute final SHARE COUNT to send to the broker:
-        //  • Legacy path (V3 off, V3 shadow, or V3 errored)   → one contract = indexType.lotSize() shares.
-        //  • V3 live path → V3 returns a LOT COUNT (1..maxLotsPerTrade); convert
-        //    to share count by multiplying by indexType.lotSize(). This guarantees
-        //    the broker always sees a quantity that is an exact multiple of the
-        //    contract lot size (a hard requirement at Zerodha / Upstox / etc.).
+        //  • V3 live path → V3's ConvictionSizer already returns a LOT COUNT in
+        //    [1, maxLotsPerTrade]; multiply by indexType.lotSize() for shares.
+        //  • Legacy + CASE 0 path → convictionToLotCount() maps the entry's score
+        //    (bias_score for CASE 1-5, op_score for CASE 0) to a lot count in
+        //    [1, maxLotsPerTrade] using the same GlobalConfig cap. Multiply by
+        //    indexType.lotSize() for shares.
+        //  • SPIKE / REVERSE entries (no embedded score) → 1 lot (safety default).
+        // This guarantees the broker always sees a quantity that is an exact
+        // multiple of the contract lot size (a hard requirement at Zerodha / Upstox).
+        int legacyLotCount = computeLegacyLotCount(reason);
         int lotSize = (v3OverrideLots > 0 && config.isV3Enabled() && !config.isV3ShadowMode())
                 ? v3OverrideLots * indexType.lotSize()
-                : indexType.lotSize();
+                : legacyLotCount * indexType.lotSize();
 
         // Build decision for execution
         StrategyDecision decision = new StrategyDecision(
