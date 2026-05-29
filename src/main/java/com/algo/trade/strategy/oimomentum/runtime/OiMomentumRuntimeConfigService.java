@@ -156,6 +156,47 @@ public class OiMomentumRuntimeConfigService {
             row.setMaxTradesPerDay(update.maxTradesPerDay);
             changes.append("maxTradesPerDay=").append(update.maxTradesPerDay).append(" ");
         }
+        if (update.legacyTimeOfDayModeEnabled != null
+                && update.legacyTimeOfDayModeEnabled != row.isLegacyTimeOfDayModeEnabled()) {
+            row.setLegacyTimeOfDayModeEnabled(update.legacyTimeOfDayModeEnabled);
+            changes.append("legacyTimeOfDayModeEnabled=").append(update.legacyTimeOfDayModeEnabled).append(" ");
+        }
+        if (update.case0Enabled != null
+                && update.case0Enabled != row.isCase0Enabled()) {
+            row.setCase0Enabled(update.case0Enabled);
+            changes.append("case0Enabled=").append(update.case0Enabled).append(" ");
+        }
+        if (update.case0ShadowMode != null
+                && update.case0ShadowMode != row.isCase0ShadowMode()) {
+            row.setCase0ShadowMode(update.case0ShadowMode);
+            changes.append("case0ShadowMode=").append(update.case0ShadowMode).append(" ");
+        }
+        if (update.case0OpScoreThreshold != null) {
+            if (update.case0OpScoreThreshold < 50 || update.case0OpScoreThreshold > 100) {
+                throw new IllegalArgumentException("case0OpScoreThreshold must be in [50,100]");
+            }
+            row.setCase0OpScoreThreshold(update.case0OpScoreThreshold);
+            changes.append("case0OpScoreThreshold=").append(update.case0OpScoreThreshold).append(" ");
+        }
+        if (update.case0CoilMaxPct != null) {
+            if (update.case0CoilMaxPct <= 0 || update.case0CoilMaxPct > 1.0) {
+                throw new IllegalArgumentException("case0CoilMaxPct must be in (0,1.0]");
+            }
+            row.setCase0CoilMaxPct(update.case0CoilMaxPct);
+            changes.append("case0CoilMaxPct=").append(update.case0CoilMaxPct).append(" ");
+        }
+        if (update.case0PcrSlopeMinAbs != null) {
+            if (update.case0PcrSlopeMinAbs < 0) {
+                throw new IllegalArgumentException("case0PcrSlopeMinAbs must be >= 0");
+            }
+            row.setCase0PcrSlopeMinAbs(update.case0PcrSlopeMinAbs);
+            changes.append("case0PcrSlopeMinAbs=").append(update.case0PcrSlopeMinAbs).append(" ");
+        }
+        if (update.case4WatchlistBonusEnabled != null
+                && update.case4WatchlistBonusEnabled != row.isCase4WatchlistBonusEnabled()) {
+            row.setCase4WatchlistBonusEnabled(update.case4WatchlistBonusEnabled);
+            changes.append("case4WatchlistBonusEnabled=").append(update.case4WatchlistBonusEnabled).append(" ");
+        }
         row.setUpdatedAt(Instant.now());
         row.setUpdatedBy(updatedBy == null ? "anonymous" : updatedBy);
         row.setUpdatedReason(reason);
@@ -204,6 +245,13 @@ public class OiMomentumRuntimeConfigService {
         oiMomentumConfig.setConsecutiveLossHaltCount(src.getConsecutiveLossHaltCount());
         oiMomentumConfig.setBreakEvenTriggerPercent(src.getBreakEvenTriggerPercent());
         oiMomentumConfig.setMaxTradesPerDay(src.getMaxTradesPerDay());
+        oiMomentumConfig.setLegacyTimeOfDayModeEnabled(src.isLegacyTimeOfDayModeEnabled());
+        oiMomentumConfig.setCase0Enabled(src.isCase0Enabled());
+        oiMomentumConfig.setCase0ShadowMode(src.isCase0ShadowMode());
+        oiMomentumConfig.setCase0OpScoreThreshold(src.getCase0OpScoreThreshold());
+        oiMomentumConfig.setCase0CoilMaxPct(src.getCase0CoilMaxPct());
+        oiMomentumConfig.setCase0PcrSlopeMinAbs(src.getCase0PcrSlopeMinAbs());
+        oiMomentumConfig.setCase4WatchlistBonusEnabled(src.isCase4WatchlistBonusEnabled());
     }
 
     private OiMomentumRuntimeConfig createDefaultRow() {
@@ -227,5 +275,13 @@ public class OiMomentumRuntimeConfigService {
         public Integer consecutiveLossHaltCount;
         public Double  breakEvenTriggerPercent;
         public Integer maxTradesPerDay;
+        // Legacy enhancements (29 May 2026 — see OI_MOMENTUM_EMPIRICAL_REPLAY_RESULTS.md)
+        public Boolean legacyTimeOfDayModeEnabled;
+        public Boolean case0Enabled;
+        public Boolean case0ShadowMode;
+        public Integer case0OpScoreThreshold;
+        public Double  case0CoilMaxPct;
+        public Double  case0PcrSlopeMinAbs;
+        public Boolean case4WatchlistBonusEnabled;
     }
 }

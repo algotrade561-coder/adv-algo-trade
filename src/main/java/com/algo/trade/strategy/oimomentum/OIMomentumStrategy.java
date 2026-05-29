@@ -183,6 +183,28 @@ public class OIMomentumStrategy {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.algo.trade.strategy.oimomentum.v3.MarketContextService v3MarketContext;
 
+    /** CASE 0 OI-led entry detector (P0-1 — 29 May 2026, data-validated). Optional. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private Case0OiLedDetector case0Detector;
+
+    /** Legacy detection CSV recorder — captures every momentum evaluation cycle. Optional. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private LegacyDetectionRecorder legacyRecorder;
+
+    /**
+     * CASE 4 watch-list state (P1-3): when CASE 4 (OI conflicts momentum) fires, we
+     * remember the OI direction + timestamp per index. If the NEXT signal within 20 min
+     * aligns with that remembered OI direction, the bias score gets a +5 bonus.
+     */
+    private static class Case4WatchEntry {
+        final int oiDirection;
+        final Instant atTime;
+        Case4WatchEntry(int oiDir, Instant at) { this.oiDirection = oiDir; this.atTime = at; }
+    }
+    private final java.util.concurrent.ConcurrentHashMap<IndexType, Case4WatchEntry> case4Watch =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private static final java.time.Duration CASE4_WATCH_TTL = java.time.Duration.ofMinutes(20);
+
     public OIMomentumStrategy(OIMomentumConfig config,
                                TickMomentumDetector momentumDetector,
                                LiveInstrumentCache liveInstrumentCache,
@@ -632,6 +654,70 @@ public class OIMomentumStrategy {
             return;
         }
 
+        // ── CASE 0 — OI-led entry (P0-1, 29 May 2026 data-validated) ──
+        // Evaluated BEFORE event spike + price-momentum. Catches setups where the
+        // chain has tilted but spot is still coiling. See OI_MOMENTUM_EMPIRICAL_REPLAY_RESULTS.md
+        // (replay: 91% 30m win on strict thresholds across 12 days).
+        //
+        // Binding only when:  case0Enabled && !case0ShadowMode && !(v3Enabled && !v3ShadowMode)
+        // Otherwise: record-only (CSV captured for end-of-day validation).
+        Case0OiLedDetector.Decision case0Decision = (case0Detector != null)
+                ? case0Detector.evaluate(indexType, config)
+                : new Case0OiLedDetector.Decision(false, 0, 0, 0, 0, "detector_not_wired");
+        boolean v3BindingLive = config.isV3Enabled() && !config.isV3ShadowMode();
+        boolean case0BindingLive = case0Decision.fires()
+                && config.isCase0Enabled() && !config.isCase0ShadowMode() && !v3BindingLive;
+
+        if (case0Decision.fires()) {
+            String label = case0BindingLive ? "CASE0_LIVE" : "CASE0_SHADOW";
+            log.info("[OIMomentum][{}] {} dir={} opScore={} range20m={}% pcrSlope5m={}",
+                    indexType, label, case0Decision.direction(), case0Decision.opScore(),
+                    String.format("%.3f", case0Decision.rangePct()),
+                    String.format("%+.3f", case0Decision.pcrSlope5Min()));
+        }
+
+        if (case0BindingLive) {
+            double case0Spot = momentumDetector.getSpot(indexType);
+            if (case0Spot > 0) {
+                int case0Atm = indexType.roundToATM(case0Spot);
+                long[] case0Oi = liveInstrumentCache.getAtmOiChange(indexType, case0Atm, 3, 3);
+                double case0Pcr = liveInstrumentCache.getRealtimePcr(indexType);
+                int case0PcrDir = pcrDir(case0Pcr);
+                int case0OiDir = oiDir(case0Oi[0], case0Oi[1]);
+                boolean case0OiAvail = case0Oi[0] != 0 || case0Oi[1] != 0;
+                TickMomentumDetector.MomentumSignal pseudoMom =
+                        new TickMomentumDetector.MomentumSignal(case0Decision.direction(),
+                                "CASE0_OI_LED", 0, case0Spot);
+                OiMomentumEntryDiagnostics case0Diag = OiMomentumEntryDiagnostics.forSpike(
+                        indexType, pseudoMom, case0Pcr, case0PcrDir, case0Oi[0], case0Oi[1],
+                        case0OiAvail, case0OiDir, state.oiAdvanced,
+                        marketGuard.getCurrentVix(), expiryCalendar.daysToExpiry(indexType),
+                        expiryCalendar.isExpiryDay(indexType), paperTrading(indexType));
+                String case0Reason = String.format(
+                        "CASE0_OI_LED opScore=%d range20m=%.3f%% pcrSlope=%+.3f",
+                        case0Decision.opScore(), case0Decision.rangePct(),
+                        case0Decision.pcrSlope5Min());
+                recordLegacyDetection(indexType, com.algo.trade.strategy.oimomentum.v3.TimeOfDayMode.classify(LocalTime.now(IST)),
+                        case0Spot, case0Atm, case0Decision,
+                        case0Oi[0], case0Oi[1], case0OiAvail, case0OiDir,
+                        case0Pcr, case0PcrDir,
+                        0, "CASE0_OI_LED", 0, 0,
+                        "CASE0_LIVE", "ENTER", case0Reason, 0);
+                enter(indexType, state, case0Decision.direction(), case0Reason, case0Spot, case0Diag);
+                return;
+            }
+        } else if (case0Decision.fires()) {
+            // Shadow-mode CASE 0 fire — record so end-of-day analysis can see "what we would
+            // have entered" without actually entering.
+            double s0 = momentumDetector.getSpot(indexType);
+            int a0 = s0 > 0 ? indexType.roundToATM(s0) : 0;
+            recordLegacyDetection(indexType, com.algo.trade.strategy.oimomentum.v3.TimeOfDayMode.classify(LocalTime.now(IST)),
+                    s0, a0, case0Decision,
+                    0, 0, false, 0, liveInstrumentCache.getRealtimePcr(indexType), 0,
+                    0, "CASE0_OI_LED", 0, 0,
+                    "CASE0_SHADOW", "SKIP", "case0_shadow_mode", 0);
+        }
+
         // ── Event Spike Detection (highest priority) ──
         TickMomentumDetector.MomentumSignal spike = momentumDetector.detectSpike(
                 indexType, config.getSpikeThresholdPercent());
@@ -720,6 +806,28 @@ public class OIMomentumStrategy {
         OiMomentumEntryDiagnostics diag = buildDiagnostics(
                 indexType, state, momentum, oiDirection, pcrDirection, pcr, ceOiChange, peOiChange,
                 oiAvailable, spot, atm, entryCase, null, diagBlockDetail);
+
+        // ── P0-2: time-of-day mode gate (29 May 2026, data-validated) ──
+        // Replay: filtering out AFTERNOON_POSITION + LAST_HOUR + EOD_SQUEEZE_ONLY
+        // lifts 30m win rate from 48% → 58%. MIDDAY_DISCIPLINE requires 4-of-4
+        // (CASE 1) or CASE 3 + operator-aligned confluence — sustained-loss window.
+        com.algo.trade.strategy.oimomentum.v3.TimeOfDayMode todMode =
+                com.algo.trade.strategy.oimomentum.v3.TimeOfDayMode.classify(LocalTime.now(IST));
+        if (config.isLegacyTimeOfDayModeEnabled() && eval.direction() != 0) {
+            String todSkip = checkTimeOfDayGate(indexType, todMode, entryCase, oiDirection, momentum.direction());
+            if (todSkip != null) {
+                rejectedCount.incrementAndGet();
+                state.lastRejectReason = todSkip;
+                state.lastRejectSampleTime = tuneRecorder.recordReject(indexType, state.lastRejectSampleTime,
+                        todSkip, diag);
+                recordLegacyDetection(indexType, todMode, spot, atm, case0Decision,
+                        ceOiChange, peOiChange, oiAvailable, oiDirection,
+                        pcr, pcrDirection, momentum.direction(), momentum.type(), momentum.magnitude(),
+                        0, entryCase, "SKIP", todSkip, 0);
+                return;
+            }
+        }
+
         if (eval.direction() != 0) {
             // ── Adaptive Bias Engine (Stage 1) ────────────────────────────
             BiasScore bias = computeBiasScore(indexType, state, momentum.direction(),
@@ -757,6 +865,13 @@ public class OIMomentumStrategy {
                     String reason = String.format("M:%s OI:%d PCR:%.2f(%d) case=%s bias=%.0f ticks=%d%s",
                             momentum.type(), oiDirection, pcr, pcrDirection, entryCase,
                             bias.score(), config.getBiasConfirmationTicks(), operatorTag);
+                    // Record before enter() so we always have a row even if enter() throws
+                    recordLegacyDetection(indexType, todMode, spot, atm, case0Decision,
+                            ceOiChange, peOiChange, oiAvailable, oiDirection,
+                            pcr, pcrDirection, momentum.direction(), momentum.type(), momentum.magnitude(),
+                            (int) bias.score(), entryCase, "ENTER", reason, 0);
+                    // CASE 4 watchlist consumed: this aligned entry just took the bonus
+                    clearCase4Watch(indexType, eval.direction());
                     enter(indexType, state, eval.direction(), reason, spot, diag);
                     // NOTE: enteredCount is incremented inside enterWithGates only on a
                     // confirmed entry (paper fill / live fill / pending order). Internal
@@ -774,6 +889,10 @@ public class OIMomentumStrategy {
                 state.lastRejectReason = rejectReason;
                 state.lastRejectSampleTime = tuneRecorder.recordReject(indexType, state.lastRejectSampleTime,
                         rejectReason, diag);
+                recordLegacyDetection(indexType, todMode, spot, atm, case0Decision,
+                        ceOiChange, peOiChange, oiAvailable, oiDirection,
+                        pcr, pcrDirection, momentum.direction(), momentum.type(), momentum.magnitude(),
+                        (int) bias.score(), entryCase, "SKIP", rejectReason, 0);
             }
             // ──────────────────────────────────────────────────────────────
         } else {
@@ -787,6 +906,130 @@ public class OIMomentumStrategy {
             state.lastRejectReason = rejectReason;
             state.lastRejectSampleTime = tuneRecorder.recordReject(indexType, state.lastRejectSampleTime,
                     rejectReason, diag);
+            // P1-3: CASE 4 watch-list (OI flip vs momentum = potential reversal lead)
+            if (config.isCase4WatchlistBonusEnabled() && "CASE4".equals(entryCase)
+                    && oiDirection != 0) {
+                case4Watch.put(indexType,
+                        new Case4WatchEntry(oiDirection, Instant.now()));
+                log.debug("[OIMomentum][{}] CASE4 watchlist set: oiDir={} (TTL=20m)",
+                        indexType, oiDirection);
+            }
+            recordLegacyDetection(indexType, todMode, spot, atm, case0Decision,
+                    ceOiChange, peOiChange, oiAvailable, oiDirection,
+                    pcr, pcrDirection, momentum.direction(), momentum.type(), momentum.magnitude(),
+                    0, entryCase, "SKIP", rejectReason, 0);
+        }
+    }
+
+    /**
+     * P0-2 time-of-day gate. Returns a skip reason (null = pass through).
+     *
+     * <ul>
+     *   <li>AFTERNOON_POSITION (13:30–14:45): skip all baseline entries.</li>
+     *   <li>LAST_HOUR (14:45–15:10), EOD_SQUEEZE_ONLY (15:10–15:20): skip all
+     *       baseline entries. Last-hour squeezes are V3-only.</li>
+     *   <li>MIDDAY_DISCIPLINE (11:30–13:30): require CASE 1 (all three align) OR
+     *       CASE 3 with operator-aligned OI direction. CASE 2 (no OI) is rejected.</li>
+     *   <li>OPENING_DRIVE + TREND_FOLLOW: allow everything (these are the windows
+     *       where the strategy actually wins).</li>
+     * </ul>
+     */
+    private String checkTimeOfDayGate(IndexType ix,
+                                      com.algo.trade.strategy.oimomentum.v3.TimeOfDayMode mode,
+                                      String entryCase, int oiDirection, int momentumDir) {
+        switch (mode) {
+            case AFTERNOON_POSITION:
+                return "tod_gate:AFTERNOON_POSITION blocked";
+            case LAST_HOUR:
+                return "tod_gate:LAST_HOUR blocked";
+            case EOD_SQUEEZE_ONLY:
+                return "tod_gate:EOD_SQUEEZE_ONLY blocked";
+            case MIDDAY_DISCIPLINE:
+                if ("CASE2".equals(entryCase)) {
+                    return "tod_gate:MIDDAY_DISCIPLINE requires_oi";
+                }
+                if ("CASE3".equals(entryCase) && oiDirection != momentumDir) {
+                    return "tod_gate:MIDDAY_DISCIPLINE requires_oi_aligned";
+                }
+                return null;
+            default:
+                return null;
+        }
+    }
+
+    /** Clear stale CASE 4 watch state, but only when aligned (preserves the bonus path). */
+    private void clearCase4Watch(IndexType ix, int enteredDir) {
+        Case4WatchEntry e = case4Watch.get(ix);
+        if (e == null) return;
+        if (e.oiDirection == enteredDir) case4Watch.remove(ix);
+    }
+
+    /**
+     * Returns the +5 CASE 4 watch bonus if there is an active watchlist entry on
+     * this index whose oiDirection matches {@code momentumDir} and is younger than
+     * {@link #CASE4_WATCH_TTL}. Used by {@link #computeBiasScore}.
+     */
+    private int case4WatchBonus(IndexType ix, int momentumDir) {
+        if (!config.isCase4WatchlistBonusEnabled()) return 0;
+        Case4WatchEntry e = case4Watch.get(ix);
+        if (e == null) return 0;
+        if (Duration.between(e.atTime, Instant.now()).compareTo(CASE4_WATCH_TTL) > 0) {
+            case4Watch.remove(ix);
+            return 0;
+        }
+        return (e.oiDirection == momentumDir) ? 5 : 0;
+    }
+
+    /**
+     * Build a {@link LegacyDetectionRecord} from the current detection state and
+     * hand it to {@link LegacyDetectionRecorder}. Best-effort: failures are swallowed.
+     */
+    private void recordLegacyDetection(IndexType ix,
+                                       com.algo.trade.strategy.oimomentum.v3.TimeOfDayMode mode,
+                                       double spot, int atm,
+                                       Case0OiLedDetector.Decision case0,
+                                       long ceOiChange, long peOiChange,
+                                       boolean oiAvail, int oiDir,
+                                       double pcr, int pcrDir,
+                                       int momentumDir, String momentumType,
+                                       double momentumMagPct,
+                                       int biasScore, String matrixCase,
+                                       String finalDecision, String finalReason,
+                                       int finalLots) {
+        if (legacyRecorder == null) return;
+        try {
+            double pcrSlope = 0.0;
+            try {
+                pcrSlope = (v3MarketContext != null) ? v3MarketContext.pcrSlope5Min(ix) : 0.0;
+            } catch (Exception ignored) {}
+            Case4WatchEntry watch = case4Watch.get(ix);
+            boolean watchActive = watch != null
+                    && Duration.between(watch.atTime, Instant.now()).compareTo(CASE4_WATCH_TTL) <= 0;
+
+            OperatorAccumulationDetector.OperatorSignal opSig = (operatorFrameworkService != null)
+                    ? operatorFrameworkService.getOperatorSignal(ix) : null;
+            int opScore = opSig != null ? opSig.getScore() : 0;
+            int opDir = opSig != null ? opSig.getDirection() : 0;
+
+            double vix = 0;
+            try { vix = marketGuard.getCurrentVix(); } catch (Exception ignored) {}
+
+            LegacyDetectionRecord r = new LegacyDetectionRecord(
+                    Instant.now(), ix, spot, atm, vix, mode,
+                    opScore, opDir,
+                    case0 != null ? case0.rangePct() : 0,
+                    pcr, pcrSlope, pcrDir,
+                    ceOiChange, peOiChange, oiAvail, oiDir,
+                    momentumDir, momentumType, momentumMagPct,
+                    biasScore, matrixCase, config.getBiasConfidenceThreshold(),
+                    case0 != null && case0.fires(),
+                    case0 != null ? case0.direction() : 0,
+                    case0 != null && !case0.fires() ? case0.reason() : "",
+                    watchActive, watchActive ? watch.atTime : null,
+                    finalDecision, finalReason, finalLots);
+            legacyRecorder.record(r);
+        } catch (Exception ex) {
+            log.debug("[OIMomentum][{}] legacy detection record failed: {}", ix, ex.getMessage());
         }
     }
 
@@ -1746,6 +1989,16 @@ public class OIMomentumStrategy {
             // No OI data at all — use configurable penalty (was hardcoded to 10)
             score -= config.getBiasDecayPenalty();
             sig.append(String.format(" NO_OI(-%d)", config.getBiasDecayPenalty()));
+        }
+
+        // ── [+5] CASE 4 watch-list bonus (P1-3, 29 May 2026 data-validated) ──
+        // When a recent (≤20 min) CASE 4 fire had an OI direction matching this
+        // momentum, treat that as an early reversal lead. Replay 60m win rate
+        // when OI wins CASE 4: 53.6% (vs 46.4% if momentum wins).
+        int c4Bonus = case4WatchBonus(indexType, momentumDir);
+        if (c4Bonus > 0) {
+            score += c4Bonus;
+            sig.append(" C4_WATCH(+").append(c4Bonus).append(")");
         }
 
         // ── [+0..+20] Operator Framework conviction bonus ─────────────────────────

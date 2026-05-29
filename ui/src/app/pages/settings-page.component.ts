@@ -126,6 +126,58 @@ import {
               </div>
             }
 
+            <!-- ── Legacy Enhancements (29 May 2026 — data-validated) ── -->
+            <div class="section-hdr clickable sub-hdr" (click)="legacyEnhOpen = !legacyEnhOpen">
+              <mat-icon class="icon-v3">insights</mat-icon>
+              <div>
+                <h2>Legacy enhancements <small style="color:var(--muted);font-weight:400">(data-validated 29 May)</small></h2>
+                <p>Time-of-day filter, CASE 0 OI-led entry, CASE 4 watch-list bonus</p>
+              </div>
+              <span class="spacer"></span>
+              <mat-icon>{{ legacyEnhOpen ? 'expand_less' : 'expand_more' }}</mat-icon>
+            </div>
+
+            @if (legacyEnhOpen) {
+              <div class="form-grid">
+                <div class="toggle-row">
+                  <span>Time-of-day mode filter
+                    <small class="toggle-hint">Skip afternoon + last-hour entries; require 4-of-4 in mid-day. Replay 48% → 58% win%.</small></span>
+                  <mat-slide-toggle [(ngModel)]="oiConfig.legacyTimeOfDayModeEnabled" color="primary"></mat-slide-toggle>
+                </div>
+                <div class="toggle-row">
+                  <span>CASE 0 — OI-led entry
+                    <small class="toggle-hint">Fires before any price breakout when chain is screaming. 91% 30m win in replay.</small></span>
+                  <mat-slide-toggle [(ngModel)]="oiConfig.case0Enabled" color="primary"></mat-slide-toggle>
+                </div>
+                <div class="toggle-row">
+                  <span>CASE 0 shadow mode
+                    <small class="toggle-hint">Log-only — recommended for first 5 sessions.</small></span>
+                  <mat-slide-toggle [(ngModel)]="oiConfig.case0ShadowMode" color="primary"
+                    [disabled]="!oiConfig.case0Enabled"></mat-slide-toggle>
+                </div>
+                <mat-form-field appearance="outline">
+                  <mat-label>CASE 0 op-score threshold</mat-label>
+                  <input matInput type="number" min="50" max="100" [(ngModel)]="oiConfig.case0OpScoreThreshold">
+                  <mat-hint>Strict=80 (91% win). Loose=70 (56% win, 3+/day).</mat-hint>
+                </mat-form-field>
+                <mat-form-field appearance="outline">
+                  <mat-label>CASE 0 max 20-min coil (%)</mat-label>
+                  <input matInput type="number" min="0.01" max="1.0" step="0.01" [(ngModel)]="oiConfig.case0CoilMaxPct">
+                  <mat-hint>Strict=0.10. Loose=0.15.</mat-hint>
+                </mat-form-field>
+                <mat-form-field appearance="outline">
+                  <mat-label>CASE 0 min |PCR slope 5m|</mat-label>
+                  <input matInput type="number" min="0" max="1" step="0.01" [(ngModel)]="oiConfig.case0PcrSlopeMinAbs">
+                  <mat-hint>Direction-of-tilt requirement.</mat-hint>
+                </mat-form-field>
+                <div class="toggle-row">
+                  <span>CASE 4 watch-list bonus
+                    <small class="toggle-hint">+5 bias when next signal aligns with prior OI flip (≤20 min).</small></span>
+                  <mat-slide-toggle [(ngModel)]="oiConfig.case4WatchlistBonusEnabled" color="primary"></mat-slide-toggle>
+                </div>
+              </div>
+            }
+
             <div class="section-hdr clickable sub-hdr" (click)="haltsOpen = !haltsOpen">
               <mat-icon class="icon-risk">pause_circle</mat-icon>
               <div>
@@ -693,6 +745,7 @@ export class SettingsPageComponent implements OnInit {
   riskOpen = true;
   oiOpen = true;
   v3SafetyOpen = false;
+  legacyEnhOpen = false;   // collapsed by default; toggle when configuring legacy CASE 0 + TOD filter
   haltsOpen = true;
   haltStatus: OiMomentumHaltStatusDto | null = null;
   resumeClearHalted = true;

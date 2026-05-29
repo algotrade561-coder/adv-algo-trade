@@ -137,6 +137,14 @@ export interface OiMomentumRuntimeConfigDto {
   consecutiveLossHaltCount: number;
   breakEvenTriggerPercent: number;
   maxTradesPerDay: number;
+  // ── Legacy enhancements (29 May 2026 — data-validated; see OI_MOMENTUM_EMPIRICAL_REPLAY_RESULTS.md) ──
+  legacyTimeOfDayModeEnabled: boolean;
+  case0Enabled: boolean;
+  case0ShadowMode: boolean;
+  case0OpScoreThreshold: number;
+  case0CoilMaxPct: number;
+  case0PcrSlopeMinAbs: number;
+  case4WatchlistBonusEnabled: boolean;
   updatedAt: string;
   updatedBy: string;
   updatedReason: string;

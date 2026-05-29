@@ -183,6 +183,14 @@ public class OiMomentumSettingsController {
         m.put("consecutiveLossHaltCount", c.getConsecutiveLossHaltCount());
         m.put("breakEvenTriggerPercent", c.getBreakEvenTriggerPercent());
         m.put("maxTradesPerDay", c.getMaxTradesPerDay());
+        // Legacy enhancements (29 May 2026 — data-validated)
+        m.put("legacyTimeOfDayModeEnabled", c.isLegacyTimeOfDayModeEnabled());
+        m.put("case0Enabled", c.isCase0Enabled());
+        m.put("case0ShadowMode", c.isCase0ShadowMode());
+        m.put("case0OpScoreThreshold", c.getCase0OpScoreThreshold());
+        m.put("case0CoilMaxPct", c.getCase0CoilMaxPct());
+        m.put("case0PcrSlopeMinAbs", c.getCase0PcrSlopeMinAbs());
+        m.put("case4WatchlistBonusEnabled", c.isCase4WatchlistBonusEnabled());
         m.put("updatedAt", c.getUpdatedAt() != null ? c.getUpdatedAt().toString() : "");
         m.put("updatedBy", c.getUpdatedBy());
         m.put("updatedReason", c.getUpdatedReason());
@@ -205,6 +213,14 @@ public class OiMomentumSettingsController {
         public Double  breakEvenTriggerPercent;
         public Integer maxTradesPerDay;
         public String  reason;
+        // Legacy enhancements (29 May 2026 — data-validated)
+        public Boolean legacyTimeOfDayModeEnabled;
+        public Boolean case0Enabled;
+        public Boolean case0ShadowMode;
+        public Integer case0OpScoreThreshold;
+        public Double  case0CoilMaxPct;
+        public Double  case0PcrSlopeMinAbs;
+        public Boolean case4WatchlistBonusEnabled;
 
         RuntimeConfigUpdate toUpdate() {
             RuntimeConfigUpdate u = new RuntimeConfigUpdate();
@@ -221,6 +237,13 @@ public class OiMomentumSettingsController {
             u.consecutiveLossHaltCount = consecutiveLossHaltCount;
             u.breakEvenTriggerPercent = breakEvenTriggerPercent;
             u.maxTradesPerDay = maxTradesPerDay;
+            u.legacyTimeOfDayModeEnabled = legacyTimeOfDayModeEnabled;
+            u.case0Enabled = case0Enabled;
+            u.case0ShadowMode = case0ShadowMode;
+            u.case0OpScoreThreshold = case0OpScoreThreshold;
+            u.case0CoilMaxPct = case0CoilMaxPct;
+            u.case0PcrSlopeMinAbs = case0PcrSlopeMinAbs;
+            u.case4WatchlistBonusEnabled = case4WatchlistBonusEnabled;
             return u;
         }
     }

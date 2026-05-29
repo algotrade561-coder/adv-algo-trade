@@ -268,6 +268,34 @@ public class OIMomentumConfig {
      */
     private boolean v3ShadowMode = false;
 
+    // ── Legacy enhancements (data-validated 29 May 2026) ──
+    //
+    // See OI_MOMENTUM_EMPIRICAL_REPLAY_RESULTS.md for the supporting figures.
+    /**
+     * P0-2: filter baseline CASE 1-5 by time-of-day mode. When true, AFTERNOON_POSITION
+     * (13:30–14:45) + LAST_HOUR (14:45–15:10) entries are skipped, and MIDDAY_DISCIPLINE
+     * (11:30–13:30) requires 4-of-4 alignment.
+     */
+    private boolean legacyTimeOfDayModeEnabled = false;
+
+    /** P0-1: enable CASE 0 (OI-led entry that fires before any price breakout). */
+    private boolean case0Enabled = false;
+
+    /** CASE 0 shadow mode — record but do not bind. Default ON so first deploy is safe. */
+    private boolean case0ShadowMode = true;
+
+    /** CASE 0 minimum operator score. Replay calibration: 80. */
+    private int case0OpScoreThreshold = 80;
+
+    /** CASE 0 maximum 20-min spot range (% of spot). Replay calibration: 0.10. */
+    private double case0CoilMaxPct = 0.10;
+
+    /** CASE 0 minimum |PCR slope per 5 min| in the operator direction. */
+    private double case0PcrSlopeMinAbs = 0.02;
+
+    /** P1-3: enable CASE 4 watch-list bonus (+5 to next aligned signal within 20 min). */
+    private boolean case4WatchlistBonusEnabled = false;
+
     // ── Enabled/Paper ──
     private boolean enabled = true;
     private boolean paperTrading = false;
@@ -319,6 +347,22 @@ public class OIMomentumConfig {
     public void setV3Enabled(boolean v) { this.v3Enabled = v; }
     public boolean isV3ShadowMode() { return v3ShadowMode; }
     public void setV3ShadowMode(boolean v) { this.v3ShadowMode = v; }
+
+    // ── Legacy enhancements getters/setters (29 May 2026) ──
+    public boolean isLegacyTimeOfDayModeEnabled() { return legacyTimeOfDayModeEnabled; }
+    public void setLegacyTimeOfDayModeEnabled(boolean v) { this.legacyTimeOfDayModeEnabled = v; }
+    public boolean isCase0Enabled() { return case0Enabled; }
+    public void setCase0Enabled(boolean v) { this.case0Enabled = v; }
+    public boolean isCase0ShadowMode() { return case0ShadowMode; }
+    public void setCase0ShadowMode(boolean v) { this.case0ShadowMode = v; }
+    public int getCase0OpScoreThreshold() { return case0OpScoreThreshold; }
+    public void setCase0OpScoreThreshold(int v) { this.case0OpScoreThreshold = v; }
+    public double getCase0CoilMaxPct() { return case0CoilMaxPct; }
+    public void setCase0CoilMaxPct(double v) { this.case0CoilMaxPct = v; }
+    public double getCase0PcrSlopeMinAbs() { return case0PcrSlopeMinAbs; }
+    public void setCase0PcrSlopeMinAbs(double v) { this.case0PcrSlopeMinAbs = v; }
+    public boolean isCase4WatchlistBonusEnabled() { return case4WatchlistBonusEnabled; }
+    public void setCase4WatchlistBonusEnabled(boolean v) { this.case4WatchlistBonusEnabled = v; }
 
     // Getters and setters
     public double getMomentumThresholdPercent() { return momentumThresholdPercent; }
