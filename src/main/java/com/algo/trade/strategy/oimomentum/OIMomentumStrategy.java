@@ -188,6 +188,13 @@ public class OIMomentumStrategy {
     private Case0OiLedDetector case0Detector;
 
     /**
+     * R2 — Range-edge fade detector (29 May 2026, data-validated 54% 30m / 56% 60m
+     * win, ~13.6 fires/day). Addresses range-bound gap. Optional.
+     */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private RangeEdgeFadeDetector rangeEdgeFadeDetector;
+
+    /**
      * Source of the {@code maxLotsPerTrade} cap used for conviction-based lot sizing
      * on legacy CASE 1-5 + CASE 0 entries. Optional so unit-test wirings without the
      * full Spring context can construct OIMomentumStrategy. When null, conviction
@@ -314,15 +321,15 @@ public class OIMomentumStrategy {
             for (IndexType idx : CANDIDATE_INDICES) {
                 IndexState state = indexStates.get(idx);
                 var closedForIdx = todayTrades.stream()
-                        .filter(t -> t.getStatus() == TradeStatus.CLOSED)
+                    .filter(t -> t.getStatus() == TradeStatus.CLOSED)
                         .filter(t -> resolveIndexFromInstrumentKey(t.getInstrumentKey()) == idx)
-                        .sorted((a, b) -> b.getExitTime().compareTo(a.getExitTime()))
-                        .toList();
+                    .sorted((a, b) -> b.getExitTime().compareTo(a.getExitTime()))
+                    .toList();
                 int losses = 0;
                 for (var t : closedForIdx) {
-                    if (t.getRealizedPnl() != null && t.getRealizedPnl().signum() < 0) losses++;
-                    else break;
-                }
+                if (t.getRealizedPnl() != null && t.getRealizedPnl().signum() < 0) losses++;
+                else break;
+            }
                 state.consecutiveLosses.set(losses);
             }
 
@@ -727,6 +734,67 @@ public class OIMomentumStrategy {
                     "CASE0_SHADOW", "SKIP", "case0_shadow_mode", 0);
         }
 
+        // ── R2: Range-edge fade (29 May 2026 — data-validated for range-bound markets) ──
+        // Fires on tight ranges (30M < 0.30%) when spot is at top/bottom edge with
+        // OI confirmation. Binds when not in V3-live mode. Same shadow-vs-live pattern.
+        RangeEdgeFadeDetector.Decision fadeDecision = (rangeEdgeFadeDetector != null)
+                ? rangeEdgeFadeDetector.evaluate(indexType, config)
+                : new RangeEdgeFadeDetector.Decision(false, 0, 0, 0, 0, 0, 0, "detector_not_wired");
+        boolean fadeBindingLive = fadeDecision.fires() && !v3BindingLive;
+        if (fadeDecision.fires()) {
+            log.info("[OIMomentum][{}] RANGE_EDGE_FADE {} dir={} pos={} range30m={}% pcr={} theta_cost={}%",
+                    indexType, fadeBindingLive ? "LIVE" : "SHADOW",
+                    fadeDecision.direction(),
+                    String.format("%.3f", fadeDecision.positionInRange()),
+                    String.format("%.3f", fadeDecision.range30mPct()),
+                    String.format("%.2f", fadeDecision.pcr()),
+                    String.format("%.2f", fadeDecision.thetaCostPct()));
+        }
+        if (fadeBindingLive) {
+            double fadeSpot = momentumDetector.getSpot(indexType);
+            if (fadeSpot > 0) {
+                int fadeAtm = indexType.roundToATM(fadeSpot);
+                long[] fadeOi = liveInstrumentCache.getAtmOiChange(indexType, fadeAtm, 3, 3);
+                double fadePcr = liveInstrumentCache.getRealtimePcr(indexType);
+                int fadePcrDir = pcrDir(fadePcr);
+                int fadeOiDir = oiDir(fadeOi[0], fadeOi[1]);
+                boolean fadeOiAvail = fadeOi[0] != 0 || fadeOi[1] != 0;
+                TickMomentumDetector.MomentumSignal pseudoMom =
+                        new TickMomentumDetector.MomentumSignal(fadeDecision.direction(),
+                                "RANGE_EDGE_FADE", 0, fadeSpot);
+                OiMomentumEntryDiagnostics fadeDiag = OiMomentumEntryDiagnostics.forSpike(
+                        indexType, pseudoMom, fadePcr, fadePcrDir, fadeOi[0], fadeOi[1],
+                        fadeOiAvail, fadeOiDir, state.oiAdvanced,
+                        marketGuard.getCurrentVix(), expiryCalendar.daysToExpiry(indexType),
+                        expiryCalendar.isExpiryDay(indexType), paperTrading(indexType));
+                String fadeReason = String.format(
+                        "RANGE_EDGE_FADE dir=%d pos=%.3f range30m=%.3f%% pcr=%.2f theta=%.2f%%",
+                        fadeDecision.direction(), fadeDecision.positionInRange(),
+                        fadeDecision.range30mPct(), fadeDecision.pcr(),
+                        fadeDecision.thetaCostPct());
+                recordLegacyDetection(indexType,
+                        com.algo.trade.strategy.oimomentum.v3.TimeOfDayMode.classify(LocalTime.now(IST)),
+                        fadeSpot, fadeAtm, case0Decision,
+                        fadeOi[0], fadeOi[1], fadeOiAvail, fadeOiDir,
+                        fadePcr, fadePcrDir,
+                        fadeDecision.direction(), "RANGE_EDGE_FADE", 0.0,
+                        0, "RANGE_EDGE_FADE_LIVE", "ENTER", fadeReason, 0);
+                enter(indexType, state, fadeDecision.direction(), fadeReason, fadeSpot, fadeDiag);
+                return;
+            }
+        } else if (fadeDecision.fires()) {
+            // Shadow-mode fade — record without entering
+            double fs = momentumDetector.getSpot(indexType);
+            int fa = fs > 0 ? indexType.roundToATM(fs) : 0;
+            recordLegacyDetection(indexType,
+                    com.algo.trade.strategy.oimomentum.v3.TimeOfDayMode.classify(LocalTime.now(IST)),
+                    fs, fa, case0Decision,
+                    0L, 0L, false, 0,
+                    liveInstrumentCache.getRealtimePcr(indexType), 0,
+                    fadeDecision.direction(), "RANGE_EDGE_FADE", 0.0,
+                    0, "RANGE_EDGE_FADE_SHADOW", "SKIP", "v3_binding_blocks_fade", 0);
+        }
+
         // ── Event Spike Detection (highest priority) ──
         TickMomentumDetector.MomentumSignal spike = momentumDetector.detectSpike(
                 indexType, config.getSpikeThresholdPercent());
@@ -762,7 +830,7 @@ public class OIMomentumStrategy {
                         marketGuard.getCurrentVix(), expiryCalendar.daysToExpiry(indexType),
                         expiryCalendar.isExpiryDay(indexType), paperTrading(indexType));
                 enter(indexType, state, spike.direction(), "SPIKE:" + spike.type(), spike.spotPrice(), diag);
-                return;
+            return;
             }
         }
 

@@ -139,6 +139,63 @@ public class OiMomentumRuntimeConfig {
     @ColumnDefault("true")
     private boolean case4WatchlistBonusEnabled = true;
 
+    // ── R3 — Adaptive CASE 0 for low-VIX (29 May 2026 — data-validated 82% 60m win) ──
+
+    /** Enable the low-VIX second tier of CASE 0 (replay: 71.7% 30m, 82.1% 60m win, ~4/day). */
+    @Column(name = "case0_low_vix_enabled", nullable = false)
+    @ColumnDefault("true")
+    private boolean case0LowVixEnabled = true;
+
+    /** Activate low-VIX tier when current VIX < this. */
+    @Column(name = "case0_low_vix_vix_threshold", nullable = false)
+    @ColumnDefault("17.0")
+    private double case0LowVixVixThreshold = 17.0;
+
+    /** Op-score threshold for low-VIX tier (looser than strict tier's 80). */
+    @Column(name = "case0_low_vix_op_score", nullable = false)
+    @ColumnDefault("65")
+    private int case0LowVixOpScoreThreshold = 65;
+
+    /** Coil % for low-VIX tier (looser than strict tier's 0.10). */
+    @Column(name = "case0_low_vix_coil_max_pct", nullable = false)
+    @ColumnDefault("0.20")
+    private double case0LowVixCoilMaxPct = 0.20;
+
+    // ── R2 — Range-edge fade (29 May 2026 — data-validated 53.8% 30m / 56.5% 60m win) ──
+
+    /** Enable range-edge fade detector (~13.6 fires/day at 54% win, addresses range-bound gap). */
+    @Column(name = "range_edge_fade_enabled", nullable = false)
+    @ColumnDefault("true")
+    private boolean rangeEdgeFadeEnabled = true;
+
+    /** Max 30M range to consider "ranging" (% of spot). */
+    @Column(name = "range_edge_fade_range_max_pct", nullable = false)
+    @ColumnDefault("0.30")
+    private double rangeEdgeFadeRangeMaxPct = 0.30;
+
+    /** Edge band — top/bottom this fraction of range triggers fade. */
+    @Column(name = "range_edge_fade_edge_pct", nullable = false)
+    @ColumnDefault("0.20")
+    private double rangeEdgeFadeEdgePct = 0.20;
+
+    /** Min 5-min OI build (contracts) on the trapping side to confirm fade. */
+    @Column(name = "range_edge_fade_oi_build_min", nullable = false)
+    @ColumnDefault("3000")
+    private int rangeEdgeFadeOiBuildMin = 3000;
+
+    // ── Theta-decay gate (applied to all new entries; also retroactively to CASE 0) ──
+
+    /** Enable theta-decay rejection. Trades whose expected theta cost exceeds the
+     *  configured % of expected gain are skipped. */
+    @Column(name = "theta_decay_check_enabled", nullable = false)
+    @ColumnDefault("true")
+    private boolean thetaDecayCheckEnabled = true;
+
+    /** Max % of expected gain that theta is allowed to eat. Default 30%. */
+    @Column(name = "theta_decay_max_cost_pct", nullable = false)
+    @ColumnDefault("30.0")
+    private double thetaDecayMaxCostPct = 30.0;
+
     /** When this row was last modified (audit). */
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt = Instant.now();
@@ -215,6 +272,29 @@ public class OiMomentumRuntimeConfig {
 
     public boolean isCase4WatchlistBonusEnabled() { return case4WatchlistBonusEnabled; }
     public void setCase4WatchlistBonusEnabled(boolean v) { this.case4WatchlistBonusEnabled = v; }
+
+    public boolean isCase0LowVixEnabled() { return case0LowVixEnabled; }
+    public void setCase0LowVixEnabled(boolean v) { this.case0LowVixEnabled = v; }
+    public double getCase0LowVixVixThreshold() { return case0LowVixVixThreshold; }
+    public void setCase0LowVixVixThreshold(double v) { this.case0LowVixVixThreshold = v; }
+    public int getCase0LowVixOpScoreThreshold() { return case0LowVixOpScoreThreshold; }
+    public void setCase0LowVixOpScoreThreshold(int v) { this.case0LowVixOpScoreThreshold = v; }
+    public double getCase0LowVixCoilMaxPct() { return case0LowVixCoilMaxPct; }
+    public void setCase0LowVixCoilMaxPct(double v) { this.case0LowVixCoilMaxPct = v; }
+
+    public boolean isRangeEdgeFadeEnabled() { return rangeEdgeFadeEnabled; }
+    public void setRangeEdgeFadeEnabled(boolean v) { this.rangeEdgeFadeEnabled = v; }
+    public double getRangeEdgeFadeRangeMaxPct() { return rangeEdgeFadeRangeMaxPct; }
+    public void setRangeEdgeFadeRangeMaxPct(double v) { this.rangeEdgeFadeRangeMaxPct = v; }
+    public double getRangeEdgeFadeEdgePct() { return rangeEdgeFadeEdgePct; }
+    public void setRangeEdgeFadeEdgePct(double v) { this.rangeEdgeFadeEdgePct = v; }
+    public int getRangeEdgeFadeOiBuildMin() { return rangeEdgeFadeOiBuildMin; }
+    public void setRangeEdgeFadeOiBuildMin(int v) { this.rangeEdgeFadeOiBuildMin = v; }
+
+    public boolean isThetaDecayCheckEnabled() { return thetaDecayCheckEnabled; }
+    public void setThetaDecayCheckEnabled(boolean v) { this.thetaDecayCheckEnabled = v; }
+    public double getThetaDecayMaxCostPct() { return thetaDecayMaxCostPct; }
+    public void setThetaDecayMaxCostPct(double v) { this.thetaDecayMaxCostPct = v; }
 
     public Instant getUpdatedAt() { return updatedAt; }
     public void setUpdatedAt(Instant v) { this.updatedAt = v; }

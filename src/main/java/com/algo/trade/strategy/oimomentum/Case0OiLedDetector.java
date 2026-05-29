@@ -52,6 +52,14 @@ public class Case0OiLedDetector {
     @Autowired(required = false)
     private MarketContextService marketContext;
 
+    /**
+     * R3 — Adaptive CASE 0 reads VIX from MarketGuard to decide between the strict
+     * tier (high-VIX) and the loosened low-VIX tier. Optional so tests can construct
+     * without the full Spring context.
+     */
+    @Autowired(required = false)
+    private com.algo.trade.risk.MarketGuard marketGuard;
+
     public Case0OiLedDetector(OperatorFrameworkService operatorFrameworkService,
                               TickMomentumDetector momentumDetector) {
         this.operatorFrameworkService = operatorFrameworkService;
@@ -95,7 +103,7 @@ public class Case0OiLedDetector {
         OperatorAccumulationDetector.OperatorSignal sig =
                 operatorFrameworkService.getOperatorSignal(index);
 
-        // Need a fresh, directional, high-conviction operator signal.
+        // Need a fresh, directional operator signal (any tier).
         int opScore = sig == null ? 0 : sig.getScore();
         int opDir = sig == null ? 0 : sig.getDirection();
         if (sig == null || !sig.isFresh()) {
@@ -104,35 +112,48 @@ public class Case0OiLedDetector {
         if (opDir == 0) {
             return Decision.skip("op_dir_neutral", opScore, 0, 0);
         }
-        if (opScore < config.getCase0OpScoreThreshold()) {
-            return Decision.skip("op_score_below_" + config.getCase0OpScoreThreshold(),
+
+        // R3 — Adaptive tier selection (29 May 2026 — replay-validated 82% 60m win).
+        // If VIX is below the low-VIX threshold AND the low-VIX tier is enabled,
+        // use the looser thresholds. Otherwise use the strict (original) thresholds.
+        double currentVix = (marketGuard != null) ? marketGuard.getCurrentVix() : 0.0;
+        boolean lowVixActive = config.isCase0LowVixEnabled()
+                && currentVix > 0 && currentVix < config.getCase0LowVixVixThreshold();
+        int effectiveOpThr = lowVixActive
+                ? config.getCase0LowVixOpScoreThreshold() : config.getCase0OpScoreThreshold();
+        double effectiveCoilMax = lowVixActive
+                ? config.getCase0LowVixCoilMaxPct() : config.getCase0CoilMaxPct();
+        String tier = lowVixActive ? "LOW_VIX" : "STRICT";
+
+        if (opScore < effectiveOpThr) {
+            return Decision.skip(String.format("op_score_below_%d_tier=%s", effectiveOpThr, tier),
                     opScore, 0, 0);
         }
 
-        // Coil check: tight range over the last 20 minutes.
+        // Coil check using the tier-appropriate threshold.
         double rangePct = compute20MinRangePct(index);
         if (Double.isNaN(rangePct)) {
             return Decision.skip("range_unavailable", opScore, 0, 0);
         }
-        if (rangePct > config.getCase0CoilMaxPct()) {
-            return Decision.skip(String.format("not_coiled_range=%.3f%%", rangePct),
+        if (rangePct > effectiveCoilMax) {
+            return Decision.skip(String.format("not_coiled_range=%.3f%%_tier=%s", rangePct, tier),
                     opScore, rangePct, 0);
         }
 
-        // PCR slope agrees with operator direction.
+        // PCR slope agrees with operator direction (both tiers).
         double pcrSlope = (marketContext != null) ? marketContext.pcrSlope5Min(index) : 0.0;
         double need = config.getCase0PcrSlopeMinAbs();
         boolean pcrAgrees =
                 (opDir > 0 && pcrSlope >= +need)
              || (opDir < 0 && pcrSlope <= -need);
         if (!pcrAgrees) {
-            return Decision.skip(String.format("pcr_slope_disagrees=%.3f", pcrSlope),
+            return Decision.skip(String.format("pcr_slope_disagrees=%.3f_tier=%s", pcrSlope, tier),
                     opScore, rangePct, pcrSlope);
         }
 
         if (log.isInfoEnabled()) {
-            log.info("[CASE0][{}] FIRE dir={} opScore={} range20m={}% pcrSlope5m={}",
-                    index, opDir, opScore,
+            log.info("[CASE0][{}] FIRE tier={} dir={} opScore={} vix={} range20m={}% pcrSlope5m={}",
+                    index, tier, opDir, opScore, String.format("%.2f", currentVix),
                     String.format("%.3f", rangePct), String.format("%+.3f", pcrSlope));
         }
         return Decision.fire(opDir, opScore, rangePct, pcrSlope);

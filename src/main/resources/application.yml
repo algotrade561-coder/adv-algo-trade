@@ -335,6 +335,19 @@ oi-momentum:
   case0-coil-max-pct: 0.10                 # strict; loose=0.15
   case0-pcr-slope-min-abs: 0.02            # PCR direction-of-tilt requirement
   case4-watchlist-bonus-enabled: true      # P1-3: +5 bias on next OI-aligned signal
+  # R3 — Adaptive CASE 0 for low-VIX (29 May 2026 — replay 82% 60m win, ~4/day)
+  case0-low-vix-enabled: true
+  case0-low-vix-vix-threshold: 17.0
+  case0-low-vix-op-score-threshold: 65
+  case0-low-vix-coil-max-pct: 0.20
+  # R2 — Range-edge fade for range-bound markets (replay 54% 30m win, ~14/day)
+  range-edge-fade-enabled: true
+  range-edge-fade-range-max-pct: 0.30
+  range-edge-fade-edge-pct: 0.20
+  range-edge-fade-oi-build-min: 3000
+  # Theta-decay gate — reject high-decay entries on both new detectors
+  theta-decay-check-enabled: true
+  theta-decay-max-cost-pct: 30.0
   # Detection-row CSV — captures every momentum-cycle row for end-of-day analysis.
   legacy-decision-log-enabled: true
   legacy-decision-log-dir: data/oi-decisions

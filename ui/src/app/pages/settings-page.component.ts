@@ -175,6 +175,69 @@ import {
                     <small class="toggle-hint">+5 bias when next signal aligns with prior OI flip (≤20 min).</small></span>
                   <mat-slide-toggle [(ngModel)]="oiConfig.case4WatchlistBonusEnabled" color="primary"></mat-slide-toggle>
                 </div>
+
+                <!-- R3 — Adaptive CASE 0 for low-VIX (replay 82% 60m win) -->
+                <div class="toggle-row">
+                  <span>CASE 0 low-VIX tier (R3)
+                    <small class="toggle-hint">Loosen CASE 0 thresholds when VIX is calm. Replay: 71.7% 30m / 82.1% 60m win.</small></span>
+                  <mat-slide-toggle [(ngModel)]="oiConfig.case0LowVixEnabled" color="primary"></mat-slide-toggle>
+                </div>
+                <mat-form-field appearance="outline">
+                  <mat-label>Low-VIX activation threshold</mat-label>
+                  <input matInput type="number" min="10" max="25" step="0.5"
+                         [(ngModel)]="oiConfig.case0LowVixVixThreshold">
+                  <mat-hint>VIX below this → use loose tier (default 17)</mat-hint>
+                </mat-form-field>
+                <mat-form-field appearance="outline">
+                  <mat-label>Low-VIX op-score threshold</mat-label>
+                  <input matInput type="number" min="30" max="100" step="5"
+                         [(ngModel)]="oiConfig.case0LowVixOpScoreThreshold">
+                  <mat-hint>Looser than strict 80 (default 65)</mat-hint>
+                </mat-form-field>
+                <mat-form-field appearance="outline">
+                  <mat-label>Low-VIX coil max (%)</mat-label>
+                  <input matInput type="number" min="0.05" max="0.50" step="0.01"
+                         [(ngModel)]="oiConfig.case0LowVixCoilMaxPct">
+                  <mat-hint>Looser than strict 0.10 (default 0.20)</mat-hint>
+                </mat-form-field>
+
+                <!-- R2 — Range-edge fade for range-bound markets -->
+                <div class="toggle-row">
+                  <span>Range-edge fade (R2)
+                    <small class="toggle-hint">Fade top/bottom of tight 30M range with OI confirmation. Replay: ~14/day @ 54% 30m / 56% 60m win. Fills range-bound gap.</small></span>
+                  <mat-slide-toggle [(ngModel)]="oiConfig.rangeEdgeFadeEnabled" color="primary"></mat-slide-toggle>
+                </div>
+                <mat-form-field appearance="outline">
+                  <mat-label>Max 30M range to consider ranging (%)</mat-label>
+                  <input matInput type="number" min="0.10" max="0.80" step="0.05"
+                         [(ngModel)]="oiConfig.rangeEdgeFadeRangeMaxPct">
+                  <mat-hint>Default 0.30</mat-hint>
+                </mat-form-field>
+                <mat-form-field appearance="outline">
+                  <mat-label>Edge band (top/bottom fraction)</mat-label>
+                  <input matInput type="number" min="0.10" max="0.40" step="0.05"
+                         [(ngModel)]="oiConfig.rangeEdgeFadeEdgePct">
+                  <mat-hint>0.20 = top/bottom 20% of range</mat-hint>
+                </mat-form-field>
+                <mat-form-field appearance="outline">
+                  <mat-label>Min OI build to confirm fade</mat-label>
+                  <input matInput type="number" min="500" max="50000" step="500"
+                         [(ngModel)]="oiConfig.rangeEdgeFadeOiBuildMin">
+                  <mat-hint>Default 3000 contracts</mat-hint>
+                </mat-form-field>
+
+                <!-- Theta-decay gate -->
+                <div class="toggle-row">
+                  <span>Theta-decay check
+                    <small class="toggle-hint">Reject entries whose expected theta cost exceeds % of expected gain. Protects late-day / near-expiry entries.</small></span>
+                  <mat-slide-toggle [(ngModel)]="oiConfig.thetaDecayCheckEnabled" color="primary"></mat-slide-toggle>
+                </div>
+                <mat-form-field appearance="outline">
+                  <mat-label>Max theta cost % of expected gain</mat-label>
+                  <input matInput type="number" min="10" max="80" step="5"
+                         [(ngModel)]="oiConfig.thetaDecayMaxCostPct">
+                  <mat-hint>30 = theta eats max 30% of expected gain</mat-hint>
+                </mat-form-field>
               </div>
             }
 

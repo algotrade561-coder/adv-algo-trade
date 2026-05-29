@@ -296,6 +296,22 @@ public class OIMomentumConfig {
     /** P1-3: enable CASE 4 watch-list bonus (+5 to next aligned signal within 20 min). LIVE default ON. */
     private boolean case4WatchlistBonusEnabled = true;
 
+    // ── R3 — Adaptive CASE 0 for low-VIX (29 May 2026 — replay-validated 82% 60m win) ──
+    private boolean case0LowVixEnabled = true;
+    private double case0LowVixVixThreshold = 17.0;
+    private int case0LowVixOpScoreThreshold = 65;
+    private double case0LowVixCoilMaxPct = 0.20;
+
+    // ── R2 — Range-edge fade (29 May 2026 — replay-validated 54% 30m win, ~14/day) ──
+    private boolean rangeEdgeFadeEnabled = true;
+    private double rangeEdgeFadeRangeMaxPct = 0.30;
+    private double rangeEdgeFadeEdgePct = 0.20;
+    private int rangeEdgeFadeOiBuildMin = 3000;
+
+    // ── Theta-decay gate ──
+    private boolean thetaDecayCheckEnabled = true;
+    private double thetaDecayMaxCostPct = 30.0;
+
     // ── Enabled/Paper ──
     private boolean enabled = true;
     private boolean paperTrading = false;
@@ -363,6 +379,29 @@ public class OIMomentumConfig {
     public void setCase0PcrSlopeMinAbs(double v) { this.case0PcrSlopeMinAbs = v; }
     public boolean isCase4WatchlistBonusEnabled() { return case4WatchlistBonusEnabled; }
     public void setCase4WatchlistBonusEnabled(boolean v) { this.case4WatchlistBonusEnabled = v; }
+
+    public boolean isCase0LowVixEnabled() { return case0LowVixEnabled; }
+    public void setCase0LowVixEnabled(boolean v) { this.case0LowVixEnabled = v; }
+    public double getCase0LowVixVixThreshold() { return case0LowVixVixThreshold; }
+    public void setCase0LowVixVixThreshold(double v) { this.case0LowVixVixThreshold = v; }
+    public int getCase0LowVixOpScoreThreshold() { return case0LowVixOpScoreThreshold; }
+    public void setCase0LowVixOpScoreThreshold(int v) { this.case0LowVixOpScoreThreshold = v; }
+    public double getCase0LowVixCoilMaxPct() { return case0LowVixCoilMaxPct; }
+    public void setCase0LowVixCoilMaxPct(double v) { this.case0LowVixCoilMaxPct = v; }
+
+    public boolean isRangeEdgeFadeEnabled() { return rangeEdgeFadeEnabled; }
+    public void setRangeEdgeFadeEnabled(boolean v) { this.rangeEdgeFadeEnabled = v; }
+    public double getRangeEdgeFadeRangeMaxPct() { return rangeEdgeFadeRangeMaxPct; }
+    public void setRangeEdgeFadeRangeMaxPct(double v) { this.rangeEdgeFadeRangeMaxPct = v; }
+    public double getRangeEdgeFadeEdgePct() { return rangeEdgeFadeEdgePct; }
+    public void setRangeEdgeFadeEdgePct(double v) { this.rangeEdgeFadeEdgePct = v; }
+    public int getRangeEdgeFadeOiBuildMin() { return rangeEdgeFadeOiBuildMin; }
+    public void setRangeEdgeFadeOiBuildMin(int v) { this.rangeEdgeFadeOiBuildMin = v; }
+
+    public boolean isThetaDecayCheckEnabled() { return thetaDecayCheckEnabled; }
+    public void setThetaDecayCheckEnabled(boolean v) { this.thetaDecayCheckEnabled = v; }
+    public double getThetaDecayMaxCostPct() { return thetaDecayMaxCostPct; }
+    public void setThetaDecayMaxCostPct(double v) { this.thetaDecayMaxCostPct = v; }
 
     // Getters and setters
     public double getMomentumThresholdPercent() { return momentumThresholdPercent; }

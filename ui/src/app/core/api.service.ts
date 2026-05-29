@@ -145,6 +145,19 @@ export interface OiMomentumRuntimeConfigDto {
   case0CoilMaxPct: number;
   case0PcrSlopeMinAbs: number;
   case4WatchlistBonusEnabled: boolean;
+  // R3 — Adaptive CASE 0 for low-VIX (29 May 2026 — replay 82% 60m win)
+  case0LowVixEnabled: boolean;
+  case0LowVixVixThreshold: number;
+  case0LowVixOpScoreThreshold: number;
+  case0LowVixCoilMaxPct: number;
+  // R2 — Range-edge fade (29 May 2026 — replay 54% 30m win, ~14/day, addresses range-bound gap)
+  rangeEdgeFadeEnabled: boolean;
+  rangeEdgeFadeRangeMaxPct: number;
+  rangeEdgeFadeEdgePct: number;
+  rangeEdgeFadeOiBuildMin: number;
+  // Theta-decay gate
+  thetaDecayCheckEnabled: boolean;
+  thetaDecayMaxCostPct: number;
   updatedAt: string;
   updatedBy: string;
   updatedReason: string;

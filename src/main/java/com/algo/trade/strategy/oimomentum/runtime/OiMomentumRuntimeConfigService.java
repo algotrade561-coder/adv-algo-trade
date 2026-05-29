@@ -197,6 +197,55 @@ public class OiMomentumRuntimeConfigService {
             row.setCase4WatchlistBonusEnabled(update.case4WatchlistBonusEnabled);
             changes.append("case4WatchlistBonusEnabled=").append(update.case4WatchlistBonusEnabled).append(" ");
         }
+        // R3 — Adaptive CASE 0 for low-VIX
+        if (update.case0LowVixEnabled != null
+                && update.case0LowVixEnabled != row.isCase0LowVixEnabled()) {
+            row.setCase0LowVixEnabled(update.case0LowVixEnabled);
+            changes.append("case0LowVixEnabled=").append(update.case0LowVixEnabled).append(" ");
+        }
+        if (update.case0LowVixVixThreshold != null) {
+            row.setCase0LowVixVixThreshold(update.case0LowVixVixThreshold);
+            changes.append("case0LowVixVixThreshold=").append(update.case0LowVixVixThreshold).append(" ");
+        }
+        if (update.case0LowVixOpScoreThreshold != null) {
+            if (update.case0LowVixOpScoreThreshold < 30 || update.case0LowVixOpScoreThreshold > 100) {
+                throw new IllegalArgumentException("case0LowVixOpScoreThreshold must be in [30,100]");
+            }
+            row.setCase0LowVixOpScoreThreshold(update.case0LowVixOpScoreThreshold);
+            changes.append("case0LowVixOpScoreThreshold=").append(update.case0LowVixOpScoreThreshold).append(" ");
+        }
+        if (update.case0LowVixCoilMaxPct != null) {
+            row.setCase0LowVixCoilMaxPct(update.case0LowVixCoilMaxPct);
+            changes.append("case0LowVixCoilMaxPct=").append(update.case0LowVixCoilMaxPct).append(" ");
+        }
+        // R2 — Range-edge fade
+        if (update.rangeEdgeFadeEnabled != null
+                && update.rangeEdgeFadeEnabled != row.isRangeEdgeFadeEnabled()) {
+            row.setRangeEdgeFadeEnabled(update.rangeEdgeFadeEnabled);
+            changes.append("rangeEdgeFadeEnabled=").append(update.rangeEdgeFadeEnabled).append(" ");
+        }
+        if (update.rangeEdgeFadeRangeMaxPct != null) {
+            row.setRangeEdgeFadeRangeMaxPct(update.rangeEdgeFadeRangeMaxPct);
+            changes.append("rangeEdgeFadeRangeMaxPct=").append(update.rangeEdgeFadeRangeMaxPct).append(" ");
+        }
+        if (update.rangeEdgeFadeEdgePct != null) {
+            row.setRangeEdgeFadeEdgePct(update.rangeEdgeFadeEdgePct);
+            changes.append("rangeEdgeFadeEdgePct=").append(update.rangeEdgeFadeEdgePct).append(" ");
+        }
+        if (update.rangeEdgeFadeOiBuildMin != null) {
+            row.setRangeEdgeFadeOiBuildMin(update.rangeEdgeFadeOiBuildMin);
+            changes.append("rangeEdgeFadeOiBuildMin=").append(update.rangeEdgeFadeOiBuildMin).append(" ");
+        }
+        // Theta-decay gate
+        if (update.thetaDecayCheckEnabled != null
+                && update.thetaDecayCheckEnabled != row.isThetaDecayCheckEnabled()) {
+            row.setThetaDecayCheckEnabled(update.thetaDecayCheckEnabled);
+            changes.append("thetaDecayCheckEnabled=").append(update.thetaDecayCheckEnabled).append(" ");
+        }
+        if (update.thetaDecayMaxCostPct != null) {
+            row.setThetaDecayMaxCostPct(update.thetaDecayMaxCostPct);
+            changes.append("thetaDecayMaxCostPct=").append(update.thetaDecayMaxCostPct).append(" ");
+        }
         row.setUpdatedAt(Instant.now());
         row.setUpdatedBy(updatedBy == null ? "anonymous" : updatedBy);
         row.setUpdatedReason(reason);
@@ -252,6 +301,19 @@ public class OiMomentumRuntimeConfigService {
         oiMomentumConfig.setCase0CoilMaxPct(src.getCase0CoilMaxPct());
         oiMomentumConfig.setCase0PcrSlopeMinAbs(src.getCase0PcrSlopeMinAbs());
         oiMomentumConfig.setCase4WatchlistBonusEnabled(src.isCase4WatchlistBonusEnabled());
+        // R3 — Adaptive CASE 0 for low-VIX
+        oiMomentumConfig.setCase0LowVixEnabled(src.isCase0LowVixEnabled());
+        oiMomentumConfig.setCase0LowVixVixThreshold(src.getCase0LowVixVixThreshold());
+        oiMomentumConfig.setCase0LowVixOpScoreThreshold(src.getCase0LowVixOpScoreThreshold());
+        oiMomentumConfig.setCase0LowVixCoilMaxPct(src.getCase0LowVixCoilMaxPct());
+        // R2 — Range-edge fade
+        oiMomentumConfig.setRangeEdgeFadeEnabled(src.isRangeEdgeFadeEnabled());
+        oiMomentumConfig.setRangeEdgeFadeRangeMaxPct(src.getRangeEdgeFadeRangeMaxPct());
+        oiMomentumConfig.setRangeEdgeFadeEdgePct(src.getRangeEdgeFadeEdgePct());
+        oiMomentumConfig.setRangeEdgeFadeOiBuildMin(src.getRangeEdgeFadeOiBuildMin());
+        // Theta-decay gate
+        oiMomentumConfig.setThetaDecayCheckEnabled(src.isThetaDecayCheckEnabled());
+        oiMomentumConfig.setThetaDecayMaxCostPct(src.getThetaDecayMaxCostPct());
     }
 
     private OiMomentumRuntimeConfig createDefaultRow() {
@@ -283,5 +345,18 @@ public class OiMomentumRuntimeConfigService {
         public Double  case0CoilMaxPct;
         public Double  case0PcrSlopeMinAbs;
         public Boolean case4WatchlistBonusEnabled;
+        // R3 — Adaptive CASE 0 for low-VIX
+        public Boolean case0LowVixEnabled;
+        public Double  case0LowVixVixThreshold;
+        public Integer case0LowVixOpScoreThreshold;
+        public Double  case0LowVixCoilMaxPct;
+        // R2 — Range-edge fade
+        public Boolean rangeEdgeFadeEnabled;
+        public Double  rangeEdgeFadeRangeMaxPct;
+        public Double  rangeEdgeFadeEdgePct;
+        public Integer rangeEdgeFadeOiBuildMin;
+        // Theta-decay gate
+        public Boolean thetaDecayCheckEnabled;
+        public Double  thetaDecayMaxCostPct;
     }
 }

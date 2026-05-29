@@ -191,6 +191,19 @@ public class OiMomentumSettingsController {
         m.put("case0CoilMaxPct", c.getCase0CoilMaxPct());
         m.put("case0PcrSlopeMinAbs", c.getCase0PcrSlopeMinAbs());
         m.put("case4WatchlistBonusEnabled", c.isCase4WatchlistBonusEnabled());
+        // R3 — Adaptive CASE 0 for low-VIX
+        m.put("case0LowVixEnabled", c.isCase0LowVixEnabled());
+        m.put("case0LowVixVixThreshold", c.getCase0LowVixVixThreshold());
+        m.put("case0LowVixOpScoreThreshold", c.getCase0LowVixOpScoreThreshold());
+        m.put("case0LowVixCoilMaxPct", c.getCase0LowVixCoilMaxPct());
+        // R2 — Range-edge fade
+        m.put("rangeEdgeFadeEnabled", c.isRangeEdgeFadeEnabled());
+        m.put("rangeEdgeFadeRangeMaxPct", c.getRangeEdgeFadeRangeMaxPct());
+        m.put("rangeEdgeFadeEdgePct", c.getRangeEdgeFadeEdgePct());
+        m.put("rangeEdgeFadeOiBuildMin", c.getRangeEdgeFadeOiBuildMin());
+        // Theta-decay gate
+        m.put("thetaDecayCheckEnabled", c.isThetaDecayCheckEnabled());
+        m.put("thetaDecayMaxCostPct", c.getThetaDecayMaxCostPct());
         m.put("updatedAt", c.getUpdatedAt() != null ? c.getUpdatedAt().toString() : "");
         m.put("updatedBy", c.getUpdatedBy());
         m.put("updatedReason", c.getUpdatedReason());
@@ -221,6 +234,19 @@ public class OiMomentumSettingsController {
         public Double  case0CoilMaxPct;
         public Double  case0PcrSlopeMinAbs;
         public Boolean case4WatchlistBonusEnabled;
+        // R3 — Adaptive CASE 0 for low-VIX
+        public Boolean case0LowVixEnabled;
+        public Double  case0LowVixVixThreshold;
+        public Integer case0LowVixOpScoreThreshold;
+        public Double  case0LowVixCoilMaxPct;
+        // R2 — Range-edge fade
+        public Boolean rangeEdgeFadeEnabled;
+        public Double  rangeEdgeFadeRangeMaxPct;
+        public Double  rangeEdgeFadeEdgePct;
+        public Integer rangeEdgeFadeOiBuildMin;
+        // Theta-decay gate
+        public Boolean thetaDecayCheckEnabled;
+        public Double  thetaDecayMaxCostPct;
 
         RuntimeConfigUpdate toUpdate() {
             RuntimeConfigUpdate u = new RuntimeConfigUpdate();
@@ -244,6 +270,19 @@ public class OiMomentumSettingsController {
             u.case0CoilMaxPct = case0CoilMaxPct;
             u.case0PcrSlopeMinAbs = case0PcrSlopeMinAbs;
             u.case4WatchlistBonusEnabled = case4WatchlistBonusEnabled;
+            // R3 — Adaptive CASE 0 for low-VIX
+            u.case0LowVixEnabled = case0LowVixEnabled;
+            u.case0LowVixVixThreshold = case0LowVixVixThreshold;
+            u.case0LowVixOpScoreThreshold = case0LowVixOpScoreThreshold;
+            u.case0LowVixCoilMaxPct = case0LowVixCoilMaxPct;
+            // R2 — Range-edge fade
+            u.rangeEdgeFadeEnabled = rangeEdgeFadeEnabled;
+            u.rangeEdgeFadeRangeMaxPct = rangeEdgeFadeRangeMaxPct;
+            u.rangeEdgeFadeEdgePct = rangeEdgeFadeEdgePct;
+            u.rangeEdgeFadeOiBuildMin = rangeEdgeFadeOiBuildMin;
+            // Theta-decay gate
+            u.thetaDecayCheckEnabled = thetaDecayCheckEnabled;
+            u.thetaDecayMaxCostPct = thetaDecayMaxCostPct;
             return u;
         }
     }

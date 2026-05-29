@@ -52,6 +52,17 @@ public class KiteWebSocketClient {
     private static final int MAX_ZOMBIE_RECONNECTS_BEFORE_BACKOFF = 5;
     /** Backoff period after too many zombie reconnects (minutes). */
     private static final int ZOMBIE_BACKOFF_MINUTES = 5;
+    /**
+     * Bug #4 fix (29 May 2026): when this many zombie reconnects accumulate
+     * without sustained recovery, recreate the OkHttpClient itself. Re-login
+     * is NOT an option mid-day (Kite OAuth requires manual TOTP), but a fresh
+     * HTTP client with a fresh connection pool effectively achieves the same
+     * thing — Kite's server-side session tracker treats it as a new client.
+     * This is what JVM restart does and is why "only restart helps" today.
+     */
+    private static final int ZOMBIE_HTTP_CLIENT_RECREATE_THRESHOLD = 10;
+    /** Extended backoff (minutes) after recreating the HTTP client — let Kite's session state age out. */
+    private static final int EXTENDED_BACKOFF_MINUTES = 5;
 
     private final LiveInstrumentCache liveInstrumentCache;
     private final LiveCandleBuilder candleBuilder;
@@ -68,10 +79,23 @@ public class KiteWebSocketClient {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.algo.trade.monitoring.ErrorEventService errorEventService;
 
-    private final OkHttpClient httpClient = new OkHttpClient.Builder()
-            .readTimeout(0, TimeUnit.MILLISECONDS) // no timeout for WebSocket
-            .build();
+    /**
+     * Bug #4 fix (29 May 2026): NOT final anymore. When Kite poisons a session
+     * (rapid reconnects → backend marks the session as suspicious), fresh TCP
+     * connects from the SAME OkHttpClient keep getting killed because they
+     * reuse the same connection pool state. The only known fix without
+     * re-login (which requires manual TOTP — not available mid-day) is to
+     * destroy the OkHttpClient and create a fresh one. This is what a JVM
+     * restart effectively does and explains why "only restart helps".
+     */
+    private volatile OkHttpClient httpClient = newOkHttpClient();
     private volatile ScheduledExecutorService reconnectExecutor = newReconnectExecutor();
+
+    private static OkHttpClient newOkHttpClient() {
+        return new OkHttpClient.Builder()
+                .readTimeout(0, TimeUnit.MILLISECONDS) // no timeout for WebSocket
+                .build();
+    }
 
     private static ScheduledExecutorService newReconnectExecutor() {
         return Executors.newSingleThreadScheduledExecutor(r -> {
@@ -95,6 +119,18 @@ public class KiteWebSocketClient {
     private volatile int reconnectCount = 0;
     private volatile int zombieReconnectCount = 0;
     private volatile Instant lastZombieReconnectTime = null;
+    /**
+     * Counts tick frames received since the last zombie reconnect. Bug #3 fix
+     * (29 May 2026): the previous code reset {@link #zombieReconnectCount} to 0
+     * on the FIRST tick after a reconnect. But Kite sometimes sends a single tick
+     * burst right after subscribe and then nothing — that single tick was enough
+     * to reset the backoff counter, so MAX_ZOMBIE_RECONNECTS_BEFORE_BACKOFF was
+     * never reached and the strategy thrashed forever. We now require at least
+     * {@link #SUSTAINED_TICKS_TO_RESET} consecutive ticks before declaring the
+     * reconnect a real success.
+     */
+    private volatile int sustainedTicksSinceReconnect = 0;
+    private static final int SUSTAINED_TICKS_TO_RESET = 100;
     private volatile ScheduledExecutorService heartbeatExecutor;
     private final java.util.concurrent.ExecutorService alertExecutor =
             java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
@@ -189,6 +225,66 @@ public class KiteWebSocketClient {
         log.warn("[WS] Force-reconnect triggered: {}", reason);
         zombieReconnectCount++;
         lastZombieReconnectTime = Instant.now();
+        // Bug #3 fix: reset sustained-tick counter so each reconnect attempt
+        // must independently prove the connection is healthy.
+        sustainedTicksSinceReconnect = 0;
+
+        // Bug #4 fix (29 May 2026): persistent zombies indicate Kite has poisoned
+        // the session — fresh TCP connects from the SAME OkHttpClient keep being
+        // killed. Re-login isn't available mid-day (TOTP required). The only known
+        // automatic recovery is to recreate the OkHttpClient itself, dropping all
+        // connection-pool state and HTTP/2 session cookies. This is effectively
+        // what a JVM restart does, which is why "only restart helps" today.
+        // We recreate the client + back off for an extended period to let Kite's
+        // server-side state clear before the next attempt.
+        if (zombieReconnectCount >= ZOMBIE_HTTP_CLIENT_RECREATE_THRESHOLD) {
+            log.error("[WS] {} consecutive zombie reconnects — recreating OkHttpClient "
+                    + "to drop poisoned session state (mimicking restart behaviour)",
+                    zombieReconnectCount);
+            OkHttpClient oldClient = this.httpClient;
+            try {
+                // Build fresh client first so the new connect uses it
+                this.httpClient = newOkHttpClient();
+                // Tear down the old client's connection pool + dispatcher
+                if (oldClient != null) {
+                    try {
+                        oldClient.dispatcher().executorService().shutdown();
+                        oldClient.connectionPool().evictAll();
+                    } catch (Exception evictEx) {
+                        log.debug("[WS] Old client teardown ignored: {}", evictEx.getMessage());
+                    }
+                }
+                log.info("[WS] OkHttpClient recreated — fresh connection pool ready");
+            } catch (Exception ex) {
+                log.error("[WS] OkHttpClient recreation failed: {}", ex.getMessage(), ex);
+            }
+            alertExecutor.execute(() -> {
+                telegramAlertService.systemAlert(
+                        "🔄 WebSocket session reset: " + zombieReconnectCount
+                        + " consecutive zombies. Recreated HTTP client to drop poisoned "
+                        + "session state. Backing off " + EXTENDED_BACKOFF_MINUTES
+                        + " min before next attempt.");
+                if (errorEventService != null) {
+                    errorEventService.high("WebSocket",
+                            "Session reset after " + zombieReconnectCount
+                            + " zombies — fresh HTTP client created", null);
+                }
+            });
+            // Reset zombie counter — the recreated client is a fresh start
+            zombieReconnectCount = 0;
+            sustainedTicksSinceReconnect = 0;
+            // Extended backoff: 5 min before next connect attempt. Gives Kite's
+            // server-side session tracker time to age out any rate-limit state.
+            if (reconnectExecutor.isShutdown()) {
+                reconnectExecutor = newReconnectExecutor();
+            }
+            reconnectExecutor.schedule(() -> {
+                log.info("[WS] Extended backoff over — attempting connect with fresh client");
+                forceReconnectInProgress.set(false);
+                doConnect();
+            }, EXTENDED_BACKOFF_MINUTES, TimeUnit.MINUTES);
+            return;
+        }
 
         // Tear down existing socket — onFailure will fire but won't schedule a second reconnect
         WebSocket ws = this.webSocket;
@@ -209,7 +305,13 @@ public class KiteWebSocketClient {
         reconnectExecutor.schedule(() -> {
             log.info("[WS] Zombie recovery: reconnecting...");
             reconnectCount++;
-            forceReconnectInProgress.set(false); // allow future force-reconnects
+            // Fix (29 May 2026 — Bug #1): do NOT clear forceReconnectInProgress here.
+            // The OLD socket's onFailure callback fires AFTER ws.cancel() above —
+            // often a few hundred ms after we get into this scheduled task.
+            // If we cleared the flag here, that onFailure would see flag=false and
+            // call scheduleReconnect() → DUPLICATE connection (3 connections in 10s).
+            // The flag is now cleared in onOpen() of the new socket — by then,
+            // the OLD socket's onFailure has already been suppressed correctly.
             doConnect();
         }, 3, TimeUnit.SECONDS);
 
@@ -359,7 +461,20 @@ public class KiteWebSocketClient {
             connected = true;
             reconnectDelay.set(5);
             lastConnectTime = Instant.now();
-            lastTickTime = Instant.now();
+            // Fix (29 May 2026 \u2014 Bug #2): set lastTickTime = null, NOT Instant.now().
+            // The previous code set it to "now" on connect, which faked a healthy state
+            // for 30s after every reconnect even if zero real ticks arrived. Combined
+            // with Bug #3 (counter reset on any single tick burst), that masked the
+            // dead connection and prevented backoff from triggering.
+            // Setting it to null routes the heartbeat through the "no tick ever
+            // received" branch in zombieCheck(), which uses lastConnectTime instead.
+            // That branch correctly detects "30s elapsed without a tick" without the
+            // false-positive caused by stale lastTickTime from a previous session.
+            lastTickTime = null;
+            // Fix (29 May 2026 \u2014 Bug #1 follow-up): clear forceReconnectInProgress here,
+            // after the new socket is genuinely open. By now any OLD onFailure has fired
+            // and been correctly suppressed.
+            forceReconnectInProgress.set(false);
             candleBuilder.clearOpenCandles();
             tickVolumeProfileService.reset(); // cumulative volumes restart after reconnect
             log.info("[WS] Connected to Kite WebSocket");
@@ -446,10 +561,19 @@ public class KiteWebSocketClient {
     private void parseBinaryTicks(byte[] data) {
         if (data.length < 2) return;
         lastTickTime = Instant.now();
-        // Reset zombie counter when ticks resume after a zombie reconnect
+        // Bug #3 fix (29 May 2026): require SUSTAINED ticks before declaring
+        // the reconnect a real success. Kite sometimes sends a single tick burst
+        // after subscribe and then nothing — previously that one tick reset
+        // zombieReconnectCount to 0, so MAX_ZOMBIE_RECONNECTS_BEFORE_BACKOFF
+        // was never reached and the strategy thrashed forever.
         if (zombieReconnectCount > 0) {
-            log.info("[WS] Ticks resumed after {} zombie reconnect(s) — resetting counter", zombieReconnectCount);
-            zombieReconnectCount = 0;
+            sustainedTicksSinceReconnect++;
+            if (sustainedTicksSinceReconnect >= SUSTAINED_TICKS_TO_RESET) {
+                log.info("[WS] Sustained ticks ({}) after {} zombie reconnect(s) — resetting counter",
+                        sustainedTicksSinceReconnect, zombieReconnectCount);
+                zombieReconnectCount = 0;
+                sustainedTicksSinceReconnect = 0;
+            }
         }
         ByteBuffer buf = ByteBuffer.wrap(data).order(ByteOrder.BIG_ENDIAN);
         int numPackets = buf.getShort();

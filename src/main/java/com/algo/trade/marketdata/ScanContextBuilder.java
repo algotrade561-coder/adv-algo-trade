@@ -147,10 +147,27 @@ public class ScanContextBuilder {
         Map<OptionType, Instrument> selectedOptions = selectedOptionsWithOffset(underlying, options,
                 underlyingPrice, optionQuotes, dynamicOffset);
         if (selectedOptions.isEmpty()) {
-            BigDecimal maxPrem = maxTradablePremium(underlying, options.stream().findFirst()
+            // Fix (29 May 2026): apply per-underlying cap when displaying maxPremium.
+            // Previously this only logged the risk-math-derived cap (e.g. 1778), which
+            // hid the fact that a much lower underlying-cap (e.g. 400) was actually
+            // doing the filtering. Now show the effective min so the log points
+            // directly at whichever cap is binding.
+            BigDecimal riskBasedCap = maxTradablePremium(underlying, options.stream().findFirst()
                     .map(Instrument::lotSize).orElse(0));
-            failReason[0] = "noAffordableOption(maxPremium=" + maxPrem.setScale(0, java.math.RoundingMode.HALF_UP) + ")";
-            log.warn("ScanContext skipped: no affordable option, underlying={}", underlying);
+            BigDecimal underlyingCap = underlyingConfigService.getMaxEntryPremium(underlying);
+            BigDecimal effectiveCap = riskBasedCap;
+            String capSource = "risk-based";
+            if (underlyingCap.signum() > 0 && underlyingCap.compareTo(riskBasedCap) < 0) {
+                effectiveCap = underlyingCap;
+                capSource = "underlying-config";
+            }
+            failReason[0] = "noAffordableOption(maxPremium="
+                    + effectiveCap.setScale(0, java.math.RoundingMode.HALF_UP)
+                    + ",source=" + capSource + ")";
+            log.warn("ScanContext skipped: no affordable option, underlying={} effectiveCap=₹{} ({})",
+                    underlying,
+                    effectiveCap.setScale(0, java.math.RoundingMode.HALF_UP),
+                    capSource);
             return Optional.empty();
         }
 
