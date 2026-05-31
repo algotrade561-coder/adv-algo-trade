@@ -20,7 +20,8 @@ import java.util.TimeZone;
  */
 @SpringBootApplication
 @EnableConfigurationProperties({TradingProperties.class, PositionSyncProperties.class,
-        SpreadTradingProperties.class, LiquidityExitProperties.class})
+        SpreadTradingProperties.class, LiquidityExitProperties.class,
+        com.algo.trade.strategy.oishifttrap.OiShiftTrapConfig.class})
 @EnableScheduling
 public class AdvancedAlgoTradeApplication {
 

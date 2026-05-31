@@ -100,6 +100,12 @@ public class ExecutionEngine {
     @Autowired(required = false)
     private com.algo.trade.execution.exit.EntryLiquidityRecorder entryLiquidityRecorder;
 
+    @Autowired(required = false)
+    private com.algo.trade.strategy.oishifttrap.ShiftTrapMaeMfeTracker shiftTrapMaeMfeTracker;
+
+    @Autowired(required = false)
+    private com.algo.trade.strategy.oishifttrap.OiShiftTrapConfig oiShiftTrapConfig;
+
     @Autowired
     public ExecutionEngine(TradingProperties properties, GlobalConfigService globalConfigService, BrokerClient brokerClient, RiskEngine riskEngine, TradingStateService tradingStateService,
                            TradeRepository tradeRepository, OrderRepository orderRepository,
@@ -337,6 +343,7 @@ public class ExecutionEngine {
                 if (entryLiquidityRecorder != null) {
                     entryLiquidityRecorder.recordTradeEntry(tradeEntity, effectiveConfig);
                 }
+                registerShiftTrapMaeTracking(tradeEntity);
                 tradeRepository.save(tradeEntity);
                 tradingStateService.recordTradeEntry();
                 log.info("Entry trade opened: tradeId={}, instrument={}, quantity={}, entryPrice={}",
@@ -796,6 +803,7 @@ public class ExecutionEngine {
                         orderEntity.getClientOrderId(), orderEntity.getStrategyType());
             }
         }
+        registerShiftTrapMaeTracking(trade);
         tradeRepository.save(trade);
 
         // Mark order as materialized to prevent duplicate trade creation
@@ -1367,5 +1375,18 @@ public class ExecutionEngine {
                     request.instrumentKey(), request.side(), ex.getMessage());
             return Optional.empty();
         }
+    }
+
+    private void registerShiftTrapMaeTracking(TradeEntity trade) {
+        if (shiftTrapMaeMfeTracker == null || oiShiftTrapConfig == null || !oiShiftTrapConfig.isExitMaeMfeEnabled()) {
+            return;
+        }
+        if (!"OI_SHIFT_TRAP".equals(trade.getStrategyType())) {
+            return;
+        }
+        var ctx = shiftTrapMaeMfeTracker.resolveContext(
+                trade.getUnderlying(), trade.getOptionType(), trade.getEntryTime());
+        shiftTrapMaeMfeTracker.startTracking(
+                trade.getTradeId(), ctx, trade.getEntryPrice(), trade.getEntryTime());
     }
 }

@@ -878,7 +878,8 @@ final class SignalTuningCsvLoader {
             BigDecimal strike,
             int score,
             double imbalance,
-            double proximityPct
+            double proximityPct,
+            BigDecimal signalPremium
     ) {
     }
 
@@ -962,7 +963,8 @@ final class SignalTuningCsvLoader {
                     decimal(r.get("strike")),
                     (int) longValue(r.get("score")),
                     parseDoubleOrNull(r.get("imbalance")) != null ? parseDoubleOrNull(r.get("imbalance")) : 0,
-                    parseDoubleOrNull(r.get("proximityPct")) != null ? parseDoubleOrNull(r.get("proximityPct")) : 0
+                    parseDoubleOrNull(r.get("proximityPct")) != null ? parseDoubleOrNull(r.get("proximityPct")) : 0,
+                    decimal(r.get("signalPremium"))
             ));
         }
     }

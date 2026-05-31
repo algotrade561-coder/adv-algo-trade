@@ -285,6 +285,21 @@ public class SignalTuningReportService {
                     <tbody>%s</tbody></table>
                     <h2 style="margin-top:16px">Near-miss strikes (score 40–49)</h2>
                     <table><thead><tr><th>Time</th><th>Und</th><th>Side</th><th>Strike</th><th>Score</th><th>Gate</th><th>Imbalance</th><th>Prox %%</th></tr></thead>
+                    <tbody>%s</tbody></table>
+                    <h2 style="margin-top:16px">MAE drawdown (exits CSV)</h2>
+                    <table><thead><tr><th>Metric</th><th>P25</th><th>P50</th><th>P75</th><th>P90</th></tr></thead>
+                    <tbody>%s</tbody></table>
+                    <h2 style="margin-top:16px">Per-score bucket (by index)</h2>
+                    <table><thead><tr><th>Index</th><th>Band</th><th>Signals</th><th>Closed</th><th>Win %%</th><th>Avg MAE</th></tr></thead>
+                    <tbody>%s</tbody></table>
+                    <h2 style="margin-top:16px">Confirmation gate effectiveness (top 10)</h2>
+                    <table><thead><tr><th>Gates</th><th>Retained</th><th>Ret %%</th><th>Avg MAE kept</th><th>Avg PnL kept</th></tr></thead>
+                    <tbody>%s</tbody></table>
+                    <h2 style="margin-top:16px">Late-entry simulation</h2>
+                    <table><thead><tr><th>Decision</th><th>Checkpoint</th><th>Actual MAE</th><th>Spot move</th><th>OI delta</th></tr></thead>
+                    <tbody>%s</tbody></table>
+                    <h2 style="margin-top:16px">Avg slippage by score band</h2>
+                    <table><thead><tr><th>Score band</th><th>Avg slippage %%</th><th>Avg fill %%</th></tr></thead>
                     <tbody>%s</tbody></table></section>
                   <section class="panel"><h2>OI Momentum (dedicated CSV)</h2>
                     <p class="sub">From oi-momentum-signals.csv — joined to execution outcomes and exits</p>
@@ -338,6 +353,11 @@ public class SignalTuningReportService {
                 buysHtml(report),
                 trapBlockersHtml(report),
                 trapNearMissHtml(report),
+                trapDrawdownHtml(report),
+                trapScoreBucketsHtml(report),
+                trapConfirmationHtml(report),
+                trapLateEntryHtml(report),
+                trapSlippageHtml(report),
                 oiCaseStatsHtml(report),
                 oiSignalFillHtml(report),
                 oiPerIndexCaseStatsHtml(report),
@@ -373,6 +393,7 @@ public class SignalTuningReportService {
                 + card(report.oiMomentumReport().v3Summary().decisionCount(), "V3 evaluations")
                 + card(report.oiShiftTrapReport().evaluationSamples(), "Trap eval samples")
                 + card(report.oiShiftTrapReport().nearMissRows(), "Trap near-miss")
+                + card(report.oiShiftTrapReport().exitRows(), "Trap exits")
                 + card(report.recommendations().size(), "Recommendations");
     }
 
@@ -410,6 +431,82 @@ public class SignalTuningReportService {
                         .append(td(String.format("%.1f", r.imbalance())))
                         .append(td(String.format("%.2f", r.proximityPct())))
                         .append("</tr>"));
+        return sb.toString();
+    }
+
+    private static String trapDrawdownHtml(SignalTuningAnalyzer.Report report) {
+        OiShiftTrapTuningAnalyzer.DrawdownStats dd = report.oiShiftTrapReport().drawdownStats();
+        if (report.oiShiftTrapReport().exitRows() == 0) {
+            return "<tr><td colspan='5'>No oi-shift-trap-exits.csv yet</td></tr>";
+        }
+        OiShiftTrapTuningAnalyzer.Percentiles p = dd.overall();
+        return "<tr><td>All trades</td>"
+                + td(String.format("%.1f", p.p25())) + td(String.format("%.1f", p.p50()))
+                + td(String.format("%.1f", p.p75())) + td(String.format("%.1f", p.p90())) + "</tr>";
+    }
+
+    private static String trapScoreBucketsHtml(SignalTuningAnalyzer.Report report) {
+        Map<String, List<OiShiftTrapTuningAnalyzer.BucketStats>> buckets =
+                report.oiShiftTrapReport().scoreBucketsByIndex();
+        if (buckets.isEmpty()) {
+            return "<tr><td colspan='6'>No trap signals with score bands</td></tr>";
+        }
+        StringBuilder sb = new StringBuilder();
+        buckets.forEach((index, list) -> list.forEach(b -> sb.append("<tr>")
+                .append(td(index)).append(td(b.band())).append(td(b.signals()))
+                .append(td(b.closed())).append(td(String.format("%.0f", b.winPct())))
+                .append(td(String.format("%.1f", b.avgMae()))).append("</tr>")));
+        return sb.toString();
+    }
+
+    private static String trapConfirmationHtml(SignalTuningAnalyzer.Report report) {
+        List<OiShiftTrapTuningAnalyzer.ConfirmationComboStats> combos =
+                report.oiShiftTrapReport().confirmationCombos();
+        if (combos.isEmpty()) {
+            return "<tr><td colspan='5'>No confirmation shadow data yet</td></tr>";
+        }
+        StringBuilder sb = new StringBuilder();
+        combos.forEach(c -> sb.append("<tr>")
+                .append(td(c.gates())).append(td(c.retained()))
+                .append(td(String.format("%.0f", c.retainedPct())))
+                .append(td(String.format("%.1f", c.avgMaeRetained())))
+                .append(td(String.format("%.0f", c.avgPnlRetained())))
+                .append("</tr>"));
+        return sb.toString();
+    }
+
+    private static String trapLateEntryHtml(SignalTuningAnalyzer.Report report) {
+        List<OiShiftTrapTuningAnalyzer.LateEntrySimRow> rows =
+                report.oiShiftTrapReport().lateEntrySimulation();
+        if (rows.isEmpty()) {
+            return "<tr><td colspan='5'>No forward checkpoint data for late-entry sim</td></tr>";
+        }
+        StringBuilder sb = new StringBuilder();
+        rows.stream().limit(20).forEach(r -> sb.append("<tr>")
+                .append(td(r.decisionKey())).append(td(r.checkpoint()))
+                .append(td(String.format("%.1f", r.actualMae())))
+                .append(td(String.format("%.2f", r.spotMoveAtCp())))
+                .append(td(String.format("%.0f", r.oiDeltaAtCp())))
+                .append("</tr>"));
+        return sb.toString();
+    }
+
+    private static String trapSlippageHtml(SignalTuningAnalyzer.Report report) {
+        Map<String, Double> slip = report.oiShiftTrapReport().slippageByScoreBand();
+        Map<String, Double> fill = report.oiShiftTrapReport().fillRatioByScoreBand();
+        if (slip.isEmpty() && fill.isEmpty()) {
+            return "<tr><td colspan='3'>No slippage data (need signalPremium + fills)</td></tr>";
+        }
+        java.util.Set<String> bands = new java.util.TreeSet<>();
+        bands.addAll(slip.keySet());
+        bands.addAll(fill.keySet());
+        StringBuilder sb = new StringBuilder();
+        for (String band : bands) {
+            sb.append("<tr>").append(td(band))
+                    .append(td(slip.containsKey(band) ? String.format("%.2f", slip.get(band)) : "—"))
+                    .append(td(fill.containsKey(band) ? String.format("%.0f", fill.get(band)) : "—"))
+                    .append("</tr>");
+        }
         return sb.toString();
     }
 

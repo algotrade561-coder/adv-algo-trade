@@ -80,6 +80,15 @@ public class LivePositionExitMonitor {
     private final ExitEvaluationRegistry exitEvaluationRegistry;
     private final com.algo.trade.execution.exit.LiquidityEmergencyGate liquidityEmergencyGate;
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.strategy.oishifttrap.ShiftTrapMaeMfeTracker shiftTrapMaeMfeTracker;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.strategy.oishifttrap.OiShiftTrapExitRecorder oiShiftTrapExitRecorder;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.strategy.oishifttrap.OiShiftTrapConfig oiShiftTrapConfig;
+
     // tradeId → best price seen since entry (high for long, low for short)
     private final Map<String, BigDecimal> peakPrices = new ConcurrentHashMap<>();
     // tradeId → current trailing stop price
@@ -368,6 +377,8 @@ public class LivePositionExitMonitor {
 
         double profitPct = PositionPnlCalculator.profitPercent(entryPrice, currentPrice, shortEntry);
         double peakPct = PositionPnlCalculator.profitPercent(entryPrice, peak, shortEntry);
+
+        updateShiftTrapMaeMfe(trade, currentPrice);
 
         long spotToken = indexType.spotToken();
         List<com.algo.trade.domain.Candle> candles15m = liveCandleBuilder.getHistory(spotToken, Timeframe.FIFTEEN_MINUTE);
@@ -670,6 +681,25 @@ public class LivePositionExitMonitor {
         }
     }
 
+    private void updateShiftTrapMaeMfe(TradeEntity trade, BigDecimal currentPrice) {
+        if (shiftTrapMaeMfeTracker == null || oiShiftTrapConfig == null || !oiShiftTrapConfig.isExitMaeMfeEnabled()) {
+            return;
+        }
+        if (!"OI_SHIFT_TRAP".equals(trade.getStrategyType())) {
+            return;
+        }
+        if (shiftTrapMaeMfeTracker.get(trade.getTradeId()) == null) {
+            var ctx = shiftTrapMaeMfeTracker.resolveContext(
+                    trade.getUnderlying(), trade.getOptionType(), trade.getEntryTime());
+            shiftTrapMaeMfeTracker.startTracking(
+                    trade.getTradeId(), ctx, trade.getEntryPrice(), trade.getEntryTime());
+        }
+        IndexType indexType = IndexType.fromName(trade.getUnderlying());
+        double spot = liveInstrumentCache.getFuturesPrice(indexType);
+        long oi = trade.getEntryOpenInterest() != null ? trade.getEntryOpenInterest() : 0;
+        shiftTrapMaeMfeTracker.update(trade.getTradeId(), currentPrice, spot, oi);
+    }
+
     private void close(TradeEntity trade, BigDecimal price, String reason) {
         // Record ML exit shadow BEFORE closing (trade still has OPEN status and all data)
         boolean shortEntry = PositionPnlCalculator.isShortEntry(trade);
@@ -678,8 +708,17 @@ public class LivePositionExitMonitor {
         double peakPct = PositionPnlCalculator.profitPercent(trade.getEntryPrice(), peak, shortEntry);
         recordExitShadow(trade, trade.getEntryPrice(), price, profitPct, peakPct, 0, false, true, reason);
 
+        com.algo.trade.strategy.oishifttrap.ShiftTrapMaeMfeTracker.State maeState = null;
+        if ("OI_SHIFT_TRAP".equals(trade.getStrategyType()) && shiftTrapMaeMfeTracker != null) {
+            maeState = shiftTrapMaeMfeTracker.remove(trade.getTradeId());
+        }
+
         try {
             executionEngine.closeTrade(trade.getTradeId(), price, reason);
+            if (maeState != null && oiShiftTrapExitRecorder != null
+                    && oiShiftTrapConfig != null && oiShiftTrapConfig.isExitMaeMfeEnabled()) {
+                oiShiftTrapExitRecorder.recordExit(trade, price, reason, maeState);
+            }
             // Only clear in-memory state after confirmed successful close
             trailingStops.remove(trade.getTradeId());
             peakPrices.remove(trade.getTradeId());

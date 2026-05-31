@@ -71,7 +71,8 @@ final class SignalTuningAnalyzer {
                 data.oiShiftTrapEvaluations(),
                 data.oiShiftTrapNearMisses(),
                 data.oiShiftTrapSignals(),
-                trapGeneric);
+                trapGeneric,
+                entryExecByKey);
         List<BuyOutcome> buyOutcomes = analyzeBuys(signals, data, entryViewByKey, data.chainLevelsByDecisionKey());
         List<StrategySummary> strategies = summarizeStrategies(signals);
         Map<String, Long> executionStages = data.entryOutcomes().stream()

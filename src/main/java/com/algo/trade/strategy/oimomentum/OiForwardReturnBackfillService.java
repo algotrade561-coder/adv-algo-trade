@@ -141,11 +141,11 @@ public class OiForwardReturnBackfillService {
     }
 
     @FunctionalInterface
-    interface RowBackfill {
+    public interface RowBackfill {
         Map<String, String> fill(Map<String, String> row, Instant ts, String indexName);
     }
 
-    static void backfillCsv(Path path, String tsCol, String indexCol, List<String> fwdCols,
+    public static void backfillCsv(Path path, String tsCol, String indexCol, List<String> fwdCols,
                             RowBackfill backfill) throws IOException {
         List<String> lines = Files.readAllLines(path);
         if (lines.isEmpty()) {
@@ -226,7 +226,7 @@ public class OiForwardReturnBackfillService {
         return String.format("%.2f", v);
     }
 
-    static Map<String, Integer> indexHeader(String[] header) {
+    public static Map<String, Integer> indexHeader(String[] header) {
         Map<String, Integer> map = new LinkedHashMap<>();
         for (int i = 0; i < header.length; i++) {
             map.put(header[i].trim(), i);
@@ -244,7 +244,7 @@ public class OiForwardReturnBackfillService {
         return changed;
     }
 
-    static String[] rebuildHeader(String[] original, Map<String, Integer> colIndex, List<String> extra) {
+    public static String[] rebuildHeader(String[] original, Map<String, Integer> colIndex, List<String> extra) {
         List<String> out = new ArrayList<>();
         for (String h : original) {
             out.add(h);
@@ -258,7 +258,7 @@ public class OiForwardReturnBackfillService {
         return out.toArray(new String[0]);
     }
 
-    static Map<String, String> rowMap(String[] header, String[] cols, Map<String, Integer> colIndex) {
+    public static Map<String, String> rowMap(String[] header, String[] cols, Map<String, Integer> colIndex) {
         Map<String, String> row = new LinkedHashMap<>();
         for (String h : header) {
             Integer idx = colIndex.get(h);
@@ -267,7 +267,7 @@ public class OiForwardReturnBackfillService {
         return row;
     }
 
-    static String[] rowToArray(String[] header, Map<String, String> row) {
+    public static String[] rowToArray(String[] header, Map<String, String> row) {
         String[] out = new String[header.length];
         for (int i = 0; i < header.length; i++) {
             out[i] = row.getOrDefault(header[i], "");
@@ -275,7 +275,7 @@ public class OiForwardReturnBackfillService {
         return out;
     }
 
-    static String[] parseCsvLine(String line) {
+    public static String[] parseCsvLine(String line) {
         List<String> out = new ArrayList<>();
         StringBuilder cur = new StringBuilder();
         boolean inQuotes = false;
@@ -294,7 +294,7 @@ public class OiForwardReturnBackfillService {
         return out.toArray(new String[0]);
     }
 
-    static String[] padCols(String[] cols, int len) {
+    public static String[] padCols(String[] cols, int len) {
         if (cols.length >= len) {
             return cols;
         }
@@ -303,7 +303,7 @@ public class OiForwardReturnBackfillService {
         return out;
     }
 
-    static String joinCsv(String[] cols) {
+    public static String joinCsv(String[] cols) {
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < cols.length; i++) {
             if (i > 0) {

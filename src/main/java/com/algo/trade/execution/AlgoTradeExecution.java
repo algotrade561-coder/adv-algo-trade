@@ -20,6 +20,7 @@ import com.algo.trade.strategy.ExpiryReversalStrategy;
 import com.algo.trade.strategy.GapAndGoStrategy;
 import com.algo.trade.strategy.OiShiftTrapStrategy;
 import com.algo.trade.strategy.oishifttrap.OiShiftTrapTuneRecorder;
+import com.algo.trade.strategy.oishifttrap.ShiftTrapSignalCaptureService;
 import com.algo.trade.strategy.ReversalBuyStrategy;
 import com.algo.trade.strategy.RuleBasedOptionsStrategy;
 import com.algo.trade.strategy.ScalpingStrategy;
@@ -82,6 +83,7 @@ public class AlgoTradeExecution {
     private final ReversalBuyStrategy reversalBuyStrategy;
     private final OiShiftTrapStrategy oiShiftTrapStrategy;
     private final OiShiftTrapTuneRecorder oiShiftTrapTuneRecorder;
+    private final ShiftTrapSignalCaptureService shiftTrapSignalCaptureService;
     private final ExpiryGammaStrategy expiryGammaStrategy;
     private final ExpiryReversalStrategy expiryReversalStrategy;
     private final MomentumStrategy momentumStrategy;
@@ -140,6 +142,8 @@ public class AlgoTradeExecution {
             OiShiftTrapStrategy oiShiftTrapStrategy,
             @org.springframework.beans.factory.annotation.Autowired(required = false)
             OiShiftTrapTuneRecorder oiShiftTrapTuneRecorder,
+            @org.springframework.beans.factory.annotation.Autowired(required = false)
+            ShiftTrapSignalCaptureService shiftTrapSignalCaptureService,
             ExpiryGammaStrategy expiryGammaStrategy,
             ExpiryReversalStrategy expiryReversalStrategy,
             MomentumStrategy momentumStrategy,
@@ -179,6 +183,7 @@ public class AlgoTradeExecution {
         this.reversalBuyStrategy = reversalBuyStrategy;
         this.oiShiftTrapStrategy = oiShiftTrapStrategy;
         this.oiShiftTrapTuneRecorder = oiShiftTrapTuneRecorder;
+        this.shiftTrapSignalCaptureService = shiftTrapSignalCaptureService;
         this.expiryGammaStrategy = expiryGammaStrategy;
         this.expiryReversalStrategy = expiryReversalStrategy;
         this.momentumStrategy = momentumStrategy;
@@ -602,8 +607,14 @@ public class AlgoTradeExecution {
                         oiCtx.get().optionChainSnapshot(), oiSpot, config, underlying, trendCandles);
                 if (oiShiftTrapTuneRecorder != null) {
                     oiShiftTrapTuneRecorder.recordEvaluation(trapEval.diagnostics());
-                    trapEval.signal().ifPresent(s ->
-                            oiShiftTrapTuneRecorder.recordSignal(s, trapEval.diagnostics()));
+                    trapEval.signal().ifPresent(s -> {
+                        oiShiftTrapTuneRecorder.recordSignal(s, trapEval.diagnostics(), trendCandles);
+                        if (shiftTrapSignalCaptureService != null) {
+                            shiftTrapSignalCaptureService.captureSignal(
+                                    s, trapEval.diagnostics(), oiCtx.get().optionChainSnapshot(),
+                                    trendCandles, liveInstrumentCache);
+                        }
+                    });
                 }
                 yield trapEval.signal();
             }

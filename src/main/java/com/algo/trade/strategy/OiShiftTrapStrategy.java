@@ -300,7 +300,8 @@ public class OiShiftTrapStrategy {
 
         return Optional.of(new StrategyDecision(
                 Instant.now(), underlying, SignalType.BUY_CE, spotPrice,
-                Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
+                Optional.ofNullable(level.callLastPrice()).filter(p -> p.signum() > 0),
+                Optional.empty(), Optional.empty(), Optional.empty(),
                 Optional.empty(), Optional.of(level.strike()), Optional.of(OptionType.CE),
                 false, Optional.of(BigDecimal.valueOf(imbalance)), false,
                 BigDecimal.valueOf(score), reasons
@@ -337,7 +338,8 @@ public class OiShiftTrapStrategy {
 
         return Optional.of(new StrategyDecision(
                 Instant.now(), underlying, SignalType.BUY_PE, spotPrice,
-                Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
+                Optional.ofNullable(level.putLastPrice()).filter(p -> p.signum() > 0),
+                Optional.empty(), Optional.empty(), Optional.empty(),
                 Optional.empty(), Optional.of(level.strike()), Optional.of(OptionType.PE),
                 false, Optional.of(BigDecimal.valueOf(imbalance)), false,
                 BigDecimal.valueOf(score), reasons

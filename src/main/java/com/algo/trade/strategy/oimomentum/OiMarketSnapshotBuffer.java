@@ -60,7 +60,15 @@ public class OiMarketSnapshotBuffer {
         }
         int atm = indexType.roundToATM(spot);
         double[] prem = atmPremiums(indexType, atm);
-        Snapshot snap = new Snapshot(at, spot, atm, prem[0], prem[1]);
+        ingest(indexType, at, spot, prem[0], prem[1]);
+    }
+
+    /** Archive warm-up — spot + ATM premiums without live cache. */
+    public void ingest(IndexType indexType, Instant at, double spot, double atmCeLast, double atmPeLast) {
+        if (spot <= 0 || at == null) {
+            return;
+        }
+        Snapshot snap = new Snapshot(at, spot, indexType.roundToATM(spot), atmCeLast, atmPeLast);
         NavigableMap<Instant, Snapshot> map = byIndex.computeIfAbsent(indexType, k -> new TreeMap<>());
         synchronized (map) {
             map.put(at, snap);
