@@ -399,6 +399,27 @@ signal-tuning:
 tuning:
   capture:
     poll-interval-sec: 30
+  store:
+    # DuckDB native (off-heap) memory limit. Conservative in trading JVM; the forked
+    # analyzer JVM (Phase 6) overrides this to 1GB via its dedicated Spring profile.
+    memory-limit: 256MB
+    threads: 2
+    temp-directory: /var/tmp/duckdb
+    statement-timeout-sec: 60
+  roller:
+    # Daily IST-midnight CSV → Parquet rollup + retention enforcement.
+    enabled: true
+    archive-base-dir: reports/tuning/archive
+    summary-base-dir: reports/tuning/summary
+    delete-csv-after-roll: true
+    # Per-event-type retention in days (design § 12.2).
+    retention-days:
+      EVALUATION: 90
+      SIGNAL: 365
+      EXECUTION: 365
+      EXIT: 365
+      FORWARD_CHECKPOINT: 90
+      SHADOW_GATE: 30
   # Interim OOM mitigation: stop writing entry-candles.csv (753 MB / 4.18 M rows).
   # OI Momentum + OI Shift Trap have dedicated forward-return capture; other strategies
   # fire < 30 BUYs/period and their 45m MFE/MAE column will be empty until redesign lands.

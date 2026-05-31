@@ -563,6 +563,7 @@ export class AppComponent implements OnInit, OnDestroy {
     { label: 'Index Config', path: 'index-config', icon: 'category' },
     { label: 'Monitoring', path: 'monitoring', icon: 'monitoring' },
     { label: 'Reports', path: 'reports', icon: 'description' },
+    { label: 'Tuning Capture', path: 'tuning-capture', icon: 'science' },
     { label: 'Diagnostics', path: 'diagnostics', icon: 'monitor_heart' },
     { label: 'Kite Auth', path: 'auth', icon: 'lock_open' },
     { label: 'Settings', path: 'settings', icon: 'tune' }

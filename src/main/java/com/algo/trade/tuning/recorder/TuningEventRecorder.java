@@ -67,6 +67,7 @@ public class TuningEventRecorder {
     private final AtomicLong totalWriteNanos = new AtomicLong(0);
     private final AtomicLong totalFailures = new AtomicLong(0);
 
+    @org.springframework.beans.factory.annotation.Autowired
     public TuningEventRecorder(@Value("${tuning.capture.base-dir:reports/tuning/events}") String baseDirPath,
                                 CaptureToggleService captureToggle,
                                 IstDayClock clock) {

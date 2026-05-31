@@ -22,7 +22,9 @@ import java.util.TimeZone;
 @EnableConfigurationProperties({TradingProperties.class, PositionSyncProperties.class,
         SpreadTradingProperties.class, LiquidityExitProperties.class,
         com.algo.trade.strategy.oishifttrap.OiShiftTrapConfig.class,
-        com.algo.trade.tuning.capture.CaptureToggleProperties.class})
+        com.algo.trade.tuning.capture.CaptureToggleProperties.class,
+        com.algo.trade.tuning.store.TuningEventStoreProperties.class,
+        com.algo.trade.tuning.store.ParquetRollerProperties.class})
 @EnableScheduling
 public class AdvancedAlgoTradeApplication {
 

@@ -39,6 +39,44 @@ export interface StrategyDto {
   squareoffHour: number; squareoffMinute: number;
 }
 
+// ── Tuning capture (Phase 1) ─────────────────────────────────────────────
+export interface TuningCaptureDto {
+  strategy: string;
+  displayName: string;
+  captureEnabled: boolean;
+  captureEvaluations: boolean;
+  captureSignals: boolean;
+  captureExecutions: boolean;
+  captureExits: boolean;
+  captureForward: boolean;
+  captureShadow: boolean;
+  episodeWindowSec: number;
+  notes: string | null;
+}
+
+export interface TuningCaptureUpdate {
+  captureEnabled: boolean;
+  captureEvaluations: boolean;
+  captureSignals: boolean;
+  captureExecutions: boolean;
+  captureExits: boolean;
+  captureForward: boolean;
+  captureShadow: boolean;
+  episodeWindowSec: number;
+  notes: string | null;
+  reason: string;
+}
+
+export interface TuningCaptureAuditDto {
+  id: number;
+  changedAt: string;
+  changedBy: string;
+  fieldName: string;
+  oldValue: string | null;
+  newValue: string | null;
+  reason: string | null;
+}
+
 export interface UnderlyingConfigDto {
   underlying: string;
   enabled: boolean;
@@ -325,6 +363,21 @@ export class ApiService {
   signalTuningReportUrl(path?: string): string {
     const q = path ? `?path=${encodeURIComponent(path)}` : '';
     return `${this.base}/reports/signal-tuning/report${q}`;
+  }
+
+  // ── Tuning capture toggle (Phase 1) ───────────────────────────────────────
+  // /tuning/capture/* — see SIGNAL_CAPTURE_TUNING_REDESIGN.md
+  listTuningCapture(): Observable<TuningCaptureDto[]> {
+    return this.http.get<TuningCaptureDto[]>(`${this.base}/tuning/capture/strategies`);
+  }
+  getTuningCapture(strategy: string): Observable<TuningCaptureDto> {
+    return this.http.get<TuningCaptureDto>(`${this.base}/tuning/capture/${strategy}`);
+  }
+  updateTuningCapture(strategy: string, body: TuningCaptureUpdate): Observable<TuningCaptureDto> {
+    return this.http.put<TuningCaptureDto>(`${this.base}/tuning/capture/${strategy}`, body);
+  }
+  getTuningCaptureAudit(strategy: string, limit: number = 50): Observable<TuningCaptureAuditDto[]> {
+    return this.http.get<TuningCaptureAuditDto[]>(`${this.base}/tuning/capture/${strategy}/audit?limit=${limit}`);
   }
 
   // ── Strategy management ───────────────────────────────────────────────────

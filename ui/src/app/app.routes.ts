@@ -10,12 +10,14 @@ import { StrategiesPageComponent } from './pages/strategies-page.component';
 import { SettingsPageComponent } from './pages/settings-page.component';
 import { UnderlyingConfigPageComponent } from './pages/underlying-config-page.component';
 import { DiagnosticsPageComponent } from './pages/diagnostics-page.component';
+import { TuningCapturePageComponent } from './pages/tuning-capture-page.component';
 
 export const routes: Routes = [
   { path: '', pathMatch: 'full', redirectTo: 'dashboard' },
   { path: 'dashboard', component: DashboardPageComponent },
   { path: 'strategies', component: StrategiesPageComponent },
   { path: 'settings', component: SettingsPageComponent },
+  { path: 'tuning-capture', component: TuningCapturePageComponent },
   { path: 'index-config', component: UnderlyingConfigPageComponent },
   { path: 'execution', component: ExecutionPageComponent },
   { path: 'monitoring', component: MonitoringPageComponent },
