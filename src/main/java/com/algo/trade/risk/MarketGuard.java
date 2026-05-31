@@ -227,6 +227,34 @@ public class MarketGuard {
         return null;
     }
 
+    /**
+     * Map {@link #longPremiumBlockReason()} text to a stable reject-reason token for CSV counters.
+     *
+     * @param prefix e.g. {@code market_guard} or {@code market_guard_entry}
+     */
+    public static String normalizeLongPremiumRejectToken(String prefix, String blockReason) {
+        if (blockReason == null || blockReason.isBlank()) {
+            return prefix + ":unknown";
+        }
+        String lower = blockReason.toLowerCase();
+        if (lower.contains("unavailable")) {
+            return prefix + ":vix_unavailable";
+        }
+        if (lower.contains("too low")) {
+            return prefix + ":vix_too_low";
+        }
+        if (lower.contains("circuit breaker")) {
+            return prefix + ":circuit_breaker";
+        }
+        if (lower.contains("pre-event")) {
+            return prefix + ":pre_event_day";
+        }
+        if (lower.contains("event day")) {
+            return prefix + ":event_day";
+        }
+        return prefix + ":unknown";
+    }
+
     /** Safe to enter SHORT PREMIUM strategies (selling options). */
     public boolean isSafeForShortPremium() {
         return shortPremiumBlockReason() == null;

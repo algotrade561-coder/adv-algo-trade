@@ -44,21 +44,26 @@ final class SignalTuningAnalyzer {
         Instant periodTo = signals.stream().map(SignalTuningCsvLoader.SignalRow::timestamp).max(Instant::compareTo)
                 .orElse(Instant.now());
 
-        Map<String, ExecutionRowView> entryByKey = indexEntries(data.entryOutcomes());
+        Map<String, ExecutionRowView> entryViewByKey = indexEntries(data.entryOutcomes());
         Map<String, String> execStageByKey = new LinkedHashMap<>();
         Map<String, String> execReasonByKey = new LinkedHashMap<>();
+        Map<String, SignalTuningCsvLoader.ExecutionRow> entryExecByKey = new LinkedHashMap<>();
         for (var e : data.entryOutcomes()) {
             execStageByKey.put(e.decisionKey(), e.stage());
             execReasonByKey.put(e.decisionKey(), e.reasons() != null ? e.reasons() : "");
+            entryExecByKey.put(e.decisionKey(), e);
         }
         OiMomentumTuningAnalyzer.OiReport oiReport = OiMomentumTuningAnalyzer.analyze(
                 data.oiMomentumSignals(),
                 data.oiMomentumRejects(),
                 data.oiMomentumExits(),
+                entryExecByKey,
                 execStageByKey,
                 execReasonByKey,
                 data.chainLevelsByDecisionKey(),
-                data.v3Decisions());
+                data.v3Decisions(),
+                data.legacyDetections(),
+                data.spikeEpisodes());
         List<SignalTuningCsvLoader.SignalRow> trapGeneric = signals.stream()
                 .filter(s -> "OI_SHIFT_TRAP".equals(s.strategyType()))
                 .toList();
@@ -67,7 +72,7 @@ final class SignalTuningAnalyzer {
                 data.oiShiftTrapNearMisses(),
                 data.oiShiftTrapSignals(),
                 trapGeneric);
-        List<BuyOutcome> buyOutcomes = analyzeBuys(signals, data, entryByKey, data.chainLevelsByDecisionKey());
+        List<BuyOutcome> buyOutcomes = analyzeBuys(signals, data, entryViewByKey, data.chainLevelsByDecisionKey());
         List<StrategySummary> strategies = summarizeStrategies(signals);
         Map<String, Long> executionStages = data.entryOutcomes().stream()
                 .collect(Collectors.groupingBy(SignalTuningCsvLoader.ExecutionRow::stage, Collectors.counting()));

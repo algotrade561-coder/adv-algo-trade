@@ -248,7 +248,7 @@ import {
                 </div>
                 <div class="toggle-row">
                   <span>Record every reject
-                    <small class="toggle-hint">When on, writes every reject to oi-momentum-rejects.csv (heavy). Off uses interval sampling below.</small></span>
+                    <small class="toggle-hint">Default ON at deploy (from application.yml). Writes every reject to oi-momentum-rejects.csv; turn off after the data week to save disk.</small></span>
                   <mat-slide-toggle [(ngModel)]="oiConfig.recordEveryReject" color="primary"></mat-slide-toggle>
                 </div>
                 <mat-form-field appearance="outline">

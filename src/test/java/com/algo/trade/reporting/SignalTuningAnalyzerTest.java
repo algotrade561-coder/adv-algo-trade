@@ -82,7 +82,8 @@ class SignalTuningAnalyzerTest {
         SignalTuningCsvLoader.SignalRow row = signalRow(
                 "key1", ts, "DIRECTIONAL_BUY", "NO_TRADE", "score failed", true, true, true);
         SignalTuningCsvLoader.ExecutionRow entry = new SignalTuningCsvLoader.ExecutionRow(
-                "key1", ts, "BROKER_ERROR", false, "DIRECTIONAL_BUY", "BUY_CE", "NIFTY", "IP not allowed", "403");
+                "key1", ts, "BROKER_ERROR", false, "DIRECTIONAL_BUY", "BUY_CE", "NIFTY", "IP not allowed", "403",
+                0, 0, null);
         SignalTuningCsvLoader.Loaded data = new SignalTuningCsvLoader.Loaded(
                 List.of(row), List.of(entry), List.of(), Map.of(), Map.of());
 
@@ -98,7 +99,8 @@ class SignalTuningAnalyzerTest {
         Instant ts = Instant.parse("2026-05-15T10:00:00+05:30");
         SignalTuningCsvLoader.ExecutionRow guard = new SignalTuningCsvLoader.ExecutionRow(
                 "key1", ts, "ORDER_GUARD_REJECTED", false, "DIRECTIONAL_BUY", "BUY_PE", "NIFTY", "",
-                "Open trade already exists for instrument: NFO:NIFTY2651923400PE");
+                "Open trade already exists for instrument: NFO:NIFTY2651923400PE",
+                0, 0, null);
         SignalTuningCsvLoader.SignalRow noop = signalRow(
                 "noop", ts, "DIRECTIONAL_BUY", "NO_TRADE", "score failed", true, true, false);
         SignalTuningCsvLoader.Loaded data = new SignalTuningCsvLoader.Loaded(

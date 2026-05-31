@@ -59,6 +59,8 @@ final class SignalTuningCsvLoader {
         List<OiShiftTrapNearMissRow> trapNearMiss = new ArrayList<>();
         List<OiShiftTrapSignalRow> trapSignals = new ArrayList<>();
         List<V3DecisionRow> v3Decisions = loadV3Decisions();
+        List<LegacyDetectionRow> legacyDetections = loadLegacyDetections();
+        List<SpikeEpisodeRow> spikeEpisodes = loadSpikeEpisodes();
 
         loadDir(ACTIVE_DIR, signals, entries, exits, chainByDecision,
                 oiSignals, oiRejects, oiExits, trapEvals, trapNearMiss, trapSignals);
@@ -87,13 +89,90 @@ final class SignalTuningCsvLoader {
             finalizedCandles.put(e.getKey(),
                     e.getValue().values().stream().sorted(Comparator.comparing(Candle::timestamp)).toList());
         }
-        log.info("Signal tuning data loaded: signals={}, entryOutcomes={}, exitOutcomes={}, optionSeries={}, chainKeys={}, oiSignals={}, oiRejects={}, oiExits={}, trapEvals={}, trapNearMiss={}, trapSignals={}, v3Decisions={}",
+        log.info("Signal tuning data loaded: signals={}, entryOutcomes={}, exitOutcomes={}, optionSeries={}, chainKeys={}, oiSignals={}, oiRejects={}, oiExits={}, trapEvals={}, trapNearMiss={}, trapSignals={}, v3Decisions={}, legacyDetections={}, spikeEpisodes={}",
                 signals.size(), entries.size(), exits.size(), finalizedCandles.size(), chainByDecision.size(),
                 oiSignals.size(), oiRejects.size(), oiExits.size(), trapEvals.size(), trapNearMiss.size(), trapSignals.size(),
-                v3Decisions.size());
+                v3Decisions.size(), legacyDetections.size(), spikeEpisodes.size());
         return new Loaded(List.copyOf(signals.values()), List.copyOf(entries.values()), List.copyOf(exits.values()),
                 finalizedCandles, chainByDecision, List.copyOf(oiSignals), List.copyOf(oiRejects), List.copyOf(oiExits),
-                List.copyOf(trapEvals), List.copyOf(trapNearMiss), List.copyOf(trapSignals), List.copyOf(v3Decisions));
+                List.copyOf(trapEvals), List.copyOf(trapNearMiss), List.copyOf(trapSignals), List.copyOf(v3Decisions),
+                List.copyOf(legacyDetections), List.copyOf(spikeEpisodes));
+    }
+
+    private static final Path LEGACY_DIR = Path.of("data", "oi-decisions");
+
+    static List<LegacyDetectionRow> loadLegacyDetections() {
+        List<LegacyDetectionRow> rows = new ArrayList<>();
+        if (!Files.isDirectory(LEGACY_DIR)) {
+            return rows;
+        }
+        try {
+            List<Path> files = Files.list(LEGACY_DIR)
+                    .filter(p -> p.getFileName().toString().endsWith(".csv"))
+                    .sorted(Comparator.comparing(Path::getFileName, Comparator.reverseOrder()))
+                    .limit(7)
+                    .toList();
+            for (Path file : files) {
+                readLegacyDetections(Files.newInputStream(file), rows);
+            }
+        } catch (IOException ex) {
+            log.warn("Failed to load legacy detection CSVs: {}", ex.getMessage());
+        }
+        return rows;
+    }
+
+    private static void readLegacyDetections(InputStream input, List<LegacyDetectionRow> target) throws IOException {
+        for (Map<String, String> r : Csv.read(input).rows()) {
+            target.add(new LegacyDetectionRow(
+                    parseInstant(firstText(r.get("ts"), r.get("timestamp"))),
+                    firstText(r.get("index"), ""),
+                    parseDoubleOrNull(r.get("spot")) != null ? parseDoubleOrNull(r.get("spot")) : 0,
+                    (int) longValue(r.get("atm")),
+                    firstText(r.get("matrix_case"), r.get("wouldBeCase")),
+                    (int) longValue(r.get("bias_score")),
+                    firstText(r.get("final_decision"), ""),
+                    firstText(r.get("final_reason"), ""),
+                    (int) longValue(r.get("mom_dir"))
+            ));
+        }
+    }
+
+    static List<SpikeEpisodeRow> loadSpikeEpisodes() {
+        List<SpikeEpisodeRow> rows = new ArrayList<>();
+        Path dir = Path.of("data", "spike-episodes");
+        if (!Files.isDirectory(dir)) {
+            return rows;
+        }
+        try {
+            List<Path> files = Files.list(dir)
+                    .filter(p -> p.getFileName().toString().endsWith(".csv"))
+                    .sorted(Comparator.comparing(Path::getFileName, Comparator.reverseOrder()))
+                    .limit(7)
+                    .toList();
+            for (Path file : files) {
+                readSpikeEpisodes(Files.newInputStream(file), rows);
+            }
+        } catch (IOException ex) {
+            log.warn("Failed to load spike episode CSVs: {}", ex.getMessage());
+        }
+        return rows;
+    }
+
+    private static void readSpikeEpisodes(InputStream input, List<SpikeEpisodeRow> target) throws IOException {
+        for (Map<String, String> r : Csv.read(input).rows()) {
+            target.add(new SpikeEpisodeRow(
+                    firstText(r.get("episodeId"), ""),
+                    parseInstant(r.get("firstAt")),
+                    firstText(r.get("indexType"), ""),
+                    (int) longValue(r.get("direction")),
+                    parseDoubleOrNull(r.get("magnitudePct")) != null ? parseDoubleOrNull(r.get("magnitudePct")) : 0,
+                    bool(r.get("entered")),
+                    parseDoubleOrNull(r.get("spot")) != null ? parseDoubleOrNull(r.get("spot")) : 0,
+                    parseDoubleOrNull(r.get("fwdSpot5m")),
+                    parseDoubleOrNull(r.get("fwdSpot15m")),
+                    parseDoubleOrNull(r.get("fwdSpot30m"))
+            ));
+        }
     }
 
     private static final Path V3_DIR = Path.of("data", "v3-decisions");
@@ -363,7 +442,10 @@ final class SignalTuningCsvLoader {
                     firstText(r.get("signalType"), ""),
                     firstText(r.get("underlying"), ""),
                     firstText(r.get("brokerRejectionReason"), ""),
-                    firstText(r.get("reasons"), "")
+                    firstText(r.get("reasons"), ""),
+                    longValue(r.get("requestedQuantity")),
+                    longValue(r.get("filledQuantity")),
+                    decimal(r.get("averageFillPrice"))
             ));
         }
     }
@@ -583,7 +665,10 @@ final class SignalTuningCsvLoader {
             String signalType,
             String underlying,
             String brokerRejectionReason,
-            String reasons
+            String reasons,
+            long requestedQuantity,
+            long filledQuantity,
+            BigDecimal averageFillPrice
     ) {
     }
 
@@ -673,7 +758,42 @@ final class SignalTuningCsvLoader {
             String matrixCase,
             String entryPath,
             int operatorScore,
-            int biasScore
+            int biasScore,
+            Instant episodeFirstAt,
+            Instant episodeLastAt,
+            int episodeTickCount,
+            Double fwdSpot15m,
+            Double fwdSpot30m,
+            Double fwdSpot60m,
+            Double fwdAtmCe30m,
+            Double fwdAtmPe30m
+    ) {
+    }
+
+    record LegacyDetectionRow(
+            Instant timestamp,
+            String indexType,
+            double spot,
+            int atm,
+            String matrixCase,
+            int biasScore,
+            String finalDecision,
+            String finalReason,
+            int momentumDir
+    ) {
+    }
+
+    record SpikeEpisodeRow(
+            String episodeId,
+            Instant firstAt,
+            String indexType,
+            int direction,
+            double magnitudePct,
+            boolean entered,
+            double spot,
+            Double fwdSpot5m,
+            Double fwdSpot15m,
+            Double fwdSpot30m
     ) {
     }
 
@@ -774,19 +894,21 @@ final class SignalTuningCsvLoader {
             List<OiShiftTrapEvalRow> oiShiftTrapEvaluations,
             List<OiShiftTrapNearMissRow> oiShiftTrapNearMisses,
             List<OiShiftTrapSignalRow> oiShiftTrapSignals,
-            List<V3DecisionRow> v3Decisions
+            List<V3DecisionRow> v3Decisions,
+            List<LegacyDetectionRow> legacyDetections,
+            List<SpikeEpisodeRow> spikeEpisodes
     ) {
         Loaded(List<SignalRow> signals, List<ExecutionRow> entryOutcomes, List<ExecutionRow> exitOutcomes,
                Map<String, List<Candle>> optionCandlesByInstrument) {
             this(signals, entryOutcomes, exitOutcomes, optionCandlesByInstrument, Map.of(),
-                    List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
+                    List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
         }
 
         Loaded(List<SignalRow> signals, List<ExecutionRow> entryOutcomes, List<ExecutionRow> exitOutcomes,
                Map<String, List<Candle>> optionCandlesByInstrument,
                Map<String, List<ChainLevelRow>> chainLevelsByDecisionKey) {
             this(signals, entryOutcomes, exitOutcomes, optionCandlesByInstrument, chainLevelsByDecisionKey,
-                    List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
+                    List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
         }
     }
 
@@ -924,7 +1046,15 @@ final class SignalTuningCsvLoader {
                     firstText(r.get("matrixCase"), ""),
                     firstText(r.get("entryPath"), ""),
                     (int) longValue(r.get("operatorScore")),
-                    (int) longValue(r.get("biasScore"))
+                    (int) longValue(r.get("biasScore")),
+                    parseInstant(r.get("episodeFirstAt")),
+                    parseInstant(r.get("episodeLastAt")),
+                    (int) longValue(r.get("episodeTickCount")),
+                    parseDoubleOrNull(r.get("fwdSpot15m")),
+                    parseDoubleOrNull(r.get("fwdSpot30m")),
+                    parseDoubleOrNull(r.get("fwdSpot60m")),
+                    parseDoubleOrNull(r.get("fwdAtmCe30m")),
+                    parseDoubleOrNull(r.get("fwdAtmPe30m"))
             ));
         }
     }

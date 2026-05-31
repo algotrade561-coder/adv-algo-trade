@@ -291,7 +291,25 @@ public class SignalTuningReportService {
                     <table><thead><tr><th>Case</th><th>Signals</th><th>Closed</th><th>Win %%</th><th>Avg PnL</th></tr></thead>
                     <tbody>%s</tbody></table>
                     <h2 style="margin-top:16px">Signal vs fill (by matrixCase)</h2>
-                    <table><thead><tr><th>Case</th><th>Signals</th><th>Filled</th><th>Open</th><th>Not filled</th><th>Closed</th><th>Win %%</th><th>Avg PnL</th></tr></thead>
+                    <table><thead><tr><th>Case</th><th>Signals</th><th>Filled</th><th>Partial</th><th>Open</th><th>Not filled</th><th>Closed</th><th>Win %%</th><th>Avg PnL</th></tr></thead>
+                    <tbody>%s</tbody></table>
+                    <h2 style="margin-top:16px">Per-index case stats</h2>
+                    <table><thead><tr><th>Index</th><th>Case</th><th>Signals</th><th>Closed</th><th>Win %%</th><th>Avg PnL</th></tr></thead>
+                    <tbody>%s</tbody></table>
+                    <h2 style="margin-top:16px">Daily rollup</h2>
+                    <table><thead><tr><th>Date</th><th>Signals</th><th>Filled</th><th>Closed</th><th>Win %%</th><th>Net PnL</th></tr></thead>
+                    <tbody>%s</tbody></table>
+                    <h2 style="margin-top:16px">Exit reason × case</h2>
+                    <table><thead><tr><th>Exit reason</th><th>Case</th><th>Signals</th><th>Closed</th><th>Win %%</th><th>Avg PnL</th></tr></thead>
+                    <tbody>%s</tbody></table>
+                    <h2 style="margin-top:16px">V3 vs legacy concordance (±2s)</h2>
+                    <table><thead><tr><th>V3 verdict</th><th>Legacy decision</th><th>Count</th></tr></thead>
+                    <tbody>%s</tbody></table>
+                    <h2 style="margin-top:16px">Bias score histogram (rejects)</h2>
+                    <table><thead><tr><th>Band</th><th>Rejects</th><th>With fwd30m</th><th>Avg spot move %% @30m</th></tr></thead>
+                    <tbody>%s</tbody></table>
+                    <h2 style="margin-top:16px">Avg slippage by case</h2>
+                    <table><thead><tr><th>Case</th><th>Avg slippage %%</th></tr></thead>
                     <tbody>%s</tbody></table>
                     <h2 style="margin-top:16px">Reject funnel (normalized reason)</h2>
                     <table><thead><tr><th>Reason</th><th>Count</th></tr></thead>
@@ -300,7 +318,7 @@ public class SignalTuningReportService {
                     <table><thead><tr><th>Verdict / gate</th><th>Count</th></tr></thead>
                     <tbody>%s</tbody></table>
                     <h2 style="margin-top:16px">OI trades</h2>
-                    <table><thead><tr><th>Time</th><th>Case</th><th>Path</th><th>Und</th><th>Opt</th><th>Premium</th><th>PCR</th><th>Mom</th><th>OI dir</th><th>Stage</th><th>Exit</th><th>PnL</th><th>Hold</th><th>Chain</th></tr></thead>
+                    <table><thead><tr><th>Time</th><th>Case</th><th>Path</th><th>Und</th><th>Opt</th><th>Premium</th><th>Fill</th><th>Slip %%</th><th>Partial</th><th>PCR</th><th>Mom</th><th>OI dir</th><th>Stage</th><th>Exit</th><th>PnL</th><th>Hold</th><th>Chain</th></tr></thead>
                     <tbody>%s</tbody></table></section>
                   <section class="panel"><h2>Entry execution stages</h2>
                     <table><thead><tr><th>Stage</th><th>Count</th></tr></thead>
@@ -322,6 +340,12 @@ public class SignalTuningReportService {
                 trapNearMissHtml(report),
                 oiCaseStatsHtml(report),
                 oiSignalFillHtml(report),
+                oiPerIndexCaseStatsHtml(report),
+                oiDailyRollupHtml(report),
+                oiExitReasonBreakdownHtml(report),
+                oiConcordanceHtml(report),
+                oiBiasHistogramHtml(report),
+                oiSlippageByCaseHtml(report),
                 oiRejectBreakdownHtml(report),
                 v3SummaryHtml(report),
                 oiTradesHtml(report),
@@ -417,7 +441,7 @@ public class SignalTuningReportService {
         Map<String, OiMomentumTuningAnalyzer.SignalFillStats> byCase =
                 report.oiMomentumReport().signalFillByCase();
         if (byCase.isEmpty()) {
-            return "<tr><td colspan='8'>No OI momentum signals</td></tr>";
+            return "<tr><td colspan='9'>No OI momentum signals</td></tr>";
         }
         StringBuilder sb = new StringBuilder();
         byCase.entrySet().stream()
@@ -428,6 +452,7 @@ public class SignalTuningReportService {
                             .append(td(e.getKey()))
                             .append(td(s.signals()))
                             .append(td(s.filled()))
+                            .append(td(s.partialFills() > 0 ? s.partialFills() : "—"))
                             .append(td(s.openNoFill()))
                             .append(td(s.notFilled()))
                             .append(td(s.closed()))
@@ -436,6 +461,137 @@ public class SignalTuningReportService {
                                     ? s.avgPnl().setScale(2, RoundingMode.HALF_UP).toPlainString() : "—"))
                             .append("</tr>");
                 });
+        return sb.toString();
+    }
+
+    private static String oiPerIndexCaseStatsHtml(SignalTuningAnalyzer.Report report) {
+        Map<String, Map<String, OiMomentumTuningAnalyzer.CaseStats>> byIndex =
+                report.oiMomentumReport().statsByCaseByIndex();
+        if (byIndex.isEmpty()) {
+            return "<tr><td colspan='6'>No per-index case data</td></tr>";
+        }
+        StringBuilder sb = new StringBuilder();
+        byIndex.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .forEach(indexEntry -> indexEntry.getValue().entrySet().stream()
+                        .sorted(Map.Entry.comparingByKey())
+                        .forEach(caseEntry -> {
+                            OiMomentumTuningAnalyzer.CaseStats stats = caseEntry.getValue();
+                            sb.append("<tr>")
+                                    .append(td(indexEntry.getKey()))
+                                    .append(td(caseEntry.getKey()))
+                                    .append(td(stats.count()))
+                                    .append(td(stats.closed()))
+                                    .append(td(stats.closed() > 0 ? stats.winRatePct() + "%" : "—"))
+                                    .append(td(stats.closed() > 0
+                                            ? stats.avgPnl().setScale(2, RoundingMode.HALF_UP).toPlainString() : "—"))
+                                    .append("</tr>");
+                        }));
+        return sb.toString();
+    }
+
+    private static String oiDailyRollupHtml(SignalTuningAnalyzer.Report report) {
+        Map<java.time.LocalDate, OiMomentumTuningAnalyzer.DailyStats> daily =
+                report.oiMomentumReport().dailyStats();
+        if (daily.isEmpty()) {
+            return "<tr><td colspan='6'>No daily rollup</td></tr>";
+        }
+        StringBuilder sb = new StringBuilder();
+        daily.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .forEach(e -> {
+                    OiMomentumTuningAnalyzer.DailyStats s = e.getValue();
+                    sb.append("<tr>")
+                            .append(td(e.getKey()))
+                            .append(td(s.signals()))
+                            .append(td(s.filled()))
+                            .append(td(s.closed()))
+                            .append(td(s.closed() > 0 ? s.winRatePct() + "%" : "—"))
+                            .append(td(s.closed() > 0 ? formatInr(s.netPnl()) : "—"))
+                            .append("</tr>");
+                });
+        return sb.toString();
+    }
+
+    private static String oiExitReasonBreakdownHtml(SignalTuningAnalyzer.Report report) {
+        Map<String, Map<String, OiMomentumTuningAnalyzer.CaseStats>> byExit =
+                report.oiMomentumReport().statsByCaseAndExitReason();
+        if (byExit.isEmpty()) {
+            return "<tr><td colspan='6'>No exit-reason breakdown</td></tr>";
+        }
+        StringBuilder sb = new StringBuilder();
+        byExit.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .forEach(exitEntry -> exitEntry.getValue().entrySet().stream()
+                        .sorted(Map.Entry.comparingByKey())
+                        .forEach(caseEntry -> {
+                            OiMomentumTuningAnalyzer.CaseStats stats = caseEntry.getValue();
+                            sb.append("<tr>")
+                                    .append(td(exitEntry.getKey()))
+                                    .append(td(caseEntry.getKey()))
+                                    .append(td(stats.count()))
+                                    .append(td(stats.closed()))
+                                    .append(td(stats.closed() > 0 ? stats.winRatePct() + "%" : "—"))
+                                    .append(td(stats.closed() > 0
+                                            ? stats.avgPnl().setScale(2, RoundingMode.HALF_UP).toPlainString() : "—"))
+                                    .append("</tr>");
+                        }));
+        return sb.toString();
+    }
+
+    private static String oiConcordanceHtml(SignalTuningAnalyzer.Report report) {
+        Map<String, Map<String, Long>> matrix = report.oiMomentumReport().concordanceMatrix();
+        if (matrix.isEmpty()) {
+            return "<tr><td colspan='3'>No V3 or legacy detection data for concordance</td></tr>";
+        }
+        StringBuilder sb = new StringBuilder();
+        matrix.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .forEach(v3Entry -> v3Entry.getValue().entrySet().stream()
+                        .sorted(Map.Entry.<String, Long>comparingByValue().reversed())
+                        .forEach(legacyEntry -> sb.append("<tr>")
+                                .append(td(v3Entry.getKey()))
+                                .append(td(legacyEntry.getKey()))
+                                .append(td(legacyEntry.getValue()))
+                                .append("</tr>")));
+        return sb.toString();
+    }
+
+    private static String oiBiasHistogramHtml(SignalTuningAnalyzer.Report report) {
+        Map<String, OiMomentumTuningAnalyzer.BiasBandStats> bands = report.oiMomentumReport().biasHistogram();
+        if (bands.isEmpty()) {
+            return "<tr><td colspan='4'>No reject bias scores</td></tr>";
+        }
+        StringBuilder sb = new StringBuilder();
+        for (String band : List.of("0-20", "20-30", "30-40", "40-50")) {
+            OiMomentumTuningAnalyzer.BiasBandStats stats = bands.get(band);
+            if (stats == null || stats.count() == 0) {
+                sb.append("<tr>").append(td(band)).append(td(0)).append(td("—")).append(td("—")).append("</tr>");
+                continue;
+            }
+            Double avgMove = stats.avgFwdSpot30mMovePct();
+            sb.append("<tr>")
+                    .append(td(band))
+                    .append(td(stats.count()))
+                    .append(td(stats.fwdCount()))
+                    .append(td(avgMove != null ? String.format("%.2f", avgMove) : "—"))
+                    .append("</tr>");
+        }
+        return sb.toString();
+    }
+
+    private static String oiSlippageByCaseHtml(SignalTuningAnalyzer.Report report) {
+        Map<String, Double> slippage = report.oiMomentumReport().avgSlippageByCase();
+        if (slippage.isEmpty()) {
+            return "<tr><td colspan='2'>No fill slippage data (needs premium + averageFillPrice)</td></tr>";
+        }
+        StringBuilder sb = new StringBuilder();
+        slippage.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .forEach(e -> sb.append("<tr>")
+                        .append(td(e.getKey()))
+                        .append(td(String.format("%.2f", e.getValue())))
+                        .append("</tr>"));
         return sb.toString();
     }
 
@@ -473,7 +629,7 @@ public class SignalTuningReportService {
     private static String oiTradesHtml(SignalTuningAnalyzer.Report report) {
         List<OiMomentumTuningAnalyzer.OiTradeOutcome> trades = report.oiMomentumReport().trades();
         if (trades.isEmpty()) {
-            return "<tr><td colspan='14'>No OI momentum signals in period</td></tr>";
+            return "<tr><td colspan='17'>No OI momentum signals in period</td></tr>";
         }
         StringBuilder sb = new StringBuilder();
         for (OiMomentumTuningAnalyzer.OiTradeOutcome t : trades) {
@@ -481,7 +637,10 @@ public class SignalTuningReportService {
             SignalTuningChainSummarizer.ChainSummary c = t.chain();
             String chain = c != null && c.present() ? c.shortSummary() : "—";
             String pnl = formatInr(t.realizedPnl());
-            String rowClass = "ORDER_OPEN".equals(t.executionStage()) ? "warn" : null;
+            String fillRatio = t.fillRatio() != null ? t.fillRatio().toPlainString() : "—";
+            String slippage = t.slippagePct() != null ? t.slippagePct().toPlainString() : "—";
+            String rowClass = "ORDER_OPEN".equals(t.executionStage()) ? "warn"
+                    : t.partialFill() ? "warn" : null;
             sb.append("<tr>")
                     .append(td(IST_TS.format(s.timestamp()), rowClass))
                     .append(td(s.entryCase(), rowClass))
@@ -489,6 +648,9 @@ public class SignalTuningReportService {
                     .append(td(s.underlying(), rowClass))
                     .append(td(s.optionType(), rowClass))
                     .append(td(s.premium() != null ? s.premium() : "—", rowClass))
+                    .append(td(fillRatio, rowClass))
+                    .append(td(slippage, rowClass))
+                    .append(td(t.partialFill() ? "YES" : "no", rowClass))
                     .append(td(String.format("%.2f", s.pcr()), rowClass))
                     .append(td(s.momentumType() + " " + s.momentumDir(), rowClass))
                     .append(td(s.oiDir(), rowClass))

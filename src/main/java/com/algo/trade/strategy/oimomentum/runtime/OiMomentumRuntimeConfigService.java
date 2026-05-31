@@ -55,6 +55,10 @@ public class OiMomentumRuntimeConfigService {
                     cached.isAntiPyramidEnabled(), cached.isExpiryOtmCutoffEnabled(),
                     cached.getDailyLossMultiplierOfAvgLoser(), cached.getConsecutiveLossHaltCount(),
                     cached.getBreakEvenTriggerPercent());
+            // P4 capture flags always follow application.yml on deploy (no UI flip required).
+            applyCaptureInstrumentationFromYaml(cached);
+            cached.setUpdatedAt(Instant.now());
+            cached = repository.save(cached);
         } else {
             // Seed from current OIMomentumConfig (which Spring populated from YAML).
             OiMomentumRuntimeConfig seed = new OiMomentumRuntimeConfig();
@@ -75,6 +79,7 @@ public class OiMomentumRuntimeConfigService {
             seed.setRejectSampleIntervalSeconds(oiMomentumConfig.getRejectSampleIntervalSeconds());
             seed.setMatrixRejectSampleIntervalSeconds(oiMomentumConfig.getMatrixRejectSampleIntervalSeconds());
             seed.setSummaryRejectTopN(oiMomentumConfig.getSummaryRejectTopN());
+            seed.setRejectEpisodeWindowSeconds(oiMomentumConfig.getRejectEpisodeWindowSeconds());
             seed.setUpdatedAt(Instant.now());
             seed.setUpdatedBy("yaml-seed");
             seed.setUpdatedReason("initial seed from YAML defaults");
@@ -83,7 +88,24 @@ public class OiMomentumRuntimeConfigService {
         }
         // Apply cached state back to the in-memory OIMomentumConfig so anything
         // already reading the bean picks up DB-persisted overrides.
+        applyCaptureInstrumentationFromYaml(cached);
         applyToOiMomentumConfig(cached);
+        log.info("[OiMomentumRuntimeConfig] capture instrumentation: recordEveryReject={}, "
+                        + "rejectSampleInterval={}s, matrixRejectSampleInterval={}s, summaryRejectTopN={}",
+                cached.isRecordEveryReject(), cached.getRejectSampleIntervalSeconds(),
+                cached.getMatrixRejectSampleIntervalSeconds(), cached.getSummaryRejectTopN());
+    }
+
+    /**
+     * Sync P4 CSV/log capture settings from {@code application.yml} into the DB row.
+     * Trading gates remain UI/DB-controlled; capture defaults are deploy-and-go.
+     */
+    private void applyCaptureInstrumentationFromYaml(OiMomentumRuntimeConfig row) {
+        row.setRecordEveryReject(oiMomentumConfig.isRecordEveryReject());
+        row.setRejectSampleIntervalSeconds(oiMomentumConfig.getRejectSampleIntervalSeconds());
+        row.setMatrixRejectSampleIntervalSeconds(oiMomentumConfig.getMatrixRejectSampleIntervalSeconds());
+        row.setSummaryRejectTopN(oiMomentumConfig.getSummaryRejectTopN());
+        row.setRejectEpisodeWindowSeconds(oiMomentumConfig.getRejectEpisodeWindowSeconds());
     }
 
     /** Read-only snapshot for UI / API. */
@@ -344,6 +366,7 @@ public class OiMomentumRuntimeConfigService {
         oiMomentumConfig.setRejectSampleIntervalSeconds(src.getRejectSampleIntervalSeconds());
         oiMomentumConfig.setMatrixRejectSampleIntervalSeconds(src.getMatrixRejectSampleIntervalSeconds());
         oiMomentumConfig.setSummaryRejectTopN(src.getSummaryRejectTopN());
+        oiMomentumConfig.setRejectEpisodeWindowSeconds(src.getRejectEpisodeWindowSeconds());
     }
 
     private static void validateInterval(int seconds, String field) {

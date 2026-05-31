@@ -211,6 +211,9 @@ public class OIMomentumStrategy {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private LegacyDetectionRecorder legacyRecorder;
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private SpikeEpisodeRecorder spikeEpisodeRecorder;
+
     /**
      * CASE 4 watch-list state (P1-3): when CASE 4 (OI conflicts momentum) fires, we
      * remember the OI direction + timestamp per index. If the NEXT signal within 20 min
@@ -674,8 +677,10 @@ public class OIMomentumStrategy {
         }
 
         // ── MarketGuard safety: VIX, circuit breaker, event day ──
-        if (!marketGuard.isSafeForLongPremium()) {
-            recordThrottleReject(indexType, state, "market_guard");
+        String mgBlock = marketGuard.longPremiumBlockReason();
+        if (mgBlock != null) {
+            recordThrottleReject(indexType, state,
+                    MarketGuard.normalizeLongPremiumRejectToken("market_guard", mgBlock));
             return;
         }
 
@@ -824,8 +829,14 @@ public class OIMomentumStrategy {
                             expiryCalendar.isExpiryDay(indexType), paperTrading(indexType));
                     state.lastRejectReason = "spike_dedupe";
                     state.lastRejectSampleTime = recordReject(indexType, state, "spike_dedupe", partial);
+                    if (spikeEpisodeRecorder != null) {
+                        spikeEpisodeRecorder.record(indexType, spike, false, Instant.now());
+                    }
                 } else {
                     state.lastSpikeEntryTime = Instant.now();
+                    if (spikeEpisodeRecorder != null) {
+                        spikeEpisodeRecorder.record(indexType, spike, true, Instant.now());
+                    }
                     log.info("[OIMomentum][{}] EVENT SPIKE detected: direction={}, magnitude={}%, spot={}",
                             indexType, spike.direction(), spike.magnitude(), spike.spotPrice());
                     int atm = indexType.roundToATM(spike.spotPrice());
@@ -1838,8 +1849,10 @@ public class OIMomentumStrategy {
             return;
         }
         // P2 #19: Allow event spikes to bypass MarketGuard
-        if (!reason.startsWith("SPIKE:") && !marketGuard.isSafeForLongPremium()) {
-            recordGateReject(indexType, state, "market_guard_entry", diagnostics);
+        String mgBlock = marketGuard.longPremiumBlockReason();
+        if (!reason.startsWith("SPIKE:") && mgBlock != null) {
+            recordGateReject(indexType, state,
+                    MarketGuard.normalizeLongPremiumRejectToken("market_guard_entry", mgBlock), diagnostics);
             return;
         }
         LocalTime now = LocalTime.now(IST);

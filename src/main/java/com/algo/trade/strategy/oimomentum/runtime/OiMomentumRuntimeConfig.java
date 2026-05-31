@@ -227,6 +227,10 @@ public class OiMomentumRuntimeConfig {
     @ColumnDefault("10")
     private int summaryRejectTopN = 10;
 
+    @Column(name = "reject_episode_window_seconds", nullable = false)
+    @ColumnDefault("60")
+    private int rejectEpisodeWindowSeconds = 60;
+
     // ── Getters / setters ─────────────────────────────────────────────────
 
     public Long getId() { return id; }
@@ -332,4 +336,6 @@ public class OiMomentumRuntimeConfig {
     public void setMatrixRejectSampleIntervalSeconds(int v) { this.matrixRejectSampleIntervalSeconds = v; }
     public int getSummaryRejectTopN() { return summaryRejectTopN; }
     public void setSummaryRejectTopN(int v) { this.summaryRejectTopN = v; }
+    public int getRejectEpisodeWindowSeconds() { return rejectEpisodeWindowSeconds; }
+    public void setRejectEpisodeWindowSeconds(int v) { this.rejectEpisodeWindowSeconds = v; }
 }

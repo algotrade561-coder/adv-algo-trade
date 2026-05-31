@@ -2,6 +2,9 @@ package com.algo.trade.reporting;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -14,6 +17,9 @@ import java.util.stream.Collectors;
  */
 final class OiMomentumTuningAnalyzer {
 
+    private static final ZoneId IST = ZoneId.of("Asia/Kolkata");
+    private static final long CONCORDANCE_WINDOW_SECONDS = 2;
+
     private OiMomentumTuningAnalyzer() {
     }
 
@@ -21,10 +27,13 @@ final class OiMomentumTuningAnalyzer {
             List<SignalTuningCsvLoader.OiMomentumSignalRow> signals,
             List<SignalTuningCsvLoader.OiMomentumRejectRow> rejects,
             List<SignalTuningCsvLoader.OiMomentumExitRow> exits,
+            Map<String, SignalTuningCsvLoader.ExecutionRow> entryByKey,
             Map<String, String> executionStageByKey,
             Map<String, String> executionReasonByKey,
             Map<String, List<SignalTuningCsvLoader.ChainLevelRow>> chainByKey,
-            List<SignalTuningCsvLoader.V3DecisionRow> v3Decisions) {
+            List<SignalTuningCsvLoader.V3DecisionRow> v3Decisions,
+            List<SignalTuningCsvLoader.LegacyDetectionRow> legacyDetections,
+            List<SignalTuningCsvLoader.SpikeEpisodeRow> spikeEpisodes) {
 
         if (signals.isEmpty() && rejects.isEmpty() && (v3Decisions == null || v3Decisions.isEmpty())) {
             return OiReport.empty();
@@ -34,6 +43,7 @@ final class OiMomentumTuningAnalyzer {
         for (SignalTuningCsvLoader.OiMomentumSignalRow signal : signals) {
             String execStage = executionStageByKey.getOrDefault(signal.decisionKey(), "—");
             String execReason = executionReasonByKey.getOrDefault(signal.decisionKey(), "");
+            SignalTuningCsvLoader.ExecutionRow exec = entryByKey.get(signal.decisionKey());
             SignalTuningCsvLoader.OiMomentumExitRow exit = exits.stream()
                     .filter(e -> signal.decisionKey().equals(e.decisionKey()))
                     .findFirst()
@@ -43,6 +53,9 @@ final class OiMomentumTuningAnalyzer {
 
             BigDecimal profitPct = exit != null ? exit.profitPct() : null;
             BigDecimal pnl = exit != null ? exit.realizedPnl() : null;
+            BigDecimal fillRatio = computeFillRatio(exec);
+            BigDecimal slippagePct = computeSlippagePct(signal.premium(), exec);
+            boolean partialFill = isPartialFill(exec);
 
             trades.add(new OiTradeOutcome(
                     signal,
@@ -52,7 +65,10 @@ final class OiMomentumTuningAnalyzer {
                     profitPct,
                     exit != null ? exit.exitReason() : "",
                     exit != null ? exit.holdSeconds() : 0,
-                    pnl
+                    pnl,
+                    fillRatio,
+                    slippagePct,
+                    partialFill
             ));
         }
         trades.sort(Comparator.comparing(t -> t.signal().timestamp()));
@@ -62,6 +78,18 @@ final class OiMomentumTuningAnalyzer {
             String caseName = signalCaseLabel(t.signal());
             byCase.computeIfAbsent(caseName, k -> new CaseStats()).add(t);
         }
+
+        Map<String, Map<String, CaseStats>> statsByCaseByIndex = buildStatsByCaseByIndex(trades);
+        Map<String, Map<String, SignalFillStats>> signalFillByCaseByIndex = buildSignalFillByCaseByIndex(trades);
+        Map<String, Map<String, CaseStats>> statsByCaseAndExitReason = buildStatsByCaseAndExitReason(trades);
+        CaseStats reversalStats = buildReversalStats(exits, signals, entryByKey, executionStageByKey,
+                executionReasonByKey, chainByKey);
+        Map<String, Double> avgSlippageByCase = buildAvgSlippageByCase(trades);
+        Map<LocalDate, DailyStats> dailyStats = buildDailyStats(trades);
+        Map<String, Map<String, Long>> concordanceMatrix = buildConcordanceMatrix(
+                v3Decisions != null ? v3Decisions : List.of(),
+                legacyDetections != null ? legacyDetections : List.of());
+        Map<String, BiasBandStats> biasHistogram = buildBiasHistogram(rejects);
 
         Map<String, SignalFillStats> signalFillByCase = buildSignalFillStats(trades);
         Map<String, Long> rejectReasonCounts = summarizeRejectReasons(rejects);
@@ -87,11 +115,250 @@ final class OiMomentumTuningAnalyzer {
                 byCase,
                 trades,
                 signalFillByCase,
+                statsByCaseByIndex,
+                signalFillByCaseByIndex,
+                statsByCaseAndExitReason,
+                reversalStats,
+                avgSlippageByCase,
+                dailyStats,
+                concordanceMatrix,
+                biasHistogram,
                 rejectReasonCounts,
                 rejectByTimeOfDay,
                 rejectByEntryPath,
                 v3Summary,
                 recs);
+    }
+
+    private static String indexKey(SignalTuningCsvLoader.OiMomentumSignalRow signal) {
+        if (signal.indexType() != null && !signal.indexType().isBlank()) {
+            return signal.indexType();
+        }
+        if (signal.underlying() != null && !signal.underlying().isBlank()) {
+            return signal.underlying();
+        }
+        return "UNKNOWN";
+    }
+
+    private static Map<String, Map<String, CaseStats>> buildStatsByCaseByIndex(List<OiTradeOutcome> trades) {
+        Map<String, Map<String, CaseStats>> out = new LinkedHashMap<>();
+        for (OiTradeOutcome t : trades) {
+            String index = indexKey(t.signal());
+            String caseName = signalCaseLabel(t.signal());
+            out.computeIfAbsent(index, k -> new LinkedHashMap<>())
+                    .computeIfAbsent(caseName, k -> new CaseStats())
+                    .add(t);
+        }
+        return out;
+    }
+
+    private static Map<String, Map<String, SignalFillStats>> buildSignalFillByCaseByIndex(List<OiTradeOutcome> trades) {
+        Map<String, Map<String, SignalFillStats>> out = new LinkedHashMap<>();
+        for (OiTradeOutcome t : trades) {
+            String index = indexKey(t.signal());
+            String caseName = signalCaseLabel(t.signal());
+            out.computeIfAbsent(index, k -> new LinkedHashMap<>())
+                    .computeIfAbsent(caseName, k -> new SignalFillStats())
+                    .add(t);
+        }
+        return out;
+    }
+
+    private static Map<String, Map<String, CaseStats>> buildStatsByCaseAndExitReason(List<OiTradeOutcome> trades) {
+        Map<String, Map<String, CaseStats>> out = new LinkedHashMap<>();
+        for (OiTradeOutcome t : trades) {
+            String exitReason = t.exitReason() == null || t.exitReason().isBlank() ? "OPEN" : t.exitReason();
+            String caseName = signalCaseLabel(t.signal());
+            out.computeIfAbsent(exitReason, k -> new LinkedHashMap<>())
+                    .computeIfAbsent(caseName, k -> new CaseStats())
+                    .add(t);
+        }
+        return out;
+    }
+
+    private static CaseStats buildReversalStats(
+            List<SignalTuningCsvLoader.OiMomentumExitRow> exits,
+            List<SignalTuningCsvLoader.OiMomentumSignalRow> signals,
+            Map<String, SignalTuningCsvLoader.ExecutionRow> entryByKey,
+            Map<String, String> executionStageByKey,
+            Map<String, String> executionReasonByKey,
+            Map<String, List<SignalTuningCsvLoader.ChainLevelRow>> chainByKey) {
+        CaseStats stats = new CaseStats();
+        Map<String, SignalTuningCsvLoader.OiMomentumSignalRow> signalByKey = signals.stream()
+                .collect(Collectors.toMap(SignalTuningCsvLoader.OiMomentumSignalRow::decisionKey, s -> s,
+                        (a, b) -> a, LinkedHashMap::new));
+        for (SignalTuningCsvLoader.OiMomentumExitRow exit : exits) {
+            if (!exit.reversal()) {
+                continue;
+            }
+            SignalTuningCsvLoader.OiMomentumSignalRow signal = signalByKey.get(exit.decisionKey());
+            if (signal == null) {
+                continue;
+            }
+            String execStage = executionStageByKey.getOrDefault(signal.decisionKey(), "—");
+            String execReason = executionReasonByKey.getOrDefault(signal.decisionKey(), "");
+            SignalTuningCsvLoader.ExecutionRow exec = entryByKey.get(signal.decisionKey());
+            SignalTuningChainSummarizer.ChainSummary chain = SignalTuningChainSummarizer.summarizeOi(
+                    signal, chainByKey.get(signal.decisionKey()));
+            stats.add(new OiTradeOutcome(
+                    signal,
+                    execStage,
+                    execReason,
+                    chain,
+                    exit.profitPct(),
+                    exit.exitReason(),
+                    exit.holdSeconds(),
+                    exit.realizedPnl(),
+                    computeFillRatio(exec),
+                    computeSlippagePct(signal.premium(), exec),
+                    isPartialFill(exec)
+            ));
+        }
+        return stats;
+    }
+
+    private static Map<String, Double> buildAvgSlippageByCase(List<OiTradeOutcome> trades) {
+        Map<String, List<BigDecimal>> byCase = new LinkedHashMap<>();
+        for (OiTradeOutcome t : trades) {
+            if (t.slippagePct() == null) {
+                continue;
+            }
+            byCase.computeIfAbsent(signalCaseLabel(t.signal()), k -> new ArrayList<>())
+                    .add(t.slippagePct());
+        }
+        Map<String, Double> out = new LinkedHashMap<>();
+        for (var e : byCase.entrySet()) {
+            double avg = e.getValue().stream()
+                    .mapToDouble(BigDecimal::doubleValue)
+                    .average()
+                    .orElse(0);
+            out.put(e.getKey(), Math.round(avg * 100.0) / 100.0);
+        }
+        return out;
+    }
+
+    private static Map<LocalDate, DailyStats> buildDailyStats(List<OiTradeOutcome> trades) {
+        Map<LocalDate, DailyStats> out = new LinkedHashMap<>();
+        for (OiTradeOutcome t : trades) {
+            LocalDate day = t.signal().timestamp().atZone(IST).toLocalDate();
+            out.computeIfAbsent(day, k -> new DailyStats()).add(t);
+        }
+        return out;
+    }
+
+    private static Map<String, Map<String, Long>> buildConcordanceMatrix(
+            List<SignalTuningCsvLoader.V3DecisionRow> v3Decisions,
+            List<SignalTuningCsvLoader.LegacyDetectionRow> legacyDetections) {
+        Map<String, Map<String, Long>> matrix = new LinkedHashMap<>();
+        if (v3Decisions.isEmpty()) {
+            return matrix;
+        }
+        for (SignalTuningCsvLoader.V3DecisionRow v3 : v3Decisions) {
+            String v3Verdict = v3.verdict() != null && !v3.verdict().isBlank() ? v3.verdict() : "UNKNOWN";
+            String legacyDecision = matchLegacyDecision(v3, legacyDetections);
+            matrix.computeIfAbsent(v3Verdict, k -> new LinkedHashMap<>())
+                    .merge(legacyDecision, 1L, Long::sum);
+        }
+        return matrix;
+    }
+
+    private static String matchLegacyDecision(
+            SignalTuningCsvLoader.V3DecisionRow v3,
+            List<SignalTuningCsvLoader.LegacyDetectionRow> legacyDetections) {
+        if (legacyDetections.isEmpty() || v3.timestamp() == null) {
+            return "—";
+        }
+        String index = v3.indexType() != null ? v3.indexType() : "";
+        SignalTuningCsvLoader.LegacyDetectionRow best = null;
+        long bestDelta = Long.MAX_VALUE;
+        for (SignalTuningCsvLoader.LegacyDetectionRow legacy : legacyDetections) {
+            if (legacy.timestamp() == null) {
+                continue;
+            }
+            if (!index.equals(legacy.indexType())) {
+                continue;
+            }
+            long deltaSec = Math.abs(DurationSeconds.between(v3.timestamp(), legacy.timestamp()));
+            if (deltaSec <= CONCORDANCE_WINDOW_SECONDS && deltaSec < bestDelta) {
+                bestDelta = deltaSec;
+                best = legacy;
+            }
+        }
+        if (best == null) {
+            return "—";
+        }
+        return best.finalDecision() != null && !best.finalDecision().isBlank() ? best.finalDecision() : "UNKNOWN";
+    }
+
+    private static Map<String, BiasBandStats> buildBiasHistogram(
+            List<SignalTuningCsvLoader.OiMomentumRejectRow> rejects) {
+        Map<String, BiasBandStats> out = new LinkedHashMap<>();
+        for (String band : List.of("0-20", "20-30", "30-40", "40-50")) {
+            out.put(band, new BiasBandStats());
+        }
+        for (SignalTuningCsvLoader.OiMomentumRejectRow reject : rejects) {
+            String band = biasBand(reject.biasScore());
+            if (band == null) {
+                continue;
+            }
+            out.get(band).add(reject);
+        }
+        return out;
+    }
+
+    static String biasBand(int biasScore) {
+        if (biasScore < 0) {
+            return null;
+        }
+        if (biasScore < 20) {
+            return "0-20";
+        }
+        if (biasScore < 30) {
+            return "20-30";
+        }
+        if (biasScore < 40) {
+            return "30-40";
+        }
+        if (biasScore < 50) {
+            return "40-50";
+        }
+        return null;
+    }
+
+    private static BigDecimal computeFillRatio(SignalTuningCsvLoader.ExecutionRow exec) {
+        if (exec == null || exec.requestedQuantity() <= 0) {
+            return null;
+        }
+        return BigDecimal.valueOf(exec.filledQuantity())
+                .divide(BigDecimal.valueOf(exec.requestedQuantity()), 4, RoundingMode.HALF_UP);
+    }
+
+    private static BigDecimal computeSlippagePct(BigDecimal signalPremium,
+                                                 SignalTuningCsvLoader.ExecutionRow exec) {
+        if (signalPremium == null || signalPremium.signum() <= 0 || exec == null) {
+            return null;
+        }
+        BigDecimal fillPrice = exec.averageFillPrice();
+        if (fillPrice == null || fillPrice.signum() <= 0) {
+            return null;
+        }
+        return fillPrice.subtract(signalPremium)
+                .multiply(BigDecimal.valueOf(100))
+                .divide(signalPremium, 2, RoundingMode.HALF_UP);
+    }
+
+    private static boolean isPartialFill(SignalTuningCsvLoader.ExecutionRow exec) {
+        if (exec == null || exec.requestedQuantity() <= 0) {
+            return false;
+        }
+        return exec.filledQuantity() > 0 && exec.filledQuantity() < exec.requestedQuantity();
+    }
+
+    /** Package-private helper to avoid java.time.Duration in hot path signatures. */
+    private static final class DurationSeconds {
+        static long between(Instant a, Instant b) {
+            return Math.abs(a.getEpochSecond() - b.getEpochSecond());
+        }
     }
 
     private static String signalCaseLabel(SignalTuningCsvLoader.OiMomentumSignalRow signal) {
@@ -310,6 +577,14 @@ final class OiMomentumTuningAnalyzer {
             Map<String, CaseStats> statsByCase,
             List<OiTradeOutcome> trades,
             Map<String, SignalFillStats> signalFillByCase,
+            Map<String, Map<String, CaseStats>> statsByCaseByIndex,
+            Map<String, Map<String, SignalFillStats>> signalFillByCaseByIndex,
+            Map<String, Map<String, CaseStats>> statsByCaseAndExitReason,
+            CaseStats reversalStats,
+            Map<String, Double> avgSlippageByCase,
+            Map<LocalDate, DailyStats> dailyStats,
+            Map<String, Map<String, Long>> concordanceMatrix,
+            Map<String, BiasBandStats> biasHistogram,
             Map<String, Long> rejectReasonCounts,
             Map<String, Long> rejectByTimeOfDay,
             Map<String, Long> rejectByEntryPath,
@@ -318,6 +593,7 @@ final class OiMomentumTuningAnalyzer {
     ) {
         static OiReport empty() {
             return new OiReport(0, 0, 0, 0, Map.of(), List.of(), Map.of(), Map.of(), Map.of(), Map.of(),
+                    new CaseStats(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of(),
                     V3Summary.empty(), List.of());
         }
     }
@@ -340,11 +616,15 @@ final class OiMomentumTuningAnalyzer {
         int openNoFill;
         int notFilled;
         int closed;
+        int partialFills;
         int wins;
         BigDecimal totalPnl = BigDecimal.ZERO;
 
         void add(OiTradeOutcome t) {
             signals++;
+            if (t.partialFill()) {
+                partialFills++;
+            }
             if ("ORDER_OPEN".equals(t.executionStage())) {
                 openNoFill++;
             } else if (isFilledStage(t.executionStage())) {
@@ -366,6 +646,7 @@ final class OiMomentumTuningAnalyzer {
         int openNoFill() { return openNoFill; }
         int notFilled() { return notFilled; }
         int closed() { return closed; }
+        int partialFills() { return partialFills; }
 
         int winRatePct() {
             return closed == 0 ? 0 : (int) Math.round(wins * 100.0 / closed);
@@ -385,7 +666,10 @@ final class OiMomentumTuningAnalyzer {
             BigDecimal profitPct,
             String exitReason,
             long holdSeconds,
-            BigDecimal realizedPnl
+            BigDecimal realizedPnl,
+            BigDecimal fillRatio,
+            BigDecimal slippagePct,
+            boolean partialFill
     ) {
     }
 
@@ -421,6 +705,62 @@ final class OiMomentumTuningAnalyzer {
 
         int winRatePct() {
             return closed == 0 ? 0 : (int) Math.round(wins * 100.0 / closed);
+        }
+    }
+
+    static final class DailyStats {
+        int signals;
+        int filled;
+        int closed;
+        int wins;
+        BigDecimal netPnl = BigDecimal.ZERO;
+
+        void add(OiTradeOutcome t) {
+            signals++;
+            if (isFilledStage(t.executionStage())) {
+                filled++;
+            }
+            if (t.realizedPnl() != null) {
+                closed++;
+                netPnl = netPnl.add(t.realizedPnl());
+                if (t.realizedPnl().signum() > 0) {
+                    wins++;
+                }
+            }
+        }
+
+        int signals() { return signals; }
+        int filled() { return filled; }
+        int closed() { return closed; }
+        BigDecimal netPnl() { return netPnl; }
+
+        int winRatePct() {
+            return closed == 0 ? 0 : (int) Math.round(wins * 100.0 / closed);
+        }
+    }
+
+    static final class BiasBandStats {
+        int count;
+        int fwdCount;
+        double totalFwdMovePct;
+
+        void add(SignalTuningCsvLoader.OiMomentumRejectRow reject) {
+            count++;
+            Double fwd = reject.fwdSpot30m();
+            if (fwd != null && reject.spot() > 0) {
+                fwdCount++;
+                totalFwdMovePct += (fwd - reject.spot()) / reject.spot() * 100.0;
+            }
+        }
+
+        int count() { return count; }
+        int fwdCount() { return fwdCount; }
+
+        Double avgFwdSpot30mMovePct() {
+            if (fwdCount == 0) {
+                return null;
+            }
+            return Math.round(totalFwdMovePct / fwdCount * 100.0) / 100.0;
         }
     }
 }

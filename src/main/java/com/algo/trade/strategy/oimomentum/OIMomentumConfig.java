@@ -319,6 +319,8 @@ public class OIMomentumConfig {
     private int matrixRejectSampleIntervalSeconds = 5;
     /** Top-N reject reasons included in the 60-second summary log. */
     private int summaryRejectTopN = 10;
+    /** Group consecutive rejects of the same (index, reason) within this window into one CSV row. */
+    private int rejectEpisodeWindowSeconds = 60;
 
     // ── Enabled/Paper ──
     private boolean enabled = true;
@@ -419,6 +421,8 @@ public class OIMomentumConfig {
     public void setMatrixRejectSampleIntervalSeconds(int v) { this.matrixRejectSampleIntervalSeconds = v; }
     public int getSummaryRejectTopN() { return summaryRejectTopN; }
     public void setSummaryRejectTopN(int v) { this.summaryRejectTopN = v; }
+    public int getRejectEpisodeWindowSeconds() { return rejectEpisodeWindowSeconds; }
+    public void setRejectEpisodeWindowSeconds(int v) { this.rejectEpisodeWindowSeconds = v; }
 
     // Getters and setters
     public double getMomentumThresholdPercent() { return momentumThresholdPercent; }

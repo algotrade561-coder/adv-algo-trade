@@ -11,6 +11,8 @@ import com.algo.trade.domain.OptionInstrument;
 import com.algo.trade.persistence.TradeEntity;
 import com.algo.trade.reporting.SignalDecisionKey;
 import com.algo.trade.util.IstDateTimes;
+import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.nio.file.Files;
@@ -18,9 +20,12 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 /**
@@ -30,6 +35,7 @@ import org.springframework.stereotype.Component;
 public class OiMomentumTuneRecorder {
 
     private static final Logger log = LoggerFactory.getLogger(OiMomentumTuneRecorder.class);
+    private static final ZoneId IST = ZoneId.of("Asia/Kolkata");
     private static final Path DIR = Path.of("reports", "entry-signals");
     private static final Path SIGNALS = DIR.resolve("oi-momentum-signals.csv");
     private static final Path REJECTS = DIR.resolve("oi-momentum-rejects.csv");
@@ -53,7 +59,9 @@ public class OiMomentumTuneRecorder {
             "spot", "atm", "spot30mHigh", "spot30mLow", "rangePct30m", "breakoutDistancePct",
             "atmCeLast", "atmPeLast", "vix", "daysToExpiry", "isExpiryDay",
             "restFallbackActive", "maxAtmOiStaleSec", "wsTickAgeSec",
-            "timeOfDayMode", "matrixCase", "entryPath", "operatorScore", "biasScore"
+            "timeOfDayMode", "matrixCase", "entryPath", "operatorScore", "biasScore",
+            "episodeFirstAt", "episodeLastAt", "episodeTickCount",
+            "fwdSpot15m", "fwdSpot30m", "fwdSpot60m", "fwdAtmCe30m", "fwdAtmPe30m"
     ) + System.lineSeparator();
 
     private static final String EXIT_HEADER = String.join(",",
@@ -73,11 +81,9 @@ public class OiMomentumTuneRecorder {
     private final LiveInstrumentCache liveInstrumentCache;
     private final OiRestFallbackService oiRestFallbackService;
     private final OIMomentumConfig config;
+    private RejectEpisodeAggregator episodeAggregator;
+    private volatile LocalDate episodeDay = LocalDate.now(IST);
 
-    /**
-     * Per-JVM cache of files whose existing header has been verified against the
-     * current code's expected header. Avoids hitting disk on every reject write.
-     */
     private final java.util.Set<Path> headerVerified = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     public OiMomentumTuneRecorder(LiveInstrumentCache liveInstrumentCache,
@@ -87,6 +93,38 @@ public class OiMomentumTuneRecorder {
         this.liveInstrumentCache = liveInstrumentCache;
         this.config = config;
         this.oiRestFallbackService = oiRestFallbackService;
+    }
+
+    @PostConstruct
+    void initAggregator() {
+        rebuildAggregator();
+    }
+
+    @PreDestroy
+    void flushOnShutdown() {
+        flushEpisodes(Instant.now());
+    }
+
+    @Scheduled(fixedRate = 30_000)
+    void flushExpiredEpisodes() {
+        LocalDate today = LocalDate.now(IST);
+        if (!today.equals(episodeDay)) {
+            flushEpisodes(Instant.now());
+            episodeAggregator.flushAll();
+            episodeDay = today;
+            rebuildAggregator();
+        } else {
+            flushEpisodes(Instant.now());
+        }
+    }
+
+    /** Visible for tests. */
+    void flushAllEpisodesForTest() {
+        flushEpisodes(Instant.now());
+    }
+
+    private void rebuildAggregator() {
+        episodeAggregator = new RejectEpisodeAggregator(config.getRejectEpisodeWindowSeconds());
     }
 
     public String recordBuy(StrategyDecision decision, OiMomentumEntryDiagnostics diag,
@@ -99,7 +137,7 @@ public class OiMomentumTuneRecorder {
                     csv(decisionKey),
                     csv(signalId),
                     csv(IstDateTimes.formatInstant(decision.timestamp())),
-                    csv(IstDateTimes.formatLocalTime(java.time.LocalTime.now(java.time.ZoneId.of("Asia/Kolkata")))),
+                    csv(IstDateTimes.formatLocalTime(java.time.LocalTime.now(IST))),
                     csv(diag.indexType().name()),
                     csv(decision.underlying()),
                     csv(decision.signalType()),
@@ -150,15 +188,31 @@ public class OiMomentumTuneRecorder {
             return lastSampleTime;
         }
         Instant now = Instant.now();
+        List<RejectEpisodeAggregator.EpisodeRow> flushed =
+                episodeAggregator.record(indexType, rejectReason, partial, now);
+        writeEpisodeRows(flushed);
+        return now;
+    }
+
+    private void flushEpisodes(Instant now) {
+        writeEpisodeRows(episodeAggregator.flushExpired(now));
+    }
+
+    private void writeEpisodeRows(List<RejectEpisodeAggregator.EpisodeRow> rows) {
+        if (rows.isEmpty()) {
+            return;
+        }
         try {
             Files.createDirectories(DIR);
-            String row = buildRejectRow(now, indexType, rejectReason, partial);
-            append(REJECTS, REJECT_HEADER, row);
-            return now;
+            StringBuilder batch = new StringBuilder();
+            for (RejectEpisodeAggregator.EpisodeRow ep : rows) {
+                batch.append(buildRejectRow(ep.lastAt(), ep.indexType(), ep.rejectReason(),
+                        ep.diagnostics(), ep.firstAt(), ep.lastAt(), ep.tickCount()));
+            }
+            append(REJECTS, REJECT_HEADER, batch.toString());
         } catch (IOException ex) {
-            log.warn("[OiMomentumTune] reject record failed: {}", ex.getMessage());
+            log.warn("[OiMomentumTune] reject episode write failed: {}", ex.getMessage());
         }
-        return lastSampleTime;
     }
 
     private boolean shouldSampleReject(Instant lastSampleTime, String rejectReason) {
@@ -172,11 +226,12 @@ public class OiMomentumTuneRecorder {
         return lastSampleTime == null || Duration.between(lastSampleTime, now).compareTo(interval) >= 0;
     }
 
-    private String buildRejectRow(Instant now, IndexType indexType, String rejectReason,
-                                  OiMomentumEntryDiagnostics partial) {
+    private String buildRejectRow(Instant rowTimestamp, IndexType indexType, String rejectReason,
+                                  OiMomentumEntryDiagnostics partial,
+                                  Instant episodeFirst, Instant episodeLast, int episodeTicks) {
         return String.join(",",
-                csv(IstDateTimes.formatInstant(now)),
-                csv(IstDateTimes.formatLocalTime(java.time.LocalTime.now(java.time.ZoneId.of("Asia/Kolkata")))),
+                csv(IstDateTimes.formatInstant(rowTimestamp)),
+                csv(IstDateTimes.formatLocalTime(java.time.LocalTime.now(IST))),
                 csv(indexType.name()),
                 csv(rejectReason),
                 csv(partial != null ? partial.entryCase() : ""),
@@ -209,7 +264,15 @@ public class OiMomentumTuneRecorder {
                 csv(partial != null ? partial.matrixCase() : ""),
                 csv(partial != null ? partial.entryPath() : ""),
                 csv(partial != null ? partial.operatorScore() : ""),
-                csv(partial != null ? partial.biasScore() : "")
+                csv(partial != null ? partial.biasScore() : ""),
+                csv(IstDateTimes.formatInstant(episodeFirst)),
+                csv(IstDateTimes.formatInstant(episodeLast)),
+                csv(episodeTicks),
+                csv(""),
+                csv(""),
+                csv(""),
+                csv(""),
+                csv("")
         ) + System.lineSeparator();
     }
 
