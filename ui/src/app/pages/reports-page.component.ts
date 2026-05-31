@@ -3,7 +3,7 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 import { RouterLink } from '@angular/router';
 import { ApiService } from '../core/api.service';
-import { DailyBundleSummary } from '../core/models';
+import { DailyBundleSummary, SignalTuningRunResult } from '../core/models';
 
 @Component({
   selector: 'app-reports-page',
@@ -105,6 +105,49 @@ import { DailyBundleSummary } from '../core/models';
         <p class="download-error">{{ downloadError }}</p>
       }
 
+      <div class="section-hdr tuning-hdr">
+        <h2 class="section-title">Signal tuning report</h2>
+        <p class="section-desc">
+          End-of-day HTML analysis from entry-signal CSVs — strategy scorecards, buy outcomes, and tuning recommendations.
+        </p>
+      </div>
+
+      <div class="tuning-warn">
+        <mat-icon>warning_amber</mat-icon>
+        <span>
+          Do not run during market hours. Generation loads all signal CSVs into memory, uses significant JVM heap,
+          and may bring down the application. Run after the session (ideally after 3:30 PM IST).
+        </span>
+      </div>
+
+      <div class="panel panel-tuning">
+        <div class="panel-hdr">
+          <mat-icon class="hdr-icon">tune</mat-icon>
+          <div>
+            <h2>Generate &amp; view report</h2>
+            <p>Analyses reports/entry-signals CSVs and writes HTML under reports/signal-tuning.</p>
+          </div>
+        </div>
+        @if (tuningResult) {
+          <p class="file-meta">
+            Last run: {{ tuningResult.totalEvaluations }} evaluations · {{ tuningResult.buySignals }} buys ·
+            {{ tuningResult.recommendationCount }} recommendations
+          </p>
+        }
+        <div class="tuning-actions">
+          <button mat-flat-button color="primary" (click)="generateTuningReport()" [disabled]="tuningGenerating">
+            <mat-icon>{{ tuningGenerating ? 'hourglass_top' : 'play_circle' }}</mat-icon>
+            {{ tuningGenerating ? 'Generating… (1–3 min)' : 'Generate report' }}
+          </button>
+          <a class="report-link" [href]="tuningReportHref" target="_blank" rel="noopener">
+            <mat-icon>open_in_new</mat-icon> View latest HTML report
+          </a>
+        </div>
+        @if (tuningError) {
+          <p class="download-error">{{ tuningError }}</p>
+        }
+      </div>
+
     </section>
   `,
   styles: [`
@@ -144,17 +187,39 @@ import { DailyBundleSummary } from '../core/models';
     .lc-arrow { margin-left: auto; color: var(--muted); font-size: 20px; width: 20px; height: 20px; }
 
     .download-error { color: var(--bad); font-size: 12px; margin-top: 8px; }
+
+    .tuning-hdr { margin-top: 28px; }
+    .tuning-warn {
+      display: flex; align-items: flex-start; gap: 10px;
+      padding: 12px 16px; margin-bottom: 16px; border-radius: 10px;
+      background: rgba(242,189,75,.08); border: 1px solid rgba(242,189,75,.35); color: var(--warn);
+      font-size: 12px; line-height: 1.5;
+    }
+    .tuning-warn mat-icon { font-size: 20px; width: 20px; height: 20px; flex-shrink: 0; margin-top: 1px; }
+    .panel-tuning { max-width: 640px; }
+    .tuning-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+    .report-link {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-size: 13px; font-weight: 600; color: var(--accent); text-decoration: none;
+    }
+    .report-link:hover { text-decoration: underline; }
+    .report-link mat-icon { font-size: 18px; width: 18px; height: 18px; }
   `]
 })
 export class ReportsPageComponent implements OnInit {
   bundleSummary?: DailyBundleSummary;
   downloading = false;
   downloadError?: string;
+  tuningGenerating = false;
+  tuningError?: string;
+  tuningResult?: SignalTuningRunResult;
+  tuningReportHref = '/advalgotrade/reports/signal-tuning/report';
 
   constructor(private readonly api: ApiService) {}
 
   ngOnInit(): void {
     this.refreshBundleSummary();
+    this.tuningReportHref = this.api.signalTuningReportUrl();
   }
 
   refreshBundleSummary(): void {
@@ -168,6 +233,23 @@ export class ReportsPageComponent implements OnInit {
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  generateTuningReport(): void {
+    this.tuningGenerating = true;
+    this.tuningError = undefined;
+    this.api.generateSignalTuningReport().subscribe({
+      next: result => {
+        this.tuningResult = result;
+        this.tuningReportHref = this.api.signalTuningReportUrl(result.htmlReportPath);
+        this.tuningGenerating = false;
+      },
+      error: err => {
+        this.tuningGenerating = false;
+        this.tuningError = extractApiError(err)
+          ?? 'Report generation failed. Avoid running during market hours, or try again after more signal data is recorded.';
+      }
+    });
   }
 
   downloadToday(kind: 'signals' | 'logs' | 'chain' | 'all'): void {
@@ -209,4 +291,20 @@ export class ReportsPageComponent implements OnInit {
     document.body.removeChild(a);
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
+}
+
+function extractApiError(err: { error?: unknown; message?: string }): string | undefined {
+  const body = err?.error;
+  if (typeof body === 'string' && body.trim()) {
+    return body.trim();
+  }
+  if (body && typeof body === 'object' && 'message' in body) {
+    const message = String((body as { message?: unknown }).message ?? '').trim();
+    if (message) {
+      return message.includes('OutOfMemoryError')
+        ? `${message} Increase JVM heap (-Xmx) or run after market close when fewer CSVs are being written.`
+        : message;
+    }
+  }
+  return err?.message?.trim() || undefined;
 }

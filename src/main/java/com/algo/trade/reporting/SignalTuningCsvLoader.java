@@ -14,9 +14,12 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
+import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 import org.slf4j.Logger;
@@ -36,6 +39,14 @@ final class SignalTuningCsvLoader {
     }
 
     static Loaded load() {
+        return load(true);
+    }
+
+    /**
+     * @param loadForwardCandles when true, streams {@code entry-candles.csv} for BUY instruments only
+     *                           (avoids loading the full multi-hundred-MB file into heap)
+     */
+    static Loaded load(boolean loadForwardCandles) {
         Map<String, SignalRow> signals = new LinkedHashMap<>();
         Map<String, ExecutionRow> entries = new LinkedHashMap<>();
         Map<String, ExecutionRow> exits = new LinkedHashMap<>();
@@ -48,10 +59,27 @@ final class SignalTuningCsvLoader {
         List<OiShiftTrapNearMissRow> trapNearMiss = new ArrayList<>();
         List<OiShiftTrapSignalRow> trapSignals = new ArrayList<>();
 
-        loadDir(ACTIVE_DIR, signals, entries, exits, optionCandles, chainByDecision,
+        loadDir(ACTIVE_DIR, signals, entries, exits, chainByDecision,
                 oiSignals, oiRejects, oiExits, trapEvals, trapNearMiss, trapSignals);
-        loadRecentArchives(signals, entries, exits, optionCandles, chainByDecision,
+        loadRecentArchives(signals, entries, exits, chainByDecision,
                 oiSignals, oiRejects, oiExits, trapEvals, trapNearMiss, trapSignals);
+
+        if (loadForwardCandles) {
+            Set<String> buyInstruments = signals.values().stream()
+                    .filter(SignalRow::isBuy)
+                    .map(SignalRow::instrumentKey)
+                    .filter(k -> k != null && !k.isBlank())
+                    .collect(Collectors.toCollection(LinkedHashSet::new));
+            Path candlesFile = ACTIVE_DIR.resolve("entry-candles.csv");
+            if (!buyInstruments.isEmpty() && Files.exists(candlesFile)) {
+                try {
+                    readCandles(Files.newInputStream(candlesFile), optionCandles, buyInstruments);
+                    log.info("Signal tuning forward candles loaded for {} BUY instruments (filtered stream)", buyInstruments.size());
+                } catch (IOException ex) {
+                    throw new IllegalStateException("Failed to load filtered entry candles from " + candlesFile, ex);
+                }
+            }
+        }
 
         Map<String, List<Candle>> finalizedCandles = new LinkedHashMap<>();
         for (var e : optionCandles.entrySet()) {
@@ -68,7 +96,6 @@ final class SignalTuningCsvLoader {
 
     private static void loadRecentArchives(Map<String, SignalRow> signals, Map<String, ExecutionRow> entries,
                                            Map<String, ExecutionRow> exits,
-                                           Map<String, Map<Instant, Candle>> optionCandles,
                                            Map<String, List<ChainLevelRow>> chainByDecision,
                                            List<OiMomentumSignalRow> oiSignals,
                                            List<OiMomentumRejectRow> oiRejects,
@@ -86,7 +113,7 @@ final class SignalTuningCsvLoader {
                     .limit(3)
                     .toList();
             for (Path zip : zips) {
-                loadZip(zip, signals, entries, exits, optionCandles, chainByDecision, oiSignals, oiRejects, oiExits,
+                loadZip(zip, signals, entries, exits, chainByDecision, oiSignals, oiRejects, oiExits,
                         trapEvals, trapNearMiss, trapSignals);
             }
         } catch (IOException ex) {
@@ -95,7 +122,7 @@ final class SignalTuningCsvLoader {
     }
 
     private static void loadDir(Path dir, Map<String, SignalRow> signals, Map<String, ExecutionRow> entries,
-                                Map<String, ExecutionRow> exits, Map<String, Map<Instant, Candle>> optionCandles,
+                                Map<String, ExecutionRow> exits,
                                 Map<String, List<ChainLevelRow>> chainByDecision,
                                 List<OiMomentumSignalRow> oiSignals,
                                 List<OiMomentumRejectRow> oiRejects,
@@ -118,10 +145,6 @@ final class SignalTuningCsvLoader {
             Path exitOutcomes = dir.resolve("exit-execution-outcomes.csv");
             if (Files.exists(exitOutcomes)) {
                 readExecutions(Files.newInputStream(exitOutcomes), exits, false);
-            }
-            Path candles = dir.resolve("entry-candles.csv");
-            if (Files.exists(candles)) {
-                readCandles(Files.newInputStream(candles), optionCandles);
             }
             Path chainLevels = dir.resolve("option-chain-levels.csv");
             if (Files.exists(chainLevels)) {
@@ -157,7 +180,7 @@ final class SignalTuningCsvLoader {
     }
 
     private static void loadZip(Path zipPath, Map<String, SignalRow> signals, Map<String, ExecutionRow> entries,
-                                Map<String, ExecutionRow> exits, Map<String, Map<Instant, Candle>> optionCandles,
+                                Map<String, ExecutionRow> exits,
                                 Map<String, List<ChainLevelRow>> chainByDecision,
                                 List<OiMomentumSignalRow> oiSignals,
                                 List<OiMomentumRejectRow> oiRejects,
@@ -177,10 +200,6 @@ final class SignalTuningCsvLoader {
             ZipEntry exit = zip.getEntry("exit-execution-outcomes.csv");
             if (exit != null) {
                 readExecutions(zip.getInputStream(exit), exits, false);
-            }
-            ZipEntry candles = zip.getEntry("entry-candles.csv");
-            if (candles != null) {
-                readCandles(zip.getInputStream(candles), optionCandles);
             }
             ZipEntry chain = zip.getEntry("option-chain-levels.csv");
             if (chain != null) {
@@ -300,12 +319,17 @@ final class SignalTuningCsvLoader {
     }
 
     private static void readCandles(InputStream input, Map<String, Map<Instant, Candle>> optionCandles) throws IOException {
+        readCandles(input, optionCandles, null);
+    }
+
+    private static void readCandles(InputStream input, Map<String, Map<Instant, Candle>> optionCandles,
+                                    Set<String> instrumentFilter) throws IOException {
         for (Map<String, String> r : Csv.read(input).rows()) {
             if (!"MARKET".equalsIgnoreCase(firstText(r.get("candleRole"), ""))) {
                 continue;
             }
             String instrument = firstText(r.get("selectedInstrumentKey"), "");
-            if (instrument.isBlank()) {
+            if (instrument.isBlank() || (instrumentFilter != null && !instrumentFilter.contains(instrument))) {
                 continue;
             }
             Candle candle = new Candle(

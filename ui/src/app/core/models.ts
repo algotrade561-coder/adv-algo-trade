@@ -214,6 +214,15 @@ export interface EntrySignalReplayResult {
   summary: EntrySignalReplaySummary;
 }
 
+export interface SignalTuningRunResult {
+  generatedAt: string;
+  htmlReportPath: string;
+  totalEvaluations: number;
+  buySignals: number;
+  recommendationCount: number;
+  telegramSummary: string;
+}
+
 export interface BacktestRunRequest {
   underlying?: UnderlyingSymbol;
   timeframe?: Timeframe;

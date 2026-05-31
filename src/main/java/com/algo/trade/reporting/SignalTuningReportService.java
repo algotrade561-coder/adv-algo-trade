@@ -7,8 +7,11 @@ import java.math.RoundingMode;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.time.DayOfWeek;
 import java.time.Instant;
+import java.time.LocalTime;
 import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Comparator;
 import java.util.List;
@@ -32,15 +35,20 @@ public class SignalTuningReportService {
             .withZone(ZoneId.of("Asia/Kolkata"));
     private static final DateTimeFormatter IST_TS = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
             .withZone(ZoneId.of("Asia/Kolkata"));
+    private static final ZoneId IST = ZoneId.of("Asia/Kolkata");
 
     private final TelegramAlertService telegramAlertService;
+    private final SignalTuningProperties tuningProperties;
 
-    public SignalTuningReportService(TelegramAlertService telegramAlertService) {
+    public SignalTuningReportService(TelegramAlertService telegramAlertService,
+                                     SignalTuningProperties tuningProperties) {
         this.telegramAlertService = telegramAlertService;
+        this.tuningProperties = tuningProperties;
     }
 
     public TuningRunResult generate() {
-        SignalTuningCsvLoader.Loaded data = SignalTuningCsvLoader.load();
+        assertSafeToGenerate();
+        SignalTuningCsvLoader.Loaded data = SignalTuningCsvLoader.load(tuningProperties.isLoadForwardCandles());
         SignalTuningAnalyzer.Report report = SignalTuningAnalyzer.analyze(data);
         Path htmlPath = writeHtml(report);
         String telegramSummary = formatTelegramSummary(report, htmlPath);
@@ -54,6 +62,23 @@ public class SignalTuningReportService {
                 report.buySignals(),
                 report.recommendations().size(),
                 telegramSummary);
+    }
+
+    private void assertSafeToGenerate() {
+        if (!tuningProperties.isBlockDuringMarketHours()) {
+            return;
+        }
+        ZonedDateTime now = ZonedDateTime.now(IST);
+        DayOfWeek dow = now.getDayOfWeek();
+        if (dow == DayOfWeek.SATURDAY || dow == DayOfWeek.SUNDAY) {
+            return;
+        }
+        LocalTime t = now.toLocalTime();
+        if (!t.isBefore(LocalTime.of(9, 15)) && t.isBefore(LocalTime.of(15, 30))) {
+            throw new IllegalArgumentException(
+                    "Signal tuning is blocked during market hours (09:15–15:30 IST) — it loads large CSVs "
+                            + "into JVM heap and may crash the application. Run after the session closes.");
+        }
     }
 
     public String readHtml(Path path) {

@@ -57,7 +57,10 @@ class SignalTuningReportServiceTest {
 
     @Test
     void generateSendsTelegramWhenDataPresent() {
-        SignalTuningReportService service = new SignalTuningReportService(telegramAlertService);
+        SignalTuningProperties properties = new SignalTuningProperties();
+        properties.setBlockDuringMarketHours(false);
+        properties.setLoadForwardCandles(false);
+        SignalTuningReportService service = new SignalTuningReportService(telegramAlertService, properties);
         if (!Path.of("reports/entry-signals/entry-signals.csv").toFile().exists()) {
             return;
         }

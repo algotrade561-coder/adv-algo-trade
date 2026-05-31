@@ -5,6 +5,7 @@ import {
   ApiRecord,
   ConfigResponse,
   EntrySignalReplayResult,
+  SignalTuningRunResult,
   ExecutionMode,
   HealthResponse,
   JvmHealth,
@@ -313,6 +314,13 @@ export class ApiService {
     return this.http.get<PagedResponse<StrategyDecision>>(`${this.base}/signals/rejected/paged?${q}`);
   }
   replayEntrySignals(): Observable<EntrySignalReplayResult> { return this.http.post<EntrySignalReplayResult>(`${this.base}/reports/entry-signals/replay`, {}); }
+  generateSignalTuningReport(): Observable<SignalTuningRunResult> {
+    return this.http.post<SignalTuningRunResult>(`${this.base}/reports/signal-tuning/generate`, {});
+  }
+  signalTuningReportUrl(path?: string): string {
+    const q = path ? `?path=${encodeURIComponent(path)}` : '';
+    return `${this.base}/reports/signal-tuning/report${q}`;
+  }
 
   // ── Strategy management ───────────────────────────────────────────────────
   getStrategies(): Observable<StrategyDto[]> { return this.http.get<StrategyDto[]>(`${this.base}/strategies`); }

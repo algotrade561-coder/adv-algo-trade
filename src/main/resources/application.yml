@@ -372,6 +372,8 @@ oi-momentum:
 # On-demand: POST /advalgotrade/reports/signal-tuning/generate (or run locally after downloading reports).
 signal-tuning:
   scheduler-enabled: false
+  block-during-market-hours: true
+  load-forward-candles: false
 
 # ── Trading Calendar (Exchange Holidays) ───────────────────────────────────
 # Only include weekday trading holidays here. If a festival falls on Sat/Sun,
