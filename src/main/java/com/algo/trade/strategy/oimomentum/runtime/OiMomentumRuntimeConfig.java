@@ -208,6 +208,25 @@ public class OiMomentumRuntimeConfig {
     @Column(name = "updated_reason", length = 500)
     private String updatedReason;
 
+    // ── P4 tuning instrumentation ───────────────────────────────────────────
+
+    /** Log every reject to CSV (disable after data-gathering week to save disk). */
+    @Column(name = "record_every_reject", nullable = false)
+    @ColumnDefault("true")
+    private boolean recordEveryReject = true;
+
+    @Column(name = "reject_sample_interval_seconds", nullable = false)
+    @ColumnDefault("30")
+    private int rejectSampleIntervalSeconds = 30;
+
+    @Column(name = "matrix_reject_sample_interval_seconds", nullable = false)
+    @ColumnDefault("5")
+    private int matrixRejectSampleIntervalSeconds = 5;
+
+    @Column(name = "summary_reject_top_n", nullable = false)
+    @ColumnDefault("10")
+    private int summaryRejectTopN = 10;
+
     // ── Getters / setters ─────────────────────────────────────────────────
 
     public Long getId() { return id; }
@@ -304,4 +323,13 @@ public class OiMomentumRuntimeConfig {
 
     public String getUpdatedReason() { return updatedReason; }
     public void setUpdatedReason(String v) { this.updatedReason = v; }
+
+    public boolean isRecordEveryReject() { return recordEveryReject; }
+    public void setRecordEveryReject(boolean v) { this.recordEveryReject = v; }
+    public int getRejectSampleIntervalSeconds() { return rejectSampleIntervalSeconds; }
+    public void setRejectSampleIntervalSeconds(int v) { this.rejectSampleIntervalSeconds = v; }
+    public int getMatrixRejectSampleIntervalSeconds() { return matrixRejectSampleIntervalSeconds; }
+    public void setMatrixRejectSampleIntervalSeconds(int v) { this.matrixRejectSampleIntervalSeconds = v; }
+    public int getSummaryRejectTopN() { return summaryRejectTopN; }
+    public void setSummaryRejectTopN(int v) { this.summaryRejectTopN = v; }
 }

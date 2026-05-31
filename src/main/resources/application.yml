@@ -352,6 +352,12 @@ oi-momentum:
   legacy-decision-log-enabled: true
   legacy-decision-log-dir: data/oi-decisions
 
+  # P4 instrumentation — full reject funnel for one tuning week (disable after review)
+  record-every-reject: true
+  reject-sample-interval-seconds: 30
+  matrix-reject-sample-interval-seconds: 5
+  summary-reject-top-n: 10
+
   # ── V3 recorder + external feeds (only used when v3-enabled: true) ──
   v3:
     decision-log-enabled: true

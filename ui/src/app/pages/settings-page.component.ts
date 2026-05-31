@@ -238,6 +238,37 @@ import {
                          [(ngModel)]="oiConfig.thetaDecayMaxCostPct">
                   <mat-hint>30 = theta eats max 30% of expected gain</mat-hint>
                 </mat-form-field>
+
+                <div class="section-hdr sub-hdr inline-hdr">
+                  <mat-icon class="icon-risk">analytics</mat-icon>
+                  <div>
+                    <h2>Tuning instrumentation</h2>
+                    <p>CSV + log capture for data-backed gate tuning (disable sampling after review week)</p>
+                  </div>
+                </div>
+                <div class="toggle-row">
+                  <span>Record every reject
+                    <small class="toggle-hint">When on, writes every reject to oi-momentum-rejects.csv (heavy). Off uses interval sampling below.</small></span>
+                  <mat-slide-toggle [(ngModel)]="oiConfig.recordEveryReject" color="primary"></mat-slide-toggle>
+                </div>
+                <mat-form-field appearance="outline">
+                  <mat-label>Reject sample interval (seconds)</mat-label>
+                  <input matInput type="number" min="5" max="300" step="5"
+                         [(ngModel)]="oiConfig.rejectSampleIntervalSeconds">
+                  <mat-hint>Throttles non-matrix rejects when record-every-reject is off</mat-hint>
+                </mat-form-field>
+                <mat-form-field appearance="outline">
+                  <mat-label>Matrix reject sample interval (seconds)</mat-label>
+                  <input matInput type="number" min="1" max="60" step="1"
+                         [(ngModel)]="oiConfig.matrixRejectSampleIntervalSeconds">
+                  <mat-hint>matrix_skip:* rows — default 5s</mat-hint>
+                </mat-form-field>
+                <mat-form-field appearance="outline">
+                  <mat-label>Top reject reasons in 60s log</mat-label>
+                  <input matInput type="number" min="1" max="50" step="1"
+                         [(ngModel)]="oiConfig.summaryRejectTopN">
+                  <mat-hint>Per-reason counters reset at IST day rollover</mat-hint>
+                </mat-form-field>
               </div>
             }
 

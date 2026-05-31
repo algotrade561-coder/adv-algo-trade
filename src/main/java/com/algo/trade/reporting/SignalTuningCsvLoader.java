@@ -58,6 +58,7 @@ final class SignalTuningCsvLoader {
         List<OiShiftTrapEvalRow> trapEvals = new ArrayList<>();
         List<OiShiftTrapNearMissRow> trapNearMiss = new ArrayList<>();
         List<OiShiftTrapSignalRow> trapSignals = new ArrayList<>();
+        List<V3DecisionRow> v3Decisions = loadV3Decisions();
 
         loadDir(ACTIVE_DIR, signals, entries, exits, chainByDecision,
                 oiSignals, oiRejects, oiExits, trapEvals, trapNearMiss, trapSignals);
@@ -86,12 +87,61 @@ final class SignalTuningCsvLoader {
             finalizedCandles.put(e.getKey(),
                     e.getValue().values().stream().sorted(Comparator.comparing(Candle::timestamp)).toList());
         }
-        log.info("Signal tuning data loaded: signals={}, entryOutcomes={}, exitOutcomes={}, optionSeries={}, chainKeys={}, oiSignals={}, oiRejects={}, oiExits={}, trapEvals={}, trapNearMiss={}, trapSignals={}",
+        log.info("Signal tuning data loaded: signals={}, entryOutcomes={}, exitOutcomes={}, optionSeries={}, chainKeys={}, oiSignals={}, oiRejects={}, oiExits={}, trapEvals={}, trapNearMiss={}, trapSignals={}, v3Decisions={}",
                 signals.size(), entries.size(), exits.size(), finalizedCandles.size(), chainByDecision.size(),
-                oiSignals.size(), oiRejects.size(), oiExits.size(), trapEvals.size(), trapNearMiss.size(), trapSignals.size());
+                oiSignals.size(), oiRejects.size(), oiExits.size(), trapEvals.size(), trapNearMiss.size(), trapSignals.size(),
+                v3Decisions.size());
         return new Loaded(List.copyOf(signals.values()), List.copyOf(entries.values()), List.copyOf(exits.values()),
                 finalizedCandles, chainByDecision, List.copyOf(oiSignals), List.copyOf(oiRejects), List.copyOf(oiExits),
-                List.copyOf(trapEvals), List.copyOf(trapNearMiss), List.copyOf(trapSignals));
+                List.copyOf(trapEvals), List.copyOf(trapNearMiss), List.copyOf(trapSignals), List.copyOf(v3Decisions));
+    }
+
+    private static final Path V3_DIR = Path.of("data", "v3-decisions");
+
+    static List<V3DecisionRow> loadV3Decisions() {
+        List<V3DecisionRow> rows = new ArrayList<>();
+        if (!Files.isDirectory(V3_DIR)) {
+            return rows;
+        }
+        try {
+            List<Path> files = Files.list(V3_DIR)
+                    .filter(p -> p.getFileName().toString().endsWith(".csv"))
+                    .sorted(Comparator.comparing(Path::getFileName, Comparator.reverseOrder()))
+                    .limit(7)
+                    .toList();
+            for (Path file : files) {
+                readV3Decisions(Files.newInputStream(file), rows);
+            }
+        } catch (IOException ex) {
+            log.warn("Failed to load V3 decision CSVs from {}: {}", V3_DIR, ex.getMessage());
+        }
+        return rows;
+    }
+
+    private static void readV3Decisions(InputStream input, List<V3DecisionRow> target) throws IOException {
+        for (Map<String, String> r : Csv.read(input).rows()) {
+            target.add(new V3DecisionRow(
+                    parseInstant(r.get("timestamp")),
+                    firstText(r.get("indexType"), ""),
+                    firstText(r.get("timeMode"), ""),
+                    firstText(r.get("verdict"), ""),
+                    firstText(r.get("verdictReason"), ""),
+                    (int) longValue(r.get("gatesPassed")),
+                    (int) longValue(r.get("gatesRequired")),
+                    (int) longValue(r.get("finalLots")),
+                    parseDoubleOrNull(r.get("conviction")) != null ? parseDoubleOrNull(r.get("conviction")) : 0,
+                    firstText(r.get("oiPattern"), ""),
+                    (int) longValue(r.get("oiDirection")),
+                    bool(r.get("g1Pass")),
+                    bool(r.get("g2Pass")),
+                    bool(r.get("g3Pass")),
+                    bool(r.get("g4Pass")),
+                    firstText(r.get("g1Reason"), ""),
+                    firstText(r.get("g2Reason"), ""),
+                    firstText(r.get("g3Reason"), ""),
+                    firstText(r.get("g4Reason"), "")
+            ));
+        }
     }
 
     private static void loadRecentArchives(Map<String, SignalRow> signals, Map<String, ExecutionRow> entries,
@@ -580,7 +630,12 @@ final class SignalTuningCsvLoader {
             double vix,
             long daysToExpiry,
             boolean expiryDay,
-            boolean paperTrading
+            boolean paperTrading,
+            String timeOfDayMode,
+            String matrixCase,
+            String entryPath,
+            int operatorScore,
+            int biasScore
     ) {
     }
 
@@ -613,7 +668,36 @@ final class SignalTuningCsvLoader {
             boolean expiryDay,
             boolean restFallbackActive,
             long maxAtmOiStaleSec,
-            long wsTickAgeSec
+            long wsTickAgeSec,
+            String timeOfDayMode,
+            String matrixCase,
+            String entryPath,
+            int operatorScore,
+            int biasScore
+    ) {
+    }
+
+    /** Compact row from {@code data/v3-decisions/YYYY-MM-DD.csv}. */
+    record V3DecisionRow(
+            Instant timestamp,
+            String indexType,
+            String timeMode,
+            String verdict,
+            String verdictReason,
+            int gatesPassed,
+            int gatesRequired,
+            int finalLots,
+            double conviction,
+            String oiPattern,
+            int oiDirection,
+            boolean g1Pass,
+            boolean g2Pass,
+            boolean g3Pass,
+            boolean g4Pass,
+            String g1Reason,
+            String g2Reason,
+            String g3Reason,
+            String g4Reason
     ) {
     }
 
@@ -689,19 +773,20 @@ final class SignalTuningCsvLoader {
             List<OiMomentumExitRow> oiMomentumExits,
             List<OiShiftTrapEvalRow> oiShiftTrapEvaluations,
             List<OiShiftTrapNearMissRow> oiShiftTrapNearMisses,
-            List<OiShiftTrapSignalRow> oiShiftTrapSignals
+            List<OiShiftTrapSignalRow> oiShiftTrapSignals,
+            List<V3DecisionRow> v3Decisions
     ) {
         Loaded(List<SignalRow> signals, List<ExecutionRow> entryOutcomes, List<ExecutionRow> exitOutcomes,
                Map<String, List<Candle>> optionCandlesByInstrument) {
             this(signals, entryOutcomes, exitOutcomes, optionCandlesByInstrument, Map.of(),
-                    List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
+                    List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
         }
 
         Loaded(List<SignalRow> signals, List<ExecutionRow> entryOutcomes, List<ExecutionRow> exitOutcomes,
                Map<String, List<Candle>> optionCandlesByInstrument,
                Map<String, List<ChainLevelRow>> chainLevelsByDecisionKey) {
             this(signals, entryOutcomes, exitOutcomes, optionCandlesByInstrument, chainLevelsByDecisionKey,
-                    List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
+                    List.of(), List.of(), List.of(), List.of(), List.of(), List.of(), List.of());
         }
     }
 
@@ -791,7 +876,12 @@ final class SignalTuningCsvLoader {
                     parseDoubleOrNull(r.get("vix")) != null ? parseDoubleOrNull(r.get("vix")) : 0,
                     longValue(r.get("daysToExpiry")),
                     bool(r.get("isExpiryDay")),
-                    bool(r.get("paperTrading"))
+                    bool(r.get("paperTrading")),
+                    firstText(r.get("timeOfDayMode"), ""),
+                    firstText(r.get("matrixCase"), ""),
+                    firstText(r.get("entryPath"), ""),
+                    (int) longValue(r.get("operatorScore")),
+                    (int) longValue(r.get("biasScore"))
             ));
         }
     }
@@ -829,7 +919,12 @@ final class SignalTuningCsvLoader {
                     bool(r.get("isExpiryDay")),
                     bool(r.get("restFallbackActive")),
                     longValue(r.get("maxAtmOiStaleSec")),
-                    longValue(r.get("wsTickAgeSec"))
+                    longValue(r.get("wsTickAgeSec")),
+                    firstText(r.get("timeOfDayMode"), ""),
+                    firstText(r.get("matrixCase"), ""),
+                    firstText(r.get("entryPath"), ""),
+                    (int) longValue(r.get("operatorScore")),
+                    (int) longValue(r.get("biasScore"))
             ));
         }
     }

@@ -71,6 +71,10 @@ public class OiMomentumRuntimeConfigService {
             seed.setConsecutiveLossHaltCount(oiMomentumConfig.getConsecutiveLossHaltCount());
             seed.setBreakEvenTriggerPercent(oiMomentumConfig.getBreakEvenTriggerPercent());
             seed.setMaxTradesPerDay(oiMomentumConfig.getMaxTradesPerDay());
+            seed.setRecordEveryReject(oiMomentumConfig.isRecordEveryReject());
+            seed.setRejectSampleIntervalSeconds(oiMomentumConfig.getRejectSampleIntervalSeconds());
+            seed.setMatrixRejectSampleIntervalSeconds(oiMomentumConfig.getMatrixRejectSampleIntervalSeconds());
+            seed.setSummaryRejectTopN(oiMomentumConfig.getSummaryRejectTopN());
             seed.setUpdatedAt(Instant.now());
             seed.setUpdatedBy("yaml-seed");
             seed.setUpdatedReason("initial seed from YAML defaults");
@@ -246,6 +250,28 @@ public class OiMomentumRuntimeConfigService {
             row.setThetaDecayMaxCostPct(update.thetaDecayMaxCostPct);
             changes.append("thetaDecayMaxCostPct=").append(update.thetaDecayMaxCostPct).append(" ");
         }
+        if (update.recordEveryReject != null && update.recordEveryReject != row.isRecordEveryReject()) {
+            row.setRecordEveryReject(update.recordEveryReject);
+            changes.append("recordEveryReject=").append(update.recordEveryReject).append(" ");
+        }
+        if (update.rejectSampleIntervalSeconds != null) {
+            validateInterval(update.rejectSampleIntervalSeconds, "rejectSampleIntervalSeconds");
+            row.setRejectSampleIntervalSeconds(update.rejectSampleIntervalSeconds);
+            changes.append("rejectSampleIntervalSeconds=").append(update.rejectSampleIntervalSeconds).append(" ");
+        }
+        if (update.matrixRejectSampleIntervalSeconds != null) {
+            validateInterval(update.matrixRejectSampleIntervalSeconds, "matrixRejectSampleIntervalSeconds");
+            row.setMatrixRejectSampleIntervalSeconds(update.matrixRejectSampleIntervalSeconds);
+            changes.append("matrixRejectSampleIntervalSeconds=")
+                    .append(update.matrixRejectSampleIntervalSeconds).append(" ");
+        }
+        if (update.summaryRejectTopN != null) {
+            if (update.summaryRejectTopN < 1 || update.summaryRejectTopN > 50) {
+                throw new IllegalArgumentException("summaryRejectTopN must be in [1,50]");
+            }
+            row.setSummaryRejectTopN(update.summaryRejectTopN);
+            changes.append("summaryRejectTopN=").append(update.summaryRejectTopN).append(" ");
+        }
         row.setUpdatedAt(Instant.now());
         row.setUpdatedBy(updatedBy == null ? "anonymous" : updatedBy);
         row.setUpdatedReason(reason);
@@ -314,6 +340,16 @@ public class OiMomentumRuntimeConfigService {
         // Theta-decay gate
         oiMomentumConfig.setThetaDecayCheckEnabled(src.isThetaDecayCheckEnabled());
         oiMomentumConfig.setThetaDecayMaxCostPct(src.getThetaDecayMaxCostPct());
+        oiMomentumConfig.setRecordEveryReject(src.isRecordEveryReject());
+        oiMomentumConfig.setRejectSampleIntervalSeconds(src.getRejectSampleIntervalSeconds());
+        oiMomentumConfig.setMatrixRejectSampleIntervalSeconds(src.getMatrixRejectSampleIntervalSeconds());
+        oiMomentumConfig.setSummaryRejectTopN(src.getSummaryRejectTopN());
+    }
+
+    private static void validateInterval(int seconds, String field) {
+        if (seconds < 1 || seconds > 300) {
+            throw new IllegalArgumentException(field + " must be in [1,300]");
+        }
     }
 
     private OiMomentumRuntimeConfig createDefaultRow() {
@@ -358,5 +394,10 @@ public class OiMomentumRuntimeConfigService {
         // Theta-decay gate
         public Boolean thetaDecayCheckEnabled;
         public Double  thetaDecayMaxCostPct;
+        // P4 instrumentation
+        public Boolean recordEveryReject;
+        public Integer rejectSampleIntervalSeconds;
+        public Integer matrixRejectSampleIntervalSeconds;
+        public Integer summaryRejectTopN;
     }
 }

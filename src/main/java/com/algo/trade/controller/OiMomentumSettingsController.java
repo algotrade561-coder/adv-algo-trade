@@ -204,6 +204,11 @@ public class OiMomentumSettingsController {
         // Theta-decay gate
         m.put("thetaDecayCheckEnabled", c.isThetaDecayCheckEnabled());
         m.put("thetaDecayMaxCostPct", c.getThetaDecayMaxCostPct());
+        // P4 instrumentation (data-gathering week)
+        m.put("recordEveryReject", c.isRecordEveryReject());
+        m.put("rejectSampleIntervalSeconds", c.getRejectSampleIntervalSeconds());
+        m.put("matrixRejectSampleIntervalSeconds", c.getMatrixRejectSampleIntervalSeconds());
+        m.put("summaryRejectTopN", c.getSummaryRejectTopN());
         m.put("updatedAt", c.getUpdatedAt() != null ? c.getUpdatedAt().toString() : "");
         m.put("updatedBy", c.getUpdatedBy());
         m.put("updatedReason", c.getUpdatedReason());
@@ -247,6 +252,11 @@ public class OiMomentumSettingsController {
         // Theta-decay gate
         public Boolean thetaDecayCheckEnabled;
         public Double  thetaDecayMaxCostPct;
+        // P4 instrumentation
+        public Boolean recordEveryReject;
+        public Integer rejectSampleIntervalSeconds;
+        public Integer matrixRejectSampleIntervalSeconds;
+        public Integer summaryRejectTopN;
 
         RuntimeConfigUpdate toUpdate() {
             RuntimeConfigUpdate u = new RuntimeConfigUpdate();
@@ -283,6 +293,11 @@ public class OiMomentumSettingsController {
             // Theta-decay gate
             u.thetaDecayCheckEnabled = thetaDecayCheckEnabled;
             u.thetaDecayMaxCostPct = thetaDecayMaxCostPct;
+            // P4 instrumentation
+            u.recordEveryReject = recordEveryReject;
+            u.rejectSampleIntervalSeconds = rejectSampleIntervalSeconds;
+            u.matrixRejectSampleIntervalSeconds = matrixRejectSampleIntervalSeconds;
+            u.summaryRejectTopN = summaryRejectTopN;
             return u;
         }
     }

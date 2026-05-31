@@ -290,8 +290,17 @@ public class SignalTuningReportService {
                     <p class="sub">From oi-momentum-signals.csv — joined to execution outcomes and exits</p>
                     <table><thead><tr><th>Case</th><th>Signals</th><th>Closed</th><th>Win %%</th><th>Avg PnL</th></tr></thead>
                     <tbody>%s</tbody></table>
+                    <h2 style="margin-top:16px">Signal vs fill (by matrixCase)</h2>
+                    <table><thead><tr><th>Case</th><th>Signals</th><th>Filled</th><th>Open</th><th>Not filled</th><th>Closed</th><th>Win %%</th><th>Avg PnL</th></tr></thead>
+                    <tbody>%s</tbody></table>
+                    <h2 style="margin-top:16px">Reject funnel (normalized reason)</h2>
+                    <table><thead><tr><th>Reason</th><th>Count</th></tr></thead>
+                    <tbody>%s</tbody></table>
+                    <h2 style="margin-top:16px">V3 operator (data/v3-decisions)</h2>
+                    <table><thead><tr><th>Verdict / gate</th><th>Count</th></tr></thead>
+                    <tbody>%s</tbody></table>
                     <h2 style="margin-top:16px">OI trades</h2>
-                    <table><thead><tr><th>Time</th><th>Case</th><th>Und</th><th>Opt</th><th>Premium</th><th>PCR</th><th>Mom</th><th>OI dir</th><th>Stage</th><th>Exit</th><th>PnL</th><th>Hold</th><th>Chain</th></tr></thead>
+                    <table><thead><tr><th>Time</th><th>Case</th><th>Path</th><th>Und</th><th>Opt</th><th>Premium</th><th>PCR</th><th>Mom</th><th>OI dir</th><th>Stage</th><th>Exit</th><th>PnL</th><th>Hold</th><th>Chain</th></tr></thead>
                     <tbody>%s</tbody></table></section>
                   <section class="panel"><h2>Entry execution stages</h2>
                     <table><thead><tr><th>Stage</th><th>Count</th></tr></thead>
@@ -312,6 +321,9 @@ public class SignalTuningReportService {
                 trapBlockersHtml(report),
                 trapNearMissHtml(report),
                 oiCaseStatsHtml(report),
+                oiSignalFillHtml(report),
+                oiRejectBreakdownHtml(report),
+                v3SummaryHtml(report),
                 oiTradesHtml(report),
                 stagesHtml(report),
                 dataQualityFooter(report)
@@ -334,6 +346,7 @@ public class SignalTuningReportService {
                 + card(report.chainOiMismatchCount(), "Chain OI mismatch")
                 + card(report.oiMomentumReport().signalCount(), "OI signals")
                 + card(report.oiMomentumReport().rejectSampleCount(), "OI reject samples")
+                + card(report.oiMomentumReport().v3Summary().decisionCount(), "V3 evaluations")
                 + card(report.oiShiftTrapReport().evaluationSamples(), "Trap eval samples")
                 + card(report.oiShiftTrapReport().nearMissRows(), "Trap near-miss")
                 + card(report.recommendations().size(), "Recommendations");
@@ -400,10 +413,67 @@ public class SignalTuningReportService {
         return sb.toString();
     }
 
+    private static String oiSignalFillHtml(SignalTuningAnalyzer.Report report) {
+        Map<String, OiMomentumTuningAnalyzer.SignalFillStats> byCase =
+                report.oiMomentumReport().signalFillByCase();
+        if (byCase.isEmpty()) {
+            return "<tr><td colspan='8'>No OI momentum signals</td></tr>";
+        }
+        StringBuilder sb = new StringBuilder();
+        byCase.entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .forEach(e -> {
+                    OiMomentumTuningAnalyzer.SignalFillStats s = e.getValue();
+                    sb.append("<tr>")
+                            .append(td(e.getKey()))
+                            .append(td(s.signals()))
+                            .append(td(s.filled()))
+                            .append(td(s.openNoFill()))
+                            .append(td(s.notFilled()))
+                            .append(td(s.closed()))
+                            .append(td(s.closed() > 0 ? s.winRatePct() + "%" : "—"))
+                            .append(td(s.closed() > 0
+                                    ? s.avgPnl().setScale(2, RoundingMode.HALF_UP).toPlainString() : "—"))
+                            .append("</tr>");
+                });
+        return sb.toString();
+    }
+
+    private static String oiRejectBreakdownHtml(SignalTuningAnalyzer.Report report) {
+        Map<String, Long> counts = report.oiMomentumReport().rejectReasonCounts();
+        if (counts.isEmpty()) {
+            return "<tr><td colspan='2'>No oi-momentum-rejects.csv rows</td></tr>";
+        }
+        StringBuilder sb = new StringBuilder();
+        counts.entrySet().stream()
+                .sorted(Map.Entry.<String, Long>comparingByValue().reversed())
+                .limit(25)
+                .forEach(e -> sb.append("<tr>").append(td(e.getKey())).append(td(e.getValue())).append("</tr>"));
+        return sb.toString();
+    }
+
+    private static String v3SummaryHtml(SignalTuningAnalyzer.Report report) {
+        OiMomentumTuningAnalyzer.V3Summary v3 = report.oiMomentumReport().v3Summary();
+        if (v3.decisionCount() == 0) {
+            return "<tr><td colspan='2'>No data/v3-decisions/*.csv (enable oi-momentum.v3.decision-log-enabled)</td></tr>";
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("<tr>").append(td("ENTER")).append(td(v3.enterCount())).append("</tr>");
+        v3.verdictCounts().entrySet().stream()
+                .sorted(Map.Entry.<String, Long>comparingByValue().reversed())
+                .limit(12)
+                .forEach(e -> sb.append("<tr>").append(td(e.getKey())).append(td(e.getValue())).append("</tr>"));
+        v3.gateFailReasons().entrySet().stream()
+                .sorted(Map.Entry.<String, Long>comparingByValue().reversed())
+                .limit(8)
+                .forEach(e -> sb.append("<tr>").append(td(e.getKey())).append(td(e.getValue())).append("</tr>"));
+        return sb.toString();
+    }
+
     private static String oiTradesHtml(SignalTuningAnalyzer.Report report) {
         List<OiMomentumTuningAnalyzer.OiTradeOutcome> trades = report.oiMomentumReport().trades();
         if (trades.isEmpty()) {
-            return "<tr><td colspan='13'>No OI momentum signals in period</td></tr>";
+            return "<tr><td colspan='14'>No OI momentum signals in period</td></tr>";
         }
         StringBuilder sb = new StringBuilder();
         for (OiMomentumTuningAnalyzer.OiTradeOutcome t : trades) {
@@ -415,6 +485,7 @@ public class SignalTuningReportService {
             sb.append("<tr>")
                     .append(td(IST_TS.format(s.timestamp()), rowClass))
                     .append(td(s.entryCase(), rowClass))
+                    .append(td(s.entryPath() != null && !s.entryPath().isBlank() ? s.entryPath() : "—", rowClass))
                     .append(td(s.underlying(), rowClass))
                     .append(td(s.optionType(), rowClass))
                     .append(td(s.premium() != null ? s.premium() : "—", rowClass))

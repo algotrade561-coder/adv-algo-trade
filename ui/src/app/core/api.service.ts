@@ -159,6 +159,11 @@ export interface OiMomentumRuntimeConfigDto {
   // Theta-decay gate
   thetaDecayCheckEnabled: boolean;
   thetaDecayMaxCostPct: number;
+  // P4 instrumentation (data-gathering week)
+  recordEveryReject: boolean;
+  rejectSampleIntervalSeconds: number;
+  matrixRejectSampleIntervalSeconds: number;
+  summaryRejectTopN: number;
   updatedAt: string;
   updatedBy: string;
   updatedReason: string;

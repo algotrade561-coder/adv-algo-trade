@@ -32,7 +32,15 @@ public record OiMomentumEntryDiagnostics(
         double rangePct30m,
         String blockDetail,
         double atmCeLast,
-        double atmPeLast
+        double atmPeLast,
+        /** Time-of-day mode at evaluation (OPENING_DRIVE, MIDDAY_DISCIPLINE, …). */
+        String timeOfDayMode,
+        /** Normalized matrix case label (CASE1, CASE2, SPIKE, CASE0, …). */
+        String matrixCase,
+        /** Detection path: LEGACY, SPIKE, CASE0, RANGE_FADE, V3, … */
+        String entryPath,
+        int operatorScore,
+        int biasScore
 ) {
     static OiMomentumEntryDiagnostics forSpike(IndexType indexType, TickMomentumDetector.MomentumSignal spike,
                                                double pcr, int pcrDir, long ceOi, long peOi, boolean oiAvailable,
@@ -49,7 +57,8 @@ public record OiMomentumEntryDiagnostics(
                 spikeEpisodeId(indexType, spike),
                 vix, dte, expiryDay, paper,
                 "SPIKE:" + spike.type(),
-                oiAdvanced, 0, "", 0, 0);
+                oiAdvanced, 0, "", 0, 0,
+                "", "SPIKE", "SPIKE", 0, 0);
     }
 
     static String spikeEpisodeId(IndexType indexType, TickMomentumDetector.MomentumSignal spike) {
@@ -74,5 +83,16 @@ public record OiMomentumEntryDiagnostics(
         String tail = reason.substring(idx + 5);
         int end = tail.indexOf(' ');
         return end < 0 ? tail.trim() : tail.substring(0, end).trim();
+    }
+
+    /** Copy with updated operator/bias scores for reject-row tuning. */
+    public OiMomentumEntryDiagnostics withScores(int operatorScore, int biasScore) {
+        return new OiMomentumEntryDiagnostics(
+                indexType, entryCase, momentumDir, momentumType, momentumMagnitudePct,
+                oiDir, pcrDir, pcr, ceOiChange, peOiChange, oiAvailable,
+                spot, atm, spot30mHigh, spot30mLow, breakoutDistancePct, spikeEpisodeId,
+                vix, daysToExpiry, expiryDay, paperTrading, signalReason, oiAdvanced,
+                rangePct30m, blockDetail, atmCeLast, atmPeLast,
+                timeOfDayMode, matrixCase, entryPath, operatorScore, biasScore);
     }
 }

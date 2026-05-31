@@ -312,6 +312,14 @@ public class OIMomentumConfig {
     private boolean thetaDecayCheckEnabled = true;
     private double thetaDecayMaxCostPct = 30.0;
 
+    // ── P4 tuning instrumentation (runtime-overridable via OiMomentumRuntimeConfig) ──
+    /** When true, every reject is written to oi-momentum-rejects.csv (no 5s/30s throttle). */
+    private boolean recordEveryReject = true;
+    private int rejectSampleIntervalSeconds = 30;
+    private int matrixRejectSampleIntervalSeconds = 5;
+    /** Top-N reject reasons included in the 60-second summary log. */
+    private int summaryRejectTopN = 10;
+
     // ── Enabled/Paper ──
     private boolean enabled = true;
     private boolean paperTrading = false;
@@ -402,6 +410,15 @@ public class OIMomentumConfig {
     public void setThetaDecayCheckEnabled(boolean v) { this.thetaDecayCheckEnabled = v; }
     public double getThetaDecayMaxCostPct() { return thetaDecayMaxCostPct; }
     public void setThetaDecayMaxCostPct(double v) { this.thetaDecayMaxCostPct = v; }
+
+    public boolean isRecordEveryReject() { return recordEveryReject; }
+    public void setRecordEveryReject(boolean v) { this.recordEveryReject = v; }
+    public int getRejectSampleIntervalSeconds() { return rejectSampleIntervalSeconds; }
+    public void setRejectSampleIntervalSeconds(int v) { this.rejectSampleIntervalSeconds = v; }
+    public int getMatrixRejectSampleIntervalSeconds() { return matrixRejectSampleIntervalSeconds; }
+    public void setMatrixRejectSampleIntervalSeconds(int v) { this.matrixRejectSampleIntervalSeconds = v; }
+    public int getSummaryRejectTopN() { return summaryRejectTopN; }
+    public void setSummaryRejectTopN(int v) { this.summaryRejectTopN = v; }
 
     // Getters and setters
     public double getMomentumThresholdPercent() { return momentumThresholdPercent; }

@@ -57,7 +57,8 @@ final class SignalTuningAnalyzer {
                 data.oiMomentumExits(),
                 execStageByKey,
                 execReasonByKey,
-                data.chainLevelsByDecisionKey());
+                data.chainLevelsByDecisionKey(),
+                data.v3Decisions());
         List<SignalTuningCsvLoader.SignalRow> trapGeneric = signals.stream()
                 .filter(s -> "OI_SHIFT_TRAP".equals(s.strategyType()))
                 .toList();

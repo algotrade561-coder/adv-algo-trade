@@ -42,7 +42,8 @@ public class OiMomentumTuneRecorder {
             "entryCase", "momentumDir", "momentumType", "momentumMagnitudePct",
             "oiDir", "pcrDir", "pcr", "ceOiChange", "peOiChange", "oiAvailable",
             "spot30mHigh", "spot30mLow", "breakoutDistancePct", "spikeEpisodeId",
-            "vix", "daysToExpiry", "isExpiryDay", "paperTrading", "reasons"
+            "vix", "daysToExpiry", "isExpiryDay", "paperTrading", "reasons",
+            "timeOfDayMode", "matrixCase", "entryPath", "operatorScore", "biasScore"
     ) + System.lineSeparator();
 
     private static final String REJECT_HEADER = String.join(",",
@@ -51,7 +52,8 @@ public class OiMomentumTuneRecorder {
             "oiDir", "ceOiChange", "peOiChange", "oiAvailable", "oiAdvanced",
             "spot", "atm", "spot30mHigh", "spot30mLow", "rangePct30m", "breakoutDistancePct",
             "atmCeLast", "atmPeLast", "vix", "daysToExpiry", "isExpiryDay",
-            "restFallbackActive", "maxAtmOiStaleSec", "wsTickAgeSec"
+            "restFallbackActive", "maxAtmOiStaleSec", "wsTickAgeSec",
+            "timeOfDayMode", "matrixCase", "entryPath", "operatorScore", "biasScore"
     ) + System.lineSeparator();
 
     private static final String EXIT_HEADER = String.join(",",
@@ -68,23 +70,22 @@ public class OiMomentumTuneRecorder {
             "callLastPrice", "putLastPrice"
     ) + System.lineSeparator();
 
-    private static final Duration REJECT_SAMPLE_INTERVAL = Duration.ofSeconds(30);
-    private static final Duration MATRIX_REJECT_SAMPLE_INTERVAL = Duration.ofSeconds(5);
-
     private final LiveInstrumentCache liveInstrumentCache;
     private final OiRestFallbackService oiRestFallbackService;
+    private final OIMomentumConfig config;
 
     /**
      * Per-JVM cache of files whose existing header has been verified against the
      * current code's expected header. Avoids hitting disk on every reject write.
-     * Entry is added after a successful header match (or after rotation/fresh write).
      */
     private final java.util.Set<Path> headerVerified = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     public OiMomentumTuneRecorder(LiveInstrumentCache liveInstrumentCache,
+                                  OIMomentumConfig config,
                                   @org.springframework.beans.factory.annotation.Autowired(required = false)
                                   OiRestFallbackService oiRestFallbackService) {
         this.liveInstrumentCache = liveInstrumentCache;
+        this.config = config;
         this.oiRestFallbackService = oiRestFallbackService;
     }
 
@@ -127,7 +128,12 @@ public class OiMomentumTuneRecorder {
                     csv(diag.daysToExpiry()),
                     csv(diag.expiryDay()),
                     csv(diag.paperTrading()),
-                    csv(decision.reasons().isEmpty() ? diag.signalReason() : String.join("; ", decision.reasons()))
+                    csv(decision.reasons().isEmpty() ? diag.signalReason() : String.join("; ", decision.reasons())),
+                    csv(diag.timeOfDayMode()),
+                    csv(diag.matrixCase()),
+                    csv(diag.entryPath()),
+                    csv(diag.operatorScore()),
+                    csv(diag.biasScore())
             ) + System.lineSeparator();
             append(SIGNALS, SIGNAL_HEADER, row);
             writeChainLevels(decisionKey, decision, diag, atm);
@@ -140,13 +146,10 @@ public class OiMomentumTuneRecorder {
     /** @return sample time if a row was written (for throttle state). */
     public Instant recordReject(IndexType indexType, Instant lastSampleTime, String rejectReason,
                                 OiMomentumEntryDiagnostics partial) {
-        Duration interval = rejectReason != null && rejectReason.startsWith("matrix_skip:")
-                ? MATRIX_REJECT_SAMPLE_INTERVAL
-                : REJECT_SAMPLE_INTERVAL;
-        Instant now = Instant.now();
-        if (lastSampleTime != null && Duration.between(lastSampleTime, now).compareTo(interval) < 0) {
+        if (!shouldSampleReject(lastSampleTime, rejectReason)) {
             return lastSampleTime;
         }
+        Instant now = Instant.now();
         try {
             Files.createDirectories(DIR);
             String row = buildRejectRow(now, indexType, rejectReason, partial);
@@ -156,6 +159,17 @@ public class OiMomentumTuneRecorder {
             log.warn("[OiMomentumTune] reject record failed: {}", ex.getMessage());
         }
         return lastSampleTime;
+    }
+
+    private boolean shouldSampleReject(Instant lastSampleTime, String rejectReason) {
+        if (config.isRecordEveryReject()) {
+            return true;
+        }
+        Duration interval = rejectReason != null && rejectReason.startsWith("matrix_skip:")
+                ? Duration.ofSeconds(Math.max(1, config.getMatrixRejectSampleIntervalSeconds()))
+                : Duration.ofSeconds(Math.max(1, config.getRejectSampleIntervalSeconds()));
+        Instant now = Instant.now();
+        return lastSampleTime == null || Duration.between(lastSampleTime, now).compareTo(interval) >= 0;
     }
 
     private String buildRejectRow(Instant now, IndexType indexType, String rejectReason,
@@ -190,7 +204,12 @@ public class OiMomentumTuneRecorder {
                 csv(partial != null ? partial.expiryDay() : ""),
                 csv(oiRestFallbackService != null && oiRestFallbackService.isRestFallbackActive()),
                 csv(oiRestFallbackService != null ? oiRestFallbackService.getMaxAtmOiSampleAgeSec(indexType) : ""),
-                csv(oiRestFallbackService != null ? oiRestFallbackService.getWsTickAgeSec() : "")
+                csv(oiRestFallbackService != null ? oiRestFallbackService.getWsTickAgeSec() : ""),
+                csv(partial != null ? partial.timeOfDayMode() : ""),
+                csv(partial != null ? partial.matrixCase() : ""),
+                csv(partial != null ? partial.entryPath() : ""),
+                csv(partial != null ? partial.operatorScore() : ""),
+                csv(partial != null ? partial.biasScore() : "")
         ) + System.lineSeparator();
     }
 
@@ -279,18 +298,6 @@ public class OiMomentumTuneRecorder {
         }
     }
 
-    /**
-     * Append rows to a CSV, writing the header when the file is fresh and rotating the
-     * existing file when its header no longer matches the current code's header.
-     *
-     * <p>Schema-drift rotation: prior to this guard, header lines were written once at
-     * file creation and never refreshed when new columns were added in code. This caused
-     * downstream parsers that read by column index to silently mis-align every row.
-     *
-     * <p>On drift the stale file is renamed to {@code <name>.legacy-<timestamp>.csv} and
-     * a fresh file is started with the current header. The check is performed once per
-     * JVM lifetime per file (cached in {@link #headerVerified}) to avoid per-row disk I/O.
-     */
     private void append(Path path, String header, String rows) throws IOException {
         if (rows == null || rows.isEmpty()) {
             return;
@@ -303,7 +310,7 @@ public class OiMomentumTuneRecorder {
             String expected = stripTrailingNewline(header);
             if (!expected.equals(existing)) {
                 Path backup = rotateLegacy(path);
-                log.warn("[OiMomentumTune] CSV schema drift at {} \u2014 rotated to {} and started fresh "
+                log.warn("[OiMomentumTune] CSV schema drift at {} — rotated to {} and started fresh "
                         + "(existing header={} cols, expected={} cols)",
                         path, backup, countCols(existing), countCols(expected));
                 writeHeader = true;

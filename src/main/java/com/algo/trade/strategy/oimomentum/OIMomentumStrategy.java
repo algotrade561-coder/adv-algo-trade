@@ -22,6 +22,7 @@ import java.time.*;
 import java.util.Optional;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
+import java.util.stream.Collectors;
 
 /**
  * OI Momentum Strategy — 1-second live tracking with OI + PCR + Momentum confluence.
@@ -142,6 +143,9 @@ public class OIMomentumStrategy {
     private final AtomicInteger momentumSignalCount = new AtomicInteger(0);
     private final AtomicInteger rejectedCount = new AtomicInteger(0);
     private final AtomicInteger enteredCount = new AtomicInteger(0);
+
+    /** P4: per-reason reject counters (reset at IST day rollover). */
+    private final ConcurrentHashMap<String, AtomicInteger> rejectReasonCounters = new ConcurrentHashMap<>();
 
     /** Parsed midday times (P2 #20: avoid parsing every tick). */
     private volatile LocalTime middayStart = null;
@@ -432,6 +436,7 @@ public class OIMomentumStrategy {
                 if (operatorFrameworkService != null) {
                     operatorFrameworkService.resetForNewDay();
                 }
+                rejectReasonCounters.clear();
             }
 
             // Process each enabled index independently (driven by UNDERLYING_CONFIGS table)
@@ -553,6 +558,10 @@ public class OIMomentumStrategy {
         int expected = entered + rejected + pending;
         sb.append(String.format(" | evals=%d momentum=%d rejected=%d entered=%d pending=%d",
                 evalCount.get(), momentum, rejected, entered, pending));
+        String topRejects = formatTopRejectReasons();
+        if (!topRejects.isEmpty()) {
+            sb.append(" | topRejects=").append(topRejects);
+        }
         log.info(sb.toString());
         if (momentum != expected) {
             log.warn("[OIMomentum] Counter invariant broken: momentum={} != entered({}) + rejected({}) + pending({}) = {}",
@@ -799,39 +808,40 @@ public class OIMomentumStrategy {
         TickMomentumDetector.MomentumSignal spike = momentumDetector.detectSpike(
                 indexType, config.getSpikeThresholdPercent());
         if (spike.isPresent()) {
-            // Spike dedupe: only 1 entry per spike episode (10-min window)
-            if (state.lastSpikeEntryTime != null
-                    && Duration.between(state.lastSpikeEntryTime, Instant.now()).toMinutes() < 10) {
-                int atm = indexType.roundToATM(spike.spotPrice());
-                long[] oi = liveInstrumentCache.getAtmOiChange(indexType, atm, 3, 3);
-                double pcr = liveInstrumentCache.getRealtimePcr(indexType);
-                int pcrDir = pcrDir(pcr);
-                int oiDir = oiDir(oi[0], oi[1]);
-                boolean oiAvail = oi[0] != 0 || oi[1] != 0;
-                OiMomentumEntryDiagnostics partial = OiMomentumEntryDiagnostics.forSpike(
-                        indexType, spike, pcr, pcrDir, oi[0], oi[1], oiAvail, oiDir, state.oiAdvanced,
-                        marketGuard.getCurrentVix(), expiryCalendar.daysToExpiry(indexType),
-                        expiryCalendar.isExpiryDay(indexType), paperTrading(indexType));
-                state.lastRejectReason = "spike_dedupe";
-                state.lastRejectSampleTime = tuneRecorder.recordReject(indexType, state.lastRejectSampleTime,
-                        "spike_dedupe", partial);
-            } else {
-                log.info("[OIMomentum][{}] EVENT SPIKE detected: direction={}, magnitude={}%, spot={}",
-                        indexType, spike.direction(), spike.magnitude(), spike.spotPrice());
-                state.lastSpikeEntryTime = Instant.now();
-                int atm = indexType.roundToATM(spike.spotPrice());
-                long[] oi = liveInstrumentCache.getAtmOiChange(indexType, atm, 3, 3);
-                double pcr = liveInstrumentCache.getRealtimePcr(indexType);
-                int pcrDir = pcrDir(pcr);
-                int oiDir = oiDir(oi[0], oi[1]);
-                boolean oiAvailSpike = oi[0] != 0 || oi[1] != 0;
-                OiMomentumEntryDiagnostics diag = OiMomentumEntryDiagnostics.forSpike(
-                        indexType, spike, pcr, pcrDir, oi[0], oi[1], oiAvailSpike, oiDir, state.oiAdvanced,
-                        marketGuard.getCurrentVix(), expiryCalendar.daysToExpiry(indexType),
-                        expiryCalendar.isExpiryDay(indexType), paperTrading(indexType));
-                enter(indexType, state, spike.direction(), "SPIKE:" + spike.type(), spike.spotPrice(), diag);
-            return;
+            synchronized (state) {
+                // Spike dedupe: only 1 entry per spike episode (10-min window)
+                if (state.lastSpikeEntryTime != null
+                        && Duration.between(state.lastSpikeEntryTime, Instant.now()).toMinutes() < 10) {
+                    int atm = indexType.roundToATM(spike.spotPrice());
+                    long[] oi = liveInstrumentCache.getAtmOiChange(indexType, atm, 3, 3);
+                    double pcr = liveInstrumentCache.getRealtimePcr(indexType);
+                    int pcrDir = pcrDir(pcr);
+                    int oiDir = oiDir(oi[0], oi[1]);
+                    boolean oiAvail = oi[0] != 0 || oi[1] != 0;
+                    OiMomentumEntryDiagnostics partial = OiMomentumEntryDiagnostics.forSpike(
+                            indexType, spike, pcr, pcrDir, oi[0], oi[1], oiAvail, oiDir, state.oiAdvanced,
+                            marketGuard.getCurrentVix(), expiryCalendar.daysToExpiry(indexType),
+                            expiryCalendar.isExpiryDay(indexType), paperTrading(indexType));
+                    state.lastRejectReason = "spike_dedupe";
+                    state.lastRejectSampleTime = recordReject(indexType, state, "spike_dedupe", partial);
+                } else {
+                    state.lastSpikeEntryTime = Instant.now();
+                    log.info("[OIMomentum][{}] EVENT SPIKE detected: direction={}, magnitude={}%, spot={}",
+                            indexType, spike.direction(), spike.magnitude(), spike.spotPrice());
+                    int atm = indexType.roundToATM(spike.spotPrice());
+                    long[] oi = liveInstrumentCache.getAtmOiChange(indexType, atm, 3, 3);
+                    double pcr = liveInstrumentCache.getRealtimePcr(indexType);
+                    int pcrDir = pcrDir(pcr);
+                    int oiDir = oiDir(oi[0], oi[1]);
+                    boolean oiAvailSpike = oi[0] != 0 || oi[1] != 0;
+                    OiMomentumEntryDiagnostics diag = OiMomentumEntryDiagnostics.forSpike(
+                            indexType, spike, pcr, pcrDir, oi[0], oi[1], oiAvailSpike, oiDir, state.oiAdvanced,
+                            marketGuard.getCurrentVix(), expiryCalendar.daysToExpiry(indexType),
+                            expiryCalendar.isExpiryDay(indexType), paperTrading(indexType));
+                    enter(indexType, state, spike.direction(), "SPIKE:" + spike.type(), spike.spotPrice(), diag);
+                }
             }
+            return;
         }
 
         // ── Momentum Detection — primary 30M, then 15M, then 5M ──
@@ -880,23 +890,24 @@ public class OIMomentumStrategy {
                 pcrDirection, oiAvailable, momentum.type(), ceOiChange, peOiChange);
         entryCase = entryCaseLabel(entryCase, eval);
         String diagBlockDetail = diagnosticsBlockDetail(entryCase, eval.blockDetail());
+        com.algo.trade.strategy.oimomentum.v3.TimeOfDayMode todMode =
+                com.algo.trade.strategy.oimomentum.v3.TimeOfDayMode.classify(LocalTime.now(IST));
+        String matrixCase = matrixCaseLabel(entryCase);
         OiMomentumEntryDiagnostics diag = buildDiagnostics(
                 indexType, state, momentum, oiDirection, pcrDirection, pcr, ceOiChange, peOiChange,
-                oiAvailable, spot, atm, entryCase, null, diagBlockDetail);
+                oiAvailable, spot, atm, entryCase, null, diagBlockDetail,
+                todMode.name(), matrixCase, "LEGACY", 0, 0);
 
         // ── P0-2: time-of-day mode gate (29 May 2026, data-validated) ──
         // Replay: filtering out AFTERNOON_POSITION + LAST_HOUR + EOD_SQUEEZE_ONLY
         // lifts 30m win rate from 48% → 58%. MIDDAY_DISCIPLINE requires 4-of-4
         // (CASE 1) or CASE 3 + operator-aligned confluence — sustained-loss window.
-        com.algo.trade.strategy.oimomentum.v3.TimeOfDayMode todMode =
-                com.algo.trade.strategy.oimomentum.v3.TimeOfDayMode.classify(LocalTime.now(IST));
         if (config.isLegacyTimeOfDayModeEnabled() && eval.direction() != 0) {
             String todSkip = checkTimeOfDayGate(indexType, todMode, entryCase, oiDirection, momentum.direction());
             if (todSkip != null) {
                 rejectedCount.incrementAndGet();
                 state.lastRejectReason = todSkip;
-                state.lastRejectSampleTime = tuneRecorder.recordReject(indexType, state.lastRejectSampleTime,
-                        todSkip, diag);
+                state.lastRejectSampleTime = recordReject(indexType, state, todSkip, diag);
                 recordLegacyDetection(indexType, todMode, spot, atm, case0Decision,
                         ceOiChange, peOiChange, oiAvailable, oiDirection,
                         pcr, pcrDirection, momentum.direction(), momentum.type(), momentum.magnitude(),
@@ -964,8 +975,8 @@ public class OIMomentumStrategy {
                 String rejectReason = String.format("low_bias:%.0f<%d [%s] case=%s",
                         bias.score(), config.getBiasConfidenceThreshold(), bias.primarySignal(), entryCase);
                 state.lastRejectReason = rejectReason;
-                state.lastRejectSampleTime = tuneRecorder.recordReject(indexType, state.lastRejectSampleTime,
-                        rejectReason, diag);
+                state.lastRejectSampleTime = recordReject(indexType, state, rejectReason,
+                        diag.withScores(0, (int) bias.score()));
                 recordLegacyDetection(indexType, todMode, spot, atm, case0Decision,
                         ceOiChange, peOiChange, oiAvailable, oiDirection,
                         pcr, pcrDirection, momentum.direction(), momentum.type(), momentum.magnitude(),
@@ -981,8 +992,7 @@ public class OIMomentumStrategy {
                     ? "matrix_skip:" + entryCase
                     : "matrix_skip:" + entryCase + "|" + eval.blockDetail();
             state.lastRejectReason = rejectReason;
-            state.lastRejectSampleTime = tuneRecorder.recordReject(indexType, state.lastRejectSampleTime,
-                    rejectReason, diag);
+            state.lastRejectSampleTime = recordReject(indexType, state, rejectReason, diag);
             // P1-3: CASE 4 watch-list (OI flip vs momentum = potential reversal lead)
             if (config.isCase4WatchlistBonusEnabled() && "CASE4".equals(entryCase)
                     && oiDirection != 0) {
@@ -1212,17 +1222,77 @@ public class OIMomentumStrategy {
 
     private record EntryCaseEvaluation(int direction, String blockDetail) {}
 
+    private Instant recordReject(IndexType indexType, IndexState state, String reason,
+                                 OiMomentumEntryDiagnostics partial) {
+        incrementRejectReason(reason);
+        return tuneRecorder.recordReject(indexType, state.lastRejectSampleTime, reason, partial);
+    }
+
+    private void incrementRejectReason(String reason) {
+        String key = normalizeRejectReason(reason);
+        rejectReasonCounters.computeIfAbsent(key, k -> new AtomicInteger()).incrementAndGet();
+    }
+
+    private static String normalizeRejectReason(String reason) {
+        if (reason == null || reason.isBlank()) {
+            return "unknown";
+        }
+        if (reason.startsWith("matrix_skip:")) {
+            return "matrix_skip";
+        }
+        if (reason.startsWith("low_bias:")) {
+            return "low_bias";
+        }
+        if (reason.startsWith("sl_cooldown:")) {
+            return "sl_cooldown";
+        }
+        if (reason.startsWith("tod_")) {
+            return reason.split("\\|")[0];
+        }
+        int pipe = reason.indexOf('|');
+        if (pipe > 0) {
+            return reason.substring(0, pipe);
+        }
+        int colon = reason.indexOf(':');
+        if (colon > 0 && !reason.startsWith("CASE")) {
+            return reason.substring(0, colon);
+        }
+        return reason;
+    }
+
+    private String formatTopRejectReasons() {
+        int topN = Math.max(1, config.getSummaryRejectTopN());
+        return rejectReasonCounters.entrySet().stream()
+                .sorted((a, b) -> Integer.compare(b.getValue().get(), a.getValue().get()))
+                .limit(topN)
+                .map(e -> e.getKey() + "=" + e.getValue().get())
+                .collect(Collectors.joining(","));
+    }
+
+    private static String matrixCaseLabel(String entryCase) {
+        if (entryCase == null || entryCase.isBlank()) {
+            return "";
+        }
+        if (entryCase.startsWith("SPIKE")) {
+            return "SPIKE";
+        }
+        int idx = entryCase.indexOf('_');
+        if (entryCase.startsWith("CASE") && idx > 0) {
+            return entryCase.substring(0, idx);
+        }
+        return entryCase;
+    }
+
     private void recordThrottleReject(IndexType indexType, IndexState state, String reason) {
         state.lastRejectReason = reason;
-        state.lastRejectSampleTime = tuneRecorder.recordReject(indexType, state.lastRejectSampleTime,
-                reason, buildThrottleDiagnostics(indexType, state, reason));
+        state.lastRejectSampleTime = recordReject(indexType, state, reason,
+                buildThrottleDiagnostics(indexType, state, reason));
     }
 
     private void recordGateReject(IndexType indexType, IndexState state, String reason,
                                   OiMomentumEntryDiagnostics diagnostics) {
         state.lastRejectReason = reason;
-        state.lastRejectSampleTime = tuneRecorder.recordReject(indexType, state.lastRejectSampleTime,
-                reason, diagnostics);
+        state.lastRejectSampleTime = recordReject(indexType, state, reason, diagnostics);
     }
 
     private OiMomentumEntryDiagnostics buildThrottleDiagnostics(IndexType indexType, IndexState state, String reason) {
@@ -1239,7 +1309,8 @@ public class OIMomentumStrategy {
                 oi[0], oi[1], oi[0] != 0 || oi[1] != 0, spot, atm,
                 high30, low30, 0, "", marketGuard.getCurrentVix(),
                 expiryCalendar.daysToExpiry(indexType), expiryCalendar.isExpiryDay(indexType),
-                paperTrading(indexType), reason, state.oiAdvanced, rangePct, "", prem[0], prem[1]);
+                paperTrading(indexType), reason, state.oiAdvanced, rangePct, "", prem[0], prem[1],
+                "", "", "THROTTLE", 0, 0);
     }
 
     private double computeRangePct30m(IndexType indexType) {
@@ -1282,7 +1353,12 @@ public class OIMomentumStrategy {
             int atm,
             String entryCase,
             String spikeEpisodeId,
-            String blockDetail) {
+            String blockDetail,
+            String timeOfDayMode,
+            String matrixCase,
+            String entryPath,
+            int operatorScore,
+            int biasScore) {
         double high30 = momentumDetector.getRolling30MinHigh(indexType);
         double low30 = momentumDetector.getRolling30MinLow(indexType);
         double distPct = 0;
@@ -1323,7 +1399,12 @@ public class OIMomentumStrategy {
                 rangePct30m,
                 blockDetail != null ? blockDetail : "",
                 prem[0],
-                prem[1]);
+                prem[1],
+                timeOfDayMode != null ? timeOfDayMode : "",
+                matrixCase != null ? matrixCase : "",
+                entryPath != null ? entryPath : "LEGACY",
+                operatorScore,
+                biasScore);
     }
 
     private int pcrDir(double pcr) {
@@ -1665,7 +1746,8 @@ public class OIMomentumStrategy {
                             new TickMomentumDetector.MomentumSignal(newDirection, "REVERSE:OI_FLIP", 0, freshSpot),
                             oiDir(ceOiChange, peOiChange), pcrDir(revPcr), revPcr,
                             ceOiChange, peOiChange, true, freshSpot,
-                            indexType.roundToATM(freshSpot), "REVERSE:OI_FLIP", null, "");
+                            indexType.roundToATM(freshSpot), "REVERSE:OI_FLIP", null, "",
+                            "", "REVERSE", "REVERSE", 0, 0);
                     enterWithGates(indexType, state, newDirection, "REVERSE:OI_FLIP", freshSpot, revDiag);
                 }
             }
@@ -1895,8 +1977,7 @@ public class OIMomentumStrategy {
             if (spreadPctVal > 5.0) {
                 log.debug("[OIMomentum][{}] Entry rejected: bid-ask spread {}% > 5% for {}",
                         indexType, spreadPctVal, instrumentKey);
-                state.lastRejectSampleTime = tuneRecorder.recordReject(indexType, state.lastRejectSampleTime,
-                        "spread_too_wide", diagnostics);
+                recordGateReject(indexType, state, "spread_too_wide", diagnostics);
                 return;
             }
         }
