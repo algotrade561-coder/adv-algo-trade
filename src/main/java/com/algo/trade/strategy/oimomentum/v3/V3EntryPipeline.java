@@ -19,7 +19,6 @@ import java.time.ZoneId;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.function.BiFunction;
 
 /**
  * V3 OPERATOR — Entry pipeline façade.
@@ -38,8 +37,10 @@ import java.util.function.BiFunction;
  *   <li>Conviction sizing.</li>
  * </ol>
  *
- * <p>A {@link V3DecisionRecord} is written for each evaluation when this pipeline runs
- * (requires {@code oi-momentum.v3-enabled=true}).</p>
+ * <p>Per-evaluation diagnostics flow through the unified tuning pipeline
+ * ({@code tuning/} → {@code OiMomentumCaptureAdapter}). The legacy
+ * {@code V3DecisionRecorder} CSV recorder was removed in Phase 6 of the
+ * Signal Capture &amp; Tuning redesign.</p>
  */
 @Component
 public class V3EntryPipeline {
@@ -70,7 +71,6 @@ public class V3EntryPipeline {
     private final OperatorFilterGate gates;
     private final MultiStrikePicker picker;
     private final ConvictionSizer sizer;
-    private final V3DecisionRecorder recorder;
     private final OIMomentumConfig oiConfig;
 
     /**
@@ -96,7 +96,6 @@ public class V3EntryPipeline {
                             OperatorFilterGate gates,
                             MultiStrikePicker picker,
                             ConvictionSizer sizer,
-                            V3DecisionRecorder recorder,
                             OIMomentumConfig oiConfig) {
         this.regimeClassifier = regimeClassifier;
         this.marketContext = marketContext;
@@ -104,7 +103,6 @@ public class V3EntryPipeline {
         this.gates = gates;
         this.picker = picker;
         this.sizer = sizer;
-        this.recorder = recorder;
         this.oiConfig = oiConfig;
     }
 
@@ -131,52 +129,28 @@ public class V3EntryPipeline {
                                      ChainSnapshot snapshot, QuoteResolver quoteResolver,
                                      int baseLots) {
         if (momentumDir == 0) {
-            // Review nit #52: telemetry parity — record CSV row for no_momentum skip too.
-            V3EntryDecision dec = V3EntryDecision.skip("no_momentum");
-            try {
-                record(buildSkipRecord(ix, spot, vix, momentumDir, momentumType, momentumMagPct,
-                        Set.of(Regime.NORMAL), TimeOfDayMode.classify(evaluationMarketTime()),
-                        OiSignal.EMPTY, emptyVerdict(), baseLots, dec));
-            } catch (Exception ignored) {}
-            return dec;
+            return V3EntryDecision.skip("no_momentum");
         }
 
         // P0b: null snapshot → warn (throttled) + SKIP
         if (snapshot == null) {
             warnNullSnapshot(ix);
-            V3EntryDecision dec = V3EntryDecision.skip("null_snapshot");
-            record(buildSkipRecord(ix, spot, vix, momentumDir, momentumType, momentumMagPct,
-                    Set.of(Regime.NORMAL), TimeOfDayMode.classify(evaluationMarketTime()),
-                    OiSignal.EMPTY, emptyVerdict(), baseLots, dec));
-            return dec;
+            return V3EntryDecision.skip("null_snapshot");
         }
 
         Set<Regime> regimes = regimeClassifier.classify(ix);
         TimeOfDayMode mode = TimeOfDayMode.classify(evaluationMarketTime());
         if (!mode.allowsEntry()) {
-            V3EntryDecision dec = V3EntryDecision.skip("time_mode:" + mode.name());
-            record(buildSkipRecord(ix, spot, vix, momentumDir, momentumType, momentumMagPct,
-                    regimes, mode, OiSignal.EMPTY, emptyVerdict(), baseLots, dec));
-            return dec;
+            return V3EntryDecision.skip("time_mode:" + mode.name());
         }
 
         // ── OI signal ──
         OiSignal signal = chainSignalAnalyzer.analyze(ix, snapshot);
         if (!signal.isActionable()) {
-            V3EntryDecision dec = V3EntryDecision.skip("oi:" + signal.label());
-            record(buildSkipRecord(ix, spot, vix, momentumDir, momentumType, momentumMagPct,
-                    regimes, mode, signal,
-                    gates.evaluate(ix, signal, momentumDir, marketContext, regimes, spot, null),
-                    baseLots, dec));
-            return dec;
+            return V3EntryDecision.skip("oi:" + signal.label());
         }
         if (signal.direction() != momentumDir) {
-            V3EntryDecision dec = V3EntryDecision.skip("oi_direction_vs_momentum");
-            record(buildSkipRecord(ix, spot, vix, momentumDir, momentumType, momentumMagPct,
-                    regimes, mode, signal,
-                    gates.evaluate(ix, signal, momentumDir, marketContext, regimes, spot, null),
-                    baseLots, dec));
-            return dec;
+            return V3EntryDecision.skip("oi_direction_vs_momentum");
         }
 
         // ── Strike picker (P0a: must run BEFORE G4) ──
@@ -186,21 +160,13 @@ public class V3EntryPipeline {
         List<MultiStrikePicker.Candidate> ranked = picker.rankCandidates(ix, snapshot, signal,
                 momentumDir, walls[0], walls[1], maxPain, isExpiry);
         if (ranked.isEmpty()) {
-            V3EntryDecision dec = V3EntryDecision.skip("no_viable_strike");
-            record(buildSkipRecord(ix, spot, vix, momentumDir, momentumType, momentumMagPct,
-                    regimes, mode, signal,
-                    gates.evaluate(ix, signal, momentumDir, marketContext, regimes, spot, null),
-                    baseLots, dec));
-            return dec;
+            return V3EntryDecision.skip("no_viable_strike");
         }
 
         // ── LIQUIDITY_REROUTE (review P1): try candidates in order; pick first that
         // gives a G4-passing verdict. Stop after MAX_REROUTE_ATTEMPTS to bound cost. ──
         MultiStrikePicker.Candidate chosen = null;
         OperatorFilterGate.Verdict verdict = null;
-        Quote pickedQuote = null;
-        int rerouteAttempts = 0;
-        boolean rerouteSucceeded = false;
         // Go-live safety: capped at 1 attempt until production data validates
         // non-ATM picks (TRAP / GAMMA_WALL / MAX_PAIN). Bump to 3 once V3 has shown
         // it picks sensible alternatives.
@@ -221,55 +187,36 @@ public class V3EntryPipeline {
             if (v.g4Pass()) {
                 chosen = c;
                 verdict = v;
-                pickedQuote = q;
-                rerouteSucceeded = i > 0;
                 if (i > 0) {
                     log.info("[V3] LIQUIDITY_REROUTE: candidate #{} ({} strike={}) passed G4 "
                             + "after top-{} rejected", i + 1, c.roleTag(), c.strike(), i);
                 }
                 break;
             }
-            rerouteAttempts++;
         }
         // If no candidate cleared G4, fall back to top-ranked and let the gate-threshold
-        // check below register the SKIP — that way the diagnostic record reflects the
-        // best-effort candidate (rather than synthesising one). rerouteSucceeded stays
-        // false so CSV consumers can distinguish "first candidate worked" from "all failed".
+        // check below register the SKIP.
         if (chosen == null) {
             chosen = ranked.get(0);
             verdict = gates.evaluate(ix, signal, momentumDir, marketContext, regimes,
                     spot, null);
         }
-        final int rerouteCount = rerouteAttempts;
-        final boolean rerouteOk = rerouteSucceeded;
 
         // G4 is mandatory for entry — 3-of-4 threshold must not admit a strike that
         // failed liquidity after LIQUIDITY_REROUTE exhausted all candidates.
         if (!verdict.g4Pass()) {
-            V3EntryDecision dec = V3EntryDecision.skip("g4_liquidity:" + verdict.g4Reason());
-            record(buildFullRecord(ix, spot, vix, momentumDir, momentumType, momentumMagPct,
-                    regimes, mode, signal, verdict, chosen, null, baseLots, dec,
-                    rerouteCount, rerouteOk));
-            return dec;
+            return V3EntryDecision.skip("g4_liquidity:" + verdict.g4Reason());
         }
 
         // ── P1c: EOD_SQUEEZE_ONLY pattern + ATM-strike constraint ──
         int atm = snapshot.atmStrike();
         if (mode == TimeOfDayMode.EOD_SQUEEZE_ONLY) {
             if (!signal.isSqueeze()) {
-                V3EntryDecision dec = V3EntryDecision.skip("eod_squeeze_only:non_squeeze_pattern");
-                record(buildFullRecord(ix, spot, vix, momentumDir, momentumType, momentumMagPct,
-                        regimes, mode, signal, verdict, chosen, null, baseLots, dec,
-                        rerouteCount, rerouteOk));
-                return dec;
+                return V3EntryDecision.skip("eod_squeeze_only:non_squeeze_pattern");
             }
             if (chosen.strike() != atm) {
-                V3EntryDecision dec = V3EntryDecision.skip(
+                return V3EntryDecision.skip(
                         "eod_squeeze_only:non_atm_strike=" + chosen.strike());
-                record(buildFullRecord(ix, spot, vix, momentumDir, momentumType, momentumMagPct,
-                        regimes, mode, signal, verdict, chosen, null, baseLots, dec,
-                        rerouteCount, rerouteOk));
-                return dec;
             }
         }
 
@@ -277,12 +224,8 @@ public class V3EntryPipeline {
         int required = mode.requiredGates();
         if (mode == TimeOfDayMode.MIDDAY_DISCIPLINE && signal.isSqueeze()) required = 3;
         if (!verdict.meetsThreshold(required)) {
-            V3EntryDecision dec = V3EntryDecision.skip(
+            return V3EntryDecision.skip(
                     "gates_below_threshold:" + verdict.passedCount() + "of4 req=" + required);
-            record(buildFullRecord(ix, spot, vix, momentumDir, momentumType, momentumMagPct,
-                    regimes, mode, signal, verdict, chosen, null, baseLots, dec,
-                    rerouteCount, rerouteOk));
-            return dec;
         }
 
         // ── Conviction sizing ──
@@ -297,28 +240,14 @@ public class V3EntryPipeline {
                 verdict.passedCount(), required, pattern, mode, regimes,
                 marketContext.ivPercentile(ix));
         if (sized.lots() <= 0) {
-            V3EntryDecision dec = V3EntryDecision.skip("sized_zero:" + sized.breakdown());
-            record(buildFullRecord(ix, spot, vix, momentumDir, momentumType, momentumMagPct,
-                    regimes, mode, signal, verdict, chosen, sized, baseLots, dec,
-                    rerouteCount, rerouteOk));
-            return dec;
+            return V3EntryDecision.skip("sized_zero:" + sized.breakdown());
         }
 
-        V3EntryDecision dec = V3EntryDecision.enter(chosen.strike(), chosen.optionType(),
+        return V3EntryDecision.enter(chosen.strike(), chosen.optionType(),
                 sized.lots(), signal, verdict, mode, regimes, pattern, sized.convictionCapped());
-        record(buildFullRecord(ix, spot, vix, momentumDir, momentumType, momentumMagPct,
-                regimes, mode, signal, verdict, chosen, sized, baseLots, dec,
-                rerouteCount, rerouteOk));
-        return dec;
     }
 
     // ── Internal helpers ───────────────────────────────────────────────────
-
-    /** Empty verdict used when we need to record a SKIP that happened before gates. */
-    private OperatorFilterGate.Verdict emptyVerdict() {
-        return new OperatorFilterGate.Verdict(false, "n/a", false, "n/a",
-                false, "n/a", false, "n/a", 0);
-    }
 
     /** Throttled WARN + Telegram when chain snapshot missing for an index. */
     private void warnNullSnapshot(IndexType ix) {
@@ -340,81 +269,5 @@ public class V3EntryPipeline {
                 log.debug("[V3] null-snapshot telegram failed: {}", alertEx.getMessage());
             }
         }
-    }
-
-    private void record(V3DecisionRecord r) {
-        try { recorder.record(r); }
-        catch (Exception e) { log.debug("[V3] decision record failed: {}", e.getMessage()); }
-    }
-
-    private V3DecisionRecord buildSkipRecord(IndexType ix, double spot, double vix,
-                                              int momentumDir, String momentumType, double momMagPct,
-                                              Set<Regime> regimes, TimeOfDayMode mode,
-                                              OiSignal signal, OperatorFilterGate.Verdict verdict,
-                                              int baseLots, V3EntryDecision dec) {
-        int[] walls = marketContext.gammaWalls(ix);
-        return new V3DecisionRecord(
-                Instant.now(), ix, spot,
-                (int) Math.round(spot / ix.strikeInterval()) * ix.strikeInterval(),
-                vix, momentumDir, momentumType, momMagPct,
-                regimes, mode,
-                regimeClassifier.getDailyAtrPct(ix),
-                regimeClassifier.getSessionOpen(ix),
-                regimeClassifier.getPreviousClose(ix),
-                marketContext.ivPercentile(ix),
-                marketContext.vixSlope15Min(),
-                marketContext.spotVsVwap(ix, spot),
-                walls[0], walls[1],
-                marketContext.maxPainStrike(ix),
-                marketContext.pcrSlope5Min(ix),
-                signal,
-                verdict.g1Pass(), verdict.g1Reason(),
-                verdict.g2Pass(), verdict.g2Reason(),
-                verdict.g3Pass(), verdict.g3Reason(),
-                verdict.g4Pass(), verdict.g4Reason(),
-                verdict.passedCount(), mode.requiredGates(),
-                0, "NONE", 0, 0, 0, 0,
-                baseLots, 0, 0, "",
-                dec.skip() ? "SKIP" : "ENTER", dec.reason(),
-                0, false);
-    }
-
-    private V3DecisionRecord buildFullRecord(IndexType ix, double spot, double vix,
-                                               int momentumDir, String momentumType, double momMagPct,
-                                               Set<Regime> regimes, TimeOfDayMode mode,
-                                               OiSignal signal, OperatorFilterGate.Verdict verdict,
-                                               MultiStrikePicker.Candidate chosen,
-                                               ConvictionSizer.SizingResult sized,
-                                               int baseLots, V3EntryDecision dec,
-                                               int rerouteAttempts, boolean rerouteSucceeded) {
-        int[] walls = marketContext.gammaWalls(ix);
-        int lots = sized != null ? sized.lots() : 0;
-        double conv = sized != null ? sized.convictionCapped() : 0;
-        String breakdown = sized != null ? sized.breakdown() : "";
-        return new V3DecisionRecord(
-                Instant.now(), ix, spot,
-                (int) Math.round(spot / ix.strikeInterval()) * ix.strikeInterval(),
-                vix, momentumDir, momentumType, momMagPct,
-                regimes, mode,
-                regimeClassifier.getDailyAtrPct(ix),
-                regimeClassifier.getSessionOpen(ix),
-                regimeClassifier.getPreviousClose(ix),
-                marketContext.ivPercentile(ix),
-                marketContext.vixSlope15Min(),
-                marketContext.spotVsVwap(ix, spot),
-                walls[0], walls[1],
-                marketContext.maxPainStrike(ix),
-                marketContext.pcrSlope5Min(ix),
-                signal,
-                verdict.g1Pass(), verdict.g1Reason(),
-                verdict.g2Pass(), verdict.g2Reason(),
-                verdict.g3Pass(), verdict.g3Reason(),
-                verdict.g4Pass(), verdict.g4Reason(),
-                verdict.passedCount(), mode.requiredGates(),
-                chosen.strike(), chosen.roleTag(), chosen.delta(), chosen.openInterest(),
-                chosen.impliedVol(), chosen.score(),
-                baseLots, lots, conv, breakdown,
-                dec.skip() ? "SKIP" : "ENTER", dec.reason(),
-                rerouteAttempts, rerouteSucceeded);
     }
 }

@@ -11,9 +11,9 @@ import java.util.List;
 /**
  * Shadow confirmation gates recorded at signal time — no production gating.
  */
-final class ShiftTrapConfirmationEvaluator {
+public final class ShiftTrapConfirmationEvaluator {
 
-    record Confirmations(
+    public record Confirmations(
             boolean momentumDecelerating,
             boolean spotStalled,
             boolean oiStillBuilding,

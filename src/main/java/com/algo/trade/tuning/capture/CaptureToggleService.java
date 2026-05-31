@@ -137,7 +137,7 @@ public class CaptureToggleService {
         }
 
         TuningCaptureConfigEntity row = configRepo.findById(strategy)
-                .orElseGet(() -> newRowFor(strategy));
+                .orElseGet(() -> newRowFor(strategy, -1));
 
         recordIfChanged(strategy, "captureEnabled", row.isCaptureEnabled(),
                 newSettings.captureEnabled(), changedBy, reason);
@@ -187,12 +187,20 @@ public class CaptureToggleService {
      * registers, so the UI capture toggle row appears automatically.
      */
     @Transactional
+    public CaptureSettings ensureRowExists(StrategyType strategy, int defaultEpisodeWindowSec) {
+        return ensureRowExistsInternal(strategy, defaultEpisodeWindowSec);
+    }
+
     public CaptureSettings ensureRowExists(StrategyType strategy) {
+        return ensureRowExistsInternal(strategy, -1);
+    }
+
+    private CaptureSettings ensureRowExistsInternal(StrategyType strategy, int episodeWindowSec) {
         Optional<TuningCaptureConfigEntity> existing = configRepo.findById(strategy);
         if (existing.isPresent()) {
             return CaptureSettings.from(existing.get());
         }
-        TuningCaptureConfigEntity row = newRowFor(strategy);
+        TuningCaptureConfigEntity row = newRowFor(strategy, episodeWindowSec);
         TuningCaptureConfigEntity saved = configRepo.save(row);
         CaptureSettings snapshot = CaptureSettings.from(saved);
         Map<StrategyType, CaptureSettings> updated = new EnumMap<>(cache.get());
@@ -202,10 +210,13 @@ public class CaptureToggleService {
         return snapshot;
     }
 
-    private TuningCaptureConfigEntity newRowFor(StrategyType strategy) {
+    private TuningCaptureConfigEntity newRowFor(StrategyType strategy, int episodeWindowSec) {
         TuningCaptureConfigEntity row = new TuningCaptureConfigEntity();
         row.setStrategy(strategy);
         // All other fields use entity defaults: captureEnabled=false, per-type=true, window=60.
+        if (episodeWindowSec > 0) {
+            row.setEpisodeWindowSec(episodeWindowSec);
+        }
         row.setUpdatedAt(Instant.now());
         return row;
     }

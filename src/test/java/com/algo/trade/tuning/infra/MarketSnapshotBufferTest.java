@@ -60,15 +60,15 @@ class MarketSnapshotBufferTest {
         // Ingest entries spanning 6 calendar days (one snapshot per hour). Retention is
         // 5 days — the oldest entries should get evicted.
         Instant t = T0;
-        int totalIngested = 6 * 24;        // 6 days of hourly snapshots = 144 entries
+        int totalIngested = 12 * 24;       // 12 days of hourly snapshots = 288 entries (retention is 10 days)
         for (int i = 0; i < totalIngested; i++) {
             buffer.ingest(IndexType.NIFTY, t, 23_500.0, 23_500, 100.0, 100.0, Map.of());
             t = t.plus(Duration.ofHours(1));
         }
-        // Latest is at T0 + 143h. Retention cutoff = latest - 5 days = T0 + 23h.
-        // Entries strictly before T0 + 23h should be evicted (24 entries).
+        // Latest at T0+287h, cutoff = latest - 10 days = T0+47h, headMap(cutoff, inclusive=true)
+        // removes 48 entries, leaving 240.
         int count = buffer.snapshotCount(IndexType.NIFTY);
-        assertThat(count).isLessThanOrEqualTo(120).isGreaterThan(115);
+        assertThat(count).isLessThanOrEqualTo(240).isGreaterThan(235);
 
         // Oldest entry remaining is within retention window relative to the latest.
         Optional<MarketSnapshot> earliest = buffer.ceiling(IndexType.NIFTY, T0);

@@ -397,14 +397,22 @@ signal-tuning:
 # See important/SIGNAL_CAPTURE_TUNING_REDESIGN.md and SIGNAL_TUNING_IMPLEMENTATION_PLAN.md.
 # All per-strategy capture is OFF by default; flip via /settings/tuning-capture UI.
 tuning:
+  report:
+    # Where TuningReportService writes generated HTML. In-process now — no forked JVM,
+    # no jar-path, no heap fork-flag.
+    output-dir: reports/tuning/html
   capture:
     poll-interval-sec: 30
   store:
-    # DuckDB native (off-heap) memory limit. Conservative in trading JVM; the forked
-    # analyzer JVM (Phase 6) overrides this to 1GB via its dedicated Spring profile.
-    memory-limit: 256MB
+    # DuckDB native (off-heap) memory cap. NOT JVM heap — DuckDB runs in native C++,
+    # so this doesn't pressure the trading JVM's GC. 512MB gives headroom for in-process
+    # reports while staying comfortably under EC2 t3.small's 2GB RAM.
+    memory-limit: 512MB
     threads: 2
-    temp-directory: /var/tmp/duckdb
+    # DuckDB spill-to-disk directory. Relative to the JVM working dir so it lives
+    # under the app tree alongside reports/tuning/html and reports/tuning/archive —
+    # matches every other tuning path and avoids needing root-owned /var/tmp.
+    temp-directory: reports/tuning/duckdb-tmp
     statement-timeout-sec: 60
   roller:
     # Daily IST-midnight CSV → Parquet rollup + retention enforcement.
@@ -424,7 +432,7 @@ tuning:
   # OI Momentum + OI Shift Trap have dedicated forward-return capture; other strategies
   # fire < 30 BUYs/period and their 45m MFE/MAE column will be empty until redesign lands.
   # Flip to true if you need cross-strategy forward MFE/MAE for an investigation.
-  write-candles: false
+  # write-candles removed in Phase 6 — no CSV candle writer remains
 
 # ── Trading Calendar (Exchange Holidays) ───────────────────────────────────
 # Only include weekday trading holidays here. If a festival falls on Sat/Sun,

@@ -82,6 +82,18 @@ public class TuningEventStore {
         } catch (ClassNotFoundException ex) {
             throw new IllegalStateException("DuckDB JDBC driver " + DRIVER_CLASS + " not on classpath", ex);
         }
+        // Pre-create the DuckDB temp directory at startup so the Tuning Capture Health
+        // widget shows OK from boot — otherwise it stays "Missing" until the first
+        // query that spills to disk.
+        String tempDir = properties.getTempDirectory();
+        if (tempDir != null && !tempDir.isBlank()) {
+            try {
+                java.nio.file.Files.createDirectories(Path.of(tempDir));
+            } catch (java.io.IOException ex) {
+                log.warn("[TuningEventStore] failed to pre-create DuckDB temp dir {}: {}",
+                        tempDir, ex.getMessage());
+            }
+        }
     }
 
     // ── File discovery ────────────────────────────────────────────────────

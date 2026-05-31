@@ -3,13 +3,70 @@ import { DecimalPipe } from '@angular/common';
 import { catchError, forkJoin, of, interval, Subscription } from 'rxjs';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
+import { RouterLink } from '@angular/router';
 import { ApiService } from '../core/api.service';
 import { MarketSnapshot, OilPriceSnapshot, PnlSnapshot, RuntimeStatus, StrategyDecision, TradingStatus } from '../core/models';
+
+interface TuningHealth {
+  generatedAt?: string;
+  captureToggles?: {
+    totalStrategies?: number;
+    enabledStrategies?: number;
+    enabledList?: string[];
+  };
+  todayEvents?: {
+    EVALUATION?: number;
+    SIGNAL?: number;
+    EXECUTION?: number;
+    EXIT?: number;
+    FORWARD_CHECKPOINT?: number;
+    SHADOW_GATE?: number;
+    LEG?: number;
+  };
+  recorder?: {
+    present?: boolean;
+    totalWrites?: number;
+    totalFailures?: number;
+    avgWriteLatencyMicros?: number;
+  };
+  lastRollerRun?: {
+    present?: boolean;
+    at?: string | null;
+    success?: boolean | null;
+    datesProcessed?: number;
+    filesRolled?: number;
+    retentionPurged?: number;
+    errorMessage?: string | null;
+  };
+  lastForwardSweep?: {
+    present?: boolean;
+    at?: string | null;
+    success?: boolean | null;
+    newCheckpoints?: number;
+    errorMessage?: string | null;
+  };
+  duckdbTempDir?: {
+    path?: string;
+    exists?: boolean;
+    freeBytes?: number | null;
+    error?: string;
+  };
+  latestReport?: {
+    present?: boolean;
+    jobId?: string;
+    status?: string;
+    requestedAt?: string | null;
+    fromDate?: string | null;
+    toDate?: string | null;
+    durationSec?: number | null;
+    hasHtml?: boolean;
+  };
+}
 
 @Component({
   selector: 'app-dashboard-page',
   standalone: true,
-  imports: [DecimalPipe, MatButtonModule, MatIconModule],
+  imports: [DecimalPipe, MatButtonModule, MatIconModule, RouterLink],
   template: `
     <section class="page">
       <div class="top-row">
@@ -275,6 +332,94 @@ import { MarketSnapshot, OilPriceSnapshot, PnlSnapshot, RuntimeStatus, StrategyD
               <div class="scan-idle"><mat-icon>hourglass_empty</mat-icon> Waiting for first signal</div>
             }
           </div>
+
+          <!-- ── Tuning Capture Health (glance widget) ─────────────────── -->
+          <div class="panel tuning-panel">
+            <h2><mat-icon class="hi">tune</mat-icon> Tuning Capture Health</h2>
+            @if (!tuningHealth) {
+              <div class="scan-idle"><mat-icon>hourglass_empty</mat-icon> Loading…</div>
+            } @else {
+              <div class="th-grid">
+                <div class="th-row">
+                  <span class="th-label">Capturing today</span>
+                  <a class="th-value th-link"
+                     [class.pos]="(tuningHealth.captureToggles?.enabledStrategies ?? 0) > 0"
+                     [class.muted]="(tuningHealth.captureToggles?.enabledStrategies ?? 0) === 0"
+                     routerLink="/tuning-capture">
+                    {{ tuningHealth.captureToggles?.enabledStrategies ?? 0 }} / {{ tuningHealth.captureToggles?.totalStrategies ?? 22 }}
+                  </a>
+                </div>
+                <div class="th-row">
+                  <span class="th-label">Today's events</span>
+                  <span class="th-value">
+                    {{ tuningHealth.todayEvents?.EVALUATION ?? 0 }} eval ·
+                    {{ tuningHealth.todayEvents?.SIGNAL ?? 0 }} sig ·
+                    {{ tuningHealth.todayEvents?.EXIT ?? 0 }} exit
+                  </span>
+                </div>
+                <div class="th-row">
+                  <span class="th-label">Recorder failures (since boot)</span>
+                  <span class="th-value"
+                        [class.pos]="(tuningHealth.recorder?.totalFailures ?? 0) === 0"
+                        [class.neg]="(tuningHealth.recorder?.totalFailures ?? 0) > 0">
+                    {{ tuningHealth.recorder?.totalFailures ?? 0 }}
+                    @if ((tuningHealth.recorder?.totalWrites ?? 0) > 0) {
+                      <span class="th-sub">of {{ tuningHealth.recorder?.totalWrites }} writes</span>
+                    }
+                  </span>
+                </div>
+                <div class="th-row">
+                  <span class="th-label">Last roller run</span>
+                  <span class="th-value"
+                        [class.pos]="tuningHealth.lastRollerRun?.success === true"
+                        [class.neg]="tuningHealth.lastRollerRun?.success === false"
+                        [class.muted]="!tuningHealth.lastRollerRun?.at">
+                    {{ formatTimeOnly(tuningHealth.lastRollerRun?.at) }}
+                    @if (tuningHealth.lastRollerRun?.at) {
+                      <span class="th-sub">{{ tuningHealth.lastRollerRun?.filesRolled ?? 0 }} files</span>
+                    }
+                  </span>
+                </div>
+                <div class="th-row">
+                  <span class="th-label">Last forward sweep</span>
+                  <span class="th-value"
+                        [class.pos]="tuningHealth.lastForwardSweep?.success === true"
+                        [class.neg]="tuningHealth.lastForwardSweep?.success === false"
+                        [class.muted]="!tuningHealth.lastForwardSweep?.at">
+                    {{ formatTimeOnly(tuningHealth.lastForwardSweep?.at) }}
+                    @if (tuningHealth.lastForwardSweep?.at) {
+                      <span class="th-sub">+{{ tuningHealth.lastForwardSweep?.newCheckpoints ?? 0 }} checkpoints</span>
+                    }
+                  </span>
+                </div>
+                <div class="th-row">
+                  <span class="th-label">DuckDB temp dir</span>
+                  <span class="th-value"
+                        [class.pos]="tuningHealth.duckdbTempDir?.exists === true"
+                        [class.neg]="tuningHealth.duckdbTempDir?.exists === false">
+                    {{ tuningHealth.duckdbTempDir?.exists ? 'OK' : 'Missing' }}
+                    @if (tuningHealth.duckdbTempDir?.freeBytes != null) {
+                      <span class="th-sub">{{ formatBytes(tuningHealth.duckdbTempDir?.freeBytes) }} free</span>
+                    }
+                  </span>
+                </div>
+                <div class="th-row">
+                  <span class="th-label">Latest report</span>
+                  @if (tuningHealth.latestReport?.present && tuningHealth.latestReport?.hasHtml) {
+                    <a class="th-value th-link pos"
+                       [routerLink]="['/tuning/reports', tuningHealth.latestReport?.jobId]">
+                      {{ tuningHealth.latestReport?.fromDate }} → {{ tuningHealth.latestReport?.toDate }}
+                      <mat-icon class="th-arrow">open_in_new</mat-icon>
+                    </a>
+                  } @else if (tuningHealth.latestReport?.present) {
+                    <span class="th-value muted">{{ tuningHealth.latestReport?.status }}</span>
+                  } @else {
+                    <a class="th-value th-link muted" routerLink="/reports">No reports yet — Generate</a>
+                  }
+                </div>
+              </div>
+            }
+          </div>
         </div>
       }
     </section>
@@ -362,6 +507,23 @@ import { MarketSnapshot, OilPriceSnapshot, PnlSnapshot, RuntimeStatus, StrategyD
     .empty mat-icon { font-size: 32px; width: 32px; height: 32px; opacity: .35; }
     .sb-tracker { background: rgba(69,209,140,.1)  !important; border-color: rgba(69,209,140,.3)  !important; color: var(--ok)   !important; }
     .sb-neutral { background: rgba(242,189,75,.1)  !important; border-color: rgba(242,189,75,.3)  !important; color: var(--warn) !important; }
+
+    /* Tuning Capture Health — sits in the same auto-fit row as Runtime + Scan & Signal Status */
+    .th-grid { display: grid; grid-template-columns: 1fr; gap: 8px; }
+    .th-row {
+      display: flex; flex-direction: column; gap: 4px;
+      padding: 10px 12px; border-radius: 8px;
+      background: rgba(255,255,255,.02); border: 1px solid var(--line);
+    }
+    .th-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+    .th-value { font-size: 13px; font-weight: 600; color: var(--ink); display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .th-value.muted { color: var(--muted); }
+    .th-value.pos   { color: var(--ok); }
+    .th-value.neg   { color: var(--bad); }
+    .th-sub { font-size: 11px; font-weight: 500; color: var(--muted); }
+    .th-link { text-decoration: none; }
+    .th-link:hover { text-decoration: underline; }
+    .th-arrow { font-size: 14px; width: 14px; height: 14px; }
   `]
 })
 export class DashboardPageComponent implements OnInit, OnDestroy {
@@ -372,11 +534,13 @@ export class DashboardPageComponent implements OnInit, OnDestroy {
   perf?: any;
   latestSignal?: StrategyDecision | null;
   oilPrice?: OilPriceSnapshot;
+  tuningHealth?: TuningHealth;
   loading = false;
   loadError = '';
   lastUpdatedAt = '';
   private inFlight = false;
   private marketPollSub?: Subscription;
+  private tuningHealthPollSub?: Subscription;
   private signalPollSub?: Subscription;
 
   get lastScanTime(): string {
@@ -393,11 +557,15 @@ export class DashboardPageComponent implements OnInit, OnDestroy {
     this.marketPollSub = interval(1000).subscribe(() => this.refreshMarket());
     // Signals and P&L change on candle close (every 1–15 min) — 3 s is plenty
     this.signalPollSub = interval(3000).subscribe(() => this.refreshSignal());
+    // Tuning health is server-side aggregated; 30 s poll is plenty (forward sweep fires every 5 min, roller once a day)
+    this.refreshTuningHealth();
+    this.tuningHealthPollSub = interval(30000).subscribe(() => this.refreshTuningHealth());
   }
 
   ngOnDestroy(): void {
     this.marketPollSub?.unsubscribe();
     this.signalPollSub?.unsubscribe();
+    this.tuningHealthPollSub?.unsubscribe();
   }
 
   load(): void {
@@ -463,6 +631,28 @@ export class DashboardPageComponent implements OnInit, OnDestroy {
   }
 
   asAny(v: unknown): any { return v as any; }
+
+  formatTimeOnly(iso?: string | null): string {
+    if (!iso) return '—';
+    try { return new Date(iso).toLocaleTimeString(); } catch { return iso; }
+  }
+
+  formatBytes(n?: number | null): string {
+    if (n == null) return '—';
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+    if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(n / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  }
+
+  private refreshTuningHealth(): void {
+    this.api.getTuningHealth().pipe(catchError(() => of(null))).subscribe(h => {
+      if (h) {
+        this.tuningHealth = h as TuningHealth;
+        this.cd.detectChanges();
+      }
+    });
+  }
 
   private fail(msg = 'Unable to reach server. Click Refresh.'): void {
     this.loading = false;

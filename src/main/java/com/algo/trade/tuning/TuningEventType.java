@@ -16,7 +16,8 @@ public enum TuningEventType {
     EXECUTION("execution"),
     EXIT("exit"),
     FORWARD_CHECKPOINT("forward_checkpoint"),
-    SHADOW_GATE("shadow_gate");
+    SHADOW_GATE("shadow_gate"),
+    LEG("leg");
 
     private final String fileBaseName;
 

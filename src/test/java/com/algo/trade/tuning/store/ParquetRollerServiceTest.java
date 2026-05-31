@@ -118,6 +118,9 @@ class ParquetRollerServiceTest {
 
         int first = roller.rollDate(LocalDate.of(2026, 6, 1));
         // Re-write the CSV (simulating a second run encountering an already-rolled file).
+        // Roller deletes the CSV + prunes the empty parent dir after a successful roll,
+        // so we need to re-create the parent before re-writing.
+        Files.createDirectories(csv.getParent());
         Files.writeString(csv, "eventTime,index,correlationKey,score\n");
 
         int second = roller.rollDate(LocalDate.of(2026, 6, 1));

@@ -31,7 +31,7 @@ import com.algo.trade.persistence.PositionGroupEntity;
 import com.algo.trade.persistence.PositionGroupRepository;
 import com.algo.trade.strategy.StrategyConfig;
 import com.algo.trade.strategy.StrategyConfigService;
-import com.algo.trade.strategy.StrategySignalCsvRecorder;
+import com.algo.trade.strategy.PipelineSignalCapture;
 import com.algo.trade.strategy.StrategyType;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
@@ -81,7 +81,7 @@ public abstract class AbstractSpreadStrategy {
     protected final InstrumentCache instrumentCache;
     protected final MarketDataService marketDataService;
     protected final ExecutionEngine executionEngine;
-    protected final StrategySignalCsvRecorder signalRecorder;
+    protected final PipelineSignalCapture signalRecorder;
     protected final EmaIndicator emaIndicator;
     protected final AtrIndicator atrIndicator;
     protected final PositionGroupRepository positionGroupRepository;
@@ -148,7 +148,7 @@ public abstract class AbstractSpreadStrategy {
                                      InstrumentCache instrumentCache,
                                      MarketDataService marketDataService,
                                      ExecutionEngine executionEngine,
-                                     StrategySignalCsvRecorder signalRecorder,
+                                     PipelineSignalCapture signalRecorder,
                                      EmaIndicator emaIndicator,
                                      AtrIndicator atrIndicator,
                                      PositionGroupRepository positionGroupRepository) {

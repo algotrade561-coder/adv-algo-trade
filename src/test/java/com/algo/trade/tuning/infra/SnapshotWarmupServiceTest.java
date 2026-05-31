@@ -2,6 +2,7 @@ package com.algo.trade.tuning.infra;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 
 import com.algo.trade.data.ChainSnapshot;
@@ -52,7 +53,9 @@ class SnapshotWarmupServiceTest {
     void ingestsWithinRetentionWindow() {
         Path fake1 = Path.of("/tmp/NIFTY_0930.json.gz");
         Path fake2 = Path.of("/tmp/NIFTY_1000.json.gz");
-        when(snapshotFileWriter.listAllSnapshots(any())).thenReturn(List.of(fake1, fake2));
+        when(snapshotFileWriter.listAllSnapshots(any())).thenReturn(List.of());
+        when(snapshotFileWriter.listAllSnapshots(eq(LocalDate.of(2026, 6, 1))))
+                .thenReturn(List.of(fake1, fake2));
 
         // Both snapshots inside the 3h retention window.
         ChainSnapshot s1 = makeChainSnapshot("NIFTY",
@@ -73,7 +76,9 @@ class SnapshotWarmupServiceTest {
         // With 5-day retention, ingesting two snapshots 5h apart should both stay.
         Path early = Path.of("/tmp/NIFTY_0500.json.gz");
         Path late = Path.of("/tmp/NIFTY_1000.json.gz");
-        when(snapshotFileWriter.listAllSnapshots(any())).thenReturn(List.of(early, late));
+        when(snapshotFileWriter.listAllSnapshots(any())).thenReturn(List.of());
+        when(snapshotFileWriter.listAllSnapshots(eq(LocalDate.of(2026, 6, 1))))
+                .thenReturn(List.of(early, late));
 
         ChainSnapshot first = makeChainSnapshot("NIFTY",
                 Instant.parse("2026-06-01T05:00:00Z"), 23_400.0, 23_400);
@@ -129,7 +134,9 @@ class SnapshotWarmupServiceTest {
     void skipsUnreadableFilesWithoutAborting() {
         Path bad = Path.of("/tmp/corrupt.json.gz");
         Path good = Path.of("/tmp/NIFTY_1000.json.gz");
-        when(snapshotFileWriter.listAllSnapshots(any())).thenReturn(List.of(bad, good));
+        when(snapshotFileWriter.listAllSnapshots(any())).thenReturn(List.of());
+        when(snapshotFileWriter.listAllSnapshots(eq(LocalDate.of(2026, 6, 1))))
+                .thenReturn(List.of(bad, good));
         when(snapshotFileWriter.read(bad)).thenReturn(Optional.empty());
         when(snapshotFileWriter.read(good)).thenReturn(Optional.of(makeChainSnapshot(
                 "NIFTY", Instant.parse("2026-06-01T10:00:00Z"), 23_500.0, 23_500)));
@@ -155,7 +162,9 @@ class SnapshotWarmupServiceTest {
     @Test
     void preservesAtmStrikeOiFromSnapshot() {
         Path file = Path.of("/tmp/NIFTY_1000.json.gz");
-        when(snapshotFileWriter.listAllSnapshots(any())).thenReturn(List.of(file));
+        when(snapshotFileWriter.listAllSnapshots(any())).thenReturn(List.of());
+        when(snapshotFileWriter.listAllSnapshots(eq(LocalDate.of(2026, 6, 1))))
+                .thenReturn(List.of(file));
 
         ChainSnapshot snap = new ChainSnapshot(
                 Instant.parse("2026-06-01T10:00:00Z"),

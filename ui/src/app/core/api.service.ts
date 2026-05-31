@@ -432,6 +432,32 @@ export class ApiService {
   getUnderlyingConfig(underlying: string): Observable<UnderlyingConfigDto> { return this.http.get<UnderlyingConfigDto>(`${this.base}/underlying-config/${underlying}`); }
   updateUnderlyingConfig(underlying: string, config: UnderlyingConfigDto): Observable<UnderlyingConfigDto> { return this.http.put<UnderlyingConfigDto>(`${this.base}/underlying-config/${underlying}`, config); }
 
+  // ── Tuning reports (Phase 6) ─────────────────────────────────────────
+  submitTuningReport(from: string, to: string, strategies = '*', force = false, forceReason?: string): Observable<{ jobId: string }> {
+    const params = new URLSearchParams({ from, to, strategies, force: String(force) });
+    if (forceReason) params.set('forceReason', forceReason);
+    return this.http.post<{ jobId: string }>(`${this.base}/reports/tuning/jobs?${params}`, {});
+  }
+  listTuningReportJobs(limit = 20): Observable<Record<string, unknown>[]> {
+    return this.http.get<Record<string, unknown>[]>(`${this.base}/reports/tuning/jobs?limit=${limit}`);
+  }
+  getTuningReportJob(jobId: string): Observable<Record<string, unknown>> {
+    return this.http.get<Record<string, unknown>>(`${this.base}/reports/tuning/jobs/${jobId}`);
+  }
+  getTuningReportHtml(jobId: string): Observable<string> {
+    return this.http.get(`${this.base}/reports/tuning/jobs/${jobId}/html`, { responseType: 'text' });
+  }
+  getTuningStrategyToday(name: string): Observable<Record<string, unknown>> {
+    return this.http.get<Record<string, unknown>>(`${this.base}/reports/tuning/strategy/${name}/today`);
+  }
+  exploreTuningBuckets(strategy: string, from: string, to: string): Observable<Record<string, unknown>> {
+    return this.http.get<Record<string, unknown>>(
+      `${this.base}/reports/tuning/explore/buckets?strategy=${encodeURIComponent(strategy)}&from=${from}&to=${to}`);
+  }
+  getTuningHealth(): Observable<Record<string, any>> {
+    return this.http.get<Record<string, any>>(`${this.base}/tuning/health`);
+  }
+
   // ── Auth ─────────────────────────────────────────────────────────────
   checkAuth(): Observable<any> { return this.http.get<any>(`${this.base}/auth/user`); }
 }

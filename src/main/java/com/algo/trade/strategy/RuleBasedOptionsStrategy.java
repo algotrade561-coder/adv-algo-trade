@@ -44,7 +44,7 @@ public class RuleBasedOptionsStrategy {
     private final VolatilityFilter volatilityFilter;
     private final OiChangeTracker oiChangeTracker;
     private final OptionChainAnalyzer optionChainAnalyzer;
-    private final StrategySignalCsvRecorder signalCsvRecorder;
+    private final PipelineSignalCapture signalCsvRecorder;
     private final RsiIndicator rsiIndicator;
     private final com.algo.trade.underlying.UnderlyingConfigService underlyingConfigService;
     private final OperatorFrameworkService operatorFrameworkService;
@@ -59,7 +59,7 @@ public class RuleBasedOptionsStrategy {
             VolatilityFilter volatilityFilter,
             OiChangeTracker oiChangeTracker,
             OptionChainAnalyzer optionChainAnalyzer,
-            StrategySignalCsvRecorder signalCsvRecorder,
+            PipelineSignalCapture signalCsvRecorder,
             com.algo.trade.underlying.UnderlyingConfigService underlyingConfigService,
             OperatorFrameworkService operatorFrameworkService
     ) {
@@ -89,7 +89,7 @@ public class RuleBasedOptionsStrategy {
             VolatilityFilter volatilityFilter,
             OiChangeTracker oiChangeTracker,
             OptionChainAnalyzer optionChainAnalyzer,
-            StrategySignalCsvRecorder signalCsvRecorder,
+            PipelineSignalCapture signalCsvRecorder,
             com.algo.trade.underlying.UnderlyingConfigService underlyingConfigService
     ) {
         this(properties, globalConfigService, vwapIndicator, emaIndicator, volumeSpikeDetector, breakoutDetector,
@@ -121,7 +121,7 @@ public class RuleBasedOptionsStrategy {
             VolatilityFilter volatilityFilter,
             OiChangeTracker oiChangeTracker,
             OptionChainAnalyzer optionChainAnalyzer,
-            StrategySignalCsvRecorder signalCsvRecorder
+            PipelineSignalCapture signalCsvRecorder
     ) {
         this(properties, null, vwapIndicator, emaIndicator, volumeSpikeDetector, breakoutDetector, volatilityFilter, oiChangeTracker,
                 optionChainAnalyzer, signalCsvRecorder, null);

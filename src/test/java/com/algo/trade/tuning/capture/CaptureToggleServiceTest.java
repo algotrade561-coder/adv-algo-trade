@@ -149,6 +149,38 @@ class CaptureToggleServiceTest {
     }
 
     @Test
+    void ensureRowExistsWithCustomWindow_persistsAdapterValue() {
+        when(configRepo.findById(StrategyType.OI_MOMENTUM)).thenReturn(Optional.empty());
+        when(configRepo.save(any(TuningCaptureConfigEntity.class))).thenAnswer(returnFirstArg());
+
+        CaptureSettings out = service.ensureRowExists(StrategyType.OI_MOMENTUM, 120);
+
+        assertThat(out.episodeWindowSec()).isEqualTo(120);
+
+        ArgumentCaptor<TuningCaptureConfigEntity> entityCaptor =
+                ArgumentCaptor.forClass(TuningCaptureConfigEntity.class);
+        verify(configRepo).save(entityCaptor.capture());
+        assertThat(entityCaptor.getValue().getEpisodeWindowSec()).isEqualTo(120);
+    }
+
+    @Test
+    void ensureRowExistsWithCustomWindow_preservesExistingValue() {
+        // Existing row has window=300 (user customized via UI).
+        TuningCaptureConfigEntity existing = newRow(StrategyType.OI_MOMENTUM,
+                false, true, true, true, true, true, true);
+        existing.setEpisodeWindowSec(300);
+        when(configRepo.findById(StrategyType.OI_MOMENTUM)).thenReturn(Optional.of(existing));
+
+        // Adapter re-registers with its own default of 60.
+        CaptureSettings out = service.ensureRowExists(StrategyType.OI_MOMENTUM, 60);
+
+        // User's saved value wins; adapter's default is ignored on re-registration.
+        assertThat(out.episodeWindowSec()).isEqualTo(300);
+        // Save is not called — existing row is returned as-is.
+        verify(configRepo, never()).save(any());
+    }
+
+    @Test
     void ensureRowExistsIsIdempotent() {
         when(configRepo.findById(StrategyType.OI_SHIFT_TRAP)).thenReturn(Optional.empty());
         when(configRepo.save(any(TuningCaptureConfigEntity.class))).thenAnswer(returnFirstArg());

@@ -51,7 +51,8 @@ class EpisodeAggregatorTest {
         assertThat(row.tickCount()).isEqualTo(1000);
         assertThat(row.firstPayload()).isEqualTo("diag-0");           // first tick's payload
         assertThat(row.firstAt()).isEqualTo(T0);
-        assertThat(row.lastAt()).isEqualTo(T0.plusSeconds(29));
+        // lastAt tracks the most-recent tick; last loop iteration i=999 → 999%30=9.
+        assertThat(row.lastAt()).isEqualTo(T0.plusSeconds(9));
     }
 
     @Test

@@ -94,6 +94,22 @@ public class ForwardCheckpointService {
     /** Correlation keys we've already processed since boot. */
     private final Set<String> processedKeys = ConcurrentHashMap.newKeySet();
 
+    /**
+     * Snapshot of the most-recent {@link #backfill()} sweep. Read by
+     * {@link com.algo.trade.controller.TuningHealthController} to power the
+     * "Last forward sweep" line in the dashboard health widget.
+     */
+    public record LastSweep(java.time.Instant at,
+                            int newCheckpoints,
+                            boolean success,
+                            String errorMessage) {}
+
+    private volatile LastSweep lastSweep;
+
+    public LastSweep lastSweep() {
+        return lastSweep;
+    }
+
     @org.springframework.beans.factory.annotation.Autowired
     public ForwardCheckpointService(@Value("${tuning.capture.base-dir:reports/tuning/events}") String baseDirPath,
                                      MarketSnapshotBuffer buffer,
@@ -117,10 +133,13 @@ public class ForwardCheckpointService {
      */
     @Scheduled(fixedRate = 300_000, initialDelay = 60_000)
     public void backfill() {
+        java.time.Instant startedAt = clock.now();
         try {
-            sweep(clock.now());
+            int newCheckpoints = sweep(startedAt);
+            lastSweep = new LastSweep(startedAt, newCheckpoints, true, null);
         } catch (Exception ex) {
             log.warn("[ForwardCheckpointService] sweep failed (non-fatal): {}", ex.getMessage());
+            lastSweep = new LastSweep(startedAt, 0, false, ex.getMessage());
         }
     }
 

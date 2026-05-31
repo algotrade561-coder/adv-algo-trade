@@ -11,6 +11,9 @@ import { SettingsPageComponent } from './pages/settings-page.component';
 import { UnderlyingConfigPageComponent } from './pages/underlying-config-page.component';
 import { DiagnosticsPageComponent } from './pages/diagnostics-page.component';
 import { TuningCapturePageComponent } from './pages/tuning-capture-page.component';
+import { TuningReportPageComponent } from './pages/tuning-report-page.component';
+import { TuningStrategyPageComponent } from './pages/tuning-strategy-page.component';
+import { TuningExplorePageComponent } from './pages/tuning-explore-page.component';
 
 export const routes: Routes = [
   { path: '', pathMatch: 'full', redirectTo: 'dashboard' },
@@ -18,6 +21,10 @@ export const routes: Routes = [
   { path: 'strategies', component: StrategiesPageComponent },
   { path: 'settings', component: SettingsPageComponent },
   { path: 'tuning-capture', component: TuningCapturePageComponent },
+  { path: 'tuning/dashboard', redirectTo: 'reports' },
+  { path: 'tuning/reports/:jobId', component: TuningReportPageComponent },
+  { path: 'tuning/strategy/:name', component: TuningStrategyPageComponent },
+  { path: 'tuning/explore', component: TuningExplorePageComponent },
   { path: 'index-config', component: UnderlyingConfigPageComponent },
   { path: 'execution', component: ExecutionPageComponent },
   { path: 'monitoring', component: MonitoringPageComponent },

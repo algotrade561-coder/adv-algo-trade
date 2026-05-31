@@ -35,6 +35,7 @@ public record CaptureSettings(
             case EXIT             -> captureExits;
             case FORWARD_CHECKPOINT -> captureForward;
             case SHADOW_GATE      -> captureShadow;
+            case LEG              -> captureExecutions;   // legs piggyback on the execution toggle
         };
     }
 

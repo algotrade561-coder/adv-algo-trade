@@ -100,6 +100,23 @@
                 <artifactId>spring-boot-maven-plugin</artifactId>
             </plugin>
             <plugin>
+                <!--
+                  Pin javac annotation-processing mode to "full" — silences the JDK 21+
+                  warning about implicit processor discovery and survives the future
+                  release that disables it by default. The only processors we use are
+                  spring-boot-configuration-processor (for the autocomplete metadata in
+                  IDEs) and any future ones a dependency adds; both still run under
+                  -proc:full.
+                -->
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <compilerArgs>
+                        <arg>-proc:full</arg>
+                    </compilerArgs>
+                </configuration>
+            </plugin>
+            <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-enforcer-plugin</artifactId>
                 <version>3.6.2</version>

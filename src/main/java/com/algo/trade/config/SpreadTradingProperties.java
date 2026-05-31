@@ -92,4 +92,13 @@ public record SpreadTradingProperties(
                 2.0
         );
     }
+
+    /**
+     * Phase 5 — per-leg tuning event capture. Returns {@code true} so spread fills
+     * emit {@link com.algo.trade.tuning.LegEvent} rows by default. Adding this as a
+     * record component would change the constructor signature + {@link #defaults()}
+     * call site, so it's exposed as a constant method for now. Replace with a real
+     * record component if you ever need YAML to disable it per-environment.
+     */
+    public boolean legEventCaptureEnabled() { return true; }
 }

@@ -30,7 +30,12 @@ public class TuningEventStoreProperties {
     private int threads = 2;
 
     /** Spill-to-disk directory used when a query exceeds {@link #memoryLimit}. */
-    private String tempDirectory = System.getProperty("java.io.tmpdir") + "/duckdb";
+    /**
+     * Spill-to-disk directory used when a query exceeds {@link #memoryLimit}. Relative
+     * paths resolve from the JVM working dir so the default stays inside the app tree
+     * (matches {@code reports/tuning/html} and {@code reports/tuning/archive}).
+     */
+    private String tempDirectory = "reports/tuning/duckdb-tmp";
 
     /** Per-query timeout. 0 disables. */
     private int statementTimeoutSec = 60;

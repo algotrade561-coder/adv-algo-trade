@@ -30,7 +30,7 @@ import java.util.Map;
  * Phase 1, Commit 1.
  */
 public sealed interface TuningEvent
-        permits EvaluationEvent, SignalEvent, ExecutionEvent,
+        permits EvaluationEvent, SignalEvent, ExecutionEvent, LegEvent,
                 ExitEvent, ForwardCheckpointEvent, ShadowGateEvent {
 
     /** Type tag — drives CSV file routing in the recorder. */

@@ -16,7 +16,7 @@ import com.algo.trade.marketdata.InstrumentCache;
 import com.algo.trade.marketdata.MarketDataService;
 import com.algo.trade.persistence.PositionGroupRepository;
 import com.algo.trade.strategy.StrategyConfig;
-import com.algo.trade.strategy.StrategySignalCsvRecorder;
+import com.algo.trade.strategy.PipelineSignalCapture;
 import com.algo.trade.strategy.StrategyType;
 import org.springframework.stereotype.Component;
 
@@ -50,7 +50,7 @@ public class SyntheticFuturesStrategy extends AbstractSpreadStrategy {
                                     InstrumentCache instrumentCache,
                                     MarketDataService marketDataService,
                                     ExecutionEngine executionEngine,
-                                    StrategySignalCsvRecorder signalRecorder,
+                                    PipelineSignalCapture signalRecorder,
                                     EmaIndicator emaIndicator,
                                     AtrIndicator atrIndicator,
                                     PositionGroupRepository positionGroupRepository) {

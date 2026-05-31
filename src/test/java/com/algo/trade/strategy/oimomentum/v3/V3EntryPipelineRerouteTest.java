@@ -40,7 +40,6 @@ class V3EntryPipelineRerouteTest {
     private ConvictionSizer sizer;
     private MarketContextService ctx;
     private RegimeClassifier regimeClassifier;
-    private V3DecisionRecorder recorder;
     private OIMomentumConfig oiConfig;
     private ExpiryCalendar expiryCalendar;
 
@@ -55,10 +54,9 @@ class V3EntryPipelineRerouteTest {
         expiryCalendar = Mockito.mock(ExpiryCalendar.class);
         Mockito.when(expiryCalendar.isExpiryDay(Mockito.any())).thenReturn(false);
         regimeClassifier = new RegimeClassifier(expiryCalendar);
-        recorder = Mockito.mock(V3DecisionRecorder.class);
         oiConfig = new OIMomentumConfig();
         pipeline = new V3EntryPipeline(regimeClassifier, ctx, analyzer, gates,
-                picker, sizer, recorder, oiConfig);
+                picker, sizer, oiConfig);
     }
 
     @AfterEach

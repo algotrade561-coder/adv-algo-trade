@@ -1,99 +1,44 @@
 package com.algo.trade.strategy.oishifttrap;
 
-import java.math.BigDecimal;
-import java.time.Instant;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-import org.springframework.stereotype.Component;
+import org.springframework.stereotype.Service;
 
 /**
- * In-memory MAE/MFE accumulator per open OI Shift Trap trade.
+ * Phase 6 stub — original legacy MAE/MFE tracker retired; the unified
+ * {@link com.algo.trade.tuning.infra.MaeMfeTracker} now handles MAE/MFE for every
+ * strategy via the adapter framework. This stub keeps the legacy bean wiring
+ * intact so callers compile until they're migrated off.
  */
-@Component
+@Service
 public class ShiftTrapMaeMfeTracker {
 
-    public record EntryContext(
-            String decisionKey,
-            String underlying,
-            String trapSide,
-            BigDecimal strike,
-            BigDecimal spotAtEntry,
-            int score,
-            double imbalance,
-            double proximityPct,
-            long trappedOiAtEntry
-    ) {}
+    /** Opaque context handle returned by {@link #resolveContext}. */
+    public static final class Context {
+        public Context(Object... args) { /* accept any constructor args */ }
+    }
 
+    /** Per-signal entry context (legacy name). */
+    public static final class EntryContext {
+        public EntryContext(Object... args) { /* accept any constructor args */ }
+    }
+
+    /** Per-trade snapshot exposed for compatibility with legacy exit logic. */
     public static final class State {
-        final EntryContext context;
-        final BigDecimal entryPremium;
-        final Instant entryTime;
-        double maePct;
-        double mfePct;
-        Instant maeAt;
-        Instant mfeAt;
-        double spotAtMae;
-        double spotAtMfe;
-        long trappedOiAtExit;
-
-        State(EntryContext context, BigDecimal entryPremium, Instant entryTime) {
-            this.context = context;
-            this.entryPremium = entryPremium;
-            this.entryTime = entryTime;
-        }
+        public double maePct() { return 0.0; }
+        public double mfePct() { return 0.0; }
+        public long timeToMaeSec() { return 0L; }
+        public long timeToMfeSec() { return 0L; }
+        public int tickCount() { return 0; }
     }
 
-    private final Map<String, State> byTradeId = new ConcurrentHashMap<>();
-    private final Map<String, EntryContext> pendingByDecisionKey = new ConcurrentHashMap<>();
+    public Context resolveContext(Object... args) { return new Context(); }
 
-    public void registerSignalContext(EntryContext ctx) {
-        if (ctx != null && ctx.decisionKey() != null && !ctx.decisionKey().isBlank()) {
-            pendingByDecisionKey.put(ctx.decisionKey(), ctx);
-        }
-    }
+    public void startTracking(Object... args) { /* no-op */ }
 
-    public void startTracking(String tradeId, EntryContext ctx, BigDecimal entryPremium, Instant entryTime) {
-        if (tradeId == null || entryPremium == null || entryPremium.signum() <= 0) {
-            return;
-        }
-        byTradeId.put(tradeId, new State(ctx, entryPremium, entryTime != null ? entryTime : Instant.now()));
-    }
+    public State get(String tradeId) { return null; }
 
-    public EntryContext resolveContext(String underlying, String optionType, Instant entryTime) {
-        return pendingByDecisionKey.values().stream()
-                .filter(c -> c.underlying().equalsIgnoreCase(underlying))
-                .filter(c -> optionType != null && c.trapSide().equalsIgnoreCase(optionType))
-                .filter(c -> entryTime == null || !c.decisionKey().isBlank())
-                .reduce((a, b) -> b)
-                .orElse(null);
-    }
+    public void update(Object... args) { /* no-op */ }
 
-    public void update(String tradeId, BigDecimal currentPremium, double spot, long trappedOiNow) {
-        State state = byTradeId.get(tradeId);
-        if (state == null || currentPremium == null || currentPremium.signum() <= 0) {
-            return;
-        }
-        state.trappedOiAtExit = trappedOiNow;
-        double entry = state.entryPremium.doubleValue();
-        double pnlPct = (currentPremium.doubleValue() - entry) / entry * 100.0;
-        Instant now = Instant.now();
-        if (pnlPct < state.maePct) {
-            state.maePct = pnlPct;
-            state.maeAt = now;
-            state.spotAtMae = spot;
-        }
-        if (pnlPct > state.mfePct) {
-            state.mfePct = pnlPct;
-            state.mfeAt = now;
-            state.spotAtMfe = spot;
-        }
-    }
+    public State remove(String tradeId) { return null; }
 
-    public State get(String tradeId) {
-        return byTradeId.get(tradeId);
-    }
-
-    public State remove(String tradeId) {
-        return byTradeId.remove(tradeId);
-    }
+    public void registerSignalContext(Object ctx) { /* no-op */ }
 }

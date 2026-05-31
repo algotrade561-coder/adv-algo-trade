@@ -14,7 +14,7 @@ import java.util.Optional;
 /**
  * Unified context for recording a signal evaluation to entry-signals.csv.
  * Carries all 38+ ML features plus strategy diagnostics for every strategy type.
- * Used by the single unified recording method in StrategySignalCsvRecorder.
+ * Used by the single unified recording method in PipelineSignalCapture.
  */
 public record SignalRecordContext(
         // Identity

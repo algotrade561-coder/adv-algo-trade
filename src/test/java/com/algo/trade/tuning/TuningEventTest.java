@@ -179,6 +179,7 @@ class TuningEventTest {
                 case ExitEvent x -> "EXIT";
                 case ForwardCheckpointEvent x -> "FORWARD_CHECKPOINT";
                 case ShadowGateEvent x -> "SHADOW_GATE";
+                case LegEvent x -> "LEG";
             };
             assertThat(tag).isEqualTo(e.type().name());
         }

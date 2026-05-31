@@ -151,7 +151,9 @@ class TuningEventStoreTest {
         assertThat(files).hasSize(2);
 
         // DuckDB can read multiple CSVs via a glob pattern; we point at the per-strategy dir.
-        String glob = tempDir.resolve("*/oi_momentum/signal.csv").toString();
+        // Build glob as a raw string — Path.resolve rejects '*' as illegal on Windows.
+        // DuckDB accepts forward slashes cross-platform.
+        String glob = tempDir.toString().replace('\\', '/') + "/*/oi_momentum/signal.csv";
         List<Map<String, Object>> rows = store.query(
                 "SELECT COUNT(*) AS n, AVG(score) AS avg_score FROM read_csv_auto(?, header=true)",
                 glob);

@@ -8,7 +8,7 @@ import com.algo.trade.indicator.VolumeSpikeDetector;
 import com.algo.trade.indicator.VwapIndicator;
 import com.algo.trade.strategy.OptionChainAnalyzer;
 import com.algo.trade.strategy.RuleBasedOptionsStrategy;
-import com.algo.trade.strategy.StrategySignalCsvRecorder;
+import com.algo.trade.strategy.PipelineSignalCapture;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -61,7 +61,7 @@ public class StrategyConfiguration {
             VolatilityFilter volatilityFilter,
             OiChangeTracker oiChangeTracker,
             OptionChainAnalyzer optionChainAnalyzer,
-            StrategySignalCsvRecorder signalCsvRecorder,
+            PipelineSignalCapture signalCsvRecorder,
             com.algo.trade.underlying.UnderlyingConfigService underlyingConfigService,
             com.algo.trade.strategy.oimomentum.OperatorFrameworkService operatorFrameworkService
     ) {

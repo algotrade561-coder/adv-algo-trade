@@ -54,6 +54,25 @@ import org.springframework.stereotype.Component;
 @Component
 public class ParquetRollerService {
 
+    /**
+     * Snapshot of the most-recent {@link #scheduledRoll()} run. Read by
+     * {@link com.algo.trade.controller.TuningHealthController} to power the
+     * "Last roller run" line in the dashboard health widget.
+     */
+    public record LastRun(java.time.Instant at,
+                          int datesProcessed,
+                          int filesRolled,
+                          int retentionPurged,
+                          boolean success,
+                          String errorMessage) {}
+
+    private volatile LastRun lastRun;
+
+    public LastRun lastRun() {
+        return lastRun;
+    }
+
+
     private static final Logger log = LoggerFactory.getLogger(ParquetRollerService.class);
 
     private final Path eventsBaseDir;
@@ -102,6 +121,7 @@ public class ParquetRollerService {
             return;
         }
         LocalDate today = clock.todayIst();
+        java.time.Instant startedAt = java.time.Instant.now();
         try {
             int rolled = 0;
             List<LocalDate> dates = listPastDateDirs(today);
@@ -112,8 +132,10 @@ public class ParquetRollerService {
             int purged = enforceRetention(today);
             log.info("[ParquetRoller] post-market roll done: {} dates processed, {} files rolled, {} purged for retention",
                     dates.size(), rolled, purged);
+            lastRun = new LastRun(startedAt, dates.size(), rolled, purged, true, null);
         } catch (Exception ex) {
             log.warn("[ParquetRoller] post-market roll failed (non-fatal): {}", ex.getMessage());
+            lastRun = new LastRun(startedAt, 0, 0, 0, false, ex.getMessage());
         }
     }
 

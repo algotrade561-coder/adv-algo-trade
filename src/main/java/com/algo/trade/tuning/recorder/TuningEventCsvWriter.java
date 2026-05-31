@@ -1,13 +1,6 @@
 package com.algo.trade.tuning.recorder;
 
-import com.algo.trade.tuning.EvaluationEvent;
-import com.algo.trade.tuning.ExecutionEvent;
-import com.algo.trade.tuning.ExitEvent;
-import com.algo.trade.tuning.ForwardCheckpointEvent;
-import com.algo.trade.tuning.ShadowGateEvent;
-import com.algo.trade.tuning.SignalEvent;
-import com.algo.trade.tuning.TuningEvent;
-import com.algo.trade.tuning.TuningEventType;
+import com.algo.trade.tuning.*;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
@@ -65,6 +58,9 @@ public class TuningEventCsvWriter {
                     + "fwdMfe30mPct,fwdMae30mPct,attr_extra\n";
             case SHADOW_GATE -> "eventTime,recordedAtDeltaUs,index,correlationKey,"
                     + "gateName,passed,bandValue,attr_extra\n";
+            case LEG -> "eventTime,recordedAtDeltaUs,index,correlationKey,"
+                    + "legNumber,legSide,legOptionType,legStrike,legInstrumentKey,stage,"
+                    + "requestedQty,filledQty,avgFillPrice,attr_extra\n";
         };
     }
 
@@ -76,7 +72,28 @@ public class TuningEventCsvWriter {
             case ExitEvent e -> formatExit(e);
             case ForwardCheckpointEvent e -> formatForward(e);
             case ShadowGateEvent e -> formatShadow(e);
+            case LegEvent e -> formatLeg(e);
         };
+    }
+
+    /** Phase 5 — LegEvent serializer. Matches the headerFor(LEG) column order. */
+    private String formatLeg(LegEvent e) {
+        return join(
+                e.eventTime().toString(),
+                deltaUs(e.eventTime(), e.recordedAt()),
+                e.index().name(),
+                csv(e.correlationKey()),
+                Integer.toString(e.legNumber()),
+                csv(e.legSide()),
+                e.legOptionType() != null ? e.legOptionType().name() : "",
+                Integer.toString(e.legStrike()),
+                csv(e.legInstrumentKey()),
+                csv(e.stage()),
+                Integer.toString(e.requestedQty()),
+                Integer.toString(e.filledQty()),
+                e.avgFillPrice() != null ? e.avgFillPrice().toPlainString() : "0",
+                json(e.attributes())
+        ) + "\n";
     }
 
     // ── Per-type serializers ──────────────────────────────────────────────

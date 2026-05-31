@@ -7,10 +7,10 @@ import java.util.List;
 /**
  * Spot velocity and acceleration from underlying candle history at signal time.
  */
-final class ShiftTrapVelocityCalculator {
+public final class ShiftTrapVelocityCalculator {
 
-    record Velocity(double spotVelocity1m, double spotVelocity3m, double spotAcceleration) {
-        static Velocity zero() {
+    public record Velocity(double spotVelocity1m, double spotVelocity3m, double spotAcceleration) {
+            public static Velocity zero() {
             return new Velocity(0, 0, 0);
         }
     }
@@ -18,7 +18,7 @@ final class ShiftTrapVelocityCalculator {
     private ShiftTrapVelocityCalculator() {
     }
 
-    static Velocity compute(List<Candle> candles, BigDecimal spot) {
+    public static Velocity compute(List<Candle> candles, BigDecimal spot) {
         if (candles == null || candles.size() < 2 || spot == null || spot.signum() <= 0) {
             return Velocity.zero();
         }

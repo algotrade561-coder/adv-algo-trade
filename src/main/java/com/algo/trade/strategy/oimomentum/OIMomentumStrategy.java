@@ -10,8 +10,6 @@ import com.algo.trade.marketdata.MarketDataService;
 import com.algo.trade.persistence.TradeEntity;
 import com.algo.trade.persistence.TradeRepository;
 import com.algo.trade.risk.MarketGuard;
-import com.algo.trade.strategy.SignalRecordContext;
-import com.algo.trade.strategy.StrategySignalCsvRecorder;
 import com.algo.trade.strategy.StrategyType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -59,9 +57,6 @@ public class OIMomentumStrategy {
     private final TradeRepository tradeRepository;
     private final MarketGuard marketGuard;
     private final ExpiryCalendar expiryCalendar;
-    private final StrategySignalCsvRecorder signalCsvRecorder;
-    private final OiMomentumTuneRecorder tuneRecorder;
-
     /** All candidate indices for OI Momentum — actual enablement controlled via UNDERLYING_CONFIGS table (UI toggle). */
     private static final java.util.List<IndexType> CANDIDATE_INDICES = java.util.List.of(
             IndexType.NIFTY, IndexType.BANKNIFTY, IndexType.SENSEX);
@@ -207,12 +202,30 @@ public class OIMomentumStrategy {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.algo.trade.config.GlobalConfigService globalConfigService;
 
-    /** Legacy detection CSV recorder — captures every momentum evaluation cycle. Optional. */
+    /**
+     * Phase 6: unified tuning pipeline is now the sole capture path. When the
+     * recorder + adapter beans are present, OI Momentum evaluations / signals /
+     * exits emit events to {@code tuning/<event>/...} CSVs. Capture is gated on
+     * {@code tuning_capture_config.OI_MOMENTUM} → no events land on disk until
+     * the operator flips the toggle via the UI. (Replaces the legacy
+     * {@code LegacyDetectionRecorder}, {@code SpikeEpisodeRecorder} and
+     * {@code OiMomentumTuneRecorder} CSV recorders deleted in Phase 6.)
+     */
     @org.springframework.beans.factory.annotation.Autowired(required = false)
-    private LegacyDetectionRecorder legacyRecorder;
+    private com.algo.trade.tuning.recorder.TuningEventRecorder tuningEventRecorder;
 
     @org.springframework.beans.factory.annotation.Autowired(required = false)
-    private SpikeEpisodeRecorder spikeEpisodeRecorder;
+    private com.algo.trade.tuning.adapter.strategies.OiMomentumCaptureAdapter oiMomentumCaptureAdapter;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.tuning.infra.MaeMfeTracker maeMfeTracker;
+
+    /**
+     * Phase 2 dual-write: episode aggregator for evaluation rejects. Groups same
+     * {@code (index, blocker)} ticks within 60s into one EvaluationEvent row.
+     */
+    private final com.algo.trade.tuning.infra.EpisodeAggregator<IndexType, String, OiMomentumEntryDiagnostics>
+            evaluationAggregator = new com.algo.trade.tuning.infra.EpisodeAggregator<>(60);
 
     /**
      * CASE 4 watch-list state (P1-3): when CASE 4 (OI conflicts momentum) fires, we
@@ -237,9 +250,7 @@ public class OIMomentumStrategy {
                                TradingStateService tradingStateService,
                                TradeRepository tradeRepository,
                                MarketGuard marketGuard,
-                               ExpiryCalendar expiryCalendar,
-                               StrategySignalCsvRecorder signalCsvRecorder,
-                               OiMomentumTuneRecorder tuneRecorder) {
+                               ExpiryCalendar expiryCalendar) {
         this.config = config;
         this.momentumDetector = momentumDetector;
         this.liveInstrumentCache = liveInstrumentCache;
@@ -250,8 +261,6 @@ public class OIMomentumStrategy {
         this.tradeRepository = tradeRepository;
         this.marketGuard = marketGuard;
         this.expiryCalendar = expiryCalendar;
-        this.signalCsvRecorder = signalCsvRecorder;
-        this.tuneRecorder = tuneRecorder;
     }
 
     @jakarta.annotation.PostConstruct
@@ -727,25 +736,9 @@ public class OIMomentumStrategy {
                         "CASE0_OI_LED opScore=%d range20m=%.3f%% pcrSlope=%+.3f",
                         case0Decision.opScore(), case0Decision.rangePct(),
                         case0Decision.pcrSlope5Min());
-                recordLegacyDetection(indexType, com.algo.trade.strategy.oimomentum.v3.TimeOfDayMode.classify(LocalTime.now(IST)),
-                        case0Spot, case0Atm, case0Decision,
-                        case0Oi[0], case0Oi[1], case0OiAvail, case0OiDir,
-                        case0Pcr, case0PcrDir,
-                        0, "CASE0_OI_LED", 0, 0,
-                        "CASE0_LIVE", "ENTER", case0Reason, 0);
                 enter(indexType, state, case0Decision.direction(), case0Reason, case0Spot, case0Diag);
                 return;
             }
-        } else if (case0Decision.fires()) {
-            // Shadow-mode CASE 0 fire — record so end-of-day analysis can see "what we would
-            // have entered" without actually entering.
-            double s0 = momentumDetector.getSpot(indexType);
-            int a0 = s0 > 0 ? indexType.roundToATM(s0) : 0;
-            recordLegacyDetection(indexType, com.algo.trade.strategy.oimomentum.v3.TimeOfDayMode.classify(LocalTime.now(IST)),
-                    s0, a0, case0Decision,
-                    0, 0, false, 0, liveInstrumentCache.getRealtimePcr(indexType), 0,
-                    0, "CASE0_OI_LED", 0, 0,
-                    "CASE0_SHADOW", "SKIP", "case0_shadow_mode", 0);
         }
 
         // ── R2: Range-edge fade (29 May 2026 — data-validated for range-bound markets) ──
@@ -786,27 +779,9 @@ public class OIMomentumStrategy {
                         fadeDecision.direction(), fadeDecision.positionInRange(),
                         fadeDecision.range30mPct(), fadeDecision.pcr(),
                         fadeDecision.thetaCostPct());
-                recordLegacyDetection(indexType,
-                        com.algo.trade.strategy.oimomentum.v3.TimeOfDayMode.classify(LocalTime.now(IST)),
-                        fadeSpot, fadeAtm, case0Decision,
-                        fadeOi[0], fadeOi[1], fadeOiAvail, fadeOiDir,
-                        fadePcr, fadePcrDir,
-                        fadeDecision.direction(), "RANGE_EDGE_FADE", 0.0,
-                        0, "RANGE_EDGE_FADE_LIVE", "ENTER", fadeReason, 0);
                 enter(indexType, state, fadeDecision.direction(), fadeReason, fadeSpot, fadeDiag);
                 return;
             }
-        } else if (fadeDecision.fires()) {
-            // Shadow-mode fade — record without entering
-            double fs = momentumDetector.getSpot(indexType);
-            int fa = fs > 0 ? indexType.roundToATM(fs) : 0;
-            recordLegacyDetection(indexType,
-                    com.algo.trade.strategy.oimomentum.v3.TimeOfDayMode.classify(LocalTime.now(IST)),
-                    fs, fa, case0Decision,
-                    0L, 0L, false, 0,
-                    liveInstrumentCache.getRealtimePcr(indexType), 0,
-                    fadeDecision.direction(), "RANGE_EDGE_FADE", 0.0,
-                    0, "RANGE_EDGE_FADE_SHADOW", "SKIP", "v3_binding_blocks_fade", 0);
         }
 
         // ── Event Spike Detection (highest priority) ──
@@ -829,14 +804,8 @@ public class OIMomentumStrategy {
                             expiryCalendar.isExpiryDay(indexType), paperTrading(indexType));
                     state.lastRejectReason = "spike_dedupe";
                     state.lastRejectSampleTime = recordReject(indexType, state, "spike_dedupe", partial);
-                    if (spikeEpisodeRecorder != null) {
-                        spikeEpisodeRecorder.record(indexType, spike, false, Instant.now());
-                    }
                 } else {
                     state.lastSpikeEntryTime = Instant.now();
-                    if (spikeEpisodeRecorder != null) {
-                        spikeEpisodeRecorder.record(indexType, spike, true, Instant.now());
-                    }
                     log.info("[OIMomentum][{}] EVENT SPIKE detected: direction={}, magnitude={}%, spot={}",
                             indexType, spike.direction(), spike.magnitude(), spike.spotPrice());
                     int atm = indexType.roundToATM(spike.spotPrice());
@@ -919,10 +888,6 @@ public class OIMomentumStrategy {
                 rejectedCount.incrementAndGet();
                 state.lastRejectReason = todSkip;
                 state.lastRejectSampleTime = recordReject(indexType, state, todSkip, diag);
-                recordLegacyDetection(indexType, todMode, spot, atm, case0Decision,
-                        ceOiChange, peOiChange, oiAvailable, oiDirection,
-                        pcr, pcrDirection, momentum.direction(), momentum.type(), momentum.magnitude(),
-                        0, entryCase, "SKIP", todSkip, 0);
                 return;
             }
         }
@@ -964,11 +929,6 @@ public class OIMomentumStrategy {
                     String reason = String.format("M:%s OI:%d PCR:%.2f(%d) case=%s bias=%.0f ticks=%d%s",
                             momentum.type(), oiDirection, pcr, pcrDirection, entryCase,
                             bias.score(), config.getBiasConfirmationTicks(), operatorTag);
-                    // Record before enter() so we always have a row even if enter() throws
-                    recordLegacyDetection(indexType, todMode, spot, atm, case0Decision,
-                            ceOiChange, peOiChange, oiAvailable, oiDirection,
-                            pcr, pcrDirection, momentum.direction(), momentum.type(), momentum.magnitude(),
-                            (int) bias.score(), entryCase, "ENTER", reason, 0);
                     // CASE 4 watchlist consumed: this aligned entry just took the bonus
                     clearCase4Watch(indexType, eval.direction());
                     enter(indexType, state, eval.direction(), reason, spot, diag);
@@ -988,10 +948,6 @@ public class OIMomentumStrategy {
                 state.lastRejectReason = rejectReason;
                 state.lastRejectSampleTime = recordReject(indexType, state, rejectReason,
                         diag.withScores(0, (int) bias.score()));
-                recordLegacyDetection(indexType, todMode, spot, atm, case0Decision,
-                        ceOiChange, peOiChange, oiAvailable, oiDirection,
-                        pcr, pcrDirection, momentum.direction(), momentum.type(), momentum.magnitude(),
-                        (int) bias.score(), entryCase, "SKIP", rejectReason, 0);
             }
             // ──────────────────────────────────────────────────────────────
         } else {
@@ -1012,10 +968,6 @@ public class OIMomentumStrategy {
                 log.debug("[OIMomentum][{}] CASE4 watchlist set: oiDir={} (TTL=20m)",
                         indexType, oiDirection);
             }
-            recordLegacyDetection(indexType, todMode, spot, atm, case0Decision,
-                    ceOiChange, peOiChange, oiAvailable, oiDirection,
-                    pcr, pcrDirection, momentum.direction(), momentum.type(), momentum.magnitude(),
-                    0, entryCase, "SKIP", rejectReason, 0);
         }
     }
 
@@ -1178,65 +1130,62 @@ public class OIMomentumStrategy {
         return (e.oiDirection == momentumDir) ? 5 : 0;
     }
 
-    /**
-     * Build a {@link LegacyDetectionRecord} from the current detection state and
-     * hand it to {@link LegacyDetectionRecorder}. Best-effort: failures are swallowed.
-     */
-    private void recordLegacyDetection(IndexType ix,
-                                       com.algo.trade.strategy.oimomentum.v3.TimeOfDayMode mode,
-                                       double spot, int atm,
-                                       Case0OiLedDetector.Decision case0,
-                                       long ceOiChange, long peOiChange,
-                                       boolean oiAvail, int oiDir,
-                                       double pcr, int pcrDir,
-                                       int momentumDir, String momentumType,
-                                       double momentumMagPct,
-                                       int biasScore, String matrixCase,
-                                       String finalDecision, String finalReason,
-                                       int finalLots) {
-        if (legacyRecorder == null) return;
-        try {
-            double pcrSlope = 0.0;
-            try {
-                pcrSlope = (v3MarketContext != null) ? v3MarketContext.pcrSlope5Min(ix) : 0.0;
-            } catch (Exception ignored) {}
-            Case4WatchEntry watch = case4Watch.get(ix);
-            boolean watchActive = watch != null
-                    && Duration.between(watch.atTime, Instant.now()).compareTo(CASE4_WATCH_TTL) <= 0;
-
-            OperatorAccumulationDetector.OperatorSignal opSig = (operatorFrameworkService != null)
-                    ? operatorFrameworkService.getOperatorSignal(ix) : null;
-            int opScore = opSig != null ? opSig.getScore() : 0;
-            int opDir = opSig != null ? opSig.getDirection() : 0;
-
-            double vix = 0;
-            try { vix = marketGuard.getCurrentVix(); } catch (Exception ignored) {}
-
-            LegacyDetectionRecord r = new LegacyDetectionRecord(
-                    Instant.now(), ix, spot, atm, vix, mode,
-                    opScore, opDir,
-                    case0 != null ? case0.rangePct() : 0,
-                    pcr, pcrSlope, pcrDir,
-                    ceOiChange, peOiChange, oiAvail, oiDir,
-                    momentumDir, momentumType, momentumMagPct,
-                    biasScore, matrixCase, config.getBiasConfidenceThreshold(),
-                    case0 != null && case0.fires(),
-                    case0 != null ? case0.direction() : 0,
-                    case0 != null && !case0.fires() ? case0.reason() : "",
-                    watchActive, watchActive ? watch.atTime : null,
-                    finalDecision, finalReason, finalLots);
-            legacyRecorder.record(r);
-        } catch (Exception ex) {
-            log.debug("[OIMomentum][{}] legacy detection record failed: {}", ix, ex.getMessage());
-        }
-    }
-
     private record EntryCaseEvaluation(int direction, String blockDetail) {}
 
     private Instant recordReject(IndexType indexType, IndexState state, String reason,
                                  OiMomentumEntryDiagnostics partial) {
         incrementRejectReason(reason);
-        return tuneRecorder.recordReject(indexType, state.lastRejectSampleTime, reason, partial);
+
+        // Phase 2 dual-write to unified tuning pipeline. Aggregator collapses repeated
+        // same-(index, blocker) ticks within 60s into one episode row; flushed episodes
+        // emit a single EvaluationEvent. Capture toggle gates actual disk writes.
+        if (tuningEventRecorder != null && oiMomentumCaptureAdapter != null) {
+            try {
+                String normalized = oiMomentumCaptureAdapter.normalizeBlocker(reason);
+                var flushed = evaluationAggregator.record(indexType, normalized, partial, Instant.now());
+                for (var row : flushed) {
+                    tuningEventRecorder.record(oiMomentumCaptureAdapter.buildEvaluationEvent(row));
+                }
+            } catch (Exception ex) {
+                log.warn("[OIMomentum] dual-write evaluation episode failed (non-fatal): {}",
+                        ex.getMessage());
+            }
+        }
+
+        if (shouldSampleReject(state.lastRejectSampleTime, reason)) {
+            return Instant.now();
+        }
+        return state.lastRejectSampleTime;
+    }
+
+    private boolean shouldSampleReject(Instant lastSampleTime, String rejectReason) {
+        if (config.isRecordEveryReject()) {
+            return true;
+        }
+        Duration interval = rejectReason != null && rejectReason.startsWith("matrix_skip:")
+                ? Duration.ofSeconds(Math.max(1, config.getMatrixRejectSampleIntervalSeconds()))
+                : Duration.ofSeconds(Math.max(1, config.getRejectSampleIntervalSeconds()));
+        Instant now = Instant.now();
+        return lastSampleTime == null || Duration.between(lastSampleTime, now).compareTo(interval) >= 0;
+    }
+
+    /**
+     * Phase 2 dual-write: periodic flush of expired evaluation episodes that haven't
+     * received a new tick within the dedup window. Fires every minute.
+     */
+    @org.springframework.scheduling.annotation.Scheduled(fixedDelay = 60_000, initialDelay = 30_000)
+    public void flushEvaluationEpisodes() {
+        if (tuningEventRecorder == null || oiMomentumCaptureAdapter == null) {
+            return;
+        }
+        try {
+            var expired = evaluationAggregator.flushExpired(Instant.now());
+            for (var row : expired) {
+                tuningEventRecorder.record(oiMomentumCaptureAdapter.buildEvaluationEvent(row));
+            }
+        } catch (Exception ex) {
+            log.debug("[OIMomentum] flush expired evaluation episodes failed: {}", ex.getMessage());
+        }
     }
 
     private void incrementRejectReason(String reason) {
@@ -2024,11 +1973,23 @@ public class OIMomentumStrategy {
                 java.util.List.of("OI_MOMENTUM[" + indexType + "]: " + reason)
         );
 
-        String decisionKey = tuneRecorder.recordBuy(decision, diagnostics, entryQuote, atm,
-                spreadPct(entryQuote), lotSize);
+        String decisionKey = com.algo.trade.reporting.SignalDecisionKey.from(decision);
         state.lastEntryDecisionKey = decisionKey;
         state.lastEntryDiagnostics = diagnostics;
-        recordOiBuySignal(indexType, decision, entryQuote, instrumentKey, atm, spreadPct(entryQuote), reason, diagnostics);
+
+        // Unified tuning pipeline. No-op when capture toggle is
+        // off (default) or when adapter/recorder beans aren't present (legacy wiring).
+        if (tuningEventRecorder != null && oiMomentumCaptureAdapter != null) {
+            try {
+                com.algo.trade.tuning.SignalEvent tuningSignal =
+                        oiMomentumCaptureAdapter.buildSignalEvent(decision, diagnostics, indexType,
+                                premium, decisionKey);
+                tuningEventRecorder.record(tuningSignal);
+            } catch (Exception ex) {
+                log.warn("[OIMomentum] dual-write to TuningEventRecorder failed (non-fatal): {}",
+                        ex.getMessage());
+            }
+        }
 
         if (paperMode) {
             var oiConfig = getCachedConfig(indexType);
@@ -2061,45 +2022,37 @@ public class OIMomentumStrategy {
             enteredCount.incrementAndGet();
             log.info("[OIMomentum][{}] ENTRY: direction={}, instrument={}, premium=₹{}, reason={}, trades={}",
                     indexType, direction > 0 ? "BULLISH" : "BEARISH", instrumentKey, premium, reason, state.tradesToday.get());
+
+            // Phase 2 dual-write: register the trade with MaeMfeTracker so the
+            // tracker's self-scheduled tick starts accumulating MAE/MFE. No-op when
+            // tracker bean isn't present (tests / legacy wirings).
+            if (maeMfeTracker != null) {
+                try {
+                    maeMfeTracker.onEntry(new com.algo.trade.tuning.infra.MaeMfeTracker.EntryContext(
+                            state.activeTradeId,
+                            com.algo.trade.strategy.StrategyType.OI_MOMENTUM,
+                            indexType,
+                            state.lastEntryDecisionKey,
+                            com.algo.trade.tuning.infra.MaeMfeTracker.Direction.LONG,
+                            instrumentKey,
+                            atm,
+                            direction > 0 ? com.algo.trade.domain.OptionType.CE
+                                          : com.algo.trade.domain.OptionType.PE,
+                            premium,
+                            spot,
+                            state.lastEntryTime));
+                } catch (Exception ex) {
+                    log.warn("[OIMomentum] MaeMfeTracker.onEntry failed (non-fatal): {}",
+                            ex.getMessage());
+                }
+            }
+
             if (telegramAlertService != null) {
                 telegramAlertService.systemAlert(String.format(
                         "🎯 OIMomentum[%s] Entry: %s %s | ₹%.2f | %s | Trade #%d",
                         indexType, direction > 0 ? "BUY CE" : "BUY PE", instrumentKey,
                         premium.doubleValue(), reason, state.tradesToday.get()));
             }
-        }
-    }
-
-    private void recordOiBuySignal(IndexType indexType,
-                                   StrategyDecision decision,
-                                   Quote entryQuote,
-                                   String instrumentKey,
-                                   int atm,
-                                   Double bidAskSpread,
-                                   String reason,
-                                   OiMomentumEntryDiagnostics diagnostics) {
-        try {
-            UnderlyingSymbol underlying = UnderlyingSymbol.valueOf(indexType.name());
-            signalCsvRecorder.recordUnified(SignalRecordContext.builder()
-                    .strategyType(StrategyType.OI_MOMENTUM.name())
-                    .underlying(underlying)
-                    .decision(decision)
-                    .selectedOptionQuote(entryQuote)
-                    .selectedInstrumentKey(instrumentKey)
-                    .selectedStrike(BigDecimal.valueOf(atm))
-                    .breakoutPassed(true)
-                    .oiPassed(diagnostics.oiAvailable())
-                    .ivPassed(true)
-                    .liquidityPassed(true)
-                    .timePassed(true)
-                    .bidAskSpread(bidAskSpread)
-                    .vixLevel(diagnostics.vix())
-                    .daysToExpiry(diagnostics.daysToExpiry())
-                    .executed(true)
-                    .executionStage("SIGNAL_EMITTED")
-                    .build());
-        } catch (Exception ex) {
-            log.warn("[OIMomentum] Failed to record BUY signal for tuning: {}", ex.getMessage());
         }
     }
 
@@ -2141,12 +2094,30 @@ public class OIMomentumStrategy {
             log.debug("[OIMomentum][{}] anti-pyramid record failed: {}", indexType, ex.getMessage());
         }
         try {
-            tuneRecorder.recordExit(state.lastEntryDecisionKey, indexType, trade, currentPrice, reason,
-                    state.lastEntryDiagnostics, reversal);
             executionEngine.closeTrade(trade.getTradeId(), BigDecimal.valueOf(currentPrice), reason);
             double pnl = (currentPrice - trade.getEntryPrice().doubleValue()) * trade.getQuantity();
             log.info("[OIMomentum][{}] EXIT: tradeId={}, reason={}, pnl=₹{}",
                     indexType, trade.getTradeId(), reason, pnl);
+
+            // Phase 2 dual-write: pull the MAE/MFE snapshot from the tracker and emit
+            // an ExitEvent. Tracker.onExit also removes the trade from the active set.
+            if (tuningEventRecorder != null && oiMomentumCaptureAdapter != null
+                    && maeMfeTracker != null) {
+                try {
+                    var snapshot = maeMfeTracker.onExit(trade.getTradeId()).orElse(null);
+                    com.algo.trade.tuning.ExitEvent exitEvent = oiMomentumCaptureAdapter.buildExitEvent(
+                            indexType, trade, snapshot,
+                            state.lastEntryDecisionKey,
+                            BigDecimal.valueOf(currentPrice),
+                            reason,
+                            reversal);
+                    tuningEventRecorder.record(exitEvent);
+                } catch (Exception ex) {
+                    log.warn("[OIMomentum] dual-write ExitEvent failed (non-fatal): {}",
+                            ex.getMessage());
+                }
+            }
+
             if (telegramAlertService != null) {
                 telegramAlertService.systemAlert(String.format(
                         "📤 OIMomentum[%s] Exit: %s | ₹%.2f → ₹%.2f | P&L ₹%.0f | %s",

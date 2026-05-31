@@ -158,10 +158,11 @@ class TuningEventRecorderTest {
         Path file = tempDir.resolve("2026-06-01").resolve("oi_momentum").resolve("signal.csv");
         String row = Files.readAllLines(file).get(1);
 
-        // The attr_extra column is CSV-quoted JSON; it contains the keys.
-        assertThat(row).contains("\"score\":72");
-        assertThat(row).contains("\"case\":\"CASE2_M+PCR\"");
-        assertThat(row).contains("\"biasScore\":38");
+        // The attr_extra column is CSV-quoted JSON — RFC 4180 doubles every embedded
+        // "; so JSON {"score":72} surfaces in the row as ""score"":72.
+        assertThat(row).contains("\"\"score\"\":72");
+        assertThat(row).contains("\"\"case\"\":\"\"CASE2_M+PCR\"\"");
+        assertThat(row).contains("\"\"biasScore\"\":38");
     }
 
     @Test

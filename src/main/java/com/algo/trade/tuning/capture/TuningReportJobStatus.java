@@ -1,23 +1,20 @@
 package com.algo.trade.tuning.capture;
 
-/**
- * Lifecycle states for a tuning report job. The forked analyzer JVM transitions
- * jobs through these states; the trading JVM observes for UI display.
- */
+/** Lifecycle states for a tuning report job. */
 public enum TuningReportJobStatus {
 
-    /** Submitted via UI / REST; not yet picked up by the runner. */
+    /** Submitted via UI / REST; not yet picked up by the @Async runner. */
     QUEUED,
 
-    /** Forked analyzer JVM started; report generation in progress. */
+    /** Analyzer task running; report generation in progress. */
     RUNNING,
 
     /** Report HTML written to disk; success. */
     COMPLETE,
 
-    /** Analyzer exited non-zero or a section threw an uncaught exception. */
+    /** A section threw an uncaught exception. */
     FAILED,
 
-    /** Parent process killed the forked JVM (e.g. exceeded total wall-clock cap). */
+    /** Job was forcibly cancelled (reserved for future operator override). */
     KILLED
 }

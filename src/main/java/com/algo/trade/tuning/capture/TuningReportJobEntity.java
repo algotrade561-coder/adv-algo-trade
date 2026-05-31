@@ -11,15 +11,13 @@ import java.time.Instant;
 import java.time.LocalDate;
 
 /**
- * Metadata for a single tuning-report generation job. The trading JVM owns this row;
- * the forked analyzer JVM reads it via command-line args (it does not connect to H2).
+ * Metadata for a single tuning-report generation job. Persisted so the UI can poll
+ * job status and recent runs survive a JVM restart.
  *
  * <p>Lifecycle: created with {@link TuningReportJobStatus#QUEUED} when the user clicks
- * Generate. Updated to {@link TuningReportJobStatus#RUNNING} when the parent process
- * spawns the forked JVM. Updated to {@link TuningReportJobStatus#COMPLETE} or
- * {@link TuningReportJobStatus#FAILED} when the child exits. The 15-minute total
- * wall-clock cap is enforced by the parent, which can flip the status to
- * {@link TuningReportJobStatus#KILLED}.</p>
+ * Generate. Updated to {@link TuningReportJobStatus#RUNNING} when the {@code @Async}
+ * analyzer task picks the job up. Updated to {@link TuningReportJobStatus#COMPLETE}
+ * or {@link TuningReportJobStatus#FAILED} when the task finishes.</p>
  */
 @Entity
 @Table(name = "tuning_report_jobs", indexes = {
