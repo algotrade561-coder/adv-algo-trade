@@ -392,6 +392,13 @@ signal-tuning:
   scheduler-enabled: false
   block-during-market-hours: true
   load-forward-candles: false
+
+# ── Unified tuning capture (Phase 1) ───────────────────────────────────────
+# See important/SIGNAL_CAPTURE_TUNING_REDESIGN.md and SIGNAL_TUNING_IMPLEMENTATION_PLAN.md.
+# All per-strategy capture is OFF by default; flip via /settings/tuning-capture UI.
+tuning:
+  capture:
+    poll-interval-sec: 30
   # Interim OOM mitigation: stop writing entry-candles.csv (753 MB / 4.18 M rows).
   # OI Momentum + OI Shift Trap have dedicated forward-return capture; other strategies
   # fire < 30 BUYs/period and their 45m MFE/MAE column will be empty until redesign lands.

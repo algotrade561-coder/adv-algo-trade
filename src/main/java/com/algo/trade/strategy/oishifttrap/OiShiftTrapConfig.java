@@ -1,13 +1,16 @@
 package com.algo.trade.strategy.oishifttrap;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
-import org.springframework.stereotype.Component;
 
 /**
  * Capture instrumentation defaults for OI Shift Trap data-week tuning.
  * All flags default ON — deploy jar and restart, no UI toggle required.
+ *
+ * <p>Registered via {@code @EnableConfigurationProperties} on
+ * {@code AdvancedAlgoTradeApplication}. Do <em>not</em> add {@code @Component} —
+ * that creates a duplicate bean alongside the @EnableConfigurationProperties
+ * registration and breaks startup.</p>
  */
-@Component
 @ConfigurationProperties(prefix = "oi-shift-trap")
 public class OiShiftTrapConfig {
 
