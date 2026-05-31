@@ -84,12 +84,15 @@ public class StrategySignalCsvRecorder {
     private final TradingProperties properties;
     private final StrategyConfigService strategyConfigService;
     private final com.algo.trade.indicator.OIPriceActionFilter oiPriceActionFilter;
+    private final com.algo.trade.reporting.SignalTuningProperties tuningProperties;
 
     public StrategySignalCsvRecorder(TradingProperties properties, StrategyConfigService strategyConfigService,
-                                      com.algo.trade.indicator.OIPriceActionFilter oiPriceActionFilter) {
+                                      com.algo.trade.indicator.OIPriceActionFilter oiPriceActionFilter,
+                                      com.algo.trade.reporting.SignalTuningProperties tuningProperties) {
         this.properties = properties;
         this.strategyConfigService = strategyConfigService;
         this.oiPriceActionFilter = oiPriceActionFilter;
+        this.tuningProperties = tuningProperties;
     }
 
     /**
@@ -269,7 +272,12 @@ public class StrategySignalCsvRecorder {
                     breakoutPassed, oiPassed, ivPassed, liquidityPassed, timePassed,
                     rsiValue, atrValue, ema9Ema21Gap, bidAskSpread, vixLevel, daysToExpiry,
                     delta, gamma, theta, vega, realizedVol5d, ivSkew));
-            append(CANDLES, CANDLES_HEADER, candleRows(decisionKey, request));
+            // Interim OOM mitigation: entry-candles.csv grows to 750+ MB and is the dominant
+            // heap pressure for report generation. Skipped by default; flip signal-tuning.write-candles=true
+            // for an ad-hoc investigation. See important/SIGNAL_CAPTURE_TUNING_REDESIGN.md.
+            if (tuningProperties.isWriteCandles()) {
+                append(CANDLES, CANDLES_HEADER, candleRows(decisionKey, request));
+            }
             append(OPTION_CHAIN_LEVELS, OPTION_CHAIN_LEVELS_HEADER, optionChainRows(decisionKey, request));
         } catch (IOException ex) {
             log.warn("Strategy signal CSV write failed: {}", ex.getMessage());

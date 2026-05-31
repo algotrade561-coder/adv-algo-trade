@@ -392,6 +392,11 @@ signal-tuning:
   scheduler-enabled: false
   block-during-market-hours: true
   load-forward-candles: false
+  # Interim OOM mitigation: stop writing entry-candles.csv (753 MB / 4.18 M rows).
+  # OI Momentum + OI Shift Trap have dedicated forward-return capture; other strategies
+  # fire < 30 BUYs/period and their 45m MFE/MAE column will be empty until redesign lands.
+  # Flip to true if you need cross-strategy forward MFE/MAE for an investigation.
+  write-candles: false
 
 # ── Trading Calendar (Exchange Holidays) ───────────────────────────────────
 # Only include weekday trading holidays here. If a festival falls on Sat/Sun,

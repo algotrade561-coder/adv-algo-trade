@@ -27,6 +27,15 @@ public class SignalTuningProperties {
      */
     private boolean loadForwardCandles = true;
 
+    /**
+     * When false, {@link com.algo.trade.strategy.StrategySignalCsvRecorder} skips appending to
+     * {@code entry-candles.csv}. Interim mitigation while the unified tuning-event pipeline lands;
+     * see {@code important/SIGNAL_CAPTURE_TUNING_REDESIGN.md}. OI Momentum and OI Shift Trap capture
+     * forward returns through dedicated services, so disabling this only affects the cross-strategy
+     * 45m MFE/MAE table for the few non-OI BUYs per period.
+     */
+    private boolean writeCandles = false;
+
     public boolean isSchedulerEnabled() {
         return schedulerEnabled;
     }
@@ -49,5 +58,13 @@ public class SignalTuningProperties {
 
     public void setLoadForwardCandles(boolean loadForwardCandles) {
         this.loadForwardCandles = loadForwardCandles;
+    }
+
+    public boolean isWriteCandles() {
+        return writeCandles;
+    }
+
+    public void setWriteCandles(boolean writeCandles) {
+        this.writeCandles = writeCandles;
     }
 }
