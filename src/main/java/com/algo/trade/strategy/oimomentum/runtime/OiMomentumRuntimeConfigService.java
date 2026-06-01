@@ -371,6 +371,26 @@ public class OiMomentumRuntimeConfigService {
         // Theta-decay gate
         oiMomentumConfig.setThetaDecayCheckEnabled(src.isThetaDecayCheckEnabled());
         oiMomentumConfig.setThetaDecayMaxCostPct(src.getThetaDecayMaxCostPct());
+        // D2 SUSTAINED_DRIFT (2 Jun 2026)
+        oiMomentumConfig.setSustainedDriftEnabled(src.isSustainedDriftEnabled());
+        oiMomentumConfig.setSustainedDriftShadowMode(src.isSustainedDriftShadowMode());
+        oiMomentumConfig.setSustainedDriftMinPct(src.getSustainedDriftMinPct());
+        oiMomentumConfig.setSustainedDriftOpScoreMin(src.getSustainedDriftOpScoreMin());
+        oiMomentumConfig.setSustainedDriftWindowMinutes(src.getSustainedDriftWindowMinutes());
+        // T2 PCR slope bias bonus
+        oiMomentumConfig.setPcrSlopeBiasBonusEnabled(src.isPcrSlopeBiasBonusEnabled());
+        oiMomentumConfig.setPcrSlopeBiasMinAbs(src.getPcrSlopeBiasMinAbs());
+        oiMomentumConfig.setPcrSlopeBiasBonusPoints(src.getPcrSlopeBiasBonusPoints());
+        oiMomentumConfig.setPcrSlopeBiasOpposePenalty(src.getPcrSlopeBiasOpposePenalty());
+        // T3 Conditional bias-floor lowering
+        oiMomentumConfig.setBiasFloorRelaxEnabled(src.isBiasFloorRelaxEnabled());
+        oiMomentumConfig.setBiasFloorDefault(src.getBiasFloorDefault());
+        oiMomentumConfig.setBiasFloorRelaxed(src.getBiasFloorRelaxed());
+        oiMomentumConfig.setBiasFloorRelaxCoilBreakRangePct(src.getBiasFloorRelaxCoilBreakRangePct());
+        oiMomentumConfig.setBiasFloorRelaxPcrSlopeMinAbs(src.getBiasFloorRelaxPcrSlopeMinAbs());
+        // T5 Capture heartbeat
+        oiMomentumConfig.setCaptureHeartbeatEnabled(src.isCaptureHeartbeatEnabled());
+        oiMomentumConfig.setCaptureHeartbeatStaleMinutes(src.getCaptureHeartbeatStaleMinutes());
         oiMomentumConfig.setRecordEveryReject(src.isRecordEveryReject());
         oiMomentumConfig.setRejectSampleIntervalSeconds(src.getRejectSampleIntervalSeconds());
         oiMomentumConfig.setMatrixRejectSampleIntervalSeconds(src.getMatrixRejectSampleIntervalSeconds());
@@ -410,7 +430,6 @@ public class OiMomentumRuntimeConfigService {
         public Integer consecutiveLossHaltCount;
         public Double  breakEvenTriggerPercent;
         public Integer maxTradesPerDay;
-        // Legacy enhancements (29 May 2026 — see OI_MOMENTUM_EMPIRICAL_REPLAY_RESULTS.md)
         public Boolean legacyTimeOfDayModeEnabled;
         public Boolean case0Enabled;
         public Boolean case0ShadowMode;
@@ -418,23 +437,36 @@ public class OiMomentumRuntimeConfigService {
         public Double  case0CoilMaxPct;
         public Double  case0PcrSlopeMinAbs;
         public Boolean case4WatchlistBonusEnabled;
-        // R3 — Adaptive CASE 0 for low-VIX
         public Boolean case0LowVixEnabled;
         public Double  case0LowVixVixThreshold;
         public Integer case0LowVixOpScoreThreshold;
         public Double  case0LowVixCoilMaxPct;
-        // R2 — Range-edge fade
         public Boolean rangeEdgeFadeEnabled;
         public Double  rangeEdgeFadeRangeMaxPct;
         public Double  rangeEdgeFadeEdgePct;
         public Integer rangeEdgeFadeOiBuildMin;
-        // Theta-decay gate
         public Boolean thetaDecayCheckEnabled;
         public Double  thetaDecayMaxCostPct;
-        // P4 instrumentation
+        public Boolean sustainedDriftEnabled;
+        public Boolean sustainedDriftShadowMode;
+        public Double  sustainedDriftMinPct;
+        public Integer sustainedDriftOpScoreMin;
+        public Integer sustainedDriftWindowMinutes;
+        public Boolean pcrSlopeBiasBonusEnabled;
+        public Double  pcrSlopeBiasMinAbs;
+        public Integer pcrSlopeBiasBonusPoints;
+        public Integer pcrSlopeBiasOpposePenalty;
+        public Boolean biasFloorRelaxEnabled;
+        public Integer biasFloorDefault;
+        public Integer biasFloorRelaxed;
+        public Double  biasFloorRelaxCoilBreakRangePct;
+        public Double  biasFloorRelaxPcrSlopeMinAbs;
+        public Boolean captureHeartbeatEnabled;
+        public Integer captureHeartbeatStaleMinutes;
         public Boolean recordEveryReject;
         public Integer rejectSampleIntervalSeconds;
         public Integer matrixRejectSampleIntervalSeconds;
         public Integer summaryRejectTopN;
+        public Integer rejectEpisodeWindowSeconds;
     }
 }

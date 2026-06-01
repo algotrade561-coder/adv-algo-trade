@@ -88,6 +88,12 @@ public class OiShiftTrapCaptureAdapter implements TuningCaptureAdapter {
             case "MIN_OI_CHANGE" -> "gate:MIN_OI_CHANGE";
             case "IMBALANCE" -> "gate:IMBALANCE";
             case "SCORE" -> "gate:SCORE";
+            // Phase 2+3+4 hard blockers — already lowercase snake-case in diag.primaryBlocker.
+            case "fake_breakout" -> "gate:FAKE_BREAKOUT";
+            case "oi_absorption" -> "gate:OI_ABSORPTION";
+            case "pcr_misaligned" -> "gate:PCR_MISALIGNED";
+            case "cross_index_disagreement" -> "gate:CROSS_INDEX_DISAGREEMENT";
+            case "underlying_volume" -> "gate:UNDERLYING_VOLUME";
             default -> raw;
         };
     }
@@ -131,6 +137,13 @@ public class OiShiftTrapCaptureAdapter implements TuningCaptureAdapter {
         String episodeId = "EVAL-" + Integer.toUnsignedString(
                 (row.streamKey() + ":" + row.dedupKey() + ":" + row.firstAt().toEpochMilli()).hashCode(), 16);
         EvaluationOutcome outcome = mapOutcome(diag);
+        // A7 (2026-06-02): EvaluationEvent's invariant requires blocker == null
+        // when outcome != BLOCKED. Today an unknown number of SIGNAL/SKIPPED
+        // rows were silently dropped at the validator because this adapter
+        // always passed a non-null blocker (the dedup key). Now we null-out
+        // the blocker for non-BLOCKED rows.
+        String blockerForEvent = (outcome == EvaluationOutcome.BLOCKED)
+                ? normalizeBlocker(row.dedupKey()) : null;
         return new EvaluationEvent(
                 row.firstAt(),
                 Instant.now(),
@@ -138,7 +151,7 @@ public class OiShiftTrapCaptureAdapter implements TuningCaptureAdapter {
                 IndexType.fromName(diag.underlying()),
                 episodeId,
                 outcome,
-                normalizeBlocker(row.dedupKey()),
+                blockerForEvent,
                 row.tickCount(),
                 attrs);
     }
@@ -322,6 +335,13 @@ public class OiShiftTrapCaptureAdapter implements TuningCaptureAdapter {
         putIfPresent(a, "outcome", diag.outcome());
         putIfPresent(a, "primaryBlocker", diag.primaryBlocker());
         a.put("chainLevels", diag.chainLevels());
+        // Phase 4 fields 13, 14 — only emit when populated to keep tuning bucket cardinality tight.
+        if (diag.daysToExpiry() > 0) {
+            a.put("daysToExpiry", diag.daysToExpiry());
+        }
+        if (diag.relativeVolumeRatio() > 0.0) {
+            a.put("relativeVolumeRatio", diag.relativeVolumeRatio());
+        }
         if (snap != null && snap.present()) {
             a.put("imbalance", snap.imbalance());
             a.put("proximityPct", snap.proximityPct());
@@ -337,8 +357,35 @@ public class OiShiftTrapCaptureAdapter implements TuningCaptureAdapter {
         if (decision != null) {
             a.put("signalType", decision.signalType().name());
             a.put("reasons", String.join("; ", decision.reasons()));
+            // Phase 1-4 signal-path categorical attribute. Lets tuning split metrics by
+            // entry path (standard / imbalance-only / distant-OI / pending-resolved).
+            a.put("signalPath", resolveSignalPath(decision.reasons()));
         }
         return a;
+    }
+
+    /**
+     * Resolve a coarse signal-path label from the first reason string. Defaults to
+     * {@code "standard"} when no special-path marker is found.
+     */
+    private static String resolveSignalPath(java.util.List<String> reasons) {
+        if (reasons == null || reasons.isEmpty()) {
+            return "standard";
+        }
+        String first = reasons.get(0);
+        if (first == null) {
+            return "standard";
+        }
+        if (first.contains("[imbalance-only]")) {
+            return "imbalance_only";
+        }
+        if (first.contains("[distant-OI]")) {
+            return "distant_oi";
+        }
+        if (first.contains("[pending-resolved]")) {
+            return "pending_resolved";
+        }
+        return "standard";
     }
 
     private static OiShiftTrapDiagnostics.CandidateSnapshot pickCandidate(OiShiftTrapDiagnostics diag) {

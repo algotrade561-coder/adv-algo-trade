@@ -47,6 +47,28 @@ public class ExpiryReversalStrategy implements TimeBoundedStrategy {
         this.expiryCalendar = expiryCalendar;
     }
 
+    /**
+     * 2 Jun 2026 — VIX-scaled spike threshold. 0.50% in 5 min is a huge move
+     * (115+ NIFTY points); only happens on event days. On quiet expiries it
+     * never triggers. VIX/20 scaling gives:
+     *   VIX 16 → 0.40% threshold
+     *   VIX 20 → 0.50% (default)
+     *   VIX 25 → 0.625%
+     * Optional autowire — falls back to static threshold if MarketGuard absent.
+     */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.risk.MarketGuard marketGuard;
+
+    private static final double NEUTRAL_VIX_REVERSAL = 20.0;
+
+    private double effectiveSpikeThreshold() {
+        double vix = marketGuard != null ? marketGuard.getCurrentVix() : NEUTRAL_VIX_REVERSAL;
+        if (vix <= 0) vix = NEUTRAL_VIX_REVERSAL;
+        double scale = Math.max(0.5, Math.min(1.5, vix / NEUTRAL_VIX_REVERSAL));
+        return MIN_SPIKE_PERCENT * scale;
+    }
+
+
     @Override
     public boolean validNow(LocalTime marketTime) {
         if (marketTime == null) return true;
@@ -87,8 +109,10 @@ public class ExpiryReversalStrategy implements TimeBoundedStrategy {
                 .divide(baseline, 6, RoundingMode.HALF_UP)
                 .multiply(BigDecimal.valueOf(100)).doubleValue();
 
-        if (Math.abs(spikePct) < MIN_SPIKE_PERCENT) {
-            return noTrade("spikeInsufficient(spike=" + String.format("%.2f", spikePct) + "%)");
+        double minSpike = effectiveSpikeThreshold();
+        if (Math.abs(spikePct) < minSpike) {
+            return noTrade("spikeInsufficient(spike=" + String.format("%.2f", spikePct)
+                    + "%<" + String.format("%.2f", minSpike) + "%)");
         }
 
         boolean spikeUp = spikePct > 0;

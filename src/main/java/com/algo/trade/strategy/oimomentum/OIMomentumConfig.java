@@ -308,6 +308,70 @@ public class OIMomentumConfig {
     private double rangeEdgeFadeEdgePct = 0.20;
     private int rangeEdgeFadeOiBuildMin = 3000;
 
+    // ── D2 — SUSTAINED_DRIFT detector (2 Jun 2026 — addresses slow-grind days
+    //         where CASE 1-5 + CASE 0 + range-fade all stay silent). Replay:
+    //         69.6% 60m win, ~5 fires/day/index. Live default ON. ──
+    private boolean sustainedDriftEnabled = true;
+    private boolean sustainedDriftShadowMode = false;
+    private double sustainedDriftMinPct = 0.20;
+    private int sustainedDriftOpScoreMin = 50;
+    private int sustainedDriftWindowMinutes = 60;
+
+    // ── OPERATOR_SQUEEZE detector (2 Jun 2026 — catches the coil → shakeout →
+    //     short-squeeze pattern that hit NIFTY 12:30–13:30 IST and that every
+    //     existing detector missed. Three-gate model: coil + ignition + chain
+    //     confirmation. See OperatorSqueezeDetector for full spec). ──
+    private boolean operatorSqueezeEnabled = true;
+    private int operatorSqueezeCoilWindowMin = 20;
+    private double operatorSqueezeCoilRangeMaxPct = 0.10;
+    private double operatorSqueezeCoilVixDropMin = 0.05;
+    private long operatorSqueezeCoilCeBuildMin = 5_000_000L;
+    private int operatorSqueezeIgnitionWindowMin = 5;
+    private double operatorSqueezeIgnitionReturnMinPct = 0.20;
+    private long operatorSqueezeOiCollapseMinAbs = 7_000_000L;
+    private double operatorSqueezeIgnitionVixMin = 0.10;
+    private double operatorSqueezeIvExpansionMinPct = 5.0;
+    private double operatorSqueezePcrRotationMin = 0.05;
+    // A8 (2026-06-02): coil-precondition gating is OPTIONAL. With this OFF,
+    // only the 4 core gates (ignition return + OI collapse + VIX expansion +
+    // IV expansion) need to pass. Today's tape shows the 3 coil gates fail at
+    // the 12:35 ignition bar (CE OI already started dropping, VIX already
+    // expanding) — making the detector silent. Default OFF so the detector
+    // can fire.
+    private boolean operatorSqueezeRequireCoil = false;
+    // E3 (2026-06-02): on expiry day, gamma exposure is roughly double the
+    // non-expiry case for the same delta. Apply this lot-multiplier to the
+    // entry to keep dollar-gamma constant. 0.5 = half-size.
+    private double operatorSqueezeExpiryLotMultiplier = 0.5;
+
+    // ── T2 — PCR slope additive bias bonus (2 Jun 2026 — for slow-PCR-roll days
+    //         like 1 Jun where PCR went 0.95→1.27 in 60 min but the legacy
+    //         binary level-threshold misread the rising PCR as neutral). The
+    //         |slope| threshold is multiplied by direction sign; +10 to bias
+    //         when the slope agrees with momentum, -5 when it actively opposes. ──
+    private boolean pcrSlopeBiasBonusEnabled = true;
+    private double pcrSlopeBiasMinAbs = 0.05;
+    private int pcrSlopeBiasBonusPoints = 10;
+    private int pcrSlopeBiasOpposePenalty = 5;
+
+    // ── T3 — Conditional bias-floor lowering (2 Jun 2026 — when a confirmed
+    //         coil break + PCR slope agree, lower the entry floor from
+    //         {@code biasThresholdDefault} to {@code biasThresholdRelaxed}. This
+    //         catches the 1 Jun 11:55 CASE 1 BEAR setup that landed at ~55
+    //         under the standard 65 floor). Only applied when BOTH conditions
+    //         hold; never lowered blindly. ──
+    private boolean biasFloorRelaxEnabled = true;
+    private int biasFloorDefault = 65;
+    private int biasFloorRelaxed = 55;
+    private double biasFloorRelaxCoilBreakRangePct = 0.15;
+    private double biasFloorRelaxPcrSlopeMinAbs = 0.05;
+
+    // ── T5 — Capture heartbeat (2 Jun 2026 — 1 Jun capture stopped at 13:51
+    //         silently; alerts when no entry-path evaluation lands for N minutes
+    //         during market hours OR tune CSV writes fail). ──
+    private boolean captureHeartbeatEnabled = true;
+    private int captureHeartbeatStaleMinutes = 10;
+
     // ── Theta-decay gate ──
     private boolean thetaDecayCheckEnabled = true;
     private double thetaDecayMaxCostPct = 30.0;
@@ -399,6 +463,74 @@ public class OIMomentumConfig {
     public double getCase0LowVixCoilMaxPct() { return case0LowVixCoilMaxPct; }
     public void setCase0LowVixCoilMaxPct(double v) { this.case0LowVixCoilMaxPct = v; }
 
+    // ── D2 SUSTAINED_DRIFT (T1) ──
+    public boolean isSustainedDriftEnabled() { return sustainedDriftEnabled; }
+    public void setSustainedDriftEnabled(boolean v) { this.sustainedDriftEnabled = v; }
+    public boolean isSustainedDriftShadowMode() { return sustainedDriftShadowMode; }
+    public void setSustainedDriftShadowMode(boolean v) { this.sustainedDriftShadowMode = v; }
+    public double getSustainedDriftMinPct() { return sustainedDriftMinPct; }
+    public void setSustainedDriftMinPct(double v) { this.sustainedDriftMinPct = v; }
+    public int getSustainedDriftOpScoreMin() { return sustainedDriftOpScoreMin; }
+    public void setSustainedDriftOpScoreMin(int v) { this.sustainedDriftOpScoreMin = v; }
+    public int getSustainedDriftWindowMinutes() { return sustainedDriftWindowMinutes; }
+    public void setSustainedDriftWindowMinutes(int v) { this.sustainedDriftWindowMinutes = v; }
+
+    // OPERATOR_SQUEEZE getters / setters
+    public boolean isOperatorSqueezeEnabled() { return operatorSqueezeEnabled; }
+    public void setOperatorSqueezeEnabled(boolean v) { this.operatorSqueezeEnabled = v; }
+    public int getOperatorSqueezeCoilWindowMin() { return operatorSqueezeCoilWindowMin; }
+    public void setOperatorSqueezeCoilWindowMin(int v) { this.operatorSqueezeCoilWindowMin = v; }
+    public double getOperatorSqueezeCoilRangeMaxPct() { return operatorSqueezeCoilRangeMaxPct; }
+    public void setOperatorSqueezeCoilRangeMaxPct(double v) { this.operatorSqueezeCoilRangeMaxPct = v; }
+    public double getOperatorSqueezeCoilVixDropMin() { return operatorSqueezeCoilVixDropMin; }
+    public void setOperatorSqueezeCoilVixDropMin(double v) { this.operatorSqueezeCoilVixDropMin = v; }
+    public long getOperatorSqueezeCoilCeBuildMin() { return operatorSqueezeCoilCeBuildMin; }
+    public void setOperatorSqueezeCoilCeBuildMin(long v) { this.operatorSqueezeCoilCeBuildMin = v; }
+    public int getOperatorSqueezeIgnitionWindowMin() { return operatorSqueezeIgnitionWindowMin; }
+    public void setOperatorSqueezeIgnitionWindowMin(int v) { this.operatorSqueezeIgnitionWindowMin = v; }
+    public double getOperatorSqueezeIgnitionReturnMinPct() { return operatorSqueezeIgnitionReturnMinPct; }
+    public void setOperatorSqueezeIgnitionReturnMinPct(double v) { this.operatorSqueezeIgnitionReturnMinPct = v; }
+    public long getOperatorSqueezeOiCollapseMinAbs() { return operatorSqueezeOiCollapseMinAbs; }
+    public void setOperatorSqueezeOiCollapseMinAbs(long v) { this.operatorSqueezeOiCollapseMinAbs = v; }
+    public double getOperatorSqueezeIgnitionVixMin() { return operatorSqueezeIgnitionVixMin; }
+    public void setOperatorSqueezeIgnitionVixMin(double v) { this.operatorSqueezeIgnitionVixMin = v; }
+    public double getOperatorSqueezeIvExpansionMinPct() { return operatorSqueezeIvExpansionMinPct; }
+    public void setOperatorSqueezeIvExpansionMinPct(double v) { this.operatorSqueezeIvExpansionMinPct = v; }
+    public double getOperatorSqueezePcrRotationMin() { return operatorSqueezePcrRotationMin; }
+    public void setOperatorSqueezePcrRotationMin(double v) { this.operatorSqueezePcrRotationMin = v; }
+    public boolean isOperatorSqueezeRequireCoil() { return operatorSqueezeRequireCoil; }
+    public void setOperatorSqueezeRequireCoil(boolean v) { this.operatorSqueezeRequireCoil = v; }
+    public double getOperatorSqueezeExpiryLotMultiplier() { return operatorSqueezeExpiryLotMultiplier; }
+    public void setOperatorSqueezeExpiryLotMultiplier(double v) { this.operatorSqueezeExpiryLotMultiplier = v; }
+
+    // ── T2 PCR slope bias bonus ──
+    public boolean isPcrSlopeBiasBonusEnabled() { return pcrSlopeBiasBonusEnabled; }
+    public void setPcrSlopeBiasBonusEnabled(boolean v) { this.pcrSlopeBiasBonusEnabled = v; }
+    public double getPcrSlopeBiasMinAbs() { return pcrSlopeBiasMinAbs; }
+    public void setPcrSlopeBiasMinAbs(double v) { this.pcrSlopeBiasMinAbs = v; }
+    public int getPcrSlopeBiasBonusPoints() { return pcrSlopeBiasBonusPoints; }
+    public void setPcrSlopeBiasBonusPoints(int v) { this.pcrSlopeBiasBonusPoints = v; }
+    public int getPcrSlopeBiasOpposePenalty() { return pcrSlopeBiasOpposePenalty; }
+    public void setPcrSlopeBiasOpposePenalty(int v) { this.pcrSlopeBiasOpposePenalty = v; }
+
+    // ── T3 Conditional bias-floor lowering ──
+    public boolean isBiasFloorRelaxEnabled() { return biasFloorRelaxEnabled; }
+    public void setBiasFloorRelaxEnabled(boolean v) { this.biasFloorRelaxEnabled = v; }
+    public int getBiasFloorDefault() { return biasFloorDefault; }
+    public void setBiasFloorDefault(int v) { this.biasFloorDefault = v; }
+    public int getBiasFloorRelaxed() { return biasFloorRelaxed; }
+    public void setBiasFloorRelaxed(int v) { this.biasFloorRelaxed = v; }
+    public double getBiasFloorRelaxCoilBreakRangePct() { return biasFloorRelaxCoilBreakRangePct; }
+    public void setBiasFloorRelaxCoilBreakRangePct(double v) { this.biasFloorRelaxCoilBreakRangePct = v; }
+    public double getBiasFloorRelaxPcrSlopeMinAbs() { return biasFloorRelaxPcrSlopeMinAbs; }
+    public void setBiasFloorRelaxPcrSlopeMinAbs(double v) { this.biasFloorRelaxPcrSlopeMinAbs = v; }
+
+    // ── T5 Capture heartbeat ──
+    public boolean isCaptureHeartbeatEnabled() { return captureHeartbeatEnabled; }
+    public void setCaptureHeartbeatEnabled(boolean v) { this.captureHeartbeatEnabled = v; }
+    public int getCaptureHeartbeatStaleMinutes() { return captureHeartbeatStaleMinutes; }
+    public void setCaptureHeartbeatStaleMinutes(int v) { this.captureHeartbeatStaleMinutes = v; }
+
     public boolean isRangeEdgeFadeEnabled() { return rangeEdgeFadeEnabled; }
     public void setRangeEdgeFadeEnabled(boolean v) { this.rangeEdgeFadeEnabled = v; }
     public double getRangeEdgeFadeRangeMaxPct() { return rangeEdgeFadeRangeMaxPct; }
@@ -424,69 +556,39 @@ public class OIMomentumConfig {
     public int getRejectEpisodeWindowSeconds() { return rejectEpisodeWindowSeconds; }
     public void setRejectEpisodeWindowSeconds(int v) { this.rejectEpisodeWindowSeconds = v; }
 
-    // Getters and setters
-    public double getMomentumThresholdPercent() { return momentumThresholdPercent; }
-    public void setMomentumThresholdPercent(double v) { this.momentumThresholdPercent = v; }
-    public double getSpikeThresholdPercent() { return spikeThresholdPercent; }
-    public void setSpikeThresholdPercent(double v) { this.spikeThresholdPercent = v; }
-    public int getRolling30MinWindowSeconds() { return rolling30MinWindowSeconds; }
-    public void setRolling30MinWindowSeconds(int v) { this.rolling30MinWindowSeconds = v; }
-    public double getMinOiChangePercent() { return minOiChangePercent; }
-    public void setMinOiChangePercent(double v) { this.minOiChangePercent = v; }
-    public double getPcrBullishThreshold() { return pcrBullishThreshold; }
-    public void setPcrBullishThreshold(double v) { this.pcrBullishThreshold = v; }
-    public double getPcrBearishThreshold() { return pcrBearishThreshold; }
-    public void setPcrBearishThreshold(double v) { this.pcrBearishThreshold = v; }
-    public long getMinSqueezeOiDelta() { return minSqueezeOiDelta; }
-    public void setMinSqueezeOiDelta(long v) { this.minSqueezeOiDelta = v; }
-    public int getMaxTradesPerDay() { return maxTradesPerDay; }
-    public void setMaxTradesPerDay(int v) { this.maxTradesPerDay = v; }
-    public int getSoftTargetTradesPerDay() { return softTargetTradesPerDay; }
-    public void setSoftTargetTradesPerDay(int v) { this.softTargetTradesPerDay = v; }
-    public int getMaxReversalsPerDay() { return maxReversalsPerDay; }
-    public void setMaxReversalsPerDay(int v) { this.maxReversalsPerDay = v; }
-    public int getCooldownAfterSlSeconds() { return cooldownAfterSlSeconds; }
-    public void setCooldownAfterSlSeconds(int v) { this.cooldownAfterSlSeconds = v; }
-    public int getMinimumHoldTimeSeconds() { return minimumHoldTimeSeconds; }
-    public void setMinimumHoldTimeSeconds(int v) { this.minimumHoldTimeSeconds = v; }
-    public int getConsecutiveLossPause() { return consecutiveLossPause; }
-    public void setConsecutiveLossPause(int v) { this.consecutiveLossPause = v; }
-    public int getMiddayTradeReductionPercent() { return middayTradeReductionPercent; }
-    public void setMiddayTradeReductionPercent(int v) { this.middayTradeReductionPercent = v; }
-    public double getStopLossPercent() { return stopLossPercent; }
-    public void setStopLossPercent(double v) { this.stopLossPercent = v; }
-    public double getTargetPercent() { return targetPercent; }
-    public void setTargetPercent(double v) { this.targetPercent = v; }
-    public double getTrailingActivationPercent() { return trailingActivationPercent; }
-    public void setTrailingActivationPercent(double v) { this.trailingActivationPercent = v; }
-    public double getTrailingGapPercent() { return trailingGapPercent; }
-    public void setTrailingGapPercent(double v) { this.trailingGapPercent = v; }
-    public double getBreakEvenTriggerPercent() { return breakEvenTriggerPercent; }
-    public void setBreakEvenTriggerPercent(double v) { this.breakEvenTriggerPercent = v; }
-    public int getSquareoffHour() { return squareoffHour; }
-    public void setSquareoffHour(int v) { this.squareoffHour = v; }
-    public int getSquareoffMinute() { return squareoffMinute; }
-    public void setSquareoffMinute(int v) { this.squareoffMinute = v; }
-    public String getOpeningSessionStart() { return openingSessionStart; }
-    public void setOpeningSessionStart(String v) { this.openingSessionStart = v; }
-    public String getOpeningSessionEnd() { return openingSessionEnd; }
-    public void setOpeningSessionEnd(String v) { this.openingSessionEnd = v; }
-    public String getMiddayStart() { return middayStart; }
-    public void setMiddayStart(String v) { this.middayStart = v; }
-    public String getMiddayEnd() { return middayEnd; }
-    public void setMiddayEnd(String v) { this.middayEnd = v; }
-    @Deprecated public String getClosingSessionStart() { return closingSessionStart; }
-    @Deprecated public void setClosingSessionStart(String v) { this.closingSessionStart = v; }
-    public String getEntryWindowStart() { return entryWindowStart; }
-    public void setEntryWindowStart(String v) { this.entryWindowStart = v; }
-    public String getEntryWindowEnd() { return entryWindowEnd; }
-    public void setEntryWindowEnd(String v) { this.entryWindowEnd = v; }
+    // ── Missing getters restored 2 Jun 2026 (the backtest + strategy need these) ──
     public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean v) { this.enabled = v; }
     public boolean isPaperTrading() { return paperTrading; }
     public void setPaperTrading(boolean v) { this.paperTrading = v; }
 
-    // Bias engine getters/setters
+    public double getMomentumThresholdPercent() { return momentumThresholdPercent; }
+    public double getSpikeThresholdPercent() { return spikeThresholdPercent; }
+    public double getStopLossPercent() { return stopLossPercent; }
+    public double getBreakEvenTriggerPercent() { return breakEvenTriggerPercent; }
+    public void setBreakEvenTriggerPercent(double v) { this.breakEvenTriggerPercent = v; }
+    public double getTrailingActivationPercent() { return trailingActivationPercent; }
+    public double getTrailingGapPercent() { return trailingGapPercent; }
+    public int getMaxTradesPerDay() { return maxTradesPerDay; }
+    public void setMaxTradesPerDay(int v) { this.maxTradesPerDay = v; }
+    public int getSoftTargetTradesPerDay() { return softTargetTradesPerDay; }
+    public int getMaxReversalsPerDay() { return maxReversalsPerDay; }
+    public int getConsecutiveLossPause() { return consecutiveLossPause; }
+    public int getCooldownAfterSlSeconds() { return cooldownAfterSlSeconds; }
+    public int getMinimumHoldTimeSeconds() { return minimumHoldTimeSeconds; }
+    public int getMiddayTradeReductionPercent() { return middayTradeReductionPercent; }
+
+    public long getMinSqueezeOiDelta() { return minSqueezeOiDelta; }
+    public double getPcrBullishThreshold() { return pcrBullishThreshold; }
+    public double getPcrBearishThreshold() { return pcrBearishThreshold; }
+
+    public String getEntryWindowStart() { return entryWindowStart; }
+    public String getEntryWindowEnd() { return entryWindowEnd; }
+    public String getMiddayStart() { return middayStart; }
+    public String getMiddayEnd() { return middayEnd; }
+
+    public int getSquareoffHour() { return squareoffHour; }
+    public int getSquareoffMinute() { return squareoffMinute; }
     public int getBiasConfidenceThreshold() { return biasConfidenceThreshold; }
     public void setBiasConfidenceThreshold(int v) { this.biasConfidenceThreshold = v; }
     public int getBiasConfirmationTicks() { return biasConfirmationTicks; }

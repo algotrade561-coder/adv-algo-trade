@@ -43,7 +43,7 @@ class LiveFlowIntegrationTest {
     private OrderRepository orderRepository;
     private StrategyDecisionRepository decisionRepository;
     private ErrorEventRepository errorEventRepository;
-    private ExecutionOutcomeCsvRecorder outcomeCsvRecorder;
+    private ExecutionTuningRecorder outcomeCsvRecorder;
     private TelegramAlertService telegramAlertService;
     private StrategyConfigService strategyConfigService;
     private MarketDataService marketDataService;
@@ -79,7 +79,7 @@ class LiveFlowIntegrationTest {
         orderRepository = mock(OrderRepository.class);
         decisionRepository = mock(StrategyDecisionRepository.class);
         errorEventRepository = mock(ErrorEventRepository.class);
-        outcomeCsvRecorder = mock(ExecutionOutcomeCsvRecorder.class);
+        outcomeCsvRecorder = mock(ExecutionTuningRecorder.class);
         telegramAlertService = mock(TelegramAlertService.class);
 
         strategyConfigService = mock(StrategyConfigService.class);

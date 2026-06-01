@@ -278,6 +278,62 @@ public class LiveInstrumentCache {
     }
 
     /**
+     * Total open interest across all subscribed CE strikes for an index.
+     * Added 2 Jun 2026 to power the OperatorSqueezeDetector — a sudden drop in
+     * total CE OI is the canonical signature of a call short-squeeze.
+     */
+    public long getTotalCeOi(IndexType indexType) {
+        long sum = 0;
+        for (OptionInstrument opt : byToken.values()) {
+            if (opt.getIndexType() != indexType) continue;
+            if (opt.getOpenInterest() <= 0) continue;
+            if ("CE".equals(opt.getOptionType())) sum += opt.getOpenInterest();
+        }
+        return sum;
+    }
+
+    /**
+     * Total open interest across all subscribed PE strikes for an index.
+     * Symmetric to {@link #getTotalCeOi} — sudden drop signals a put short-squeeze.
+     */
+    public long getTotalPeOi(IndexType indexType) {
+        long sum = 0;
+        for (OptionInstrument opt : byToken.values()) {
+            if (opt.getIndexType() != indexType) continue;
+            if (opt.getOpenInterest() <= 0) continue;
+            if ("PE".equals(opt.getOptionType())) sum += opt.getOpenInterest();
+        }
+        return sum;
+    }
+
+    /**
+     * ATM call implied volatility (latest tick). Returns 0 if no subscribed
+     * CE matches the given ATM strike or its IV is not populated yet.
+     * Used by OperatorSqueezeDetector to detect IV-expansion confirmation of
+     * a regime change.
+     */
+    public double getAtmCeIv(IndexType indexType, int atmStrike) {
+        for (OptionInstrument opt : byToken.values()) {
+            if (opt.getIndexType() != indexType) continue;
+            if (opt.getStrikePrice() != atmStrike) continue;
+            if (!"CE".equals(opt.getOptionType())) continue;
+            return opt.getImpliedVolatility();
+        }
+        return 0;
+    }
+
+    /** ATM put implied volatility — symmetric to {@link #getAtmCeIv}. */
+    public double getAtmPeIv(IndexType indexType, int atmStrike) {
+        for (OptionInstrument opt : byToken.values()) {
+            if (opt.getIndexType() != indexType) continue;
+            if (opt.getStrikePrice() != atmStrike) continue;
+            if (!"PE".equals(opt.getOptionType())) continue;
+            return opt.getImpliedVolatility();
+        }
+        return 0;
+    }
+
+    /**
      * Get total OI change (last 3 minutes) for ATM ± N strikes of a given index.
      * Positive = OI building (new positions), Negative = OI unwinding.
      * Separated by CE and PE for directional analysis.

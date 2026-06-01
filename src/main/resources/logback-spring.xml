@@ -13,8 +13,14 @@
 
     <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
         <file>logs/application/algo-trade-${startTimestamp}.log</file>
+        <!-- A5 (2026-06-02): immediateFlush=true forces every event to be flushed
+             to disk on write. Today the log froze at 12:29:02 right before the
+             12:30 squeeze — buffered events lost. With immediateFlush, even an
+             abrupt shutdown leaves a complete trace. -->
+        <immediateFlush>true</immediateFlush>
         <encoder>
             <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{50} - %msg%n</pattern>
+            <immediateFlush>true</immediateFlush>
         </encoder>
         <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
             <fileNamePattern>logs/application/algo-trade-%d{yyyyMMdd}-${startTimestamp}.%i.log</fileNamePattern>

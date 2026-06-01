@@ -151,10 +151,16 @@ public class OiMomentumCaptureAdapter implements TuningCaptureAdapter {
         if (diag == null) return a;
         // Hot dimensions (will become flat columns in Phase 6 promotion):
         putIfPresent(a, "entryCase", diag.entryCase());
-        a.put("biasScore", 0);                       // populated downstream when adapter is given biasScore
+        // 2026-06-01: read biasScore from the diagnostics record (was hardcoded 0 — bug).
+        a.put("biasScore", diag.biasScore());
         putIfPresent(a, "matrixCase", diag.matrixCase());
         putIfPresent(a, "momentumType", diag.momentumType());
         putIfPresent(a, "timeOfDayMode", diag.timeOfDayMode());
+        // Detection path (LEGACY / SPIKE / CASE0 / RANGE_FADE / V3 / …) — lets tuning
+        // split signals by which detector produced them.
+        putIfPresent(a, "entryPath", diag.entryPath());
+        // Operator-framework score (when set via withScores).
+        a.put("operatorScore", diag.operatorScore());
         // Cold diagnostics (stay in JSON sidecar):
         a.put("momentumDir", diag.momentumDir());
         a.put("momentumMagnitudePct", diag.momentumMagnitudePct());
@@ -172,6 +178,7 @@ public class OiMomentumCaptureAdapter implements TuningCaptureAdapter {
         a.put("paperTrading", diag.paperTrading());
         a.put("oiAdvanced", diag.oiAdvanced());
         a.put("rangePct30m", diag.rangePct30m());
+        putIfPresent(a, "signalReason", diag.signalReason());
         putIfPresent(a, "blockDetail", diag.blockDetail());
         putIfPresent(a, "spikeEpisodeId", diag.spikeEpisodeId());
         a.put("atmCeLast", diag.atmCeLast());
@@ -179,6 +186,12 @@ public class OiMomentumCaptureAdapter implements TuningCaptureAdapter {
         a.put("spot30mHigh", diag.spot30mHigh());
         a.put("spot30mLow", diag.spot30mLow());
         a.put("breakoutDistancePct", diag.breakoutDistancePct());
+        // ── 2 Jun 2026 new feature fields (D2 SUSTAINED_DRIFT, T2 PCR slope, T3 bias floor) ──
+        a.put("sustainedDriftPct", diag.sustainedDriftPct());
+        a.put("sustainedDriftWindowMin", diag.sustainedDriftWindowMin());
+        a.put("pcrSlope5m", diag.pcrSlope5m());
+        a.put("biasFloorRelaxed", diag.biasFloorRelaxed());
+        a.put("biasFloorUsed", diag.biasFloorUsed());
         return a;
     }
 

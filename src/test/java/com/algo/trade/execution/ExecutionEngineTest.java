@@ -50,7 +50,7 @@ class ExecutionEngineTest {
     private final OrderRepository orderRepository = mock(OrderRepository.class);
     private final ErrorEventRepository errorEventRepository = mock(ErrorEventRepository.class);
     private final StrategyDecisionRepository decisionRepository = mock(StrategyDecisionRepository.class);
-    private final ExecutionOutcomeCsvRecorder outcomeCsvRecorder = mock(ExecutionOutcomeCsvRecorder.class);
+    private final ExecutionTuningRecorder outcomeCsvRecorder = mock(ExecutionTuningRecorder.class);
     private final TelegramAlertService telegramAlertService = mock(TelegramAlertService.class);
     private final MarketDataService marketDataService = mock(MarketDataService.class);
     private final Clock clock = Clock.fixed(Instant.parse("2026-04-13T05:00:00Z"), ZoneOffset.UTC);

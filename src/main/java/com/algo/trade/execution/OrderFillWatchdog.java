@@ -34,6 +34,24 @@ public class OrderFillWatchdog {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.algo.trade.notification.TelegramAlertService telegramAlertService;
 
+    /**
+     * 2 Jun 2026 — emit ExitEvent to the unified tune pipeline when the
+     * watchdog closes a trade. Manual exit orders (and any non-monitor-driven
+     * close) previously skipped tune-event recording entirely; this wires
+     * them in.
+     */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.tuning.recorder.TuningEventRecorder tuningEventRecorder;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.tuning.adapter.strategies.OiShiftTrapCaptureAdapter oiShiftTrapCaptureAdapter;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.tuning.adapter.strategies.OiMomentumCaptureAdapter oiMomentumCaptureAdapter;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.tuning.infra.MaeMfeTracker maeMfeTracker;
+
     /** Prevents concurrent watchdog runs from creating duplicate trades. */
     private final java.util.concurrent.atomic.AtomicBoolean checkInProgress =
             new java.util.concurrent.atomic.AtomicBoolean(false);
@@ -281,6 +299,10 @@ public class OrderFillWatchdog {
      * Close the matching open trade when a pending SELL (exit) order fills.
      * Finds the open trade by instrument key and computes realized P&L.
      */
+    /**
+     * Close the matching open trade when a pending SELL (exit) order fills.
+     * Finds the open trade by instrument key and computes realized P&L.
+     */
     private void closeTradeFromFilledExitOrder(OrderEntity exitOrder) {
         String instrumentKey = exitOrder.getInstrumentKey();
         BigDecimal exitPrice = exitOrder.getAverageFillPrice() != null
@@ -294,14 +316,75 @@ public class OrderFillWatchdog {
             return;
         }
 
-        var trade = openTrades.getFirst();
-        BigDecimal realizedPnl = exitPrice.subtract(trade.getEntryPrice())
-                .multiply(BigDecimal.valueOf(trade.getQuantity()));
+        // Fix #3 (2026-06-02): When two strategies hold the same instrument (e.g.
+        // OI Momentum + OI Shift Trap on the same strike), pick the trade whose
+        // strategyType matches the order's strategyType. Falls back to first
+        // open trade if the order has no strategyType tag.
+        var trade = openTrades.stream()
+                .filter(t -> exitOrder.getStrategyType() == null
+                        || exitOrder.getStrategyType().isBlank()
+                        || exitOrder.getStrategyType().equals(t.getStrategyType()))
+                .findFirst()
+                .orElse(openTrades.getFirst());
+        if (openTrades.size() > 1) {
+            log.info("OrderFillWatchdog: {} open trades for {} — selected tradeId={} (orderStrategy={}, tradeStrategy={})",
+                    openTrades.size(), instrumentKey, trade.getTradeId(),
+                    exitOrder.getStrategyType(), trade.getStrategyType());
+        }
+
+        // Fix #1 (2026-06-02): Short positions had wrong-sign P&L because this
+        // path always computed long P&L. Route through PositionPnlCalculator
+        // so SHORT_POSITION / selling strategies get correct realised P&L.
+        boolean shortEntry = com.algo.trade.execution.exit.PositionPnlCalculator.isShortEntry(trade);
+        BigDecimal realizedPnl = shortEntry
+                ? trade.getEntryPrice().subtract(exitPrice)
+                        .multiply(BigDecimal.valueOf(trade.getQuantity()))
+                : exitPrice.subtract(trade.getEntryPrice())
+                        .multiply(BigDecimal.valueOf(trade.getQuantity()));
         trade.close(exitPrice, exitOrder.getUpdatedAt(), realizedPnl, "Watchdog: exit order filled");
-        // Save via executionEngine's repository access
         executionEngine.saveTradeEntity(trade);
 
-        log.info("OrderFillWatchdog: closed trade from exit fill — tradeId={}, instrument={}, exitPrice={}, pnl={}",
-                trade.getTradeId(), instrumentKey, exitPrice, realizedPnl);
+        log.info("OrderFillWatchdog: closed trade from exit fill — tradeId={}, instrument={}, exitPrice={}, short={}, pnl={}",
+                trade.getTradeId(), instrumentKey, exitPrice, shortEntry, realizedPnl);
+
+        emitExitEventToTuning(trade, exitPrice, "WATCHDOG_FILLED_EXIT");
+    }
+
+    /**
+     * Build + record an ExitEvent for the unified tune pipeline. Best-effort:
+     * any failure is logged and swallowed (never block trade closure on tune).
+     */
+    private void emitExitEventToTuning(com.algo.trade.persistence.TradeEntity trade,
+                                        BigDecimal exitPrice, String reason) {
+        if (tuningEventRecorder == null) return;
+        try {
+            String strategyType = trade.getStrategyType();
+            if (strategyType == null) return;
+            com.algo.trade.tuning.infra.MaeMfeTracker.Snapshot snapshot =
+                    (maeMfeTracker != null)
+                            ? maeMfeTracker.onExit(trade.getTradeId()).orElse(null)
+                            : null;
+            com.algo.trade.tuning.ExitEvent exitEvent = null;
+            String correlationKey = trade.getTradeId();
+            com.algo.trade.domain.IndexType ix =
+                    com.algo.trade.domain.IndexType.fromName(trade.getUnderlying());
+            if ("OI_SHIFT_TRAP".equals(strategyType) && oiShiftTrapCaptureAdapter != null) {
+                java.util.Map<String, Object> trapAttrs = new java.util.LinkedHashMap<>();
+                trapAttrs.put("exitOrigin", "watchdog_filled");
+                exitEvent = oiShiftTrapCaptureAdapter.buildExitEvent(
+                        ix, trade, snapshot, correlationKey, exitPrice, reason, false, trapAttrs);
+            } else if ("OI_MOMENTUM".equals(strategyType) && oiMomentumCaptureAdapter != null) {
+                exitEvent = oiMomentumCaptureAdapter.buildExitEvent(
+                        ix, trade, snapshot, correlationKey, exitPrice, reason, false);
+            }
+            if (exitEvent != null) {
+                tuningEventRecorder.record(exitEvent);
+                log.info("OrderFillWatchdog: recorded ExitEvent tradeId={}, strategy={}, reason={}",
+                        trade.getTradeId(), strategyType, reason);
+            }
+        } catch (Exception ex) {
+            log.warn("OrderFillWatchdog: ExitEvent emission failed (non-fatal): tradeId={}, ex={}",
+                    trade.getTradeId(), ex.getMessage());
+        }
     }
 }

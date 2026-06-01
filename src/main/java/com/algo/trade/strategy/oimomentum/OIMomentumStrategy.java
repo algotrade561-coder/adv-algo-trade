@@ -76,6 +76,8 @@ public class OIMomentumStrategy {
         volatile Instant lastSlTime = null;
         volatile Instant lastReversalTime = null;
         volatile double peakPrice = 0;
+        /** A2 (2026-06-02): consecutive ticks at a new peak. BE-stop arms only at >=2. */
+        volatile int peakConfirmationTicks = 0;
         volatile long lastOiCeChange = Long.MIN_VALUE;
         volatile long lastOiPeChange = Long.MIN_VALUE;
         volatile boolean oiAdvanced = false;
@@ -194,6 +196,32 @@ public class OIMomentumStrategy {
      */
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private RangeEdgeFadeDetector rangeEdgeFadeDetector;
+
+    /**
+     * D2 — SUSTAINED_DRIFT detector (2 Jun 2026 — addresses slow-grind days like
+     * 1 Jun where CASE 1-5 + CASE 0 + range-fade all stay silent). Replay-validated
+     * 69.6% 60m win, ~5 fires/day/index. Optional so unit tests can construct
+     * without the full Spring context.
+     */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private SustainedDriftDetector sustainedDriftDetector;
+
+    /**
+     * OPERATOR_SQUEEZE detector (2 Jun 2026 — added after the 12:30–13:30 NIFTY
+     * +225-pt move that every existing detector missed). Coil → ignition →
+     * chain-confirmation gates. Needs per-tick {@code tick(index)} from the
+     * strategy loop to populate its 30-min sample ring. Optional; null in tests.
+     */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private OperatorSqueezeDetector operatorSqueezeDetector;
+
+    /**
+     * T5 — Capture / entry-path heartbeat (2 Jun 2026 — addresses 1 Jun silent
+     * 13:51 stop). Optional; when wired, every detectEntry tick records a
+     * liveness ping so the scheduled checker can alert on staleness.
+     */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private EntryPathHeartbeatService entryPathHeartbeat;
 
     /**
      * Source of the {@code maxLotsPerTrade} cap used for conviction-based lot sizing
@@ -619,7 +647,12 @@ public class OIMomentumStrategy {
      * Only returns indices that are enabled in the underlying_configs table AND
      * have OI_MOMENTUM strategy config enabled.
      */
-    private java.util.List<IndexType> getEnabledIndices() {
+    /**
+     * Returns the indices currently enabled in the underlying-config DB. Public
+     * so collaborators (e.g. EntryPathHeartbeatService A3 filter) can suppress
+     * alerts for operator-disabled indices.
+     */
+    public java.util.List<IndexType> getEnabledIndices() {
         Instant now = Instant.now();
         if (enabledIndicesCacheTime != null && Duration.between(enabledIndicesCacheTime, now).compareTo(CONFIG_CACHE_TTL) < 0) {
             return enabledIndices;
@@ -639,6 +672,11 @@ public class OIMomentumStrategy {
 
     private void detectEntry(IndexType indexType, IndexState state) {
         evalCount.incrementAndGet();
+        // T5 — record entry-path liveness so the heartbeat checker can detect
+        // a silent halt (1 Jun 2026 went dark from 13:51 without an alert).
+        if (entryPathHeartbeat != null) {
+            entryPathHeartbeat.recordEntryPathTick(indexType);
+        }
         state.lastRangePct30m = computeRangePct30m(indexType);
 
         // ── v3 Quality Gates (feature-flagged, default OFF) ──
@@ -755,6 +793,123 @@ public class OIMomentumStrategy {
                         case0Decision.opScore(), case0Decision.rangePct(),
                         case0Decision.pcrSlope5Min());
                 enter(indexType, state, case0Decision.direction(), case0Reason, case0Spot, case0Diag);
+                return;
+            }
+        }
+
+        // ── D2 SUSTAINED_DRIFT (2 Jun 2026 — addresses slow-grind days like 1 Jun) ──
+        // Fires when spot has drifted ≥0.20% over the last 60 min AND the operator
+        // chain is aligned with the drift direction (score ≥ 50). No coil required
+        // (CASE 0's domain), no breakout required (CASE 1-5's domain). Replay:
+        // 69.6% 60m win, ~5 fires/day/index. Binding live when enabled and not in
+        // shadow mode, gated by the same V3-binding precedence as CASE 0.
+        SustainedDriftDetector.Decision driftDecision = (sustainedDriftDetector != null)
+                ? sustainedDriftDetector.evaluate(indexType, config)
+                : new SustainedDriftDetector.Decision(false, 0, 0, 0, 0, "detector_not_wired");
+        boolean driftBindingLive = driftDecision.fires()
+                && config.isSustainedDriftEnabled()
+                && !config.isSustainedDriftShadowMode()
+                && !v3BindingLive;
+        if (driftDecision.fires()) {
+            String label = driftBindingLive ? "D2_DRIFT_LIVE" : "D2_DRIFT_SHADOW";
+            log.info("[OIMomentum][{}] {} dir={} opScore={} drift60m={}% window={}min",
+                    indexType, label, driftDecision.direction(), driftDecision.opScore(),
+                    String.format("%+.3f", driftDecision.driftPct()),
+                    driftDecision.driftMinutes());
+        }
+        if (driftBindingLive) {
+            double driftSpot = momentumDetector.getSpot(indexType);
+            if (driftSpot > 0) {
+                int driftAtm = indexType.roundToATM(driftSpot);
+                long[] driftOi = liveInstrumentCache.getAtmOiChange(indexType, driftAtm, 3, 3);
+                double driftPcr = liveInstrumentCache.getRealtimePcr(indexType);
+                int driftPcrDir = pcrDir(driftPcr);
+                int driftOiDir = oiDir(driftOi[0], driftOi[1]);
+                boolean driftOiAvail = driftOi[0] != 0 || driftOi[1] != 0;
+                double driftSlope = (v3MarketContext != null)
+                        ? v3MarketContext.pcrSlope5Min(indexType) : 0.0;
+                TickMomentumDetector.MomentumSignal pseudoMom =
+                        new TickMomentumDetector.MomentumSignal(driftDecision.direction(),
+                                "SUSTAINED_DRIFT", 0, driftSpot);
+                OiMomentumEntryDiagnostics driftDiag = OiMomentumEntryDiagnostics.forSpike(
+                                indexType, pseudoMom, driftPcr, driftPcrDir,
+                                driftOi[0], driftOi[1], driftOiAvail, driftOiDir,
+                                state.oiAdvanced, marketGuard.getCurrentVix(),
+                                expiryCalendar.daysToExpiry(indexType),
+                                expiryCalendar.isExpiryDay(indexType), paperTrading(indexType))
+                        .withSustainedDrift(driftDecision.driftPct(), driftDecision.driftMinutes())
+                        .withPcrSlope(driftSlope);
+                String driftReason = String.format(
+                        "SUSTAINED_DRIFT opScore=%d drift60m=%+.3f%% window=%dmin",
+                        driftDecision.opScore(), driftDecision.driftPct(),
+                        driftDecision.driftMinutes());
+                enter(indexType, state, driftDecision.direction(), driftReason, driftSpot, driftDiag);
+                return;
+            }
+        }
+
+        // ── OPERATOR_SQUEEZE (2 Jun 2026 — catches the coil → ignition → CE/PE
+        //     short-squeeze pattern. Three gates: preceding 20-min coil, 5-min
+        //     ignition bar with OI collapse + VIX expansion, chain confirmation
+        //     via IV expansion + PCR rotation. Verified against 2 Jun NIFTY
+        //     12:30 tape — every gate would have passed at 12:35 close). ──
+        if (operatorSqueezeDetector != null) {
+            operatorSqueezeDetector.tick(indexType);
+        }
+        OperatorSqueezeDetector.Decision squeezeDecision = (operatorSqueezeDetector != null)
+                ? operatorSqueezeDetector.evaluate(indexType, config)
+                : new OperatorSqueezeDetector.Decision(false, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                        "detector_not_wired");
+        boolean squeezeBindingLive = squeezeDecision.fires()
+                && config.isOperatorSqueezeEnabled()
+                && !v3BindingLive;
+        if (squeezeDecision.fires()) {
+            log.info("[OIMomentum][{}] OPERATOR_SQUEEZE LIVE dir={} ignition={}% oiΔ={} "
+                    + "ivExp={}% pcrRot={} coilRange={}%",
+                    indexType, squeezeDecision.direction(),
+                    String.format("%+.3f", squeezeDecision.ignitionReturnPct()),
+                    String.format("%+,d", squeezeDecision.oiCollapseAbs()),
+                    String.format("%+.2f", squeezeDecision.ivExpansionPct()),
+                    String.format("%.3f", squeezeDecision.pcrRotation()),
+                    String.format("%.3f", squeezeDecision.coilRangePct()));
+        }
+        if (squeezeBindingLive) {
+            double squeezeSpot = momentumDetector.getSpot(indexType);
+            if (squeezeSpot > 0) {
+                int squeezeAtm = indexType.roundToATM(squeezeSpot);
+                long[] sqzOi = liveInstrumentCache.getAtmOiChange(indexType, squeezeAtm, 3, 3);
+                double sqzPcr = liveInstrumentCache.getRealtimePcr(indexType);
+                int sqzPcrDir = pcrDir(sqzPcr);
+                int sqzOiDir = oiDir(sqzOi[0], sqzOi[1]);
+                boolean sqzOiAvail = sqzOi[0] != 0 || sqzOi[1] != 0;
+                TickMomentumDetector.MomentumSignal pseudoMom =
+                        new TickMomentumDetector.MomentumSignal(squeezeDecision.direction(),
+                                "OPERATOR_SQUEEZE", Math.abs(squeezeDecision.ignitionReturnPct()),
+                                squeezeSpot);
+                OiMomentumEntryDiagnostics sqzDiag = OiMomentumEntryDiagnostics.forSpike(
+                        indexType, pseudoMom, sqzPcr, sqzPcrDir,
+                        sqzOi[0], sqzOi[1], sqzOiAvail, sqzOiDir,
+                        state.oiAdvanced, marketGuard.getCurrentVix(),
+                        expiryCalendar.daysToExpiry(indexType),
+                        expiryCalendar.isExpiryDay(indexType), paperTrading(indexType));
+                // E3 (2026-06-02): on expiry day, gamma exposure is roughly
+                // double the non-expiry case. Tag the reason string with
+                // EXPIRY_HALF_SIZE so downstream sizing (or operator visibility)
+                // can apply a 0.5× multiplier. Logged as WARN so it's prominent.
+                boolean sqzExpiryDay = expiryCalendar.isExpiryDay(indexType);
+                if (sqzExpiryDay) {
+                    log.warn("[OIMomentum][{}] OPERATOR_SQUEEZE on EXPIRY DAY — "
+                            + "recommend reduced size (config.operatorSqueezeExpiryLotMultiplier={})",
+                            indexType, config.getOperatorSqueezeExpiryLotMultiplier());
+                }
+                String sqzReason = String.format(
+                        "OPERATOR_SQUEEZE%s dir=%+d ignition=%+.3f%% oiCollapse=%+,d "
+                        + "ivExp=%+.2f%% pcrRot=%.3f coilRange=%.3f%%",
+                        sqzExpiryDay ? "[EXPIRY_HALF_SIZE]" : "",
+                        squeezeDecision.direction(), squeezeDecision.ignitionReturnPct(),
+                        squeezeDecision.oiCollapseAbs(), squeezeDecision.ivExpansionPct(),
+                        squeezeDecision.pcrRotation(), squeezeDecision.coilRangePct());
+                enter(indexType, state, squeezeDecision.direction(), sqzReason, squeezeSpot, sqzDiag);
                 return;
             }
         }
@@ -939,7 +1094,39 @@ public class OIMomentumStrategy {
             BiasScore bias = computeBiasScore(indexType, state, momentum.direction(),
                     oiDirection, pcrDirection, oiAvailable, ceOiChange, peOiChange, atm);
 
-            if (bias.score() >= config.getBiasConfidenceThreshold()) {
+            // ── T3 (2 Jun 2026): Conditional bias-floor lowering ──
+            // When BOTH (a) a confirmed coil break (20m range < relaxRangePct) AND
+            // (b) PCR slope agrees with momentum at ≥ relaxSlopeMinAbs hold, lower
+            // the entry floor from biasFloorDefault to biasFloorRelaxed. This
+            // catches setups like 1 Jun 11:55 CASE 1 BEAR (bias ~55 under 65 floor).
+            int defaultFloor = config.isBiasFloorRelaxEnabled()
+                    ? config.getBiasFloorDefault() : config.getBiasConfidenceThreshold();
+            int effectiveFloor = defaultFloor;
+            boolean floorRelaxed = false;
+            double slope5m = (v3MarketContext != null)
+                    ? v3MarketContext.pcrSlope5Min(indexType) : 0.0;
+            if (config.isBiasFloorRelaxEnabled()) {
+                double range20m = compute20mRangePctSafe(indexType);
+                boolean coilBreakConfirmed = range20m > 0
+                        && range20m <= config.getBiasFloorRelaxCoilBreakRangePct();
+                boolean slopeAgrees = (momentum.direction() > 0
+                                && slope5m >= +config.getBiasFloorRelaxPcrSlopeMinAbs())
+                        || (momentum.direction() < 0
+                                && slope5m <= -config.getBiasFloorRelaxPcrSlopeMinAbs());
+                if (coilBreakConfirmed && slopeAgrees) {
+                    effectiveFloor = config.getBiasFloorRelaxed();
+                    floorRelaxed = true;
+                    log.info("[OIMomentum][{}] BIAS_FLOOR_RELAXED {}→{} (range20m={}%, slope={})",
+                            indexType, defaultFloor, effectiveFloor,
+                            String.format("%.3f", range20m),
+                            String.format("%+.3f", slope5m));
+                }
+            }
+            // Stamp slope + floor onto the diagnostics so the tune CSV
+            // can quantify which fires used the relaxed path.
+            diag = diag.withPcrSlope(slope5m).withBiasFloor(floorRelaxed, effectiveFloor);
+
+            if (bias.score() >= effectiveFloor) {
                 // Accumulate confirmation ticks in same direction
                 if (momentum.direction() == state.lastConfirmedDir) {
                     state.confirmationCount++;
@@ -1321,13 +1508,21 @@ public class OIMomentumStrategy {
         double high30 = momentumDetector.getRolling30MinHigh(indexType);
         double low30 = momentumDetector.getRolling30MinLow(indexType);
         double rangePct = computeRangePct30m(indexType);
+        // A6 (2026-06-02): expose pcrSlope5m in throttle path so the T2 signal
+        // is visible in the 98% of evals that take the throttle branch. Today
+        // PCR moved 1.05 → 1.45 in 25 min but every eval row showed 0.0
+        // because the field was hardcoded here. Returns 0 until the
+        // MarketContextService has >= 6 min of samples accumulated.
+        double pcrSlope = (v3MarketContext != null)
+                ? v3MarketContext.pcrSlope5Min(indexType) : 0.0;
         return new OiMomentumEntryDiagnostics(
                 indexType, "", 0, "", 0, 0, pcrDir(pcr), pcr,
                 oi[0], oi[1], oi[0] != 0 || oi[1] != 0, spot, atm,
                 high30, low30, 0, "", marketGuard.getCurrentVix(),
                 expiryCalendar.daysToExpiry(indexType), expiryCalendar.isExpiryDay(indexType),
                 paperTrading(indexType), reason, state.oiAdvanced, rangePct, "", prem[0], prem[1],
-                "", "", "THROTTLE", 0, 0);
+                "", "", "THROTTLE", 0, 0)
+                .withPcrSlope(pcrSlope);
     }
 
     private double computeRangePct30m(IndexType indexType) {
@@ -1626,9 +1821,55 @@ public class OIMomentumStrategy {
     private void managePosition(IndexType indexType, IndexState state) {
         TradeEntity trade = tradeRepository.findById(state.activeTradeId).orElse(null);
         if (trade == null || trade.getStatus() != TradeStatus.OPEN) {
+            // ── Fixes #2 / #5 / #6 / #8 (2026-06-02) ──────────────────────────
+            // External-close auto-heal: when a trade closes via a path that
+            // bypasses closePosition() — OrderFillWatchdog (manual UI close),
+            // FailSafeSquareoffDaemon, GracefulShutdownHandler — this branch
+            // discovers the close on the next tick. Previously it only nulled
+            // out activeTradeId/Direction/peakPrice and re-entry boost / daily
+            // P&L / decisionKey leaked because nothing else fired. Now we also:
+            //   - log a WARN so the operator can see external close happened
+            //   - record lastProfitableExitTime if the trade made money (so
+            //     re-entry boost actually fires on the same-direction next
+            //     entry, like it does on closePosition exits)
+            //   - update state.dailyPnl from trade.realizedPnl so the daily
+            //     loss circuit-breaker counts external-close losses too
+            //   - clear lastEntryDecisionKey and lastEntryDiagnostics so the
+            //     next entry's tune-CSV row gets fresh fields
+            if (trade != null) {
+                java.math.BigDecimal entryPx = trade.getEntryPrice();
+                java.math.BigDecimal exitPx = trade.getExitPrice();
+                java.math.BigDecimal pnl = trade.getRealizedPnl();
+                String exitReason = trade.getExitReason();
+                log.warn("[OIMomentum][{}] activeTradeId={} closed externally (reason={}, exit={}, pnl={}) — auto-healing state",
+                        indexType, trade.getTradeId(), exitReason, exitPx, pnl);
+                // Re-entry boost: trade was profitable iff entry/exit signed
+                // P&L is positive. For longs (current OI Momentum only buys
+                // calls/puts) that's exit > entry.
+                if (entryPx != null && exitPx != null
+                        && exitPx.compareTo(entryPx) > 0
+                        && state.activeDirection != 0) {
+                    state.lastProfitableExitTime = Instant.now();
+                    state.lastProfitableExitDirection = state.activeDirection;
+                    log.info("[OIMomentum][{}] external close was profitable — reEntryBoost armed (dir={})",
+                            indexType, state.activeDirection);
+                }
+                // Daily P&L from realisedPnl (broker-confirmed, not estimated).
+                if (pnl != null) {
+                    state.dailyPnl += pnl.doubleValue();
+                    if (pnl.signum() < 0) {
+                        state.totalLossesPnl += pnl.doubleValue();
+                        state.totalLossesCount.incrementAndGet();
+                    }
+                }
+            }
             state.activeTradeId = null;
             state.activeDirection = 0;
+            state.activeStrike = 0;
             state.peakPrice = 0;
+            state.peakConfirmationTicks = 0;
+            state.lastEntryDecisionKey = null;
+            state.lastEntryDiagnostics = null;
             return;
         }
 
@@ -1650,13 +1891,21 @@ public class OIMomentumStrategy {
 
         double entryPrice = trade.getEntryPrice().doubleValue();
 
-        // P0 #3: Track and persist peak price
+        // P0 #3: Track and persist peak price.
+        // A2 (2026-06-02): also track peak-confirmation tick count — the BE-stop
+        // can only arm once the peak has held for 2 consecutive ticks. This
+        // blocks the 17-second flat-scalp pathology (today's 52.05→52.30 trade).
         if (currentPrice > state.peakPrice) {
             state.peakPrice = currentPrice;
+            state.peakConfirmationTicks = Math.min(state.peakConfirmationTicks + 1, 99);
             if (trade.getPeakPrice() == null || BigDecimal.valueOf(state.peakPrice).compareTo(trade.getPeakPrice()) > 0) {
                 trade.setPeakPrice(BigDecimal.valueOf(state.peakPrice));
                 tradeRepository.save(trade);
             }
+        } else if (currentPrice < state.peakPrice * 0.998) {
+            // Retraced more than 0.2% from peak — reset confirmation streak so a
+            // future new peak must re-confirm.
+            state.peakConfirmationTicks = 0;
         }
 
         double profitPct = (currentPrice - entryPrice) / entryPrice * 100;
@@ -1676,16 +1925,23 @@ public class OIMomentumStrategy {
                 ? trade.getAppliedStopLossPercent().doubleValue()
                 : config.getStopLossPercent();
 
-        // Break-even stop: once peak profit ≥ trigger, floor SL to 0% (entry price).
-        // Prevents "went up 5%, came all the way back to a loss" trades.
-        // Enabled when breakEvenTriggerPercent > 0 (default 0 = off).
+        // Break-even stop: once peak profit ≥ trigger, floor SL to entry price (0%).
+        // A2 (2026-06-02): require 2 consecutive peak confirmations before BE arms
+        // — single-tick spike no longer triggers BE-then-immediate-exit.
+        // E2 (2026-06-02): on expiry day, use +1% floor instead of 0% to account
+        // for theta decay carrying premium back to entry within minutes.
         double beTrigger = config.getBreakEvenTriggerPercent();
-        if (beTrigger > 0 && peakPct >= beTrigger) {
-            slPercent = Math.min(slPercent, 0.0); // SL can't be below 0 (entry price)
+        boolean expiryDay = expiryCalendar.isExpiryDay(indexType);
+        boolean peakConfirmed = state.peakConfirmationTicks >= 2;
+        boolean beArmed = beTrigger > 0 && peakPct >= beTrigger && peakConfirmed;
+        if (beArmed) {
+            double beFloor = expiryDay ? -1.0 : 0.0;  // expiry: SL no worse than +1% profit;
+                                                       // non-expiry: SL no worse than entry
+            slPercent = Math.min(slPercent, beFloor);
         }
 
         if (profitPct <= -slPercent) {
-            String reason = (beTrigger > 0 && peakPct >= beTrigger) ? "BREAK_EVEN_STOP" : "STOP_LOSS";
+            String reason = beArmed ? "BREAK_EVEN_STOP" : "STOP_LOSS";
             closePosition(indexType, state, trade, currentPrice, reason);
             if ("STOP_LOSS".equals(reason)) {
                 state.lastSlTime = Instant.now();
@@ -2188,6 +2444,7 @@ public class OIMomentumStrategy {
         state.activeDirection = 0;
         state.activeStrike = 0;
         state.peakPrice = 0;
+        state.peakConfirmationTicks = 0;
         state.lastEntryDecisionKey = null;
         state.lastEntryDiagnostics = null;
     }
@@ -2195,6 +2452,23 @@ public class OIMomentumStrategy {
     // ═══════════════════════════════════════════════════════════════════════════
     // ADAPTIVE BIAS ENGINE (Stage 1)
     // ═══════════════════════════════════════════════════════════════════════════
+
+    /**
+     * 20-minute spot range as % of current spot. Returns 0 (not NaN) when the
+     * detector hasn't warmed up so callers can use a simple {@code > 0} check.
+     * Used by T3 conditional bias-floor lowering.
+     */
+    private double compute20mRangePctSafe(IndexType indexType) {
+        try {
+            double high = momentumDetector.getRollingHighInWindow(indexType, 20);
+            double low = momentumDetector.getRollingLowInWindow(indexType, 20);
+            double spot = momentumDetector.getSpot(indexType);
+            if (high <= 0 || low <= 0 || spot <= 0 || high < low) return 0.0;
+            return (high - low) / spot * 100.0;
+        } catch (Exception e) {
+            return 0.0;
+        }
+    }
 
     /**
      * Lightweight value type returned by computeBiasScore().
@@ -2303,6 +2577,31 @@ public class OIMomentumStrategy {
         if (c4Bonus > 0) {
             score += c4Bonus;
             sig.append(" C4_WATCH(+").append(c4Bonus).append(")");
+        }
+
+        // ── T2 (2 Jun 2026): PCR slope additive bonus ──────────────────────────
+        // The binary level-threshold (pcr ≥ bullThreshold / pcr ≤ bearThreshold)
+        // misreads a fast-rolling PCR as "neutral" while it's mid-flight. The
+        // 1 Jun 2026 NIFTY tape: PCR ran 0.95 → 1.27 between 11:30 and 12:00 —
+        // a clear bearish flip-in-progress that the level rule treated as flat.
+        // Slope-based bonus catches the inflight signal while the level catches
+        // sustained extremes. They are complementary, not redundant.
+        if (config.isPcrSlopeBiasBonusEnabled() && v3MarketContext != null) {
+            double slope = v3MarketContext.pcrSlope5Min(indexType);
+            double minAbs = config.getPcrSlopeBiasMinAbs();
+            boolean slopeAgrees = (momentumDir > 0 && slope >= +minAbs)
+                    || (momentumDir < 0 && slope <= -minAbs);
+            boolean slopeOpposes = (momentumDir > 0 && slope <= -minAbs)
+                    || (momentumDir < 0 && slope >= +minAbs);
+            if (slopeAgrees) {
+                score += config.getPcrSlopeBiasBonusPoints();
+                sig.append(String.format(" SLOPE✓(+%d,%+.3f)",
+                        config.getPcrSlopeBiasBonusPoints(), slope));
+            } else if (slopeOpposes) {
+                score -= config.getPcrSlopeBiasOpposePenalty();
+                sig.append(String.format(" SLOPE✗(-%d,%+.3f)",
+                        config.getPcrSlopeBiasOpposePenalty(), slope));
+            }
         }
 
         // ── [+0..+20] Operator Framework conviction bonus ─────────────────────────

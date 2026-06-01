@@ -375,8 +375,12 @@ oi-momentum:
     # Format (key=value):  fii.net.crore=1234.5  dii.net.crore=-567.8
     fii-dii-file: data/v3-fii-dii.properties
 
-# ── OI Shift Trap — data-week capture (deploy-and-go, all ON by default) ─────
+# ── OI Shift Trap — data-week capture + Phase 1-4 enhancements ───────────────
+# Master toggle below (enhancements-enabled) gates ALL Phase 1-4 features.
+# 2026-06-01: flipped to true after the post-review fix pass — live in production.
+# To roll back to legacy behavior in an emergency, set enhancements-enabled: false.
 oi-shift-trap:
+  # Data-week capture (deploy-and-go, all ON by default)
   capture-enabled: true
   chain-snapshot-warmup-enabled: true
   eval-episode-dedup-enabled: true
@@ -384,6 +388,39 @@ oi-shift-trap:
   forward-checkpoints-enabled: true
   confirmation-shadow-enabled: true
   exit-mae-mfe-enabled: true
+
+  # ── Phase 1-4 master toggle (LIVE — flip to false for emergency rollback) ─
+  enhancements-enabled: true
+
+  # ── Phase 1 tunables ─────────────────────────────────────────────────────
+  trend-lookback-candles: 5
+  min-confidence-score: 65
+  score-base: 30
+  expiry-day-proximity-percent: 1.20
+  expiry-day-imbalance-ratio: 1.30
+  non-expiry-proximity-percent: 0.75
+  non-expiry-imbalance-ratio: 1.50
+  imbalance-only-entry-ratio: 2.5
+
+  # ── Phase 2 tunables ─────────────────────────────────────────────────────
+  distant-oi-max-strikes: 4
+  fake-breakout-volume-multiplier: 2.0
+  fake-breakout-reversal-percent: 0.30
+  oi-absorption-wall-oi-threshold: 200000
+  # Default 1 = single-index-safe (no peer-index agreement required). Raise to 2 only
+  # when NIFTY + BANKNIFTY + SENSEX are all actively evaluated in the same 30s window.
+  cross-index-min-agreement: 1
+  liquidity-hunt-proximity-percent: 0.30
+
+  # ── Phase 3 tunables ─────────────────────────────────────────────────────
+  pending-signal-ttl-minutes: 5
+  oi-unwind-exit-drop-percent: 10.0
+  oi-unwind-exit-window-minutes: 5
+
+  # ── Phase 5 tunables — high-imbalance Telegram watch alerts (no trade required) ─
+  # Set imbalance-alert-ratio: 0 to disable the watch alerts entirely.
+  imbalance-alert-ratio: 4.0
+  imbalance-alert-cooldown-minutes: 5
 
 # ── Signal tuning (EOD HTML from reports/entry-signals CSVs) ───────────────
 # Scheduler off by default — heavy on heap (t3.small). CSV capture during live session still runs.

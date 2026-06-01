@@ -84,6 +84,10 @@ public class AlgoTradeExecution {
     private final OiShiftTrapStrategy oiShiftTrapStrategy;
     private final OiShiftTrapTuneRecorder oiShiftTrapTuneRecorder;
     private final ShiftTrapSignalCaptureService shiftTrapSignalCaptureService;
+
+    /** Liveness watcher for the OIST evaluation loop. 2 Jun 2026. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.strategy.oishifttrap.OiShiftTrapHeartbeatService oiShiftTrapHeartbeat;
     private final ExpiryGammaStrategy expiryGammaStrategy;
     private final ExpiryReversalStrategy expiryReversalStrategy;
     private final MomentumStrategy momentumStrategy;
@@ -604,6 +608,11 @@ public class AlgoTradeExecution {
                     }
                     diagHolder[0] = new com.algo.trade.strategy.StrategyDiagnostics(oiFailReason[0], null, null, null, null, null, null, null, null);
                     yield Optional.<StrategyDecision>empty();
+                }
+                // OIST liveness heartbeat (2 Jun 2026 — addresses the 12:10 IST silent
+                // stop that left OIST silent through the 12:30 squeeze).
+                if (oiShiftTrapHeartbeat != null) {
+                    oiShiftTrapHeartbeat.recordTick(IndexType.from(underlying));
                 }
                 OiShiftTrapStrategy.TrapEvaluation trapEval = oiShiftTrapStrategy.evaluateWithDiagnostics(
                         oiCtx.get().optionChainSnapshot(), oiSpot, config, underlying, trendCandles);
@@ -1235,10 +1244,25 @@ public class AlgoTradeExecution {
     private IvRankResult computeLiveIvRank(UnderlyingSymbol underlying, List<Candle> candles) {
         com.algo.trade.domain.IndexType indexType = com.algo.trade.domain.IndexType.from(underlying);
 
-        // Use VIX-based IV rank as primary source (stable, exchange-computed, no history needed).
-        // IVRankTracker's percentile rank is unreliable until 200+ historical samples accumulate.
-        // VIX mapping: <12 → rank 10, 12-14 → rank 25, 14-16 → rank 40, 16-18 → rank 55,
-        //              18-20 → rank 70, 20-25 → rank 80, >25 → rank 95
+        // ── PRIMARY: IVRankTracker (real percentile from historical IV samples) ──
+        // Requires ≥ 20 historical samples; seeded via the admin endpoint
+        //   POST /admin/iv-samples/seed-india-vix?years=5
+        // which pulls India VIX history from Yahoo Finance into iv_samples.
+        // Once seeded, this is a real IV percentile (% of historical days
+        // where IV was below today's) rather than a 7-bucket VIX proxy.
+        if (ivRankTracker.hasSufficientHistory(indexType)
+                && ivRankTracker.getCurrentIV(indexType) > 0) {
+            double rank = ivRankTracker.getIVRank(indexType);
+            int samples = ivRankTracker.getSampleCount(indexType);
+            return new IvRankResult(rank, "TRACKER:n=" + samples);
+        }
+
+        // ── FALLBACK 1: VIX bucket proxy (stable, no history required) ──
+        // Used when the tracker has < 20 samples (fresh DB, pre-seed). Still
+        // better than NEUTRAL because it at least reflects the current vol
+        // regime, even with coarse buckets.
+        // Bucket map: <12 → 10, 12-14 → 25, 14-16 → 40, 16-18 → 55,
+        //             18-20 → 70, 20-25 → 80, >25 → 95.
         double vix = marketGuard.getCurrentVix();
         if (vix > 0) {
             double vixBasedRank;
@@ -1249,15 +1273,17 @@ public class AlgoTradeExecution {
             else if (vix < 20) vixBasedRank = 70;
             else if (vix < 25) vixBasedRank = 80;
             else vixBasedRank = 95;
-            return new IvRankResult(vixBasedRank, "VIX:" + String.format("%.1f", vix));
+            return new IvRankResult(vixBasedRank, "VIX_PROXY:" + String.format("%.1f", vix));
         }
 
-        // Fallback: IVRankTracker if VIX unavailable (shouldn't happen during market hours)
+        // ── FALLBACK 2: tracker even with insufficient history if it has any IV at all ──
         if (ivRankTracker.getCurrentIV(indexType) > 0) {
-            return new IvRankResult(ivRankTracker.getIVRank(indexType), "TRACKER");
+            return new IvRankResult(ivRankTracker.getIVRank(indexType), "TRACKER_COLD");
         }
 
-        log.debug("IV rank unavailable for {} (VIX and IVRankTracker both unavailable) — using neutral 50.0", underlying);
+        // ── FALLBACK 3: neutral 50, log so we notice ──
+        log.debug("IV rank unavailable for {} (tracker cold + VIX unavailable) — using neutral 50.0",
+                underlying);
         return new IvRankResult(50.0, "NEUTRAL");
     }
 

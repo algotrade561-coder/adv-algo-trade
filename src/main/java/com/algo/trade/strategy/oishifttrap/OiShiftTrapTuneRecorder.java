@@ -6,15 +6,21 @@ import com.algo.trade.reporting.SignalDecisionKey;
 import com.algo.trade.tuning.adapter.strategies.OiShiftTrapCaptureAdapter;
 import com.algo.trade.tuning.infra.EpisodeAggregator;
 import com.algo.trade.tuning.recorder.TuningEventRecorder;
+import com.algo.trade.domain.IndexType;
+import com.algo.trade.persistence.TradeEntity;
+import com.algo.trade.tuning.infra.MaeMfeTracker;
+import java.math.BigDecimal;
+import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
-import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Phase 7 — real implementation of OI Shift Trap capture for the unified
@@ -54,9 +60,19 @@ public class OiShiftTrapTuneRecorder {
     /** Latched once we log wiring status. */
     private volatile boolean firstCallLogged = false;
 
+    // ── 2026-06-01 — live-session counters (rolling 5-min window) ──
+    private final AtomicLong evalCount = new AtomicLong();
+    private final AtomicLong signalCount = new AtomicLong();
+    private final AtomicLong scanBlockedCount = new AtomicLong();
+    private final AtomicLong exitCount = new AtomicLong();
+    /** key = normalized blocker, value = count since last summary. */
+    private final ConcurrentHashMap<String, AtomicLong> blockerCounts = new ConcurrentHashMap<>();
+
     /** Scan was blocked before evaluation even ran. Records a SCAN_CONTEXT blocked episode. */
     public void recordScanBlocked(String underlying, String outcome, String blocker, BigDecimal spot) {
         logFirstCallStatus();
+        scanBlockedCount.incrementAndGet();
+        bumpBlocker(blocker);
         if (tuningEventRecorder == null || adapter == null) return;
         OiShiftTrapDiagnostics blockedDiag = OiShiftTrapDiagnostics.blocked(
                 underlying, outcome, blocker, spot);
@@ -66,11 +82,14 @@ public class OiShiftTrapTuneRecorder {
     /** Standard per-tick evaluation outcome. Aggregator-deduplicated. */
     public void recordEvaluation(OiShiftTrapDiagnostics diag) {
         logFirstCallStatus();
-        if (tuningEventRecorder == null || adapter == null || diag == null) return;
-        String underlying = diag.underlying();
-        String blocker = diag.primaryBlocker() == null || diag.primaryBlocker().isBlank()
+        if (diag == null) return;
+        evalCount.incrementAndGet();
+        String blockerForStats = diag.primaryBlocker() == null || diag.primaryBlocker().isBlank()
                 ? diag.outcome() : diag.primaryBlocker();
-        feedAggregator(underlying, blocker, diag);
+        bumpBlocker(blockerForStats);
+        if (tuningEventRecorder == null || adapter == null) return;
+        String underlying = diag.underlying();
+        feedAggregator(underlying, blockerForStats, diag);
     }
 
     /** Signal fired — bypass aggregator and emit immediately as a SIGNAL event. */
@@ -78,6 +97,7 @@ public class OiShiftTrapTuneRecorder {
                              OiShiftTrapDiagnostics diag,
                              List<Candle> underlyingCandles) {
         logFirstCallStatus();
+        if (decision != null) signalCount.incrementAndGet();
         if (tuningEventRecorder == null || adapter == null || decision == null) return;
         try {
             String correlationKey = SignalDecisionKey.from(decision);
@@ -86,6 +106,37 @@ public class OiShiftTrapTuneRecorder {
                     underlyingCandles != null ? underlyingCandles : List.of()));
         } catch (Exception ex) {
             log.warn("[OiShiftTrapTuneRecorder] signal record failed (non-fatal): {}", ex.getMessage());
+        }
+    }
+
+    /**
+     * Phase 5+ — emit a tuning {@code ExitEvent} when an OI Shift Trap trade closes.
+     * Builds the event via {@link OiShiftTrapCaptureAdapter#buildExitEvent} and writes
+     * through {@link TuningEventRecorder}. {@code trapAttrs} carries strategy-specific
+     * context (e.g. OI unwind evidence: drop%, entry/current OI, minutes since entry,
+     * signal-path tag derived from entry reason). NO-OP when wiring is missing or the
+     * trade isn't OI_SHIFT_TRAP.
+     */
+    public void recordExit(TradeEntity trade,
+                            BigDecimal exitPrice,
+                            String exitReason,
+                            MaeMfeTracker.Snapshot maeSnapshot,
+                            Map<String, Object> trapAttrs) {
+        logFirstCallStatus();
+        if (trade != null && "OI_SHIFT_TRAP".equals(trade.getStrategyType())) {
+            exitCount.incrementAndGet();
+        }
+        if (tuningEventRecorder == null || adapter == null || trade == null) return;
+        if (!"OI_SHIFT_TRAP".equals(trade.getStrategyType())) return;
+        try {
+            String correlationKey = trade.getTradeId();
+            IndexType index = IndexType.fromName(trade.getUnderlying());
+            tuningEventRecorder.record(adapter.buildExitEvent(
+                    index, trade, maeSnapshot, correlationKey,
+                    exitPrice, exitReason, /* reversal= */ false, trapAttrs));
+        } catch (Exception ex) {
+            log.warn("[OiShiftTrapTuneRecorder] exit record failed (non-fatal): {}",
+                    ex.getMessage());
         }
     }
 
@@ -103,6 +154,39 @@ public class OiShiftTrapTuneRecorder {
         } catch (Exception ex) {
             log.debug("[OiShiftTrapTuneRecorder] flushExpired failed (non-fatal): {}", ex.getMessage());
         }
+    }
+
+    /**
+     * 2026-06-01 — every 5 minutes during the JVM lifetime, emit a one-line summary
+     * of OI Shift Trap activity (evaluations, signals, exits, top blockers). Resets
+     * counters after each emission so each line is "last 5 min" only. Cheap; runs
+     * regardless of market hours so a quiet line itself is informative.
+     */
+    @org.springframework.scheduling.annotation.Scheduled(fixedDelay = 300_000, initialDelay = 60_000)
+    public void logFiveMinSummary() {
+        long evals = evalCount.getAndSet(0);
+        long signals = signalCount.getAndSet(0);
+        long scanBlocked = scanBlockedCount.getAndSet(0);
+        long exits = exitCount.getAndSet(0);
+        String topBlockers = top3Blockers();
+        blockerCounts.clear();
+        log.info("[OiShiftTrap-Stats 5m] evals={} signals={} exits={} scanBlocked={} topBlockers=[{}]",
+                evals, signals, exits, scanBlocked, topBlockers);
+    }
+
+    /** Format top-3 blockers as "name=count, name=count, ..." sorted desc. */
+    private String top3Blockers() {
+        return blockerCounts.entrySet().stream()
+                .sorted((a, b) -> Long.compare(b.getValue().get(), a.getValue().get()))
+                .limit(3)
+                .map(e -> e.getKey() + "=" + e.getValue().get())
+                .reduce((a, b) -> a + ", " + b)
+                .orElse("");
+    }
+
+    private void bumpBlocker(String blocker) {
+        if (blocker == null || blocker.isBlank()) return;
+        blockerCounts.computeIfAbsent(blocker, k -> new AtomicLong()).incrementAndGet();
     }
 
     // ── Internals ─────────────────────────────────────────────────────────
@@ -154,6 +238,20 @@ public class OiShiftTrapTuneRecorder {
             List<Candle> candles = args.length >= 3 && args[2] instanceof List<?> lst
                     ? (List<Candle>) lst : List.of();
             recordSignal(sd, d, candles);
+        }
+    }
+
+    /** Varargs shim: (TradeEntity, BigDecimal, String, MaeMfeTracker.Snapshot, Map). */
+    @SuppressWarnings("unchecked")
+    public void recordExit(Object... args) {
+        if (args.length >= 3
+                && args[0] instanceof TradeEntity t
+                && args[1] instanceof BigDecimal price
+                && args[2] instanceof String reason) {
+            MaeMfeTracker.Snapshot snap = args.length >= 4 && args[3] instanceof MaeMfeTracker.Snapshot s ? s : null;
+            Map<String, Object> attrs = args.length >= 5 && args[4] instanceof Map<?, ?> m
+                    ? (Map<String, Object>) m : null;
+            recordExit(t, price, reason, snap, attrs);
         }
     }
 }

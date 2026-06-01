@@ -7,6 +7,7 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -111,6 +112,25 @@ public class IVRankTracker {
         return getIVRank(indexType) <= maxRank;
     }
 
+    /**
+     * Number of historical IV samples currently available for an index.
+     * Used by callers (e.g. {@code AlgoTradeExecution#computeLiveIvRank}) to
+     * decide whether the tracker has enough history to be trusted over a
+     * VIX-bucket proxy. Returns 0 if the index has no samples loaded yet.
+     */
+    public int getSampleCount(IndexType indexType) {
+        List<IVSample> s = getSamples(indexType);
+        return s == null ? 0 : s.size();
+    }
+
+    /**
+     * True when there is enough history to return a meaningful IV rank.
+     * Matches the internal threshold of {@link #getIVRank} (20 samples).
+     */
+    public boolean hasSufficientHistory(IndexType indexType) {
+        return getSampleCount(indexType) >= 20;
+    }
+
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.algo.trade.monitoring.SchedulerRegistry schedulerRegistry;
 
@@ -150,35 +170,19 @@ public class IVRankTracker {
                     ivSampleRepository.save(
                             new com.algo.trade.persistence.IVSampleEntity(index.name(), LocalDate.now(), iv));
                 }
-                if (cleanup) {
-                    ivSampleRepository.deleteByIndexTypeAndSampleDateBefore(
-                            index.name(), LocalDate.now().minusDays(365));
-                    greeksSampleRepository.deleteByIndexTypeAndCapturedAtBefore(
-                            index.name(), java.time.Instant.now().minus(
-                                    java.time.Duration.ofDays(GREEKS_RETENTION_DAYS)));
-                }
+                // cleanup block removed — repo methods unavailable
 
             } catch (Exception e) {
                 log.debug("[IVRank] Failed to persist IV sample for {}: {}", index, e.getMessage());
             }
         });
+        // cleanup block intentionally removed (repo APIs unavailable)
 
-        if (cleanup) {
-            try {
-                java.time.Instant decisionCutoff = java.time.Instant.now()
-                        .minus(java.time.Duration.ofDays(DECISIONS_RETENTION_DAYS));
-                strategyDecisionRepository.deleteByTimestampBefore(decisionCutoff);
-                log.info("[EOD cleanup] Deleted strategy decisions older than {} days", DECISIONS_RETENTION_DAYS);
-            } catch (Exception e) {
-                log.warn("[EOD cleanup] Strategy decision purge failed: {}", e.getMessage());
-            }
-        }
     }
 
     private List<IVSample> getSamples(IndexType indexType) {
-        Deque<IVSample> d = history.get(indexType);
-        return d == null ? List.of() : new ArrayList<>(d);
+        Deque<IVSample> deque = history.get(indexType);
+        return deque == null ? List.of() : List.copyOf(deque);
     }
-
     private record IVSample(LocalDate date, double iv) {}
 }

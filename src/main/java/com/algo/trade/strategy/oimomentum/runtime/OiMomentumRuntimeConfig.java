@@ -183,6 +183,74 @@ public class OiMomentumRuntimeConfig {
     @ColumnDefault("3000")
     private int rangeEdgeFadeOiBuildMin = 3000;
 
+    // ── D2 SUSTAINED_DRIFT (2 Jun 2026 — Replay 69.6% 60m win, ~5 fires/day/index). ──
+    @Column(name = "sustained_drift_enabled", nullable = false)
+    @ColumnDefault("true")
+    private boolean sustainedDriftEnabled = true;
+
+    @Column(name = "sustained_drift_shadow_mode", nullable = false)
+    @ColumnDefault("false")
+    private boolean sustainedDriftShadowMode = false;
+
+    @Column(name = "sustained_drift_min_pct", nullable = false)
+    @ColumnDefault("0.20")
+    private double sustainedDriftMinPct = 0.20;
+
+    @Column(name = "sustained_drift_op_score_min", nullable = false)
+    @ColumnDefault("50")
+    private int sustainedDriftOpScoreMin = 50;
+
+    @Column(name = "sustained_drift_window_minutes", nullable = false)
+    @ColumnDefault("60")
+    private int sustainedDriftWindowMinutes = 60;
+
+    // ── T2 PCR slope additive bonus (2 Jun 2026). ──
+    @Column(name = "pcr_slope_bias_bonus_enabled", nullable = false)
+    @ColumnDefault("true")
+    private boolean pcrSlopeBiasBonusEnabled = true;
+
+    @Column(name = "pcr_slope_bias_min_abs", nullable = false)
+    @ColumnDefault("0.05")
+    private double pcrSlopeBiasMinAbs = 0.05;
+
+    @Column(name = "pcr_slope_bias_bonus_points", nullable = false)
+    @ColumnDefault("10")
+    private int pcrSlopeBiasBonusPoints = 10;
+
+    @Column(name = "pcr_slope_bias_oppose_penalty", nullable = false)
+    @ColumnDefault("5")
+    private int pcrSlopeBiasOpposePenalty = 5;
+
+    // ── T3 Conditional bias-floor lowering (2 Jun 2026). ──
+    @Column(name = "bias_floor_relax_enabled", nullable = false)
+    @ColumnDefault("true")
+    private boolean biasFloorRelaxEnabled = true;
+
+    @Column(name = "bias_floor_default", nullable = false)
+    @ColumnDefault("65")
+    private int biasFloorDefault = 65;
+
+    @Column(name = "bias_floor_relaxed", nullable = false)
+    @ColumnDefault("55")
+    private int biasFloorRelaxed = 55;
+
+    @Column(name = "bias_floor_relax_coil_break_range_pct", nullable = false)
+    @ColumnDefault("0.15")
+    private double biasFloorRelaxCoilBreakRangePct = 0.15;
+
+    @Column(name = "bias_floor_relax_pcr_slope_min_abs", nullable = false)
+    @ColumnDefault("0.05")
+    private double biasFloorRelaxPcrSlopeMinAbs = 0.05;
+
+    // ── T5 Capture heartbeat (2 Jun 2026 — fixes 1 Jun silent 13:51 capture stop). ──
+    @Column(name = "capture_heartbeat_enabled", nullable = false)
+    @ColumnDefault("true")
+    private boolean captureHeartbeatEnabled = true;
+
+    @Column(name = "capture_heartbeat_stale_minutes", nullable = false)
+    @ColumnDefault("10")
+    private int captureHeartbeatStaleMinutes = 10;
+
     // ── Theta-decay gate (applied to all new entries; also retroactively to CASE 0) ──
 
     /** Enable theta-decay rejection. Trades whose expected theta cost exceeds the
@@ -319,12 +387,50 @@ public class OiMomentumRuntimeConfig {
     public double getThetaDecayMaxCostPct() { return thetaDecayMaxCostPct; }
     public void setThetaDecayMaxCostPct(double v) { this.thetaDecayMaxCostPct = v; }
 
+    // ── D2 SUSTAINED_DRIFT (2 Jun 2026) ──
+    public boolean isSustainedDriftEnabled() { return sustainedDriftEnabled; }
+    public void setSustainedDriftEnabled(boolean v) { this.sustainedDriftEnabled = v; }
+    public boolean isSustainedDriftShadowMode() { return sustainedDriftShadowMode; }
+    public void setSustainedDriftShadowMode(boolean v) { this.sustainedDriftShadowMode = v; }
+    public double getSustainedDriftMinPct() { return sustainedDriftMinPct; }
+    public void setSustainedDriftMinPct(double v) { this.sustainedDriftMinPct = v; }
+    public int getSustainedDriftOpScoreMin() { return sustainedDriftOpScoreMin; }
+    public void setSustainedDriftOpScoreMin(int v) { this.sustainedDriftOpScoreMin = v; }
+    public int getSustainedDriftWindowMinutes() { return sustainedDriftWindowMinutes; }
+    public void setSustainedDriftWindowMinutes(int v) { this.sustainedDriftWindowMinutes = v; }
+
+    // ── T2 PCR slope bias bonus ──
+    public boolean isPcrSlopeBiasBonusEnabled() { return pcrSlopeBiasBonusEnabled; }
+    public void setPcrSlopeBiasBonusEnabled(boolean v) { this.pcrSlopeBiasBonusEnabled = v; }
+    public double getPcrSlopeBiasMinAbs() { return pcrSlopeBiasMinAbs; }
+    public void setPcrSlopeBiasMinAbs(double v) { this.pcrSlopeBiasMinAbs = v; }
+    public int getPcrSlopeBiasBonusPoints() { return pcrSlopeBiasBonusPoints; }
+    public void setPcrSlopeBiasBonusPoints(int v) { this.pcrSlopeBiasBonusPoints = v; }
+    public int getPcrSlopeBiasOpposePenalty() { return pcrSlopeBiasOpposePenalty; }
+    public void setPcrSlopeBiasOpposePenalty(int v) { this.pcrSlopeBiasOpposePenalty = v; }
+
+    // ── T3 Conditional bias-floor lowering ──
+    public boolean isBiasFloorRelaxEnabled() { return biasFloorRelaxEnabled; }
+    public void setBiasFloorRelaxEnabled(boolean v) { this.biasFloorRelaxEnabled = v; }
+    public int getBiasFloorDefault() { return biasFloorDefault; }
+    public void setBiasFloorDefault(int v) { this.biasFloorDefault = v; }
+    public int getBiasFloorRelaxed() { return biasFloorRelaxed; }
+    public void setBiasFloorRelaxed(int v) { this.biasFloorRelaxed = v; }
+    public double getBiasFloorRelaxCoilBreakRangePct() { return biasFloorRelaxCoilBreakRangePct; }
+    public void setBiasFloorRelaxCoilBreakRangePct(double v) { this.biasFloorRelaxCoilBreakRangePct = v; }
+    public double getBiasFloorRelaxPcrSlopeMinAbs() { return biasFloorRelaxPcrSlopeMinAbs; }
+    public void setBiasFloorRelaxPcrSlopeMinAbs(double v) { this.biasFloorRelaxPcrSlopeMinAbs = v; }
+
+    // ── T5 Capture heartbeat ──
+    public boolean isCaptureHeartbeatEnabled() { return captureHeartbeatEnabled; }
+    public void setCaptureHeartbeatEnabled(boolean v) { this.captureHeartbeatEnabled = v; }
+    public int getCaptureHeartbeatStaleMinutes() { return captureHeartbeatStaleMinutes; }
+    public void setCaptureHeartbeatStaleMinutes(int v) { this.captureHeartbeatStaleMinutes = v; }
+
     public Instant getUpdatedAt() { return updatedAt; }
     public void setUpdatedAt(Instant v) { this.updatedAt = v; }
-
     public String getUpdatedBy() { return updatedBy; }
     public void setUpdatedBy(String v) { this.updatedBy = v; }
-
     public String getUpdatedReason() { return updatedReason; }
     public void setUpdatedReason(String v) { this.updatedReason = v; }
 

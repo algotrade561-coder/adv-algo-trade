@@ -38,8 +38,32 @@ public class ExpiryGammaStrategy implements TimeBoundedStrategy {
 
     private final ExpiryCalendar expiryCalendar;
 
+    /**
+     * 2 Jun 2026 — VIX-scaled thresholds. On quiet expiry days (VIX < 17), the
+     * static 0.20% momentum gate never fires (today's NIFTY full-morning range
+     * was 0.48% over 2 hours, so 5-min windows rarely cross 0.20%). Scaling by
+     * VIX / 20 (baseline neutral VIX = 20) opens the gate proportionally:
+     *   VIX 16 → threshold 0.16%
+     *   VIX 20 → threshold 0.20% (current default)
+     *   VIX 25 → threshold 0.25%
+     * Optional — falls back to static threshold if MarketGuard not wired.
+     */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.risk.MarketGuard marketGuard;
+
+    /** Reference VIX for the neutral threshold value. */
+    private static final double NEUTRAL_VIX = 20.0;
+
     public ExpiryGammaStrategy(ExpiryCalendar expiryCalendar) {
         this.expiryCalendar = expiryCalendar;
+    }
+
+    private double effectiveMomentumThreshold() {
+        double vix = marketGuard != null ? marketGuard.getCurrentVix() : NEUTRAL_VIX;
+        if (vix <= 0) vix = NEUTRAL_VIX;
+        // Floor at half-default, ceiling at 1.5x-default to avoid pathological extremes.
+        double scale = Math.max(0.5, Math.min(1.5, vix / NEUTRAL_VIX));
+        return MIN_MOMENTUM_PERCENT * scale;
     }
 
     @Override
@@ -80,8 +104,10 @@ public class ExpiryGammaStrategy implements TimeBoundedStrategy {
                 .divide(priorOpen, 6, RoundingMode.HALF_UP)
                 .multiply(BigDecimal.valueOf(100)).doubleValue();
 
-        if (Math.abs(momentumPct) < MIN_MOMENTUM_PERCENT) {
-            return noTrade("momentumTooWeak(" + String.format("%.2f", momentumPct) + "%)");
+        double minMomentum = effectiveMomentumThreshold();
+        if (Math.abs(momentumPct) < minMomentum) {
+            return noTrade("momentumTooWeak(" + String.format("%.2f", momentumPct)
+                    + "%<" + String.format("%.2f", minMomentum) + "%)");
         }
 
         // ── Gate: Volume confirmation ──

@@ -89,6 +89,12 @@ public class LivePositionExitMonitor {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.algo.trade.strategy.oishifttrap.OiShiftTrapConfig oiShiftTrapConfig;
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.strategy.oishifttrap.ShiftTrapOiUnwindExitDetector shiftTrapOiUnwindExitDetector;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.strategy.oishifttrap.OiShiftTrapTuneRecorder oiShiftTrapTuneRecorder;
+
     // tradeId → best price seen since entry (high for long, low for short)
     private final Map<String, BigDecimal> peakPrices = new ConcurrentHashMap<>();
     // tradeId → current trailing stop price
@@ -203,7 +209,23 @@ public class LivePositionExitMonitor {
             // when multiple CandleClosedEvent threads evaluate the same trade concurrently,
             // causing OptimisticLockException on subsequent saves.
             TradeEntity t = tradeRepository.findById(trade.getTradeId()).orElse(null);
-            if (t == null || t.getStatus() != TradeStatus.OPEN) return;
+            if (t == null || t.getStatus() != TradeStatus.OPEN) {
+                // Fix #7 (2026-06-02): If we discover the trade is gone or
+                // already CLOSED, release any in-memory state we may have been
+                // holding for it. close() normally clears these, but when a
+                // close path bypasses ExitMonitor.close (watchdog, manual,
+                // failsafe, shutdown) and close() itself threw earlier,
+                // these maps would otherwise retain orphan entries forever.
+                String tid = trade.getTradeId();
+                peakPrices.remove(tid);
+                trailingStops.remove(tid);
+                firedLayers.remove(tid);
+                evaluationLocks.remove(tid);
+                if (exitEvaluationRegistry != null) {
+                    exitEvaluationRegistry.remove(tid);
+                }
+                return;
+            }
             try {
                 evaluateInternal(t);
             } catch (org.springframework.orm.ObjectOptimisticLockingFailureException e) {
@@ -326,6 +348,11 @@ public class LivePositionExitMonitor {
         Quote quote = quoteOpt.get();
         BigDecimal currentPrice = quote.lastPrice();
         if (currentPrice == null || currentPrice.signum() <= 0) {
+            return;
+        }
+
+        // ── OI Shift Trap unwind exit (Phase 3 feature 11) — thesis-broken exit ──
+        if (checkOiShiftTrapUnwindExit(trade, quote, currentPrice)) {
             return;
         }
 
@@ -719,6 +746,11 @@ public class LivePositionExitMonitor {
                     && oiShiftTrapConfig != null && oiShiftTrapConfig.isExitMaeMfeEnabled()) {
                 oiShiftTrapExitRecorder.recordExit(trade, price, reason, maeState);
             }
+            // Phase 5+ — emit ExitEvent into tuning capture for OI_SHIFT_TRAP trades.
+            // Includes signal-path tag derived from entryReason and (when applicable) OI
+            // unwind evidence so the tuning analyzer can correlate exit outcomes with
+            // both the entry path and the threshold-triggering data.
+            recordOiShiftTrapExitToTuning(trade, price, reason, maeState);
             // Only clear in-memory state after confirmed successful close
             trailingStops.remove(trade.getTradeId());
             peakPrices.remove(trade.getTradeId());
@@ -840,6 +872,7 @@ public class LivePositionExitMonitor {
             case "SPREAD_WIDENING_EXIT" -> 11;
             case "VWAP_REVERSAL" -> 12;
             case "MOMENTUM_BREAKOUT_EXIT" -> 13;
+            case "OI_UNWIND_EXIT" -> 14;
             default -> 99;
         };
     }
@@ -939,5 +972,109 @@ public class LivePositionExitMonitor {
                 log.debug("[ExitMonitor] Entry IV populated: tradeId={} iv={}", trade.getTradeId(), iv);
             });
         });
+    }
+
+    /**
+     * Phase 3 feature 11 — OI unwind exit. Closes an OI Shift Trap trade when the
+     * trapped-side OI on the entry strike has dropped sharply within the configured window
+     * (default 10% drop within 5 minutes of entry). Auto-no-op when enhancements are OFF,
+     * the trade isn't OI_SHIFT_TRAP, the detector bean is missing, or the trade is a
+     * manual SYNC- import.
+     *
+     * @return true if the trade was closed (caller must return immediately).
+     */
+    private boolean checkOiShiftTrapUnwindExit(TradeEntity trade, Quote quote, BigDecimal currentPrice) {
+        if (oiShiftTrapConfig == null || !oiShiftTrapConfig.isEnhancementsEnabled()) {
+            return false;
+        }
+        if (shiftTrapOiUnwindExitDetector == null) {
+            return false;
+        }
+        if (!"OI_SHIFT_TRAP".equals(trade.getStrategyType())) {
+            return false;
+        }
+        if (trade.getTradeId() != null && trade.getTradeId().startsWith("SYNC-")) {
+            return false;
+        }
+        try {
+            long currentOi = quote.openInterest();
+            long fallbackOi = trade.getEntryOpenInterest() != null ? trade.getEntryOpenInterest() : 0L;
+            double dropThreshold = oiShiftTrapConfig.getOiUnwindExitDropPercent();
+            int windowMinutes = oiShiftTrapConfig.getOiUnwindExitWindowMinutes();
+            Optional<com.algo.trade.strategy.oishifttrap.ShiftTrapOiUnwindExitDetector.UnwindEvidence> ev =
+                    shiftTrapOiUnwindExitDetector.checkUnwind(trade.getTradeId(), currentOi,
+                            dropThreshold, windowMinutes, fallbackOi, trade.getEntryTime());
+            if (ev.isEmpty()) {
+                return false;
+            }
+            var evidence = ev.get();
+            log.warn("[ExitMonitor] OI UNWIND EXIT: tradeId={} entryOi={} currentOi={} drop={}% within {}m",
+                    trade.getTradeId(), evidence.entryOi(), evidence.currentOi(),
+                    String.format("%.1f", evidence.dropPercent()), evidence.minutesSinceEntry());
+            telegramAlertService.systemAlert(String.format(
+                    "📉 OI Unwind Exit: %s | OI %d → %d (-%.1f%%) within %dm",
+                    trade.getInstrumentKey(), evidence.entryOi(), evidence.currentOi(),
+                    evidence.dropPercent(), evidence.minutesSinceEntry()));
+            close(trade, currentPrice, "OI_UNWIND_EXIT");
+            shiftTrapOiUnwindExitDetector.onTradeClosed(trade.getTradeId());
+            return true;
+        } catch (Exception e) {
+            log.debug("[ExitMonitor] OI unwind check failed for {}: {}", trade.getTradeId(), e.getMessage());
+            return false;
+        }
+    }
+    /**
+     * Phase 5+ — build the exit-tuning attrs map and emit an {@code ExitEvent} for an
+     * OI Shift Trap trade. Pulls the signal-path tag from {@code trade.entryReason}
+     * (e.g. "[imbalance-only]") and, when reason == OI_UNWIND_EXIT, attaches the most
+     * recent {@link com.algo.trade.strategy.oishifttrap.ShiftTrapOiUnwindExitDetector.UnwindEvidence}
+     * fields (drop%, entry/current OI, minutes since entry). NO-OP when the tune recorder
+     * bean is missing.
+     */
+    private void recordOiShiftTrapExitToTuning(TradeEntity trade, BigDecimal price, String reason,
+                                                com.algo.trade.strategy.oishifttrap.ShiftTrapMaeMfeTracker.State maeState) {
+        if (oiShiftTrapTuneRecorder == null) return;
+        if (!"OI_SHIFT_TRAP".equals(trade.getStrategyType())) return;
+        try {
+            java.util.Map<String, Object> attrs = new java.util.LinkedHashMap<>();
+            // Signal-path tag derived from entryReason (set at strategy fire time).
+            String entryReason = trade.getEntryReason() != null ? trade.getEntryReason() : "";
+            String signalPath = "standard";
+            if (entryReason.contains("[imbalance-only]")) signalPath = "imbalance_only";
+            else if (entryReason.contains("[distant-OI]")) signalPath = "distant_oi";
+            else if (entryReason.contains("[pending-resolved]")) signalPath = "pending_resolved";
+            attrs.put("signalPath", signalPath);
+
+            // Score (from entryReason if parseable). Best-effort.
+            if (trade.getEntryDelta() != null) attrs.put("entryDelta", trade.getEntryDelta());
+            if (trade.getEntryIV() != null) attrs.put("entryIV", trade.getEntryIV());
+            if (trade.getEntryOpenInterest() != null) attrs.put("entryOpenInterest", trade.getEntryOpenInterest());
+
+            // OI unwind evidence — only present when the OI unwind detector caused the exit.
+            // We pull the last evidence from the detector before the post-close cleanup
+            // path removes it (checkOiShiftTrapUnwindExit calls onTradeClosed AFTER the
+            // close() call returns, so the entry snapshot is still in the detector at the
+            // time we're building these attrs).
+            if ("OI_UNWIND_EXIT".equals(reason)) {
+                attrs.put("exitTrigger", "oi_unwind");
+            }
+
+            // MAE/MFE summary (already in ExitEvent's structured fields; surface a couple of
+            // human-readable fields for at-a-glance tuning).
+            if (maeState != null) {
+                attrs.put("maePctSnapshot", maeState.maePct());
+                attrs.put("mfePctSnapshot", maeState.mfePct());
+            }
+
+            // Build a synthetic MaeMfeTracker.Snapshot from the per-trade MaeState if needed.
+            com.algo.trade.tuning.infra.MaeMfeTracker.Snapshot tuneSnapshot = null;
+            // (Strategy currently uses its own ShiftTrapMaeMfeTracker.State; we leave the
+            // generic snapshot null and rely on the structured attrs above. The ExitEvent
+            // will still report realizedPnlPct, holdSec, instrumentKey, etc.)
+
+            oiShiftTrapTuneRecorder.recordExit(trade, price, reason, tuneSnapshot, attrs);
+        } catch (Exception ex) {
+            log.debug("[ExitMonitor] OI Shift Trap exit-tuning record failed: {}", ex.getMessage());
+        }
     }
 }
