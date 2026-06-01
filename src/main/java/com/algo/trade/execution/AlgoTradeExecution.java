@@ -28,7 +28,7 @@ import com.algo.trade.strategy.SpreadStrategyEvaluator;
 import com.algo.trade.strategy.StrategyConfig;
 import com.algo.trade.strategy.StrategyConfigService;
 import com.algo.trade.strategy.StrategyContext;
-import com.algo.trade.strategy.StrategySignalCsvRecorder;
+import com.algo.trade.strategy.PipelineSignalCapture;
 import com.algo.trade.strategy.StrategyEvaluationRequest;
 import com.algo.trade.strategy.StrategyType;
 import com.algo.trade.strategy.VolatilityBreakoutStrategy;
@@ -90,7 +90,7 @@ public class AlgoTradeExecution {
     private final MarketGuard marketGuard;
     private final com.algo.trade.marketdata.LiveInstrumentCache liveInstrumentCache;
     private final com.algo.trade.marketdata.LiveCandleBuilder candleBuilder;
-    private final StrategySignalCsvRecorder signalCsvRecorder;
+    private final PipelineSignalCapture signalCsvRecorder;
     private final ExpiryCalendar expiryCalendar;
     private final com.algo.trade.news.NewsFeedService newsFeedService;
     private final com.algo.trade.risk.WeeklyExposureTracker weeklyExposureTracker;
@@ -150,7 +150,7 @@ public class AlgoTradeExecution {
             MarketGuard marketGuard,
             com.algo.trade.marketdata.LiveInstrumentCache liveInstrumentCache,
             com.algo.trade.marketdata.LiveCandleBuilder candleBuilder,
-            StrategySignalCsvRecorder signalCsvRecorder,
+            PipelineSignalCapture signalCsvRecorder,
             ExpiryCalendar expiryCalendar,
             com.algo.trade.news.NewsFeedService newsFeedService,
             com.algo.trade.risk.WeeklyExposureTracker weeklyExposureTracker,

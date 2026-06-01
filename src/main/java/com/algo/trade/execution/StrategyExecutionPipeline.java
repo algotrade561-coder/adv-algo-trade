@@ -40,7 +40,7 @@ public class StrategyExecutionPipeline {
     private final StrategyDecisionRepository decisionRepository;
     private final WeeklyExposureTracker weeklyExposureTracker;
     private final MarketDataService marketDataService;
-    private final StrategySignalCsvRecorder signalCsvRecorder;
+    private final PipelineSignalCapture signalCsvRecorder;
     private final MlShadowRecorder mlShadowRecorder;
     private final RsiIndicator rsiIndicator;
     private final AtrIndicator atrIndicator;
@@ -60,7 +60,7 @@ public class StrategyExecutionPipeline {
             StrategyDecisionRepository decisionRepository,
             WeeklyExposureTracker weeklyExposureTracker,
             MarketDataService marketDataService,
-            StrategySignalCsvRecorder signalCsvRecorder,
+            PipelineSignalCapture signalCsvRecorder,
             MlShadowRecorder mlShadowRecorder,
             RsiIndicator rsiIndicator,
             AtrIndicator atrIndicator,

@@ -65,31 +65,46 @@ public class TuningAnalyzerCoordinator {
                             + "<p>" + escape(list) + "</p>"));
         }
 
-        // Second pass: only emit per-strategy sections for the ones that have data.
+        // Per-strategy sections — banner first ("## " sentinel), then standard
+        // breakdowns and custom plugin sections, each title prefixed with the
+        // strategy display name for self-identification. The "## " prefix is
+        // detected by TuningReport.renderHtml() to render the banner with a
+        // larger styled header and a dashed divider between strategies.
         for (StrategyType strategy : withData) {
+            String name = strategy.displayName();
+            report.addSection(AnalyzerSection.htmlOnly(
+                    "## " + name,
+                    "<p class=\"strategy-subtitle\">Captured events in window — see sections below.</p>"));
             TuningCaptureAdapter adapter = adapterRegistry.find(strategy).orElse(null);
             if (adapter != null) {
-                report.addSections(standardBreakdowns(query, strategy));
+                for (AnalyzerSection s : standardBreakdowns(query, strategy)) {
+                    report.addSection(prefix(name, s));
+                }
             } else {
-                report.addSection(AnalyzerSection.htmlOnly(strategy.displayName(),
+                report.addSection(AnalyzerSection.htmlOnly(name + " — adapter",
                         "<p><em>No capture adapter registered for this strategy.</em></p>"));
             }
             for (TuningAnalyzerPlugin plugin : plugins) {
-                if (plugin.strategy() != strategy) {
-                    continue;
-                }
+                if (plugin.strategy() != strategy) continue;
                 try {
-                    report.addSections(plugin.customSections(query));
+                    for (AnalyzerSection s : plugin.customSections(query)) {
+                        report.addSection(prefix(name, s));
+                    }
                 } catch (Exception ex) {
                     log.warn("[TuningAnalyzer] plugin {} failed: {}",
                             plugin.getClass().getSimpleName(), ex.getMessage());
                     report.addSection(AnalyzerSection.htmlOnly(
-                            plugin.getClass().getSimpleName(),
+                            name + " — " + plugin.getClass().getSimpleName(),
                             "<p class=\"error\">Plugin failed: " + escape(ex.getMessage()) + "</p>"));
                 }
             }
         }
         return report;
+    }
+
+    /** Prepend the strategy display name to a section's title so it's self-identifying. */
+    private static AnalyzerSection prefix(String strategyName, AnalyzerSection s) {
+        return new AnalyzerSection(strategyName + " — " + s.title(), s.htmlBody(), s.data());
     }
 
     /**
@@ -109,10 +124,20 @@ public class TuningAnalyzerCoordinator {
         return false;
     }
 
+    /**
+     * Universal per-strategy breakdowns. Ordered from highest-level to
+     * deepest so the report reads top-down. Custom plugins emit additional
+     * sections after these via {@link TuningAnalyzerPlugin#customSections}.
+     */
     private List<AnalyzerSection> standardBreakdowns(TuningEventQuery query, StrategyType strategy) {
         List<AnalyzerSection> sections = new ArrayList<>();
+        sections.add(StandardBreakdownSections.overview(query, strategy));
         sections.add(StandardBreakdownSections.byDay(query, strategy));
         sections.add(StandardBreakdownSections.byIndex(query, strategy));
+        sections.add(StandardBreakdownSections.topBlockers(query, strategy));
+        sections.add(StandardBreakdownSections.blockerByIndex(query, strategy));
+        sections.add(StandardBreakdownSections.byHourOfDay(query, strategy));
+        sections.add(StandardBreakdownSections.episodeSizeDistribution(query, strategy));
         sections.add(StandardBreakdownSections.signalSummary(query, strategy));
         sections.add(StandardBreakdownSections.exitSummary(query, strategy));
         sections.add(StandardBreakdownSections.fillRatio(query, strategy));

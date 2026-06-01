@@ -34,6 +34,15 @@ public class OiMomentumRuntimeConfigService {
     @Autowired(required = false)
     private TelegramAlertService telegramAlertService;
 
+    /**
+     * Optional reference to the live strategy. Used to push the reject-episode
+     * max-age window into the {@link com.algo.trade.tuning.infra.EpisodeAggregator}
+     * after the operator changes the knob via the Settings UI. Optional because
+     * unit tests construct this service without the full Spring context.
+     */
+    @Autowired(required = false)
+    private com.algo.trade.strategy.oimomentum.OIMomentumStrategy oiMomentumStrategy;
+
     private volatile OiMomentumRuntimeConfig cached;
 
     public OiMomentumRuntimeConfigService(OiMomentumRuntimeConfigRepository repository,
@@ -367,6 +376,11 @@ public class OiMomentumRuntimeConfigService {
         oiMomentumConfig.setMatrixRejectSampleIntervalSeconds(src.getMatrixRejectSampleIntervalSeconds());
         oiMomentumConfig.setSummaryRejectTopN(src.getSummaryRejectTopN());
         oiMomentumConfig.setRejectEpisodeWindowSeconds(src.getRejectEpisodeWindowSeconds());
+        // Push the new window into the live aggregator so reject episodes
+        // start force-flushing at the new cadence without a restart.
+        if (oiMomentumStrategy != null) {
+            oiMomentumStrategy.updateRejectEpisodeWindow(src.getRejectEpisodeWindowSeconds());
+        }
     }
 
     private static void validateInterval(int seconds, String field) {

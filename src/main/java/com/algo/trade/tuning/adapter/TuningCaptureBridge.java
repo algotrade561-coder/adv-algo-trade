@@ -72,7 +72,9 @@ public class TuningCaptureBridge {
                         "Duplicate TuningPipelineCapture for " + strategy);
             }
             evalAggregators.put(strategy,
-                    new EpisodeAggregator<>(capture.defaultEpisodeWindowSec()));
+                    new EpisodeAggregator<>(
+                            java.time.Duration.ofSeconds(capture.defaultEpisodeWindowSec()),
+                            java.time.Duration.ofSeconds(capture.defaultEpisodeWindowSec())));
         }
     }
 
@@ -83,7 +85,9 @@ public class TuningCaptureBridge {
         this.captures.putAll(pipelineCaptures);
         for (TuningPipelineCapture capture : pipelineCaptures.values()) {
             evalAggregators.put(capture.strategy(),
-                    new EpisodeAggregator<>(capture.defaultEpisodeWindowSec()));
+                    new EpisodeAggregator<>(
+                            java.time.Duration.ofSeconds(capture.defaultEpisodeWindowSec()),
+                            java.time.Duration.ofSeconds(capture.defaultEpisodeWindowSec())));
         }
     }
 
@@ -93,12 +97,14 @@ public class TuningCaptureBridge {
      */
     public void record(SignalRecordContext ctx) {
         if (ctx == null || ctx.strategyType() == null || ctx.underlying() == null) {
+            countDrop("ctx_null_or_missing_fields", ctx == null ? "<null>" : ctx.strategyType());
             return;
         }
         StrategyType strategy;
         try {
             strategy = StrategyType.valueOf(ctx.strategyType());
         } catch (IllegalArgumentException ex) {
+            countDrop("strategy_enum_invalid", ctx.strategyType());
             return;
         }
         if (INLINE_DUAL_WRITE.contains(strategy)) {
@@ -106,7 +112,12 @@ public class TuningCaptureBridge {
         }
         TuningPipelineCapture capture = captures.get(strategy);
         if (capture == null) {
+            countDrop("no_pipeline_adapter_registered", strategy.name());
             return;
+        }
+        if (firstHitLogged.add(strategy)) {
+            log.info("[TuningCaptureBridge] first invocation for {} — adapter={} captures.size={}",
+                    strategy, capture.getClass().getSimpleName(), captures.size());
         }
 
         try {
@@ -252,5 +263,37 @@ public class TuningCaptureBridge {
         }
         return com.algo.trade.reporting.SignalTuningFilterUtils.inferFailedFilter(
                 String.join("; ", decision.reasons()));
+    }
+
+    // ── Drop diagnostics ─────────────────────────────────────────────────
+
+    private final java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicLong>
+            droppedByReason = new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicLong>
+            lastLoggedMs = new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.Set<StrategyType> firstHitLogged =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+    private static final long DROP_LOG_THROTTLE_MS = 30_000L;
+
+    /** Throttled WARN per (reason, strategy) every 30s. */
+    private void countDrop(String reason, String strategy) {
+        String key = reason + "|" + (strategy == null ? "<null>" : strategy);
+        droppedByReason.computeIfAbsent(key, k -> new java.util.concurrent.atomic.AtomicLong())
+                .incrementAndGet();
+        long now = System.currentTimeMillis();
+        java.util.concurrent.atomic.AtomicLong last =
+                lastLoggedMs.computeIfAbsent(key, k -> new java.util.concurrent.atomic.AtomicLong(0));
+        long prev = last.get();
+        if (now - prev >= DROP_LOG_THROTTLE_MS && last.compareAndSet(prev, now)) {
+            long count = droppedByReason.get(key).get();
+            log.warn("[TuningCaptureBridge] DROPPED reason={} strategy={} count_so_far={} captures.size={}",
+                    reason, strategy, count, captures.size());
+        }
+    }
+
+    public java.util.Map<String, Long> droppedSnapshot() {
+        java.util.Map<String, Long> snap = new java.util.LinkedHashMap<>();
+        droppedByReason.forEach((k, v) -> snap.put(k, v.get()));
+        return snap;
     }
 }

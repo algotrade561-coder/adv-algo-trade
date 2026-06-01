@@ -38,6 +38,12 @@ public class MomentumCaptureAdapter implements TuningPipelineCapture {
     private static final Pattern ROC_IN_DECCEL = Pattern.compile("roc=([+-]?\\d+(?:\\.\\d+)?)");
     private static final Pattern TREND_MISALIGNED = Pattern.compile(
             "trendMisaligned\\(price=([+-]?\\d+(?:\\.\\d+)?),ema21=([+-]?\\d+(?:\\.\\d+)?)\\)");
+    // 2026-06-01 — parsed from MomentumStrategy's enriched reasons strings.
+    private static final Pattern PREV_ROC = Pattern.compile("prevROC=([+-]?\\d+(?:\\.\\d+)?)%");
+    private static final Pattern ACCELERATING = Pattern.compile("accelerating=(true|false)");
+    private static final Pattern ATR_PCT = Pattern.compile("ATR=([+-]?\\d+(?:\\.\\d+)?)%");
+    private static final Pattern SCORE_BREAKDOWN = Pattern.compile(
+            "ScoreBreakdown: base=(\\d+) roc=(\\d+) accel=(\\d+) vol=(\\d+) atr=(\\d+) total=(\\d+)");
 
     @Override
     public StrategyType strategy() {
@@ -153,6 +159,11 @@ public class MomentumCaptureAdapter implements TuningPipelineCapture {
         putIfPresent(attrs, "rocPct", rocPct(ctx, decision, reasons));
         putIfPresent(attrs, "ema21Gap", ema21Gap(ctx, decision, reasons));
         putIfPresent(attrs, "volumeRatio", volumeRatio(reasons));
+        // 2026-06-01 — enriched diagnostics for end-of-day tuning.
+        putIfPresent(attrs, "prevRocPct", parseDouble(PREV_ROC, reasons));
+        putIfPresent(attrs, "accelerating", parseBool(ACCELERATING, reasons));
+        putIfPresent(attrs, "atrPct", parseDouble(ATR_PCT, reasons));
+        putIfPresent(attrs, "scoreBreakdown", parseScoreBreakdown(reasons));
         if (ctx.scalpCrossType() != null) {
             attrs.put("direction", ctx.scalpCrossType());
         }
@@ -243,5 +254,38 @@ public class MomentumCaptureAdapter implements TuningPipelineCapture {
         if (value != null) {
             map.put(key, value);
         }
+    }
+
+    /** Generic parser for "TAG=number(%)" reason tokens. Returns null on miss. */
+    static Double parseDouble(Pattern p, String reasons) {
+        if (reasons == null) return null;
+        Matcher m = p.matcher(reasons);
+        return m.find() ? Double.parseDouble(m.group(1)) : null;
+    }
+
+    /** Generic parser for "TAG=true/false" reason tokens. Returns null on miss. */
+    static Boolean parseBool(Pattern p, String reasons) {
+        if (reasons == null) return null;
+        Matcher m = p.matcher(reasons);
+        return m.find() ? Boolean.valueOf(m.group(1)) : null;
+    }
+
+    /**
+     * Parses "ScoreBreakdown: base=55 roc=10 accel=10 vol=5 atr=5 total=85" into a
+     * structured map so the tuning report can answer "which bonuses fire most
+     * often on winning signals." Returns null when the breakdown isn't present.
+     */
+    static Map<String, Integer> parseScoreBreakdown(String reasons) {
+        if (reasons == null) return null;
+        Matcher m = SCORE_BREAKDOWN.matcher(reasons);
+        if (!m.find()) return null;
+        Map<String, Integer> out = new LinkedHashMap<>();
+        out.put("base", Integer.parseInt(m.group(1)));
+        out.put("roc", Integer.parseInt(m.group(2)));
+        out.put("accel", Integer.parseInt(m.group(3)));
+        out.put("vol", Integer.parseInt(m.group(4)));
+        out.put("atr", Integer.parseInt(m.group(5)));
+        out.put("total", Integer.parseInt(m.group(6)));
+        return out;
     }
 }

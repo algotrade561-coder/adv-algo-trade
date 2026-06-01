@@ -10,21 +10,101 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
-/** DuckDB-backed standard report sections for Phase 6. */
+/** DuckDB-backed standard report sections. */
 public final class StandardBreakdownSections {
 
     private StandardBreakdownSections() {
     }
 
+    /** Top-level overview: episode counts, ticks, time range. */
+    public static AnalyzerSection overview(TuningEventQuery query, StrategyType strategy) {
+        return querySection(query, strategy, "Overview",
+                "SELECT COUNT(*) AS episodes, "
+                        + "SUM(episodeTickCount) AS total_ticks, "
+                        + "ROUND(AVG(episodeTickCount), 1) AS avg_ticks_per_episode, "
+                        + "COUNT(DISTINCT NULLIF(blocker, '')) AS distinct_blockers, "
+                        + "COUNT(DISTINCT index) AS distinct_indexes, "
+                        + "MIN(eventTime) AS first_at, "
+                        + "MAX(eventTime) AS last_at "
+                        + "FROM evals",
+                evalFiles(query, strategy));
+    }
+
     public static AnalyzerSection byDay(TuningEventQuery query, StrategyType strategy) {
-        return querySection(query, strategy, "By day",
-                "SELECT outcome, COUNT(*) AS n FROM evals GROUP BY outcome ORDER BY n DESC",
+        return querySection(query, strategy, "Outcomes",
+                "SELECT outcome, COUNT(*) AS episodes, SUM(episodeTickCount) AS ticks "
+                        + "FROM evals GROUP BY outcome ORDER BY ticks DESC",
                 evalFiles(query, strategy));
     }
 
     public static AnalyzerSection byIndex(TuningEventQuery query, StrategyType strategy) {
         return querySection(query, strategy, "By index",
-                "SELECT index, COUNT(*) AS n FROM evals GROUP BY index ORDER BY n DESC",
+                "SELECT index, COUNT(*) AS n, SUM(episodeTickCount) AS total_ticks "
+                        + "FROM evals GROUP BY index ORDER BY total_ticks DESC",
+                evalFiles(query, strategy));
+    }
+
+    /**
+     * Universal top-blockers ranking. COALESCE blocker -> JSON firstFailedFilter
+     * -> '(skipped)' so SKIPPED rows still surface a meaningful key.
+     */
+    public static AnalyzerSection topBlockers(TuningEventQuery query, StrategyType strategy) {
+        return querySection(query, strategy, "Top blockers",
+                "SELECT COALESCE(NULLIF(blocker, ''), "
+                        + "  json_extract_string(attr_extra, '$.firstFailedFilter'), "
+                        + "  '(skipped)') AS blocker, "
+                        + "COUNT(*) AS episodes, "
+                        + "SUM(episodeTickCount) AS ticks, "
+                        + "ROUND(100.0 * SUM(episodeTickCount) / NULLIF(SUM(SUM(episodeTickCount)) OVER (), 0), 1) AS tick_share_pct "
+                        + "FROM evals GROUP BY 1 ORDER BY ticks DESC LIMIT 20",
+                evalFiles(query, strategy));
+    }
+
+    /**
+     * Blocker x index crosstab. Note: leading comma extends the WITH clause
+     * that querySection prepends. Two top-level WITH would be a SQL error.
+     */
+    public static AnalyzerSection blockerByIndex(TuningEventQuery query, StrategyType strategy) {
+        return querySection(query, strategy, "Blocker x index",
+                ", ranked AS ("
+                        + "  SELECT COALESCE(NULLIF(blocker, ''), "
+                        + "    json_extract_string(attr_extra, '$.firstFailedFilter'), "
+                        + "    '(skipped)') AS blocker, "
+                        + "    SUM(episodeTickCount) AS ticks "
+                        + "  FROM evals GROUP BY 1 ORDER BY ticks DESC LIMIT 12"
+                        + ") "
+                        + "SELECT COALESCE(NULLIF(e.blocker, ''), "
+                        + "    json_extract_string(e.attr_extra, '$.firstFailedFilter'), "
+                        + "    '(skipped)') AS blocker, "
+                        + "  e.index, "
+                        + "  COUNT(*) AS episodes, "
+                        + "  SUM(e.episodeTickCount) AS ticks "
+                        + "FROM evals e JOIN ranked r ON r.blocker = COALESCE(NULLIF(e.blocker, ''), "
+                        + "    json_extract_string(e.attr_extra, '$.firstFailedFilter'), '(skipped)') "
+                        + "GROUP BY 1, 2 ORDER BY ticks DESC LIMIT 40",
+                evalFiles(query, strategy));
+    }
+
+    /** Hour-of-day tick distribution (IST). */
+    public static AnalyzerSection byHourOfDay(TuningEventQuery query, StrategyType strategy) {
+        return querySection(query, strategy, "By hour of day (IST)",
+                "SELECT EXTRACT(hour FROM (CAST(eventTime AS TIMESTAMP) + INTERVAL '5 hours 30 minutes')) AS hour_ist, "
+                        + "COUNT(*) AS episodes, SUM(episodeTickCount) AS ticks "
+                        + "FROM evals GROUP BY hour_ist ORDER BY hour_ist",
+                evalFiles(query, strategy));
+    }
+
+    /** Episode size distribution: 1, 2-10, 11-30, 31-60, 61+ tick buckets. */
+    public static AnalyzerSection episodeSizeDistribution(TuningEventQuery query, StrategyType strategy) {
+        return querySection(query, strategy, "Episode size distribution",
+                "SELECT CASE "
+                        + "  WHEN episodeTickCount = 1 THEN '1 tick' "
+                        + "  WHEN episodeTickCount BETWEEN 2 AND 10 THEN '2-10' "
+                        + "  WHEN episodeTickCount BETWEEN 11 AND 30 THEN '11-30' "
+                        + "  WHEN episodeTickCount BETWEEN 31 AND 60 THEN '31-60' "
+                        + "  ELSE '61+' END AS tick_bucket, "
+                        + "COUNT(*) AS episodes, SUM(episodeTickCount) AS total_ticks "
+                        + "FROM evals GROUP BY tick_bucket ORDER BY MIN(episodeTickCount)",
                 evalFiles(query, strategy));
     }
 

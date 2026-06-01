@@ -85,21 +85,52 @@ public final class EpisodeAggregator<S, K, T> {
     }
 
     private final Duration window;
+    /**
+     * Max-age force-flush. If a single episode has been open for longer than
+     * this duration (measured from firstAt), record() flushes it on the next
+     * tick regardless of whether ticks have kept arriving. Prevents
+     * continuously-hit blockers from "hiding" indefinitely (the bug fixed
+     * in the OI Momentum capture-gap investigation). ZERO disables the cap.
+     */
+    private volatile Duration maxAge;
     private final Map<S, OpenEpisode<K, T>> active = new HashMap<>();
 
     public EpisodeAggregator(int windowSeconds) {
-        if (windowSeconds < 1) {
-            throw new IllegalArgumentException("windowSeconds must be >= 1, got " + windowSeconds);
-        }
-        this.window = Duration.ofSeconds(windowSeconds);
+        this(Duration.ofSeconds(positive(windowSeconds, "windowSeconds")), Duration.ZERO);
     }
 
     public EpisodeAggregator(Duration window) {
+        this(window, Duration.ZERO);
+    }
+
+    /** Full constructor — see {@link #maxAge} for the cap semantics. */
+    public EpisodeAggregator(Duration window, Duration maxAge) {
         Objects.requireNonNull(window, "window");
+        Objects.requireNonNull(maxAge, "maxAge");
         if (window.isZero() || window.isNegative()) {
             throw new IllegalArgumentException("window must be positive, got " + window);
         }
+        if (maxAge.isNegative()) {
+            throw new IllegalArgumentException("maxAge must be >= 0, got " + maxAge);
+        }
         this.window = window;
+        this.maxAge = maxAge;
+    }
+
+    /** Hot-update the max-age cap (volatile read so changes propagate immediately). */
+    public synchronized void setMaxAge(Duration maxAge) {
+        Objects.requireNonNull(maxAge, "maxAge");
+        if (maxAge.isNegative()) {
+            throw new IllegalArgumentException("maxAge must be >= 0, got " + maxAge);
+        }
+        this.maxAge = maxAge;
+    }
+
+    public Duration maxAge() { return maxAge; }
+
+    private static int positive(int v, String name) {
+        if (v < 1) throw new IllegalArgumentException(name + " must be >= 1, got " + v);
+        return v;
     }
 
     /**
@@ -122,8 +153,10 @@ public final class EpisodeAggregator<S, K, T> {
 
         boolean sameKey = Objects.equals(current.dedupKey, dedupKey);
         boolean withinWindow = Duration.between(current.lastAt, when).compareTo(window) <= 0;
+        boolean withinMaxAge = maxAge.isZero()
+                || Duration.between(current.firstAt, when).compareTo(maxAge) <= 0;
 
-        if (sameKey && withinWindow) {
+        if (sameKey && withinWindow && withinMaxAge) {
             current.tick(when);
             return flushed;
         }
@@ -144,8 +177,12 @@ public final class EpisodeAggregator<S, K, T> {
         Objects.requireNonNull(now, "now");
         List<EpisodeRow<S, K, T>> flushed = new ArrayList<>();
         active.entrySet().removeIf(entry -> {
-            if (Duration.between(entry.getValue().lastAt, now).compareTo(window) > 0) {
-                flushed.add(toRow(entry.getKey(), entry.getValue()));
+            OpenEpisode<K, T> ep = entry.getValue();
+            boolean gapExpired = Duration.between(ep.lastAt, now).compareTo(window) > 0;
+            boolean maxAgeExceeded = !maxAge.isZero()
+                    && Duration.between(ep.firstAt, now).compareTo(maxAge) > 0;
+            if (gapExpired || maxAgeExceeded) {
+                flushed.add(toRow(entry.getKey(), ep));
                 return true;
             }
             return false;

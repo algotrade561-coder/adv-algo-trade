@@ -83,7 +83,7 @@ public class ExecutionEngine {
     private final OrderRepository orderRepository;
     private final ErrorEventRepository errorEventRepository;
     private final StrategyDecisionRepository decisionRepository;
-    private final ExecutionOutcomeCsvRecorder executionOutcomeCsvRecorder;
+    private final ExecutionTuningRecorder executionOutcomeCsvRecorder;
     private final TelegramAlertService telegramAlertService;
     private final com.algo.trade.config.PositionSyncProperties positionSyncProperties;
     private final StrategyConfigService strategyConfigService;
@@ -111,7 +111,7 @@ public class ExecutionEngine {
                            TradeRepository tradeRepository, OrderRepository orderRepository,
                            ErrorEventRepository errorEventRepository,
                            StrategyDecisionRepository decisionRepository,
-                           ExecutionOutcomeCsvRecorder executionOutcomeCsvRecorder,
+                           ExecutionTuningRecorder executionOutcomeCsvRecorder,
                            TelegramAlertService telegramAlertService,
                            com.algo.trade.config.PositionSyncProperties positionSyncProperties,
                            StrategyConfigService strategyConfigService,
@@ -124,7 +124,7 @@ public class ExecutionEngine {
     ExecutionEngine(TradingProperties properties, GlobalConfigService globalConfigService, BrokerClient brokerClient, RiskEngine riskEngine, TradingStateService tradingStateService,
                     TradeRepository tradeRepository, OrderRepository orderRepository,
                     ErrorEventRepository errorEventRepository,
-                    StrategyDecisionRepository decisionRepository, ExecutionOutcomeCsvRecorder executionOutcomeCsvRecorder,
+                    StrategyDecisionRepository decisionRepository, ExecutionTuningRecorder executionOutcomeCsvRecorder,
                     TelegramAlertService telegramAlertService,
                     com.algo.trade.config.PositionSyncProperties positionSyncProperties, StrategyConfigService strategyConfigService,
                     MarketDataService marketDataService, SmartOrderRouter smartOrderRouter, Clock clock) {

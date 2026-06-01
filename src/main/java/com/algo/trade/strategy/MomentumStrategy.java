@@ -32,10 +32,19 @@ public class MomentumStrategy {
 
     private static final Logger log = LoggerFactory.getLogger(MomentumStrategy.class);
     private static final int ROC_PERIOD = 5;
-    private static final double MIN_ROC_PERCENT = 0.25;
+    /** Raised 0.25 → 0.40 (2026-06-01) — 0.305% entries reliably picked tops. */
+    private static final double MIN_ROC_PERCENT = 0.40;
     private static final int EMA_PERIOD = 21;
     private static final double MIN_VOLUME_RATIO = 1.2;
     private static final int ATR_PERIOD = 14;
+    /** Below 65 means base score only with zero quality bonuses — filter out. */
+    private static final int MIN_CONFIDENCE_SCORE = 65;
+    /** Per-(underlying, direction) cooldown — blocks identical entries seconds apart. */
+    private static final java.time.Duration ENTRY_COOLDOWN = java.time.Duration.ofMinutes(5);
+
+    /** Last entry time keyed by "{underlying}:{direction}". Lock-free read. */
+    private final java.util.concurrent.ConcurrentHashMap<String, Instant> lastEntryAt =
+            new java.util.concurrent.ConcurrentHashMap<>();
 
     private final com.algo.trade.underlying.UnderlyingConfigService underlyingConfigService;
 
@@ -143,23 +152,45 @@ public class MomentumStrategy {
             return noTrade("atrTooLow(" + String.format("%.3f", atrPercent) + "%)");
         }
 
-        // Graduated confidence score
+        // Graduated confidence score — track each bonus so tuning can see what fired.
         int score = 55;
-        if (Math.abs(roc) > 0.60) score += 10;
-        else if (Math.abs(roc) > 0.40) score += 5;
-        if (accelerating && Math.abs(roc) > Math.abs(prevRoc) * 1.5) score += 10; // strong acceleration
-        if (latestVolume > avgVolume * 2.0) score += 10;
-        else if (latestVolume > avgVolume * 1.5) score += 5;
-        if (atrPercent > 0.25) score += 5;
-        score = Math.min(90, score);
+        int rocBonus = 0;
+        int accelBonus = 0;
+        int volBonus = 0;
+        int atrBonus = 0;
+        if (Math.abs(roc) > 0.60) rocBonus = 10;
+        else if (Math.abs(roc) > 0.40) rocBonus = 5;
+        if (accelerating && Math.abs(roc) > Math.abs(prevRoc) * 1.5) accelBonus = 10; // strong acceleration
+        if (avgVolume > 0 && latestVolume > avgVolume * 2.0) volBonus = 10;
+        else if (avgVolume > 0 && latestVolume > avgVolume * 1.5) volBonus = 5;
+        if (atrPercent > 0.25) atrBonus = 5;
+        score = Math.min(90, score + rocBonus + accelBonus + volBonus + atrBonus);
+
+        // Score gate (2026-06-01) — reject signals that earned zero bonuses.
+        if (score < MIN_CONFIDENCE_SCORE) {
+            return noTrade(String.format(
+                    "scoreTooLow(score=%d roc=%.2f%% accel=%s vol=%.1fx atr=%.3f%%)",
+                    score, roc, accelerating,
+                    avgVolume > 0 ? latestVolume / avgVolume : 0.0, atrPercent));
+        }
+
+        // Per-(underlying, direction) cooldown — prevents identical re-entries seconds apart.
+        boolean bullishLocal = bullish;
+        String cooldownKey = underlying.name() + ":" + (bullishLocal ? "CE" : "PE");
+        Instant lastAt = lastEntryAt.get(cooldownKey);
+        if (lastAt != null && java.time.Duration.between(lastAt, Instant.now()).compareTo(ENTRY_COOLDOWN) < 0) {
+            long secsLeft = ENTRY_COOLDOWN.minus(java.time.Duration.between(lastAt, Instant.now())).toSeconds();
+            return noTrade("entryCooldown(remaining=" + secsLeft + "s,direction=" + (bullishLocal ? "CE" : "PE") + ")");
+        }
 
         SignalType signalType = bullish ? SignalType.BUY_CE : SignalType.BUY_PE;
         OptionType optionType = bullish ? OptionType.CE : OptionType.PE;
         String direction = bullish ? "BULLISH" : "BEARISH";
+        double volRatio = avgVolume > 0 ? (double) latestVolume / avgVolume : 0.0;
 
         log.info("[Momentum] Signal: {} ROC={}% prevROC={}% EMA21={} vol={}x ATR={}% score={}",
                 signalType, String.format("%.2f", roc), String.format("%.2f", prevRoc),
-                String.format("%.2f", ema), String.format("%.1f", latestVolume / Math.max(avgVolume, 1)),
+                String.format("%.2f", ema), String.format("%.1f", volRatio),
                 String.format("%.3f", atrPercent), score);
 
         StrategyDecision signal = new StrategyDecision(
@@ -169,13 +200,22 @@ public class MomentumStrategy {
                 false, Optional.empty(), false,
                 BigDecimal.valueOf(score),
                 List.of(
-                        "Momentum: ROC=" + String.format("%.2f", roc) + "% accelerating=" + accelerating
+                        // Reasons string format is parsed by MomentumCaptureAdapter regex.
+                        // Keep ROC=, EMA21=, Volume= tokens; new tokens captured below.
+                        "Momentum: ROC=" + String.format("%.2f", roc) + "% prevROC=" + String.format("%.2f", prevRoc)
+                                + "% accelerating=" + accelerating
                                 + " EMA21=" + String.format("%.2f", ema) + " direction=" + direction,
-                        "Volume=" + String.format("%.1f", latestVolume / Math.max(avgVolume, 1)) + "x ATR=" + String.format("%.3f", atrPercent) + "%"
+                        "Volume=" + String.format("%.1f", volRatio) + "x ATR=" + String.format("%.3f", atrPercent) + "%",
+                        "ScoreBreakdown: base=55 roc=" + rocBonus + " accel=" + accelBonus
+                                + " vol=" + volBonus + " atr=" + atrBonus + " total=" + score
                 )
         );
+        // Stamp the cooldown — block next identical entry for ENTRY_COOLDOWN.
+        lastEntryAt.put(cooldownKey, Instant.now());
         return new StrategyDiagnostics.WithSignal(Optional.of(signal),
-                new StrategyDiagnostics(null, null, null, direction, ROC_PERIOD,
+                // firstFailedFilter = "" (not null) so PipelineSignalCapture doesn't
+                // fall back to a junk reason on successful entries.
+                new StrategyDiagnostics("", null, null, direction, ROC_PERIOD,
                         null, null, Math.abs(roc), bullish));
     }
 

@@ -67,6 +67,15 @@ public class TuningEventRecorder {
     private final AtomicLong totalWriteNanos = new AtomicLong(0);
     private final AtomicLong totalFailures = new AtomicLong(0);
 
+    /**
+     * Drop counters by (reason|strategy|type). Drives both the dashboard
+     * snapshot AND a throttled WARN log so any silent drop in the unified
+     * pipeline appears in the running log within 30 seconds.
+     */
+    private final ConcurrentHashMap<String, AtomicLong> droppedByReason = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, AtomicLong> lastLoggedMs = new ConcurrentHashMap<>();
+    private static final long DROP_LOG_THROTTLE_MS = 30_000L;
+
     @org.springframework.beans.factory.annotation.Autowired
     public TuningEventRecorder(@Value("${tuning.capture.base-dir:reports/tuning/events}") String baseDirPath,
                                 CaptureToggleService captureToggle,
@@ -92,9 +101,11 @@ public class TuningEventRecorder {
      */
     public void record(TuningEvent event) {
         if (event == null) {
+            countDrop("null_event", "<null>", null);
             return;
         }
         if (!captureToggle.isEnabled(event.strategy(), event.type())) {
+            countDrop("toggle_off", event.strategy().name(), event.type());
             return;
         }
         Path file = resolvePath(event);
@@ -109,6 +120,7 @@ public class TuningEventRecorder {
             totalWriteNanos.addAndGet(System.nanoTime() - start);
         } catch (IOException ex) {
             totalFailures.incrementAndGet();
+            countDrop("io_error", event.strategy().name(), event.type());
             log.warn("[TuningEventRecorder] write failed for {}: {}", file, ex.getMessage());
         } finally {
             lock.unlock();
@@ -151,5 +163,30 @@ public class TuningEventRecorder {
         long n = totalWrites.get();
         if (n == 0) return 0.0;
         return totalWriteNanos.get() / (double) n / 1_000.0;
+    }
+
+    /** Per-reason drop counters — visible to the dashboard / diagnostics endpoint. */
+    public java.util.Map<String, Long> droppedSnapshot() {
+        java.util.Map<String, Long> snap = new java.util.LinkedHashMap<>();
+        droppedByReason.forEach((k, v) -> snap.put(k, v.get()));
+        return snap;
+    }
+
+    /**
+     * Bumps a drop counter and emits a throttled WARN per distinct
+     * (reason, strategy, type) so the running log reveals silent drops
+     * without spamming. Throttled to once per 30 seconds per pattern.
+     */
+    private void countDrop(String reason, String strategy, TuningEventType type) {
+        String key = reason + "|" + strategy + "|" + (type == null ? "-" : type.name());
+        droppedByReason.computeIfAbsent(key, k -> new AtomicLong()).incrementAndGet();
+        long now = System.currentTimeMillis();
+        AtomicLong last = lastLoggedMs.computeIfAbsent(key, k -> new AtomicLong(0));
+        long prev = last.get();
+        if (now - prev >= DROP_LOG_THROTTLE_MS && last.compareAndSet(prev, now)) {
+            long count = droppedByReason.get(key).get();
+            log.warn("[TuningEventRecorder] DROPPED reason={} strategy={} type={} count_so_far={}",
+                    reason, strategy, type, count);
+        }
     }
 }

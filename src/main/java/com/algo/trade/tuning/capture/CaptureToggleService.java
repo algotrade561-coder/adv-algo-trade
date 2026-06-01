@@ -78,15 +78,35 @@ public class CaptureToggleService {
         try {
             List<TuningCaptureConfigEntity> rows = configRepo.findAll();
             Map<StrategyType, CaptureSettings> fresh = new EnumMap<>(StrategyType.class);
+            int enabledCount = 0;
+            StringBuilder summary = new StringBuilder();
             for (TuningCaptureConfigEntity row : rows) {
-                fresh.put(row.getStrategy(), CaptureSettings.from(row));
+                CaptureSettings s = CaptureSettings.from(row);
+                fresh.put(row.getStrategy(), s);
+                if (s.captureEnabled()) enabledCount++;
+                summary.append(row.getStrategy().name()).append('=')
+                        .append(s.captureEnabled() ? "ON" : "off")
+                        .append("(eval=").append(s.captureEvaluations() ? '1' : '0')
+                        .append(",sig=").append(s.captureSignals() ? '1' : '0')
+                        .append(",exit=").append(s.captureExits() ? '1' : '0')
+                        .append(") ");
             }
             cache.set(fresh);
             lastRefreshAt = Instant.now();
+            // Diagnostic — log loaded settings when enabled-count changes
+            // (and always on first load). Keeps running log readable.
+            int prev = lastLoggedEnabledCount.getAndSet(enabledCount);
+            if (prev != enabledCount) {
+                log.info("[CaptureToggleService] refresh: rows={} enabled={}/{} settings=[{}]",
+                        rows.size(), enabledCount, rows.size(), summary.toString().trim());
+            }
         } catch (Exception ex) {
             log.warn("[CaptureToggleService] refresh failed; keeping previous snapshot: {}", ex.getMessage());
         }
     }
+
+    private final java.util.concurrent.atomic.AtomicInteger lastLoggedEnabledCount =
+            new java.util.concurrent.atomic.AtomicInteger(-1);
 
     // ── Read API (trading hot path) ───────────────────────────────────────
 

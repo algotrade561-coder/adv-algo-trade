@@ -82,6 +82,8 @@ public class OIMomentumStrategy {
         volatile String pendingEntryInstrumentKey = null;
         /** Spike dedupe: time of last spike entry — blocks re-entry for 10 min (one entry per spike episode). */
         volatile Instant lastSpikeEntryTime = null;
+        /** Range-edge fade dedupe: time of last fade entry — blocks re-entry for 10 min. */
+        volatile Instant lastFadeEntryTime = null;
         volatile String lastEntryDecisionKey = null;
         volatile OiMomentumEntryDiagnostics lastEntryDiagnostics = null;
         volatile Instant lastRejectSampleTime = null;
@@ -221,11 +223,17 @@ public class OIMomentumStrategy {
     private com.algo.trade.tuning.infra.MaeMfeTracker maeMfeTracker;
 
     /**
-     * Phase 2 dual-write: episode aggregator for evaluation rejects. Groups same
-     * {@code (index, blocker)} ticks within 60s into one EvaluationEvent row.
+     * Phase 2 dual-write: episode aggregator for evaluation rejects.
+     * Gap-window AND max-age cap come from config.getRejectEpisodeWindowSeconds()
+     * (default 60). The max-age cap forces a CSV row every N seconds even when
+     * ticks keep arriving — fixes the historic "rejects vanish" gap.
      */
     private final com.algo.trade.tuning.infra.EpisodeAggregator<IndexType, String, OiMomentumEntryDiagnostics>
-            evaluationAggregator = new com.algo.trade.tuning.infra.EpisodeAggregator<>(60);
+            evaluationAggregator;
+
+    /** Latched once we log the dual-write wiring status on the first reject. */
+    private final java.util.concurrent.atomic.AtomicBoolean firstRejectLogged =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
 
     /**
      * CASE 4 watch-list state (P1-3): when CASE 4 (OI conflicts momentum) fires, we
@@ -261,6 +269,16 @@ public class OIMomentumStrategy {
         this.tradeRepository = tradeRepository;
         this.marketGuard = marketGuard;
         this.expiryCalendar = expiryCalendar;
+        int windowSec = Math.max(1, config.getRejectEpisodeWindowSeconds());
+        java.time.Duration win = java.time.Duration.ofSeconds(windowSec);
+        this.evaluationAggregator = new com.algo.trade.tuning.infra.EpisodeAggregator<>(win, win);
+    }
+
+    /** Hot-update the reject-episode max-age window from the runtime config service. */
+    public void updateRejectEpisodeWindow(int newWindowSeconds) {
+        if (newWindowSeconds < 1) return;
+        evaluationAggregator.setMaxAge(java.time.Duration.ofSeconds(newWindowSeconds));
+        log.info("[OIMomentum] reject episode max-age updated to {}s", newWindowSeconds);
     }
 
     @jakarta.annotation.PostConstruct
@@ -743,19 +761,33 @@ public class OIMomentumStrategy {
 
         // ── R2: Range-edge fade (29 May 2026 — data-validated for range-bound markets) ──
         // Fires on tight ranges (30M < 0.30%) when spot is at top/bottom edge with
-        // OI confirmation. Binds when not in V3-live mode. Same shadow-vs-live pattern.
+        // OI confirmation. V3 evaluates later in this method and requires a
+        // momentum candidate; fade and V3 conditions are mutually exclusive in
+        // practice (tight range vs. momentum burst), so fade is free to bind
+        // live whenever its detector fires. 10-min dedupe prevents rapid re-entry.
         RangeEdgeFadeDetector.Decision fadeDecision = (rangeEdgeFadeDetector != null)
                 ? rangeEdgeFadeDetector.evaluate(indexType, config)
                 : new RangeEdgeFadeDetector.Decision(false, 0, 0, 0, 0, 0, 0, "detector_not_wired");
-        boolean fadeBindingLive = fadeDecision.fires() && !v3BindingLive;
+        boolean fadeDedupeBlocked = state.lastFadeEntryTime != null
+                && Duration.between(state.lastFadeEntryTime, Instant.now()).toMinutes() < 10;
+        boolean fadeBindingLive = fadeDecision.fires() && !fadeDedupeBlocked;
         if (fadeDecision.fires()) {
+            String label = fadeBindingLive ? "LIVE" : (fadeDedupeBlocked ? "DEDUPE" : "SHADOW");
             log.info("[OIMomentum][{}] RANGE_EDGE_FADE {} dir={} pos={} range30m={}% pcr={} theta_cost={}%",
-                    indexType, fadeBindingLive ? "LIVE" : "SHADOW",
+                    indexType, label,
                     fadeDecision.direction(),
                     String.format("%.3f", fadeDecision.positionInRange()),
                     String.format("%.3f", fadeDecision.range30mPct()),
                     String.format("%.2f", fadeDecision.pcr()),
                     String.format("%.2f", fadeDecision.thetaCostPct()));
+            // Tuning capture — record every fade fire (LIVE or dedupe-blocked) so
+            // the validation report shows full fade-decision history. Aggregator
+            // folds repeated same-(index,blocker) ticks into one episode.
+            String fadeBlocker = fadeBindingLive
+                    ? "range_edge_fade_fired"
+                    : "range_edge_fade_dedupe_blocked";
+            state.lastRejectSampleTime = recordReject(indexType, state, fadeBlocker,
+                    buildThrottleDiagnostics(indexType, state, fadeBlocker));
         }
         if (fadeBindingLive) {
             double fadeSpot = momentumDetector.getSpot(indexType);
@@ -779,6 +811,7 @@ public class OIMomentumStrategy {
                         fadeDecision.direction(), fadeDecision.positionInRange(),
                         fadeDecision.range30mPct(), fadeDecision.pcr(),
                         fadeDecision.thetaCostPct());
+                state.lastFadeEntryTime = Instant.now();
                 enter(indexType, state, fadeDecision.direction(), fadeReason, fadeSpot, fadeDiag);
                 return;
             }
@@ -837,7 +870,16 @@ public class OIMomentumStrategy {
             momentum = momentumDetector.detectInWindow(indexType, config.getShortTimeframeThresholdPct(), 5);
         }
 
-        if (!momentum.isPresent()) return; // No momentum on any timeframe — wait
+        if (!momentum.isPresent()) {
+            // Calm-market diagnostic — record "no momentum on any timeframe" so the
+            // tuning report can distinguish "strategy was running but markets flat"
+            // from "strategy was off". Aggregator folds repeated ticks into one
+            // 60s episode row per index, so cost is ~1 row/index/min.
+            state.lastRejectReason = "no_momentum_detected";
+            state.lastRejectSampleTime = recordReject(indexType, state, "no_momentum_detected",
+                    buildThrottleDiagnostics(indexType, state, "no_momentum_detected"));
+            return;
+        }
         momentumSignalCount.incrementAndGet();
 
         // ── OI Analysis (only when OI has actually advanced — P0 #1) ──
@@ -1136,15 +1178,30 @@ public class OIMomentumStrategy {
                                  OiMomentumEntryDiagnostics partial) {
         incrementRejectReason(reason);
 
-        // Phase 2 dual-write to unified tuning pipeline. Aggregator collapses repeated
-        // same-(index, blocker) ticks within 60s into one episode row; flushed episodes
-        // emit a single EvaluationEvent. Capture toggle gates actual disk writes.
+        // One-shot diagnostic on the first reject — exposes whether the
+        // dual-write hooks were actually wired by Spring. Subsequent rejects
+        // stay silent; the recorder's own throttled drop log takes over.
+        if (firstRejectLogged.compareAndSet(false, true)) {
+            log.info("[OIMomentum] dual-write status: recorder={} adapter={} recordEveryReject={}",
+                    tuningEventRecorder != null ? "WIRED" : "NULL",
+                    oiMomentumCaptureAdapter != null ? "WIRED" : "NULL",
+                    config.isRecordEveryReject());
+        }
         if (tuningEventRecorder != null && oiMomentumCaptureAdapter != null) {
             try {
                 String normalized = oiMomentumCaptureAdapter.normalizeBlocker(reason);
-                var flushed = evaluationAggregator.record(indexType, normalized, partial, Instant.now());
-                for (var row : flushed) {
-                    tuningEventRecorder.record(oiMomentumCaptureAdapter.buildEvaluationEvent(row));
+                if (config.isRecordEveryReject()) {
+                    Instant now = Instant.now();
+                    var singleton = new com.algo.trade.tuning.infra.EpisodeAggregator.EpisodeRow<
+                            IndexType, String, OiMomentumEntryDiagnostics>(
+                            indexType, normalized, now, now, 1, partial);
+                    tuningEventRecorder.record(
+                            oiMomentumCaptureAdapter.buildEvaluationEvent(singleton));
+                } else {
+                    var flushed = evaluationAggregator.record(indexType, normalized, partial, Instant.now());
+                    for (var row : flushed) {
+                        tuningEventRecorder.record(oiMomentumCaptureAdapter.buildEvaluationEvent(row));
+                    }
                 }
             } catch (Exception ex) {
                 log.warn("[OIMomentum] dual-write evaluation episode failed (non-fatal): {}",
