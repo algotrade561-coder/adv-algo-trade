@@ -538,7 +538,9 @@ public class AlgoTradeExecution {
             case EVENT_DRIVEN_BUY -> {
                 evaluated[0] = true;
                 BigDecimal eventSpotPrice = trendCandles.isEmpty() ? BigDecimal.ZERO : trendCandles.getLast().close();
-                yield eventDrivenBuyStrategy.evaluate(ivRank, config, underlying, eventSpotPrice);
+                var edbResult = eventDrivenBuyStrategy.evaluateWithDiagnostics(ivRank, config, underlying, eventSpotPrice);
+                diagHolder[0] = edbResult.diagnostics();
+                yield edbResult.signal();
             }
             case BULL_CALL_SPREAD, BEAR_PUT_SPREAD,
                  LONG_STRADDLE, LONG_STRANGLE,

@@ -3,8 +3,8 @@ package com.algo.trade.reporting;
 /**
  * Normalizes strategy rejection reason text into a stable filter key for tuning capture.
  * 2026-06-01 enhancements: AlgoFlow classification + per-strategy reason patterns
- * (Gap and Go, Scalping, Reversal Buy, Momentum, spreads) so the tuning report no
- * longer collapses 90%+ of rejections to "other".
+ * (Gap and Go, Scalping, Reversal Buy, Momentum, Event-Driven, spreads) so the tuning
+ * report no longer collapses 90%+ of rejections to "other".
  */
 public final class SignalTuningFilterUtils {
 
@@ -119,6 +119,19 @@ public final class SignalTuningFilterUtils {
         }
         if (reasons.contains("spreadEntryBlocked")) {
             return "spreadEntryBlocked";
+        }
+        // Event-Driven Buy gates (2026-06-01).
+        if (reasons.contains("noScheduledEvent")) {
+            return "noScheduledEvent";
+        }
+        if (reasons.contains("eventIvTooHigh")) {
+            return "eventIvTooHigh";
+        }
+        if (reasons.contains("noSpotPrice")) {
+            return "noSpotPrice";
+        }
+        if (reasons.contains("noConfig")) {
+            return "noConfig";
         }
         return "other";
     }

@@ -22,16 +22,17 @@ import java.util.Optional;
  * - Buy ATM straddle (CE + PE) to profit from the big move
  * - Exit after the event when IV crushes
  *
- * Entry: 1-2 days before event, when IV rank < maxIvRank
+ * Entry: 1-2 days before event, when IV rank < maxIvRank.
  * This is a BUYING strategy — risk limited to premium paid.
+ *
+ * 2026-06-01: added evaluateWithDiagnostics so SKIPPED rows carry a real
+ * firstFailedFilter (noScheduledEvent / eventIvTooHigh / noSpotPrice).
  */
 @Component
 public class EventDrivenBuyStrategy {
 
     private static final Logger log = LoggerFactory.getLogger(EventDrivenBuyStrategy.class);
 
-    // RBI MPC policy announcement dates — update when RBI publishes official calendar.
-    // Strategy triggers 1-2 days BEFORE each date. Verify Oct/Dec 2026 on rbi.org.in.
     private static final List<LocalDate> EVENT_DATES = List.of(
         LocalDate.of(2025, 6, 6),  LocalDate.of(2025, 8, 6),
         LocalDate.of(2025, 10, 8), LocalDate.of(2025, 12, 5),
@@ -42,30 +43,39 @@ public class EventDrivenBuyStrategy {
 
     public Optional<StrategyDecision> evaluate(double ivRank, StrategyConfig config,
                                                UnderlyingSymbol underlying, BigDecimal spotPrice) {
-        if (config == null) return Optional.empty();
+        return evaluateWithDiagnostics(ivRank, config, underlying, spotPrice).signal();
+    }
+
+    public StrategyDiagnostics.WithSignal evaluateWithDiagnostics(double ivRank, StrategyConfig config,
+                                                                    UnderlyingSymbol underlying, BigDecimal spotPrice) {
+        if (config == null) {
+            return noTrade("noConfig");
+        }
 
         LocalDate today = LocalDate.now();
         Optional<LocalDate> upcomingEvent = EVENT_DATES.stream()
                 .filter(d -> d.equals(today.plusDays(1)) || d.equals(today.plusDays(2)))
                 .findFirst();
 
-        if (upcomingEvent.isEmpty()) return Optional.empty();
+        if (upcomingEvent.isEmpty()) {
+            return noTrade("noScheduledEvent");
+        }
 
         if (config.getMaxIvRankForBuying() != null && ivRank > config.getMaxIvRankForBuying().doubleValue()) {
             log.debug("[EventDriven] IV rank {} too high for event buy (max {})", ivRank,
                     config.getMaxIvRankForBuying());
-            return Optional.empty();
+            return noTrade(String.format("eventIvTooHigh(ivRank=%.1f,max=%.1f)",
+                    ivRank, config.getMaxIvRankForBuying().doubleValue()));
         }
 
         if (spotPrice == null || spotPrice.signum() <= 0) {
-            log.warn("[EventDriven] Skipping pre-event signal — spotPrice is null/zero");
-            return Optional.empty();
+            log.warn("[EventDriven] Skipping pre-event signal - spotPrice is null/zero");
+            return noTrade("noSpotPrice");
         }
 
         log.info("[EventDriven] Pre-event signal: event={} ivRank={} spot={}", upcomingEvent.get(), ivRank, spotPrice);
 
-        // Signal BUY_CE as proxy for straddle — both legs handled by execution
-        return Optional.of(new StrategyDecision(
+        StrategyDecision signal = new StrategyDecision(
                 Instant.now(), underlying, SignalType.BUY_CE,
                 spotPrice,
                 Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
@@ -74,6 +84,13 @@ public class EventDrivenBuyStrategy {
                 BigDecimal.valueOf(80),
                 List.of("Pre-event straddle: event=" + upcomingEvent.get(),
                         "IV rank=" + String.format("%.0f", ivRank) + " (cheap, good to buy)")
-        ));
+        );
+        return new StrategyDiagnostics.WithSignal(Optional.of(signal),
+                new StrategyDiagnostics("", null, null, null, null, null, null, null, null));
+    }
+
+    private static StrategyDiagnostics.WithSignal noTrade(String reason) {
+        return new StrategyDiagnostics.WithSignal(Optional.empty(),
+                new StrategyDiagnostics(reason, null, null, null, null, null, null, null, null));
     }
 }
