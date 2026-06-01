@@ -1,5 +1,6 @@
 package com.algo.trade.config;
 
+import org.springframework.http.MediaType;
 import org.springframework.stereotype.Controller;
 import org.springframework.web.bind.annotation.GetMapping;
 
@@ -13,7 +14,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 @Controller
 public class SpaForwardController {
 
-    @GetMapping({
+    @GetMapping(value = {
             "/",
             "/dashboard",
             "/strategies",
@@ -30,7 +31,7 @@ public class SpaForwardController {
             "/reports",
             "/auth",
             "/diagnostics"
-    })
+    }, produces = MediaType.TEXT_HTML_VALUE)
     public String forward() {
         return "forward:/index.html";
     }
