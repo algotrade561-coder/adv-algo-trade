@@ -60,7 +60,13 @@ public class OiShiftTrapCaptureAdapter implements TuningCaptureAdapter {
                         List.of(1.5, 2.0, 3.0, 4.0), BandStyle.NUMERIC_RANGE),
                 new BucketDimension("proximity", "proximityPct",
                         List.of(0.25, 0.5, 0.75, 1.0), BandStyle.NUMERIC_RANGE),
-                new BucketDimension("trapSide", "trapSide", null, BandStyle.CATEGORICAL)
+                new BucketDimension("trapSide", "trapSide", null, BandStyle.CATEGORICAL),
+                // Ladder dimensions: split FILL vs ARMED vs CANCELLED events,
+                // and bucket on effective discount-vs-arm so the analyzer can
+                // show "where in the discount band did fills concentrate".
+                new BucketDimension("ladderEvent", "ladderEvent", null, BandStyle.CATEGORICAL),
+                new BucketDimension("ladderDiscount", "ladderDiscountVsArm",
+                        List.of(-0.10, -0.06, -0.03, 0.0), BandStyle.NUMERIC_RANGE)
         );
     }
 
@@ -337,6 +343,27 @@ public class OiShiftTrapCaptureAdapter implements TuningCaptureAdapter {
         if (decision != null) {
             a.put("signalType", decision.signalType().name());
             a.put("reasons", String.join("; ", decision.reasons()));
+        }
+        // ── Limit-ladder attributes ──────────────────────────────────────
+        // Populated by the ladder manager when a tier arms, fills, or cancels.
+        // The analyzer uses these to compute ladder effectiveness.
+        OiShiftTrapDiagnostics.LadderInfo L = diag.ladderInfo();
+        if (L != null) {
+            a.put("ladderEvent", L.event());
+            a.put("ladderMode", L.mode());
+            a.put("ladderArmLtp", L.armLtp());
+            a.put("ladderArmOpScore", L.armOpScore());
+            a.put("ladderArmOpDirection", L.armOpDirection());
+            a.put("ladderTier1Price", L.tier1Price());
+            a.put("ladderTier2Price", L.tier2Price());
+            a.put("ladderTier3Price", L.tier3Price());
+            a.put("ladderTier1FillQty", L.tier1FilledQty());
+            a.put("ladderTier2FillQty", L.tier2FilledQty());
+            a.put("ladderTier3FillQty", L.tier3FilledQty());
+            a.put("ladderEffectiveFillPrice", L.effectiveFillPrice());
+            a.put("ladderDiscountVsArm", L.discountVsArm());
+            a.put("ladderCurrentOpScore", L.currentOpScore());
+            putIfPresent(a, "ladderCancelReason", L.cancelReason());
         }
         return a;
     }

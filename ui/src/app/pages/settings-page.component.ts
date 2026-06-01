@@ -13,7 +13,8 @@ import {
   GlobalConfigDto,
   OiMomentumHaltStatusDto,
   OiMomentumIndexHaltDto,
-  OiMomentumRuntimeConfigDto
+  OiMomentumRuntimeConfigDto,
+  OiShiftTrapLadderConfigDto
 } from '../core/api.service';
 
 @Component({
@@ -404,6 +405,122 @@ import {
                 <mat-icon>block</mat-icon> Emergency kill
               </button>
               <button mat-stroked-button (click)="loadOi()">
+                <mat-icon>refresh</mat-icon> Reload
+              </button>
+            </div>
+          </div>
+        }
+
+        <hr class="section-divider" />
+      }
+
+      <!-- ── OI Shift Trap — limit ladder ────────────────────────────── -->
+      @if (ladderMsg()) { <div class="toast-ok">{{ ladderMsg() }}</div> }
+      @if (ladderError()) { <div class="toast-warn">{{ ladderError() }}</div> }
+
+      @if (!ladderLoaded) {
+        <div style="text-align:center;padding:24px;color:var(--muted)">Loading OI Shift Trap ladder…</div>
+      }
+
+      @if (ladderConfig) {
+        <div class="section-hdr clickable" (click)="ladderOpen = !ladderOpen">
+          <mat-icon class="icon-v3">stairs</mat-icon>
+          <div>
+            <h2>OI Shift Trap — limit ladder</h2>
+            <p>Three discounted limit BUY tiers below the arm premium. Replaces legacy entry when enabled.</p>
+          </div>
+          <span class="v3-mode-pill"
+                [class.live]="ladderConfig.ladderMode === 'LIVE'"
+                [class.shadow]="ladderConfig.ladderMode === 'SHADOW'">
+            {{ ladderConfig.ladderMode }}
+          </span>
+          <span class="spacer"></span>
+          <mat-icon>{{ ladderOpen ? 'expand_less' : 'expand_more' }}</mat-icon>
+        </div>
+
+        @if (ladderOpen) {
+          <div class="v3-panel">
+            <div class="form-grid">
+              <mat-form-field appearance="outline">
+                <mat-label>Mode</mat-label>
+                <mat-select [(ngModel)]="ladderConfig.ladderMode">
+                  <mat-option value="OFF">OFF (legacy entry only)</mat-option>
+                  <mat-option value="SHADOW">SHADOW (track tiers, no live orders)</mat-option>
+                  <mat-option value="LIVE">LIVE (place real limit orders)</mat-option>
+                </mat-select>
+                <mat-hint>OFF preserves the legacy strategy. LIVE replaces it with the ladder.</mat-hint>
+              </mat-form-field>
+              <mat-form-field appearance="outline">
+                <mat-label>Tier 1 discount (fraction)</mat-label>
+                <input matInput type="number" min="0.001" max="0.99" step="0.005"
+                       [(ngModel)]="ladderConfig.tier1Discount">
+                <mat-hint>0.03 = 3% below arm. Default 0.03.</mat-hint>
+              </mat-form-field>
+              <mat-form-field appearance="outline">
+                <mat-label>Tier 2 discount (fraction)</mat-label>
+                <input matInput type="number" min="0.001" max="0.99" step="0.005"
+                       [(ngModel)]="ladderConfig.tier2Discount">
+                <mat-hint>Default 0.06 (6% below arm).</mat-hint>
+              </mat-form-field>
+              <mat-form-field appearance="outline">
+                <mat-label>Tier 3 discount (fraction)</mat-label>
+                <input matInput type="number" min="0.001" max="0.99" step="0.005"
+                       [(ngModel)]="ladderConfig.tier3Discount">
+                <mat-hint>Default 0.10 (10% below arm).</mat-hint>
+              </mat-form-field>
+              <mat-form-field appearance="outline">
+                <mat-label>Window (minutes)</mat-label>
+                <input matInput type="number" min="1" max="180"
+                       [(ngModel)]="ladderConfig.ladderWindowMin">
+                <mat-hint>Auto-cancel unfilled tiers after. Default 30.</mat-hint>
+              </mat-form-field>
+              <mat-form-field appearance="outline">
+                <mat-label>Op-score arm floor</mat-label>
+                <input matInput type="number" min="0" max="100"
+                       [(ngModel)]="ladderConfig.ladderOpScoreArmFloor">
+                <mat-hint>Min operator score to place the ladder. Default 50.</mat-hint>
+              </mat-form-field>
+              <mat-form-field appearance="outline">
+                <mat-label>Op-score cancel delta</mat-label>
+                <input matInput type="number" min="0" max="100"
+                       [(ngModel)]="ladderConfig.ladderOpScoreCancelDelta">
+                <mat-hint>Cancel all open tiers when op-score drops by &gt;= this. Default 20.</mat-hint>
+              </mat-form-field>
+              @if (ladderConfig.activeLadders !== undefined && ladderConfig.activeLadders !== null) {
+                <div class="toggle-row">
+                  <span>Active ladders<small class="toggle-hint">Live count across indices.</small></span>
+                  <span class="v3-mode-pill" [class.live]="ladderConfig.activeLadders! > 0">
+                    {{ ladderConfig.activeLadders }}
+                  </span>
+                </div>
+              }
+            </div>
+
+            <p class="yaml-note">
+              Tier discounts must be strictly increasing (tier1 &lt; tier2 &lt; tier3). When the
+              ladder is enabled, the legacy immediate-entry is replaced. See
+              <code>important/OI_SHIFT_TRAP_REDESIGN.md</code> for the full design rationale.
+            </p>
+
+            <mat-form-field appearance="outline" class="reason-field">
+              <mat-label>Change reason (required)</mat-label>
+              <input matInput [(ngModel)]="ladderChangeReason" minlength="5"
+                     placeholder="e.g. shadow week before flipping LIVE">
+              <mat-hint>Min 5 characters — recorded in audit log</mat-hint>
+            </mat-form-field>
+
+            @if (ladderConfig.updatedAt) {
+              <p class="audit-line">
+                Last update: {{ ladderConfig.updatedAt }} by {{ ladderConfig.updatedBy || '—' }}
+                @if (ladderConfig.updatedReason) { — {{ ladderConfig.updatedReason }} }
+              </p>
+            }
+
+            <div class="actions oi-actions">
+              <button mat-flat-button color="primary" (click)="saveLadder()">
+                <mat-icon>save</mat-icon> Save Ladder
+              </button>
+              <button mat-stroked-button (click)="loadLadder()">
                 <mat-icon>refresh</mat-icon> Reload
               </button>
             </div>
@@ -847,6 +964,14 @@ export class SettingsPageComponent implements OnInit {
   resumeClearSlCooldown = false;
   resumeResetTrades = false;
 
+  // ── OI Shift Trap limit-ladder state ───────────────────────────────────
+  ladderConfig!: OiShiftTrapLadderConfigDto;
+  ladderLoaded = false;
+  ladderOpen = true;
+  ladderMsg = signal('');
+  ladderError = signal('');
+  ladderChangeReason = '';
+
   constructor(private api: ApiService, private cd: ChangeDetectorRef) {}
 
   ngOnInit() {
@@ -854,6 +979,7 @@ export class SettingsPageComponent implements OnInit {
       this.load();
       this.loadOi();
       this.loadHalts();
+      this.loadLadder();
     }, 0);
   }
 
@@ -996,6 +1122,50 @@ export class SettingsPageComponent implements OnInit {
         this.cd.detectChanges();
       },
       error: (e: any) => this.oiError.set(e?.error?.error ?? 'Kill switch failed')
+    });
+  }
+
+  // ── OI Shift Trap limit-ladder ─────────────────────────────────────────
+
+  private ladderReasonOrError(): string | null {
+    const reason = (this.ladderChangeReason ?? '').trim();
+    if (reason.length < 5) {
+      this.ladderError.set('Change reason is required (at least 5 characters)');
+      return null;
+    }
+    return reason;
+  }
+
+  loadLadder() {
+    this.ladderMsg.set('');
+    this.ladderError.set('');
+    this.api.getOiShiftTrapLadder().subscribe({
+      next: c => {
+        this.ladderConfig = c;
+        this.ladderLoaded = true;
+        this.cd.detectChanges();
+      },
+      error: (e: any) => {
+        this.ladderError.set(e?.error?.error ?? 'Failed to load ladder settings');
+        this.cd.detectChanges();
+      }
+    });
+  }
+
+  saveLadder() {
+    this.ladderMsg.set('');
+    this.ladderError.set('');
+    const reason = this.ladderReasonOrError();
+    if (!reason) return;
+    const body = { ...this.ladderConfig, reason };
+    this.api.updateOiShiftTrapLadder(body).subscribe({
+      next: c => {
+        this.ladderConfig = c;
+        this.ladderChangeReason = '';
+        this.ladderMsg.set('Ladder settings saved');
+        this.cd.detectChanges();
+      },
+      error: (e: any) => this.ladderError.set(e?.error?.error ?? 'Failed to save ladder settings')
     });
   }
 

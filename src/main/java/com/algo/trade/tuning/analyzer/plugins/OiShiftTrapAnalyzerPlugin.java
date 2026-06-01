@@ -65,7 +65,122 @@ public class OiShiftTrapAnalyzerPlugin implements TuningAnalyzerPlugin {
         List<AnalyzerSection> sections = new ArrayList<>();
         sections.add(confirmationEffectivenessRanker(query));
         sections.add(lateEntrySimulation(query));
+        sections.add(ladderEffectiveness(query));
         return sections;
+    }
+
+    // ── Section 3: ladder effectiveness ──────────────────────────────────
+
+    /**
+     * Reads the {@code ladderEvent}, {@code ladderDiscountVsArm}, and per-tier
+     * fill attributes from SIGNAL events and reports tier coverage, average
+     * discount, and discount distribution. Empty when the ladder is not in
+     * use (no SIGNAL events carry {@code ladderEvent}).
+     */
+    public AnalyzerSection ladderEffectiveness(TuningEventQuery query) {
+        try {
+            List<Path> signalFiles = query.store().listEventFiles(
+                    StrategyType.OI_SHIFT_TRAP, TuningEventType.SIGNAL,
+                    query.fromDate(), query.toDate());
+            if (signalFiles.isEmpty()) {
+                return AnalyzerSection.htmlOnly("Ladder effectiveness",
+                        "<p><em>No SIGNAL events in the selected window.</em></p>");
+            }
+            String glob = globOf(signalFiles);
+            String sql = "SELECT correlationKey, attr_extra "
+                    + "FROM read_csv_auto([" + glob + "], header=true)";
+            List<Map<String, Object>> raw = query.store().query(sql);
+
+            int armCount = 0, fillCount = 0, cancelCount = 0;
+            int tier1Hits = 0, tier2Hits = 0, tier3Hits = 0;
+            List<Double> discounts = new ArrayList<>();
+            Map<String, Integer> cancelReasons = new LinkedHashMap<>();
+
+            for (Map<String, Object> r : raw) {
+                String event = jsonString(r.get("attr_extra"), "ladderEvent");
+                if (event == null) continue;
+                if ("ARMED".equals(event)) armCount++;
+                else if ("TIER_FILLED".equals(event)) {
+                    fillCount++;
+                    Double d = jsonDouble(r.get("attr_extra"), "ladderDiscountVsArm");
+                    if (d != null) discounts.add(d);
+                    Double t1 = jsonDouble(r.get("attr_extra"), "ladderTier1FillQty");
+                    Double t2 = jsonDouble(r.get("attr_extra"), "ladderTier2FillQty");
+                    Double t3 = jsonDouble(r.get("attr_extra"), "ladderTier3FillQty");
+                    if (t1 != null && t1 > 0) tier1Hits++;
+                    if (t2 != null && t2 > 0) tier2Hits++;
+                    if (t3 != null && t3 > 0) tier3Hits++;
+                } else if ("CANCELLED".equals(event)) {
+                    cancelCount++;
+                    String reason = jsonString(r.get("attr_extra"), "ladderCancelReason");
+                    if (reason != null) {
+                        cancelReasons.merge(reason, 1, Integer::sum);
+                    }
+                }
+            }
+            if (armCount == 0 && fillCount == 0 && cancelCount == 0) {
+                return AnalyzerSection.htmlOnly("Ladder effectiveness",
+                        "<p><em>No ladder events found — ladder is likely OFF.</em></p>");
+            }
+            double medDisc = median(discounts);
+            double fillRate = armCount == 0 ? 0 : 100.0 * fillCount / Math.max(1, armCount);
+
+            StringBuilder html = new StringBuilder(1024);
+            html.append("<table class='ladder-summary'><thead><tr>")
+                    .append("<th>Metric</th><th>Value</th></tr></thead><tbody>")
+                    .append(row("Arms", armCount))
+                    .append(row("Tier fills", fillCount))
+                    .append(row("Cancellations", cancelCount))
+                    .append(row("Fill rate (fills / arms)", String.format(Locale.ROOT, "%.1f%%", fillRate)))
+                    .append(row("Tier 1 hits", tier1Hits))
+                    .append(row("Tier 2 hits", tier2Hits))
+                    .append(row("Tier 3 hits", tier3Hits))
+                    .append(row("Median discount vs arm",
+                            String.format(Locale.ROOT, "%.2f%%", medDisc * 100)))
+                    .append("</tbody></table>");
+            if (!cancelReasons.isEmpty()) {
+                html.append("<h4>Cancel reasons</h4><table><thead><tr><th>Reason</th><th>Count</th></tr></thead><tbody>");
+                for (var e : cancelReasons.entrySet()) {
+                    html.append(row(e.getKey(), e.getValue()));
+                }
+                html.append("</tbody></table>");
+            }
+
+            Map<String, Object> data = new LinkedHashMap<>();
+            data.put("arms", armCount);
+            data.put("fills", fillCount);
+            data.put("cancels", cancelCount);
+            data.put("tier1Hits", tier1Hits);
+            data.put("tier2Hits", tier2Hits);
+            data.put("tier3Hits", tier3Hits);
+            data.put("fillRatePct", fillRate);
+            data.put("medianDiscount", medDisc);
+            data.put("cancelReasons", cancelReasons);
+            return new AnalyzerSection("Ladder effectiveness", html.toString(), data);
+        } catch (TuningQueryException ex) {
+            log.warn("[OiShiftTrapAnalyzerPlugin] ladder effectiveness failed: {}", ex.getMessage());
+            return AnalyzerSection.htmlOnly("Ladder effectiveness",
+                    "<p class='error'>Query failed: " + escape(ex.getMessage()) + "</p>");
+        }
+    }
+
+    private static String row(String label, Object value) {
+        return "<tr><td>" + escape(label) + "</td><td>" + escape(String.valueOf(value)) + "</td></tr>";
+    }
+
+    private static String jsonString(Object jsonCol, String key) {
+        if (jsonCol == null) return null;
+        String json = jsonCol.toString();
+        if (json.isBlank()) return null;
+        String needle = "\"" + key + "\":";
+        int idx = json.indexOf(needle);
+        if (idx < 0) return null;
+        int start = idx + needle.length();
+        while (start < json.length() && Character.isWhitespace(json.charAt(start))) start++;
+        if (start >= json.length() || json.charAt(start) != '"') return null;
+        int end = ++start;
+        while (end < json.length() && json.charAt(end) != '"') end++;
+        return end <= json.length() ? json.substring(start, end) : null;
     }
 
     // ── Section 1: confirmation-effectiveness ranker ──────────────────────

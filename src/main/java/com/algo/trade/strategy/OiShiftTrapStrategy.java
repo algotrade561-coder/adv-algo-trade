@@ -2,8 +2,10 @@ package com.algo.trade.strategy;
 
 import com.algo.trade.domain.*;
 import com.algo.trade.strategy.oishifttrap.OiShiftTrapDiagnostics;
+import com.algo.trade.strategy.oishifttrap.OiShiftTrapLadderManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
@@ -49,10 +51,25 @@ public class OiShiftTrapStrategy {
 
     private final com.algo.trade.underlying.UnderlyingConfigService underlyingConfigService;
 
+    /**
+     * Optional limit-ladder manager. When present and enabled, candidates
+     * produced by the legacy gate matrix are handed off to the ladder
+     * (which places three discounted limit BUY orders) instead of firing
+     * the legacy immediate-entry. When disabled, legacy behaviour is
+     * preserved verbatim.
+     */
+    @Autowired(required = false)
+    private OiShiftTrapLadderManager ladderManager;
+
     public OiShiftTrapStrategy(
             @org.springframework.beans.factory.annotation.Autowired(required = false)
             com.algo.trade.underlying.UnderlyingConfigService underlyingConfigService) {
         this.underlyingConfigService = underlyingConfigService;
+    }
+
+    /** Test-only: inject a ladder manager stub. */
+    void setLadderManager(OiShiftTrapLadderManager mgr) {
+        this.ladderManager = mgr;
     }
 
     public record TrapEvaluation(
@@ -64,6 +81,22 @@ public class OiShiftTrapStrategy {
     public TrapEvaluation evaluateWithDiagnostics(OptionChainSnapshot snapshot, BigDecimal spotPrice,
                                                    StrategyConfig config, UnderlyingSymbol underlying,
                                                    List<Candle> underlyingCandles) {
+        // ── Ladder poll: drain any tier fills / cancellations from prior arms ──
+        OiShiftTrapDiagnostics lastLadderDiag = null;
+        if (ladderManager != null && ladderManager.isEnabled()) {
+            IndexType idx = IndexType.from(underlying);
+            for (OiShiftTrapLadderManager.FillResult fr : ladderManager.poll(idx)) {
+                if ("TIER_FILLED".equals(fr.event()) && fr.decision() != null) {
+                    log.info("[OiShiftTrap] LADDER FILL tier{} side={} strike={}",
+                            fr.tierIndex(), fr.diagnostics().trapSide(),
+                            fr.diagnostics().signalStrike());
+                    return new TrapEvaluation(Optional.of(fr.decision()), fr.diagnostics());
+                }
+                // Shadow-mode FILL or CANCEL — diagnostic only.
+                lastLadderDiag = fr.diagnostics();
+            }
+        }
+
         if (snapshot == null || snapshot.levels().isEmpty()) {
             return new TrapEvaluation(Optional.empty(),
                     OiShiftTrapDiagnostics.blocked(underlying.name(), "NO_CHAIN", "empty_snapshot", spotPrice));
@@ -125,11 +158,12 @@ public class OiShiftTrapStrategy {
                 bestCe = betterCandidate(bestCe, evaluateCeCandidate(level, proximity, trendDirection));
                 Optional<StrategyDecision> signal = tryCeSignal(level, spotPrice, underlying, proximity, trendDirection);
                 if (signal.isPresent()) {
-                    OiShiftTrapDiagnostics.CandidateSnapshot chosen = bestCe;
-                    return new TrapEvaluation(signal, buildSuccessDiag(
+                    OiShiftTrapDiagnostics succDiag = buildSuccessDiag(
                             underlying.name(), spotPrice, trendDirection, volumeMode, latestVolume,
                             snapshot.levels().size(), bestCe, bestPe, "CE", level.strike(),
-                            signal.get().confidenceScore().intValue()));
+                            signal.get().confidenceScore().intValue());
+                    return maybeArmLadderOrEmit(signal, succDiag, underlying, OptionType.CE,
+                            level.strike(), level.callLastPrice(), config);
                 }
             }
         }
@@ -151,14 +185,22 @@ public class OiShiftTrapStrategy {
                 bestPe = betterCandidate(bestPe, evaluatePeCandidate(level, proximity, trendDirection));
                 Optional<StrategyDecision> signal = tryPeSignal(level, spotPrice, underlying, proximity, trendDirection);
                 if (signal.isPresent()) {
-                    return new TrapEvaluation(signal, buildSuccessDiag(
+                    OiShiftTrapDiagnostics succDiag = buildSuccessDiag(
                             underlying.name(), spotPrice, trendDirection, volumeMode, latestVolume,
                             snapshot.levels().size(), bestCe, bestPe, "PE", level.strike(),
-                            signal.get().confidenceScore().intValue()));
+                            signal.get().confidenceScore().intValue());
+                    return maybeArmLadderOrEmit(signal, succDiag, underlying, OptionType.PE,
+                            level.strike(), level.putLastPrice(), config);
                 }
             }
         }
 
+        // If no legacy candidate fired this tick but the ladder produced a
+        // CANCEL / shadow-FILL diagnostic, prefer that — it carries real
+        // information for the tuning pipeline.
+        if (lastLadderDiag != null) {
+            return new TrapEvaluation(Optional.empty(), lastLadderDiag);
+        }
         String primaryBlocker = resolvePrimaryBlocker(trendDirection, bestCe, bestPe);
         String outcome = trendDirection == 0 ? "TREND_FLAT" : "NO_TRAP_MATCH";
         return new TrapEvaluation(Optional.empty(), new OiShiftTrapDiagnostics(
@@ -177,6 +219,55 @@ public class OiShiftTrapStrategy {
     public Optional<StrategyDecision> evaluate(OptionChainSnapshot snapshot, BigDecimal spotPrice,
                                                 StrategyConfig config, UnderlyingSymbol underlying) {
         return evaluate(snapshot, spotPrice, config, underlying, null);
+    }
+
+    /**
+     * Decide whether to emit the legacy signal immediately or hand off to
+     * the ladder. The ladder REPLACES the legacy entry when enabled — the
+     * legacy signal is suppressed and three discounted tiers are placed.
+     * When the ladder is OFF (or rejects the arm due to op-score floor),
+     * the legacy signal fires as it always has.
+     */
+    private TrapEvaluation maybeArmLadderOrEmit(Optional<StrategyDecision> signal,
+                                                 OiShiftTrapDiagnostics succDiag,
+                                                 UnderlyingSymbol underlying,
+                                                 OptionType side,
+                                                 BigDecimal strike,
+                                                 BigDecimal ltp,
+                                                 StrategyConfig config) {
+        if (ladderManager == null || !ladderManager.isEnabled()) {
+            return new TrapEvaluation(signal, succDiag);
+        }
+        double ltpDouble = ltp != null && ltp.signum() > 0 ? ltp.doubleValue() : 0.0;
+        int totalLots = config != null ? Math.max(1, config.getLots()) : 3;
+        boolean armed = ladderManager.arm(IndexType.from(underlying), side,
+                strike.intValue(), ltpDouble, totalLots, succDiag);
+        if (!armed) {
+            // Ladder rejected the arm (e.g. op-score below floor). Fall back
+            // to legacy fire so we don't lose the trade entirely.
+            log.info("[OiShiftTrap] ladder declined to arm — falling back to legacy entry");
+            return new TrapEvaluation(signal, succDiag);
+        }
+        // Suppress the legacy signal. The ladder will emit tier fills on
+        // subsequent ticks via poll().
+        OiShiftTrapDiagnostics armedDiag = succDiag.withLadderInfo(
+                OiShiftTrapDiagnostics.LadderInfo.armed(
+                        java.time.Instant.now(), ltpDouble, 0, 0,
+                        ladderManager.config() == null ? "OFF" : ladderManager.config().getLadderMode(),
+                        ltpDouble * (1 - safeTier(ladderManager.config(), 1)),
+                        ltpDouble * (1 - safeTier(ladderManager.config(), 2)),
+                        ltpDouble * (1 - safeTier(ladderManager.config(), 3))));
+        return new TrapEvaluation(Optional.empty(), armedDiag);
+    }
+
+    private static double safeTier(com.algo.trade.strategy.oishifttrap.OiShiftTrapLadderConfig c, int idx) {
+        if (c == null) return 0;
+        return switch (idx) {
+            case 1 -> c.getTier1Discount();
+            case 2 -> c.getTier2Discount();
+            case 3 -> c.getTier3Discount();
+            default -> 0;
+        };
     }
 
     private static OiShiftTrapDiagnostics buildSuccessDiag(

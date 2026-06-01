@@ -211,6 +211,26 @@ export interface OiMomentumSettingsUpdate extends Partial<OiMomentumRuntimeConfi
   reason: string;
 }
 
+/** OI Shift Trap limit-ladder runtime config (DB-backed, no restart). */
+export interface OiShiftTrapLadderConfigDto {
+  ladderMode: 'OFF' | 'SHADOW' | 'LIVE';
+  tier1Discount: number;
+  tier2Discount: number;
+  tier3Discount: number;
+  ladderWindowMin: number;
+  ladderOpScoreArmFloor: number;
+  ladderOpScoreCancelDelta: number;
+  /** Active ladders across all indices. Read-only. */
+  activeLadders?: number;
+  updatedAt: string;
+  updatedBy: string;
+  updatedReason: string;
+}
+
+export interface OiShiftTrapLadderUpdate extends Partial<OiShiftTrapLadderConfigDto> {
+  reason: string;
+}
+
 export interface OiMomentumIndexHaltDto {
   haltedForDay: boolean;
   consecutiveLosses: number;
@@ -425,6 +445,14 @@ export class ApiService {
   }
   extendOiMomentumHalts(body: OiMomentumHaltActionRequest): Observable<OiMomentumHaltActionResponse> {
     return this.http.post<OiMomentumHaltActionResponse>(`${this.base}/oi-momentum/settings/halts/extend`, body);
+  }
+
+  // ── OI Shift Trap limit-ladder runtime ──────────────────────────────────
+  getOiShiftTrapLadder(): Observable<OiShiftTrapLadderConfigDto> {
+    return this.http.get<OiShiftTrapLadderConfigDto>(`${this.base}/oi-shift-trap/ladder`);
+  }
+  updateOiShiftTrapLadder(body: OiShiftTrapLadderUpdate): Observable<OiShiftTrapLadderConfigDto> {
+    return this.http.post<OiShiftTrapLadderConfigDto>(`${this.base}/oi-shift-trap/ladder`, body);
   }
 
   // ── Underlying config ───────────────────────────────────────────────────
