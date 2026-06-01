@@ -90,6 +90,10 @@ public class TelegramAlertService {
             BigDecimal estimatedCost,
             OrderResponse order
     ) {
+        // First-reason gives operators path/setup context (e.g. "OI Shift Trap
+        // [imbalance-only]: ...", "OI Shift Trap [distant-OI]: ...", "[pending-resolved]: ...").
+        String firstReason = decision.reasons() != null && !decision.reasons().isEmpty()
+                ? decision.reasons().get(0) : "";
         send("Entry order filled"
                 + System.lineSeparator() + "Signal: " + decision.signalType()
                 + System.lineSeparator() + "Instrument: " + order.instrumentKey()
@@ -97,6 +101,7 @@ public class TelegramAlertService {
                 + System.lineSeparator() + "Signal premium: " + optionPremium
                 + System.lineSeparator() + "Fill price: " + order.averageFillPrice().orElse(null)
                 + System.lineSeparator() + "Estimated cost: " + estimatedCost
+                + (firstReason.isEmpty() ? "" : System.lineSeparator() + "Reason: " + firstReason)
                 + System.lineSeparator() + "Broker order: " + order.brokerOrderId().orElse(""));
     }
 

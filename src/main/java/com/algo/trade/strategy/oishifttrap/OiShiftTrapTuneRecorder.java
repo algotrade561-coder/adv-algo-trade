@@ -6,12 +6,16 @@ import com.algo.trade.reporting.SignalDecisionKey;
 import com.algo.trade.tuning.adapter.strategies.OiShiftTrapCaptureAdapter;
 import com.algo.trade.tuning.infra.EpisodeAggregator;
 import com.algo.trade.tuning.recorder.TuningEventRecorder;
+import com.algo.trade.domain.IndexType;
+import com.algo.trade.persistence.TradeEntity;
+import com.algo.trade.tuning.infra.MaeMfeTracker;
+import java.math.BigDecimal;
+import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
-import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -90,6 +94,34 @@ public class OiShiftTrapTuneRecorder {
     }
 
     /**
+     * Phase 5+ — emit a tuning {@code ExitEvent} when an OI Shift Trap trade closes.
+     * Builds the event via {@link OiShiftTrapCaptureAdapter#buildExitEvent} and writes
+     * through {@link TuningEventRecorder}. {@code trapAttrs} carries strategy-specific
+     * context (e.g. OI unwind evidence: drop%, entry/current OI, minutes since entry,
+     * signal-path tag derived from entry reason). NO-OP when wiring is missing or the
+     * trade isn't OI_SHIFT_TRAP.
+     */
+    public void recordExit(TradeEntity trade,
+                            BigDecimal exitPrice,
+                            String exitReason,
+                            MaeMfeTracker.Snapshot maeSnapshot,
+                            Map<String, Object> trapAttrs) {
+        logFirstCallStatus();
+        if (tuningEventRecorder == null || adapter == null || trade == null) return;
+        if (!"OI_SHIFT_TRAP".equals(trade.getStrategyType())) return;
+        try {
+            String correlationKey = trade.getTradeId();
+            IndexType index = IndexType.fromName(trade.getUnderlying());
+            tuningEventRecorder.record(adapter.buildExitEvent(
+                    index, trade, maeSnapshot, correlationKey,
+                    exitPrice, exitReason, /* reversal= */ false, trapAttrs));
+        } catch (Exception ex) {
+            log.warn("[OiShiftTrapTuneRecorder] exit record failed (non-fatal): {}",
+                    ex.getMessage());
+        }
+    }
+
+    /**
      * Periodic flush of expired episodes so a strategy that goes quiet still
      * surfaces its last episode to disk within ~30 seconds.
      */
@@ -154,6 +186,20 @@ public class OiShiftTrapTuneRecorder {
             List<Candle> candles = args.length >= 3 && args[2] instanceof List<?> lst
                     ? (List<Candle>) lst : List.of();
             recordSignal(sd, d, candles);
+        }
+    }
+
+    /** Varargs shim: (TradeEntity, BigDecimal, String, MaeMfeTracker.Snapshot, Map). */
+    @SuppressWarnings("unchecked")
+    public void recordExit(Object... args) {
+        if (args.length >= 3
+                && args[0] instanceof TradeEntity t
+                && args[1] instanceof BigDecimal price
+                && args[2] instanceof String reason) {
+            MaeMfeTracker.Snapshot snap = args.length >= 4 && args[3] instanceof MaeMfeTracker.Snapshot s ? s : null;
+            Map<String, Object> attrs = args.length >= 5 && args[4] instanceof Map<?, ?> m
+                    ? (Map<String, Object>) m : null;
+            recordExit(t, price, reason, snap, attrs);
         }
     }
 }

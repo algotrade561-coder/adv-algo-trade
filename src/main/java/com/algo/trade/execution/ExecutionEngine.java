@@ -106,6 +106,9 @@ public class ExecutionEngine {
     @Autowired(required = false)
     private com.algo.trade.strategy.oishifttrap.OiShiftTrapConfig oiShiftTrapConfig;
 
+    @Autowired(required = false)
+    private com.algo.trade.strategy.oishifttrap.ShiftTrapOiUnwindExitDetector shiftTrapOiUnwindExitDetector;
+
     @Autowired
     public ExecutionEngine(TradingProperties properties, GlobalConfigService globalConfigService, BrokerClient brokerClient, RiskEngine riskEngine, TradingStateService tradingStateService,
                            TradeRepository tradeRepository, OrderRepository orderRepository,
@@ -344,6 +347,7 @@ public class ExecutionEngine {
                     entryLiquidityRecorder.recordTradeEntry(tradeEntity, effectiveConfig);
                 }
                 registerShiftTrapMaeTracking(tradeEntity);
+                registerShiftTrapEntryOi(tradeEntity);
                 tradeRepository.save(tradeEntity);
                 tradingStateService.recordTradeEntry();
                 log.info("Entry trade opened: tradeId={}, instrument={}, quantity={}, entryPrice={}",
@@ -804,6 +808,7 @@ public class ExecutionEngine {
             }
         }
         registerShiftTrapMaeTracking(trade);
+        registerShiftTrapEntryOi(trade);
         tradeRepository.save(trade);
 
         // Mark order as materialized to prevent duplicate trade creation
@@ -1388,5 +1393,33 @@ public class ExecutionEngine {
                 trade.getUnderlying(), trade.getOptionType(), trade.getEntryTime());
         shiftTrapMaeMfeTracker.startTracking(
                 trade.getTradeId(), ctx, trade.getEntryPrice(), trade.getEntryTime());
+    }
+
+    /**
+     * Phase 3 feature 11 — record entry OI for the unwind exit detector. Called at trade
+     * entry alongside {@link #registerShiftTrapMaeTracking}. No-op when the detector bean
+     * is missing, the strategy isn't OI_SHIFT_TRAP, or enhancements are disabled.
+     */
+    private void registerShiftTrapEntryOi(TradeEntity trade) {
+        if (shiftTrapOiUnwindExitDetector == null) {
+            return;
+        }
+        if (oiShiftTrapConfig == null || !oiShiftTrapConfig.isEnhancementsEnabled()) {
+            return;
+        }
+        if (!"OI_SHIFT_TRAP".equals(trade.getStrategyType())) {
+            return;
+        }
+        try {
+            String trapSide = trade.getOptionType() != null ? trade.getOptionType() : "?";
+            long entryOi = trade.getEntryOpenInterest() != null ? trade.getEntryOpenInterest() : 0L;
+            long entryCallOi = "CE".equals(trapSide) ? entryOi : 0L;
+            long entryPutOi = "PE".equals(trapSide) ? entryOi : 0L;
+            shiftTrapOiUnwindExitDetector.recordEntryOi(
+                    trade.getTradeId(), trapSide, null,
+                    entryCallOi, entryPutOi, trade.getEntryTime());
+        } catch (Exception ex) {
+            log.debug("registerShiftTrapEntryOi failed for {}: {}", trade.getTradeId(), ex.getMessage());
+        }
     }
 }
