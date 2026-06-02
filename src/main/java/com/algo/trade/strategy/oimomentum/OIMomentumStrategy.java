@@ -1941,7 +1941,13 @@ public class OIMomentumStrategy {
         }
 
         if (profitPct <= -slPercent) {
-            String reason = beArmed ? "BREAK_EVEN_STOP" : "STOP_LOSS";
+            // A2 (2026-06-02): tag exit reason with confirmation count + peak% so
+            // tune CSV / Telegram shows whether BE armed on a deeply-confirmed
+            // peak or a shallow one. Helps post-hoc tune the threshold.
+            String reason = beArmed
+                    ? String.format("BREAK_EVEN_STOP(confirms=%d,peak=%.2f%%)",
+                            state.peakConfirmationTicks, peakPct)
+                    : "STOP_LOSS";
             closePosition(indexType, state, trade, currentPrice, reason);
             if ("STOP_LOSS".equals(reason)) {
                 state.lastSlTime = Instant.now();

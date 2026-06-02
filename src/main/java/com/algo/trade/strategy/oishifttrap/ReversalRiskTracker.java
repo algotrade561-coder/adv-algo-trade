@@ -4,10 +4,18 @@ import com.algo.trade.data.ChainSnapshot;
 import com.algo.trade.domain.IndexType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalTime;
+import java.time.ZoneId;
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.EnumMap;
@@ -60,6 +68,13 @@ public class ReversalRiskTracker {
     private final Map<IndexType, Map<Integer, Deque<TimedValue>>> peOiByStrike = new EnumMap<>(IndexType.class);
     /** Per-index per-strike history of CE OI. */
     private final Map<IndexType, Map<Integer, Deque<TimedValue>>> ceOiByStrike = new EnumMap<>(IndexType.class);
+
+    // ── Capture / observability (2026-06-02) ────────────────────────────────
+    private static final ZoneId IST = ZoneId.of("Asia/Kolkata");
+    private static final Path CAPTURE_ROOT = Path.of("reports/tuning/events");
+
+    /** Latest computed metric per index, retained for periodic log dump. */
+    private final Map<IndexType, double[]> lastMetrics = new EnumMap<>(IndexType.class);
 
     public ReversalRiskTracker() {
         for (IndexType ix : IndexType.values()) {
@@ -132,10 +147,20 @@ public class ReversalRiskTracker {
             push(ceMap.get(strike), now, row.ceOI());
         }
 
+        // Stash latest metrics for the minutely log dump.
+        lastMetrics.put(ix, new double[]{spot, atm, maxPain, skew, ceWall, peWall});
+
         if (log.isDebugEnabled()) {
             log.debug("[ReversalRisk][{}] sampled — spot={} atm={} maxPain={} skew={} ceWall={} peWall={}",
                     ix, spot, atm, maxPain, String.format("%.2f", skew), ceWall, peWall);
         }
+
+        // Append to capture CSV — one row per sample per index. Best-effort; IO
+        // failures are swallowed so they never block trading.
+        appendCsv("snapshot.csv",
+                "eventTime,index,spot,atm,maxPain,skew,ceWall,peWall",
+                String.format("%s,%s,%.2f,%d,%d,%.4f,%d,%d",
+                        now.toString(), ix, spot, atm, maxPain, skew, ceWall, peWall));
     }
 
     /**
@@ -161,7 +186,53 @@ public class ReversalRiskTracker {
         int total = mp + sk + wl + oi;
 
         String detail = String.format("MP=%d Skew=%d Wall=%d OiFlow=%d", mp, sk, wl, oi);
+        // Capture every score evaluation — even sub-threshold ones — so the tune
+        // analyser can study the score distribution + per-component contribution
+        // over time.
+        appendCsv("score.csv",
+                "eventTime,index,trapSide,trapStrike,total,maxPainComp,skewComp,wallComp,oiFlowComp",
+                String.format("%s,%s,%s,%d,%d,%d,%d,%d,%d",
+                        Instant.now().toString(), ix, trapSide, trapStrike, total, mp, sk, wl, oi));
         return new Score(total, mp, sk, wl, oi, detail);
+    }
+
+    /**
+     * Periodic INFO log of the current per-index metrics — visible in the
+     * application log alongside other strategy ticks. Runs once a minute
+     * during market hours.
+     */
+    @Scheduled(fixedRate = 60_000, initialDelay = 60_000)
+    public void logCurrentState() {
+        LocalTime now = LocalTime.now(IST);
+        if (now.isBefore(LocalTime.of(9, 15)) || now.isAfter(LocalTime.of(15, 30))) return;
+        for (Map.Entry<IndexType, double[]> e : lastMetrics.entrySet()) {
+            double[] m = e.getValue();
+            if (m == null) continue;
+            log.info("[ReversalRisk][{}] state: spot={} atm={} maxPain={} skew={} ceWall={} peWall={}",
+                    e.getKey(),
+                    String.format("%.2f", m[0]),
+                    (int) m[1], (int) m[2],
+                    String.format("%+.3f", m[3]),
+                    (int) m[4], (int) m[5]);
+        }
+    }
+
+    /** Best-effort CSV append. Creates per-day directory and writes header if first row. */
+    private static synchronized void appendCsv(String filename, String header, String row) {
+        try {
+            LocalDate today = LocalDate.now(IST);
+            Path dir = CAPTURE_ROOT.resolve(today.toString()).resolve("reversal_risk");
+            Files.createDirectories(dir);
+            Path file = dir.resolve(filename);
+            boolean newFile = !Files.exists(file);
+            StringBuilder sb = new StringBuilder();
+            if (newFile) sb.append(header).append('\n');
+            sb.append(row).append('\n');
+            Files.writeString(file, sb.toString(),
+                    StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+        } catch (IOException ex) {
+            log.debug("[ReversalRisk] CSV append failed for {}: {}", filename, ex.getMessage());
+        }
     }
 
     // ── R1: max-pain drift component (0–30) ─────────────────────────────────
@@ -172,47 +243,27 @@ public class ReversalRiskTracker {
         TimedValue latest = hist.peekLast();
         if (oldest == null || latest == null) return 0;
         double drift = latest.value - oldest.value;
-        // Position wants down → reversal is drift UP. Position wants up → reversal is drift DOWN.
         double riskDrift = wantsDown ? drift : -drift;
         if (riskDrift <= 0) return 0;
-        // 50pt shift = 15 points; 100pt = 30 (cap).
         return (int) Math.min(30, riskDrift / 50.0 * 15.0);
     }
 
-    // ── R2: IV skew component (0–25) ────────────────────────────────────────
-    // Spec: 3-bar moving average is strongly negative (for PE-buy reversal) AND
-    // the moving average is DECREASING over the last few samples. The
-    // "decreasing" requirement avoids firing on a stable-but-already-low skew
-    // that has been priced in for a long time — we only want to react to
-    // FRESH movement of the skew against the trap.
+    // ── R2: IV skew component (0–25) — strict trend version ─────────────────
     private int scoreSkewComp(IndexType ix, boolean wantsDown) {
         Deque<TimedValue> hist = skewHistory.get(ix);
         if (hist == null || hist.size() < 5) return 0;
-        // Take last 5 samples (newest → oldest); compute 3-bar MA at "now" and at "3 bars ago"
         TimedValue[] arr = hist.toArray(new TimedValue[0]);
         int n = arr.length;
         double avgNow = (arr[n-1].value + arr[n-2].value + arr[n-3].value) / 3.0;
         double avgPrior = (arr[n-3].value + arr[n-4].value + arr[n-5].value) / 3.0;
-        // Risk metric: for PE buy (wantsDown), risk grows as skew goes MORE negative.
-        // For CE buy, risk grows as skew goes MORE positive.
         double riskNow = wantsDown ? -avgNow : avgNow;
         double riskPrior = wantsDown ? -avgPrior : avgPrior;
-        // Gate 1: current skew is strongly against the trap.
         if (riskNow <= 0) return 0;
-        // Gate 2: trending against the trap (the avg is getting "worse" for the trap).
-        // riskNow > riskPrior ⇔ skew has moved further against the trap.
         if (riskNow <= riskPrior) return 0;
-        // skew avg of −1.0 → 12 points; −2.0 → 25 (cap).
         return (int) Math.min(25, riskNow * 12.5);
     }
 
-    // ── R3: wall migration component (0–25) ─────────────────────────────────
-    // Spec: BOTH walls have moved in the SAME direction AND each individual
-    // bar-to-bar transition over the last 3 bars is monotonic (no flip-flop).
-    // The old implementation looked at oldest-vs-latest only, which would
-    // pass even on a 23300→23400→23300→23400 zigzag. New impl requires the
-    // last 3 transitions to be non-negative (for "up") or non-positive (for
-    // "down"), with at least one strict shift, on BOTH walls.
+    // ── R3: wall migration component (0–25) — strict monotone version ──────
     private int scoreWallComp(IndexType ix, boolean wantsDown) {
         Deque<TimedValue> ce = ceWallHistory.get(ix);
         Deque<TimedValue> pe = peWallHistory.get(ix);
@@ -220,14 +271,12 @@ public class ReversalRiskTracker {
         TimedValue[] ceArr = ce.toArray(new TimedValue[0]);
         TimedValue[] peArr = pe.toArray(new TimedValue[0]);
         int cn = ceArr.length, pn = peArr.length;
-        // Bar-to-bar transitions over the last 3 bars (4 samples → 3 diffs).
         double ce0 = ceArr[cn-1].value - ceArr[cn-2].value;
         double ce1 = ceArr[cn-2].value - ceArr[cn-3].value;
         double ce2 = ceArr[cn-3].value - ceArr[cn-4].value;
         double pe0 = peArr[pn-1].value - peArr[pn-2].value;
         double pe1 = peArr[pn-2].value - peArr[pn-3].value;
         double pe2 = peArr[pn-3].value - peArr[pn-4].value;
-        // Monotonic up: every transition >= 0 and at least one > 0
         boolean ceUpMonotone = ce0 >= 0 && ce1 >= 0 && ce2 >= 0 && (ce0 + ce1 + ce2) > 0;
         boolean peUpMonotone = pe0 >= 0 && pe1 >= 0 && pe2 >= 0 && (pe0 + pe1 + pe2) > 0;
         boolean ceDownMonotone = ce0 <= 0 && ce1 <= 0 && ce2 <= 0 && (ce0 + ce1 + ce2) < 0;
@@ -247,8 +296,6 @@ public class ReversalRiskTracker {
 
     // ── R4: per-strike OI flow inversion (0–20) ─────────────────────────────
     private int scoreOiFlowComp(IndexType ix, int trapStrike, boolean wantsDown) {
-        // If OIST wants down, it's buying PE at trapStrike. Track PE OI at trapStrike.
-        // Reversal signal: PE OI Δ (last 5 min) FLIPPED from sustained positive to negative.
         Map<Integer, Deque<TimedValue>> strikeMap = wantsDown
                 ? peOiByStrike.get(ix) : ceOiByStrike.get(ix);
         if (strikeMap == null) return 0;
@@ -261,13 +308,9 @@ public class ReversalRiskTracker {
         double prev2 = arr[arr.length - 3].value;
         double prev3 = arr[arr.length - 4].value;
         double prev4 = arr[arr.length - 5].value;
-        // Last 1-min Δ
         double d1 = latest - prev1;
-        // Prior 3-bar average Δ (the "sustained" trend)
         double priorAvg = ((prev1 - prev2) + (prev2 - prev3) + (prev3 - prev4)) / 3.0;
-        // Inversion: priorAvg was positive, now d1 is negative AND magnitude ≥ 1M
         if (priorAvg > 100_000 && d1 < -1_000_000) {
-            // Scale: −1M = 10 points, −3M = 20 (cap)
             return (int) Math.min(20, Math.abs(d1) / 1_000_000.0 * 10.0);
         }
         return 0;

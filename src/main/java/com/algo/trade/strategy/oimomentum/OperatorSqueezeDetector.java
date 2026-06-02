@@ -74,6 +74,10 @@ public class OperatorSqueezeDetector {
     private final Map<IndexType, Deque<Sample>> samples = new ConcurrentHashMap<>();
     private static final long RETENTION_MS = 30L * 60_000L;
 
+    /** A8 (2026-06-02): last Decision per index for the minutely log dump. */
+    private final Map<IndexType, Decision> lastDecisionByIndex = new ConcurrentHashMap<>();
+    private static final java.time.ZoneId IST_LOG = java.time.ZoneId.of("Asia/Kolkata");
+
     public OperatorSqueezeDetector(TickMomentumDetector momentumDetector,
                                    LiveInstrumentCache liveInstrumentCache,
                                    MarketGuard marketGuard) {
@@ -131,8 +135,41 @@ public class OperatorSqueezeDetector {
         }
     }
 
-    /** Evaluate the squeeze gates for one index using config thresholds. */
+    /**
+     * Periodic INFO log of the last evaluated Decision per index — shows the
+     * 4 core gate values + reason. Visible alongside other strategy ticks.
+     */
+    @org.springframework.scheduling.annotation.Scheduled(fixedRate = 60_000, initialDelay = 60_000)
+    public void logCurrentGateState() {
+        java.time.LocalTime now = java.time.LocalTime.now(IST_LOG);
+        if (now.isBefore(java.time.LocalTime.of(9, 15)) || now.isAfter(java.time.LocalTime.of(15, 30))) return;
+        for (Map.Entry<IndexType, Decision> e : lastDecisionByIndex.entrySet()) {
+            Decision d = e.getValue();
+            if (d == null) continue;
+            log.info("[OperatorSqueeze][{}] gateState: fires={} ignition={}% oiΔ={} vixΔ={} ivExp={}% pcrRot={} coilRange={}% reason={}",
+                    e.getKey(), d.fires(),
+                    String.format("%+.3f", d.ignitionReturnPct()),
+                    String.format("%+,d", d.oiCollapseAbs()),
+                    String.format("%+.3f", d.vixDeltaIgnition()),
+                    String.format("%+.2f", d.ivExpansionPct()),
+                    String.format("%.3f", d.pcrRotation()),
+                    String.format("%.3f", d.coilRangePct()),
+                    d.reason());
+        }
+    }
+
+    /**
+     * Public entry — evaluates squeeze gates and stashes the result for the
+     * minutely log dump.
+     */
     public Decision evaluate(IndexType index, OIMomentumConfig config) {
+        Decision d = evaluateInternal(index, config);
+        if (d != null) lastDecisionByIndex.put(index, d);
+        return d;
+    }
+
+    /** Internal — does the actual gate evaluation. */
+    private Decision evaluateInternal(IndexType index, OIMomentumConfig config) {
         if (config == null || !config.isOperatorSqueezeEnabled()) {
             return Decision.skip("disabled", 0, 0, 0, 0, 0, 0, 0, 0);
         }
@@ -272,14 +309,14 @@ public class OperatorSqueezeDetector {
     /**
      * Find the sample whose age (relative to {@code now}) is closest to
      * {@code targetAgeMs}. The ring is roughly time-ordered (latest at tail);
-     * we walk from the head looking for the first sample whose age &lt;= target.
+     * we walk from the head looking for the first sample whose age <= target.
      */
     private static Sample findClosestAtAge(Deque<Sample> ring, long now, long targetAgeMs) {
         Sample candidate = null;
         for (Sample s : ring) {
             long age = now - s.ts;
             if (age >= targetAgeMs) {
-                candidate = s;            // newest sample older-than-or-equal target age
+                candidate = s;
             } else {
                 break;
             }
