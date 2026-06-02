@@ -63,6 +63,10 @@ public class OiShiftTrapStrategy {
     public static final String BLOCKER_EXPIRY_LATE_MORNING_BLOCK = "expiry_imbalance_after_1130";
     public static final String BLOCKER_EXPIRY_NEAR_STRIKE_LAST_HOUR = "expiry_near_strike_after_1400";
 
+    // 2 Jun 2026 — R1-R4 composite reversal-risk veto. Fires when the chain is
+    // rotating against the trap direction (max-pain drift + skew + walls + OI flow).
+    public static final String BLOCKER_REVERSAL_RISK_AGAINST_TRAP = "reversal_risk_against_trap";
+
     private final com.algo.trade.underlying.UnderlyingConfigService underlyingConfigService;
     private final OiShiftTrapConfig shiftTrapConfig;
     private final ExpiryCalendar expiryCalendar;
@@ -84,6 +88,18 @@ public class OiShiftTrapStrategy {
      */
     @Autowired(required = false)
     private com.algo.trade.strategy.oishifttrap.OiShiftTrapHeartbeatService oiShiftTrapHeartbeat;
+
+    /**
+     * R1-R4 (2026-06-02): composite reversal-risk tracker. Reads max-pain
+     * drift, IV skew, wall migration, per-strike OI flow inversion from the
+     * shared market context, scores 0-100 against an OIST candidate. Veto
+     * when the chain is rotating against the trap.
+     */
+    @Autowired(required = false)
+    private com.algo.trade.strategy.oishifttrap.ReversalRiskTracker reversalRiskTracker;
+
+    /** Score threshold above which the imbalance-only path is vetoed. Configurable per-deploy. */
+    private static final int REVERSAL_RISK_VETO_THRESHOLD = 50;
 
     public OiShiftTrapStrategy(
             @Autowired(required = false) com.algo.trade.underlying.UnderlyingConfigService underlyingConfigService,
@@ -618,6 +634,28 @@ public class OiShiftTrapStrategy {
                         level.strike());
             }
             return Optional.empty();
+        }
+
+        // ── R1-R4 (2026-06-02): composite reversal-risk veto ──
+        // Reads the max-pain drift + IV skew + wall migration + per-strike OI
+        // flow inversion via ReversalRiskTracker (sampled by V3ContextFeeder).
+        // Score 0-100; >= 50 = block new entries opposite to drift. Today the
+        // 12:45 IST PE BUY at 23250 would have scored 100/100 against the trap.
+        if (reversalRiskTracker != null) {
+            try {
+                com.algo.trade.domain.IndexType ix = com.algo.trade.domain.IndexType.from(underlying);
+                com.algo.trade.strategy.oishifttrap.ReversalRiskTracker.Score risk =
+                        reversalRiskTracker.score(ix, trapSide, level.strike().intValue());
+                if (risk.total() >= REVERSAL_RISK_VETO_THRESHOLD) {
+                    hardBlocker[0] = BLOCKER_REVERSAL_RISK_AGAINST_TRAP;
+                    log.info("[OiShiftTrap] {} imbalance BLOCKED — reversal risk {}/100 against trap "
+                            + "(strike={} components={})",
+                            trapSide, risk.total(), level.strike(), risk.detail());
+                    return Optional.empty();
+                }
+            } catch (Exception ex) {
+                log.debug("[OiShiftTrap] reversal-risk score failed (non-fatal): {}", ex.getMessage());
+            }
         }
 
         // ── E1 (2026-06-02): on expiry day, block imbalance-only after 11:30 IST ──

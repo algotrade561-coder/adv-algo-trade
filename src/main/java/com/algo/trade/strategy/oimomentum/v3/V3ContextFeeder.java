@@ -63,6 +63,14 @@ public class V3ContextFeeder {
     @Autowired(required = false)
     private FiiDiiApiClient fiiDiiApiClient;
 
+    /**
+     * R1-R4 (2026-06-02): reversal-risk tracker — sampled once per minute
+     * from the latest chain snapshot. Optional injection so legacy bringup
+     * paths and unit tests work without it.
+     */
+    @Autowired(required = false)
+    private com.algo.trade.strategy.oishifttrap.ReversalRiskTracker reversalRiskTracker;
+
     /** Indices to feed — uses NIFTY/BANKNIFTY/SENSEX by default. */
     private static final IndexType[] FEED_INDICES =
             new IndexType[]{IndexType.NIFTY, IndexType.BANKNIFTY, IndexType.SENSEX};
@@ -219,6 +227,22 @@ public class V3ContextFeeder {
             // ── PCR (realtime) ──
             double pcr = liveInstrumentCache.getRealtimePcr(ix);
             if (pcr > 0) marketContext.recordPcr(ix, pcr);
+
+            // ── R1-R4 (2026-06-02): reversal-risk tracker sampling ──
+            // Reads the latest chain snapshot once a minute and updates per-index
+            // history of max-pain, IV skew, both walls, per-strike OI. Powers the
+            // OIST imbalance-only veto when the chain is rotating against the trap.
+            if (reversalRiskTracker != null) {
+                com.algo.trade.data.ChainSnapshot latest = marketContext.getLatestSnapshot(ix);
+                if (latest != null) {
+                    try {
+                        reversalRiskTracker.recordSnapshot(ix, latest);
+                    } catch (Exception ex) {
+                        log.debug("[V3ContextFeeder] reversalRiskTracker tick failed for {}: {}",
+                                ix, ex.getMessage());
+                    }
+                }
+            }
 
             // ── ATR % approximation from 15-min candles ──
             // Timeframe enum lacks ONE_DAY; approximate daily ATR via 15-min candles
