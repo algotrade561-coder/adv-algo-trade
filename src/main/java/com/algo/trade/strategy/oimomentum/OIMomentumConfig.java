@@ -597,4 +597,33 @@ public class OIMomentumConfig {
     public void setBiasDecaySeconds(int v) { this.biasDecaySeconds = v; }
     public int getBiasDecayPenalty() { return biasDecayPenalty; }
     public void setBiasDecayPenalty(int v) { this.biasDecayPenalty = v; }
+
+    // ── 2 Jun 2026: auto-restored setters required for @ConfigurationProperties binding ──
+    public void setMomentumThresholdPercent(double v) { this.momentumThresholdPercent = v; }
+    public void setSpikeThresholdPercent(double v) { this.spikeThresholdPercent = v; }
+    public void setRolling30MinWindowSeconds(int v) { this.rolling30MinWindowSeconds = v; }
+    public void setMinOiChangePercent(double v) { this.minOiChangePercent = v; }
+    public void setPcrBullishThreshold(double v) { this.pcrBullishThreshold = v; }
+    public void setPcrBearishThreshold(double v) { this.pcrBearishThreshold = v; }
+    public void setMinSqueezeOiDelta(long v) { this.minSqueezeOiDelta = v; }
+    public void setEntryWindowStart(String v) { this.entryWindowStart = v; }
+    public void setEntryWindowEnd(String v) { this.entryWindowEnd = v; }
+    public void setSoftTargetTradesPerDay(int v) { this.softTargetTradesPerDay = v; }
+    public void setMaxReversalsPerDay(int v) { this.maxReversalsPerDay = v; }
+    public void setCooldownAfterSlSeconds(int v) { this.cooldownAfterSlSeconds = v; }
+    public void setMinimumHoldTimeSeconds(int v) { this.minimumHoldTimeSeconds = v; }
+    public void setConsecutiveLossPause(int v) { this.consecutiveLossPause = v; }
+    public void setMiddayTradeReductionPercent(int v) { this.middayTradeReductionPercent = v; }
+    public void setStopLossPercent(double v) { this.stopLossPercent = v; }
+    public void setTargetPercent(double v) { this.targetPercent = v; }
+    public void setTrailingActivationPercent(double v) { this.trailingActivationPercent = v; }
+    public void setTrailingGapPercent(double v) { this.trailingGapPercent = v; }
+    public void setSquareoffHour(int v) { this.squareoffHour = v; }
+    public void setSquareoffMinute(int v) { this.squareoffMinute = v; }
+    public void setOpeningSessionStart(String v) { this.openingSessionStart = v; }
+    public void setOpeningSessionEnd(String v) { this.openingSessionEnd = v; }
+    public void setMiddayStart(String v) { this.middayStart = v; }
+    public void setMiddayEnd(String v) { this.middayEnd = v; }
+    public void setClosingSessionStart(String v) { this.closingSessionStart = v; }
+
 }

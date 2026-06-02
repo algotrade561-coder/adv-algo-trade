@@ -50,10 +50,14 @@ public class EntryPathHeartbeatService {
 
     /**
      * A3 (2026-06-02): optional reference to OIMomentumStrategy so the heartbeat
-     * can skip alerts for indices the operator has disabled via UI. Without
-     * this filter, manually disabling BANKNIFTY raised false STALE alerts.
+     * can skip alerts for indices the operator has disabled via UI. Marked
+     * {@code @Lazy} to break the circular reference — OIMomentumStrategy
+     * already injects this service, so eager wiring both ways forms a cycle.
+     * The strategy reference is only used inside the scheduled checkHeartbeat
+     * loop (which runs minutes after startup), so lazy resolution is fine.
      */
     @Autowired(required = false)
+    @org.springframework.context.annotation.Lazy
     private OIMomentumStrategy oiMomentumStrategy;
 
     private final Map<IndexType, AtomicLong> lastTickEpochMs = new EnumMap<>(IndexType.class);
