@@ -180,40 +180,62 @@ public class ReversalRiskTracker {
     }
 
     // ── R2: IV skew component (0–25) ────────────────────────────────────────
+    // Spec: 3-bar moving average is strongly negative (for PE-buy reversal) AND
+    // the moving average is DECREASING over the last few samples. The
+    // "decreasing" requirement avoids firing on a stable-but-already-low skew
+    // that has been priced in for a long time — we only want to react to
+    // FRESH movement of the skew against the trap.
     private int scoreSkewComp(IndexType ix, boolean wantsDown) {
         Deque<TimedValue> hist = skewHistory.get(ix);
-        if (hist == null || hist.size() < 3) return 0;
-        // 3-bar moving average of skew
-        double[] last3 = new double[3];
-        int i = 0;
-        for (java.util.Iterator<TimedValue> it = hist.descendingIterator(); it.hasNext() && i < 3; ) {
-            last3[i++] = it.next().value;
-        }
-        if (i < 3) return 0;
-        double avg = (last3[0] + last3[1] + last3[2]) / 3.0;
-        // Strongly negative skew = pricing UP-move risk. Bad for PE BUY (wantsDown).
-        // Strongly positive skew = pricing DOWN-move risk. Bad for CE BUY.
-        double risk = wantsDown ? -avg : avg;
-        if (risk <= 0) return 0;
+        if (hist == null || hist.size() < 5) return 0;
+        // Take last 5 samples (newest → oldest); compute 3-bar MA at "now" and at "3 bars ago"
+        TimedValue[] arr = hist.toArray(new TimedValue[0]);
+        int n = arr.length;
+        double avgNow = (arr[n-1].value + arr[n-2].value + arr[n-3].value) / 3.0;
+        double avgPrior = (arr[n-3].value + arr[n-4].value + arr[n-5].value) / 3.0;
+        // Risk metric: for PE buy (wantsDown), risk grows as skew goes MORE negative.
+        // For CE buy, risk grows as skew goes MORE positive.
+        double riskNow = wantsDown ? -avgNow : avgNow;
+        double riskPrior = wantsDown ? -avgPrior : avgPrior;
+        // Gate 1: current skew is strongly against the trap.
+        if (riskNow <= 0) return 0;
+        // Gate 2: trending against the trap (the avg is getting "worse" for the trap).
+        // riskNow > riskPrior ⇔ skew has moved further against the trap.
+        if (riskNow <= riskPrior) return 0;
         // skew avg of −1.0 → 12 points; −2.0 → 25 (cap).
-        return (int) Math.min(25, risk * 12.5);
+        return (int) Math.min(25, riskNow * 12.5);
     }
 
     // ── R3: wall migration component (0–25) ─────────────────────────────────
+    // Spec: BOTH walls have moved in the SAME direction AND each individual
+    // bar-to-bar transition over the last 3 bars is monotonic (no flip-flop).
+    // The old implementation looked at oldest-vs-latest only, which would
+    // pass even on a 23300→23400→23300→23400 zigzag. New impl requires the
+    // last 3 transitions to be non-negative (for "up") or non-positive (for
+    // "down"), with at least one strict shift, on BOTH walls.
     private int scoreWallComp(IndexType ix, boolean wantsDown) {
         Deque<TimedValue> ce = ceWallHistory.get(ix);
         Deque<TimedValue> pe = peWallHistory.get(ix);
-        if (ce == null || pe == null || ce.size() < 3 || pe.size() < 3) return 0;
-        TimedValue ceOldest = ce.peekFirst();
-        TimedValue ceLatest = ce.peekLast();
-        TimedValue peOldest = pe.peekFirst();
-        TimedValue peLatest = pe.peekLast();
-        double ceDrift = ceLatest.value - ceOldest.value;
-        double peDrift = peLatest.value - peOldest.value;
-        // Both walls migrating up = bullish (bad for PE BUY).
-        // Both walls migrating down = bearish (bad for CE BUY).
-        boolean bothUp = ceDrift > 0 && peDrift > 0;
-        boolean bothDown = ceDrift < 0 && peDrift < 0;
+        if (ce == null || pe == null || ce.size() < 4 || pe.size() < 4) return 0;
+        TimedValue[] ceArr = ce.toArray(new TimedValue[0]);
+        TimedValue[] peArr = pe.toArray(new TimedValue[0]);
+        int cn = ceArr.length, pn = peArr.length;
+        // Bar-to-bar transitions over the last 3 bars (4 samples → 3 diffs).
+        double ce0 = ceArr[cn-1].value - ceArr[cn-2].value;
+        double ce1 = ceArr[cn-2].value - ceArr[cn-3].value;
+        double ce2 = ceArr[cn-3].value - ceArr[cn-4].value;
+        double pe0 = peArr[pn-1].value - peArr[pn-2].value;
+        double pe1 = peArr[pn-2].value - peArr[pn-3].value;
+        double pe2 = peArr[pn-3].value - peArr[pn-4].value;
+        // Monotonic up: every transition >= 0 and at least one > 0
+        boolean ceUpMonotone = ce0 >= 0 && ce1 >= 0 && ce2 >= 0 && (ce0 + ce1 + ce2) > 0;
+        boolean peUpMonotone = pe0 >= 0 && pe1 >= 0 && pe2 >= 0 && (pe0 + pe1 + pe2) > 0;
+        boolean ceDownMonotone = ce0 <= 0 && ce1 <= 0 && ce2 <= 0 && (ce0 + ce1 + ce2) < 0;
+        boolean peDownMonotone = pe0 <= 0 && pe1 <= 0 && pe2 <= 0 && (pe0 + pe1 + pe2) < 0;
+        boolean bothUp = ceUpMonotone && peUpMonotone;
+        boolean bothDown = ceDownMonotone && peDownMonotone;
+        double ceDrift = ce0 + ce1 + ce2;
+        double peDrift = pe0 + pe1 + pe2;
         if (wantsDown && bothUp) {
             return Math.min(25, (int) ((Math.abs(ceDrift) + Math.abs(peDrift)) / 100.0 * 12.5));
         }
@@ -232,7 +254,6 @@ public class ReversalRiskTracker {
         if (strikeMap == null) return 0;
         Deque<TimedValue> hist = strikeMap.get(trapStrike);
         if (hist == null || hist.size() < 5) return 0;
-        // Get last 5 values (need 5 samples = 5 minutes minimum to detect inversion)
         TimedValue[] arr = hist.toArray(new TimedValue[0]);
         if (arr.length < 5) return 0;
         double latest = arr[arr.length - 1].value;
