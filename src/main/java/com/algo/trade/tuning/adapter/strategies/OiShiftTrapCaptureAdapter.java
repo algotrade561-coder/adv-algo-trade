@@ -103,6 +103,9 @@ public class OiShiftTrapCaptureAdapter implements TuningCaptureAdapter {
             // 4 Jun 2026 — structural strike-position gate
             case "imbalance_pe_strike_below_spot" -> "gate:IMBALANCE_PE_STRIKE_BELOW_SPOT";
             case "imbalance_ce_strike_above_spot" -> "gate:IMBALANCE_CE_STRIKE_ABOVE_SPOT";
+            // 4 Jun 2026 PM — opening auction + warmup gates
+            case "opening_auction_window" -> "gate:OPENING_AUCTION_WINDOW";
+            case "insufficient_warmup_candles" -> "gate:INSUFFICIENT_WARMUP_CANDLES";
             default -> raw;
         };
     }

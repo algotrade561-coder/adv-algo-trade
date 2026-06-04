@@ -473,6 +473,43 @@ public class LivePositionExitMonitor {
             return;
         }
 
+        // ── 1b. Theta-cost exit (long-buy only) ───────────────────────────────
+        // 4 Jun 2026 PM: if the trade has been bleeding theta for long enough
+        // that cumulative theta-burn equals 50% of the entry premium AND we
+        // are still in loss territory (profitPct <= 0), close. This protects
+        // against the "held too long while underwater" pattern that amplified
+        // today's losses (SENSEX 73900 PE held -36% before SL fired).
+        // Theta is per day; we use elapsed minutes / 375 (one session) to
+        // pro-rate the burn. Activates only after at least 5 minutes of hold
+        // so we don't immediately stop out fresh entries.
+        if (!shortEntry && profitPct <= 0) {
+            com.algo.trade.domain.OptionInstrument liveOpt = liveInstrumentCache.getBySymbol(
+                    trade.getInstrumentKey().contains(":")
+                            ? trade.getInstrumentKey().split(":", 2)[1]
+                            : trade.getInstrumentKey()).orElse(null);
+            if (liveOpt != null && liveOpt.getTheta() != 0.0 && trade.getEntryTime() != null) {
+                long holdMinutes = java.time.Duration.between(
+                        trade.getEntryTime(), java.time.Instant.now()).toMinutes();
+                if (holdMinutes >= 5) {
+                    double thetaPerDay = Math.abs(liveOpt.getTheta());
+                    double thetaBurnSoFar = thetaPerDay * (holdMinutes / 375.0);
+                    double thetaBurnPct = (thetaBurnSoFar / entryPrice.doubleValue()) * 100.0;
+                    if (thetaBurnPct >= 50.0) {
+                        log.warn("[ExitMonitor] THETA_COST exit: tradeId={} entry={} current={} "
+                                + "profit={}% holdMin={} thetaPerDay={} thetaBurn={}% (>=50%)",
+                                trade.getTradeId(), entryPrice, currentPrice,
+                                String.format("%.1f", profitPct), holdMinutes,
+                                String.format("%.2f", thetaPerDay), String.format("%.1f", thetaBurnPct));
+                        telegramAlertService.systemAlert(String.format(
+                                "Theta exit: %s | P&L %.1f%% | held %d min | theta burn %.0f%%",
+                                trade.getInstrumentKey(), profitPct, holdMinutes, thetaBurnPct));
+                        close(trade, currentPrice, "THETA_COST");
+                        return;
+                    }
+                }
+            }
+        }
+
         // ── 2. Target ─────────────────────────────────────────────────────────
         if (profitPct >= targetPct) {
             log.info("[ExitMonitor] TARGET hit: tradeId={} instrument={} entry={} current={} profit={}% target={}%",

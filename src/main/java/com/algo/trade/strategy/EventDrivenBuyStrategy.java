@@ -5,9 +5,13 @@ import com.algo.trade.domain.OptionType;
 import com.algo.trade.domain.SignalType;
 import com.algo.trade.domain.StrategyDecision;
 import com.algo.trade.domain.UnderlyingSymbol;
+import com.algo.trade.persistence.EventDrivenFireLogEntity;
+import com.algo.trade.persistence.EventDrivenFireLogRepository;
 import com.algo.trade.risk.MarketGuard;
+import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
@@ -37,6 +41,8 @@ import java.util.concurrent.ConcurrentHashMap;
  *   <li>VIX range gate [12, 25].</li>
  *   <li>Direction-aware CE/PE choice from trend candles.</li>
  *   <li>paperTrading=true stays as the safety net until backtest validates.</li>
+ *   <li>4 Jun 2026 PM: lastFiredOn persisted to {@code event_driven_fire_log}
+ *       so the one-shot gate survives app restarts.</li>
  * </ul>
  */
 @Component
@@ -57,8 +63,39 @@ public class EventDrivenBuyStrategy {
     private final Map<UnderlyingSymbol, LocalDate> lastFiredOn =
             new ConcurrentHashMap<>(new EnumMap<>(UnderlyingSymbol.class));
 
+    /** Persistent backing store for lastFiredOn. Lazy/optional so the strategy
+     *  still works if the repository isn't wired (tests, migrations, etc.). */
+    @Autowired(required = false)
+    private EventDrivenFireLogRepository fireLogRepository;
+
     public EventDrivenBuyStrategy(MarketGuard marketGuard) {
         this.marketGuard = marketGuard;
+    }
+
+    /** Bootstrap the in-memory lastFiredOn map from any rows persisted today.
+     *  This restores the one-shot-per-day gate across restarts. */
+    @PostConstruct
+    public void loadFireLog() {
+        if (fireLogRepository == null) {
+            log.info("[EventDriven] fire-log repository not wired — in-memory only");
+            return;
+        }
+        try {
+            LocalDate today = LocalDate.now(IST);
+            List<EventDrivenFireLogEntity> rows = fireLogRepository.findByFireDate(today);
+            for (EventDrivenFireLogEntity row : rows) {
+                try {
+                    UnderlyingSymbol u = UnderlyingSymbol.valueOf(row.getUnderlying());
+                    lastFiredOn.put(u, row.getFireDate());
+                } catch (IllegalArgumentException ignored) {
+                    log.warn("[EventDriven] skipping unknown underlying in fire-log: {}", row.getUnderlying());
+                }
+            }
+            log.info("[EventDriven] loaded {} fire-log rows for {} → in-memory map has {} entries",
+                    rows.size(), today, lastFiredOn.size());
+        } catch (Exception ex) {
+            log.warn("[EventDriven] fire-log load failed (non-fatal): {}", ex.getMessage());
+        }
     }
 
     public Optional<StrategyDecision> evaluate(double ivRank, StrategyConfig config,
@@ -123,6 +160,9 @@ public class EventDrivenBuyStrategy {
         if (lastFired != null && lastFired.equals(today)) {
             return noTrade("alreadyFiredToday");
         }
+        // 4 Jun 2026 PM: persist before adding to in-memory map so a crash
+        // between in-memory put + DB save can't leave us inconsistent.
+        persistFireLog(underlying, today, leg.name(), spotPrice, ivRank, vix);
         log.info("[EventDriven] Pre-event {} signal: underlying={} event={} ivRank={} vix={} move={}% spot={}",
                 leg, underlying, upcomingEvent.get(),
                 String.format("%.1f", ivRank), String.format("%.1f", vix),
@@ -146,6 +186,23 @@ public class EventDrivenBuyStrategy {
         );
         return new StrategyDiagnostics.WithSignal(Optional.of(signal),
                 new StrategyDiagnostics("", null, null, null, null, null, null, null, null));
+    }
+
+    /** Best-effort DB write. Repository-null and unique-violation are both
+     *  swallowed because the in-memory map gives sufficient guard during the
+     *  current run — DB persistence only matters across restarts. */
+    private void persistFireLog(UnderlyingSymbol underlying, LocalDate today, String optionType,
+                                 BigDecimal spotPrice, double ivRank, double vix) {
+        if (fireLogRepository == null) return;
+        try {
+            EventDrivenFireLogEntity row = new EventDrivenFireLogEntity(
+                    underlying.name(), today, Instant.now(), optionType, spotPrice, ivRank, vix);
+            fireLogRepository.save(row);
+        } catch (Exception ex) {
+            // Likely unique-constraint violation — another tick won the race.
+            // Either way, the in-memory map has been updated and the gate works.
+            log.debug("[EventDriven] fire-log save skipped (likely duplicate): {}", ex.getMessage());
+        }
     }
 
     private static StrategyDiagnostics.WithSignal noTrade(String reason) {

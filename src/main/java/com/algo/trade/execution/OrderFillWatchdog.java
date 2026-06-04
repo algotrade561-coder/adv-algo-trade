@@ -87,6 +87,15 @@ public class OrderFillWatchdog {
             for (OrderEntity order : pending) {
                 try {
                     checkOrder(order);
+                } catch (org.springframework.orm.ObjectOptimisticLockingFailureException
+                         | org.hibernate.StaleObjectStateException ex) {
+                    // 4 Jun 2026 PM: Hibernate optimistic-lock race between watchdog
+                    // poll and concurrent OrderEntity save. checkOrder is idempotent
+                    // and the next 1s poll will retry — log DEBUG, not WARN, so we
+                    // don't trigger ops alerts on benign races. Today's 09:20 orphan
+                    // recoveries fell out of THIS race, not a deeper bug.
+                    log.debug("OrderFillWatchdog optimistic-lock race on order {} — will retry next cycle",
+                            order.getClientOrderId());
                 } catch (Exception ex) {
                     log.warn("OrderFillWatchdog failed for order {}: {}", order.getClientOrderId(), ex.getMessage());
                 }

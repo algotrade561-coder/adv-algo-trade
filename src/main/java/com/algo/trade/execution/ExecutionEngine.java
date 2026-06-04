@@ -783,7 +783,24 @@ public class ExecutionEngine {
         String underlying = extractUnderlyingFromKey(instrumentKey);
         String optionType = instrumentKey.toUpperCase().contains("PE") ? "PE" : "CE";
 
-        String entryReason = "Limit order filled (watchdog) [" + (orderEntity.getStrategyType() != null ? orderEntity.getStrategyType() : "UNKNOWN") + "]: " + orderEntity.getClientOrderId();
+        // 4 Jun 2026 PM: defensive default. If strategyType is missing on the
+        // order entity (e.g. an old order placed before persistOrderWithSignalTime
+        // was the default path, or DB races losing the field), fall back to
+        // OI_MOMENTUM's conservative SL/Target (15%/25%) rather than letting
+        // the trade run with broker-default 30%/60% from DirectionalBuy. Today's
+        // SENSEX 73900 PE loss was amplified by exactly this mis-default: it
+        // hit -36% before SL fired because the wrong (wider) SL was applied.
+        // OIM's tighter SL bounds the loss to ~-15% in similar future cases.
+        if (orderEntity.getStrategyType() == null || orderEntity.getStrategyType().isBlank()) {
+            log.error("openTradeFromFilledOrder: orphan order MISSING strategyType — "
+                    + "defaulting to OI_MOMENTUM conservative SL/Target. clientOrderId={} instrument={}",
+                    orderEntity.getClientOrderId(), instrumentKey);
+            orderEntity.setStrategyType("OI_MOMENTUM");
+            telegramAlertService.systemAlert("ORPHAN RECOVERY: clientOrderId="
+                    + orderEntity.getClientOrderId() + " instrument=" + instrumentKey
+                    + " was missing strategyType. Applied OIM conservative defaults. Manual review.");
+        }
+        String entryReason = "Limit order filled (watchdog) [" + orderEntity.getStrategyType() + "]: " + orderEntity.getClientOrderId();
         // Use current time as entry time for orphaned orders discovered after restart.
         // The original fill time (orderEntity.getUpdatedAt()) may be minutes/hours old,
         // which would immediately trigger maxHoldTime exit. Using Instant.now() gives

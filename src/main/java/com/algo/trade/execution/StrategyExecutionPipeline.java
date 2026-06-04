@@ -293,15 +293,31 @@ public class StrategyExecutionPipeline {
 
     // ── Private helpers ────────────────────────────────────────────────────────
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.risk.CrossIndexCorrelationGuard crossIndexCorrelationGuard;
+
     private boolean executeSignal(StrategyDecision decision, StrategyConfig config, UnderlyingSymbol underlying) {
         int qty = config.getLots() * IndexType.from(underlying).lotSize();
         BigDecimal premium = decision.optionPrice().orElse(decision.underlyingPrice());
 
         if (decision.signalType().name().startsWith("BUY_") && decision.selectedInstrumentKey().isPresent()) {
+            // 4 Jun 2026 PM: cross-index correlation block. NIFTY/BANKNIFTY/SENSEX
+            // are highly correlated — taking same-side BUY on two of them within
+            // 60s doubles directional exposure. Today's 09:20 losses were exactly
+            // this pattern (NIFTY 23300 PE + SENSEX 73900 PE within 4 sec).
+            if (crossIndexCorrelationGuard != null
+                    && crossIndexCorrelationGuard.shouldBlock(underlying, decision.signalType())) {
+                log.warn("[ExecutionPipeline] {} BUY blocked by cross-index correlation guard ({})",
+                        underlying, crossIndexCorrelationGuard.describe(decision.signalType()).orElse("recent"));
+                return false;
+            }
             if (config.isPaperTrading()) {
                 executionEngine.executePaperEntry(decision, premium, qty, config);
             } else {
                 executionEngine.executeEntry(decision, premium, qty, config);
+            }
+            if (crossIndexCorrelationGuard != null) {
+                crossIndexCorrelationGuard.recordEntry(underlying, decision.signalType());
             }
             return true;
         }

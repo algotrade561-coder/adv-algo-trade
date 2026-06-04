@@ -76,6 +76,14 @@ public class OiShiftTrapStrategy {
     public static final String BLOCKER_IMBALANCE_PE_STRIKE_BELOW_SPOT = "imbalance_pe_strike_below_spot";
     public static final String BLOCKER_IMBALANCE_CE_STRIKE_ABOVE_SPOT = "imbalance_ce_strike_above_spot";
 
+    // 4 Jun 2026 (PM) — Opening-auction window block + min-warmup gate.
+    // The 09:20 losses today both fell in the first 5 min of the session, where
+    // OI imbalance is dominated by yesterday's positional carryover and the
+    // velocity calculator doesn't yet have enough candle history (only 1-2
+    // candles) to detect the bullish thrust that ate both PE BUYs.
+    public static final String BLOCKER_OPENING_AUCTION_WINDOW = "opening_auction_window";
+    public static final String BLOCKER_INSUFFICIENT_WARMUP_CANDLES = "insufficient_warmup_candles";
+
     /** Strike-vs-spot offset (% of strike) above which imbalance-only is rejected.
      *  0.05% = 12 pts on NIFTY @ 23300. Tight enough to allow at-money traps,
      *  strict enough to block the OTM-writer-floor false positives. */
@@ -594,6 +602,29 @@ public class OiShiftTrapStrategy {
                                                                 String trapSide, List<Candle> candles,
                                                                 String[] hardBlocker) {
         if (!enhancementsOn()) {
+            return Optional.empty();
+        }
+
+        // ── 4 Jun 2026 PM: opening-auction window block ──────────────────
+        // Block first 10 min of session (09:15-09:25 IST). OI during this
+        // window is dominated by yesterday's positional carryover, not
+        // today's intent. Both 09:20 losses today fell in this window.
+        java.time.LocalTime nowIstEarly = java.time.LocalTime.now(java.time.ZoneId.of("Asia/Kolkata"));
+        if (nowIstEarly.isBefore(java.time.LocalTime.of(9, 25))) {
+            hardBlocker[0] = BLOCKER_OPENING_AUCTION_WINDOW;
+            log.info("[OiShiftTrap] {} imbalance BLOCKED — opening auction window (now={} < 09:25)",
+                    trapSide, nowIstEarly);
+            return Optional.empty();
+        }
+
+        // ── 4 Jun 2026 PM: min-warmup gate ──────────────────────────────
+        // Velocity-dependent gates need ≥ 3 trend candles to be reliable.
+        // At 09:20:01 today we had only 1-2 candles so the A1 thrust gate
+        // returned near-zero velocity and didn't catch the bullish move.
+        if (candles == null || candles.size() < 3) {
+            hardBlocker[0] = BLOCKER_INSUFFICIENT_WARMUP_CANDLES;
+            log.info("[OiShiftTrap] {} imbalance BLOCKED — insufficient warmup ({} candles, need 3)",
+                    trapSide, candles == null ? 0 : candles.size());
             return Optional.empty();
         }
         double threshold = shiftTrapConfig.getImbalanceOnlyEntryRatio();
