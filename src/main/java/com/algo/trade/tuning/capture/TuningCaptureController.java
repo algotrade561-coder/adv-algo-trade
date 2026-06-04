@@ -13,6 +13,7 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.core.oidc.user.OidcUser;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -97,6 +98,31 @@ public class TuningCaptureController {
         CaptureSettings saved = toggleService.updateConfig(strategy, newSettings, changedBy, reason);
         log.info("[TuningCaptureController] {} updated by={}", strategy, changedBy);
         return ResponseEntity.ok(CaptureSettingsDto.from(strategy, saved));
+    }
+
+    /**
+     * Bulk-enable capture for every strategy row in the DB. Designed for a
+     * one-time migration when upgrading from the pre-4-Jun-2026 default-OFF
+     * world to the new default-ON world without touching each strategy by hand.
+     * Idempotent — rows already enabled are skipped.
+     */
+    @PostMapping("/enable-all")
+    public ResponseEntity<Map<String, Object>> enableAll(@RequestParam(value = "reason", defaultValue = "bulk-enable") String reason,
+                                                          @AuthenticationPrincipal OidcUser principal) {
+        String changedBy = principal != null ? principal.getEmail() : "unknown";
+        int changed = toggleService.setAllCaptureEnabled(true, changedBy, reason);
+        log.info("[TuningCaptureController] enable-all by={} changedRows={}", changedBy, changed);
+        return ResponseEntity.ok(Map.of("changedRows", changed, "changedBy", changedBy, "captureEnabled", true));
+    }
+
+    /** Bulk-disable counterpart. Useful for staging / non-prod runs. */
+    @PostMapping("/disable-all")
+    public ResponseEntity<Map<String, Object>> disableAll(@RequestParam(value = "reason", defaultValue = "bulk-disable") String reason,
+                                                           @AuthenticationPrincipal OidcUser principal) {
+        String changedBy = principal != null ? principal.getEmail() : "unknown";
+        int changed = toggleService.setAllCaptureEnabled(false, changedBy, reason);
+        log.warn("[TuningCaptureController] disable-all by={} changedRows={}", changedBy, changed);
+        return ResponseEntity.ok(Map.of("changedRows", changed, "changedBy", changedBy, "captureEnabled", false));
     }
 
     @GetMapping("/{strategy}/audit")

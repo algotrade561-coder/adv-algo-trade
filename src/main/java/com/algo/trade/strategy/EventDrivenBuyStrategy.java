@@ -1,9 +1,11 @@
 package com.algo.trade.strategy;
 
+import com.algo.trade.domain.Candle;
 import com.algo.trade.domain.OptionType;
 import com.algo.trade.domain.SignalType;
 import com.algo.trade.domain.StrategyDecision;
 import com.algo.trade.domain.UnderlyingSymbol;
+import com.algo.trade.risk.MarketGuard;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -11,79 +13,136 @@ import org.springframework.stereotype.Component;
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalTime;
+import java.time.ZoneId;
+import java.util.EnumMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Event-Driven Long Option Strategy — BUY straddle BEFORE major events.
+ * Event-Driven Long Option Strategy — buys premium BEFORE major events.
  *
- * Logic: Before RBI policy, budget, earnings, global events:
- * - IV is usually low (market hasn't priced in the event yet)
- * - Buy ATM straddle (CE + PE) to profit from the big move
- * - Exit after the event when IV crushes
+ * <p>Premise: 1-2 days before RBI policy / budget / monetary-policy events,
+ * IV is often low (market hasn't fully priced in the event). Buying premium
+ * captures the IV expansion that typically follows.</p>
  *
- * Entry: 1-2 days before event, when IV rank < maxIvRank.
- * This is a BUYING strategy — risk limited to premium paid.
- *
- * 2026-06-01: added evaluateWithDiagnostics so SKIPPED rows carry a real
- * firstFailedFilter (noScheduledEvent / eventIvTooHigh / noSpotPrice).
+ * <h2>4 Jun 2026 hardening</h2>
+ * <ul>
+ *   <li>Event-date source = MarketGuard.nextEventWithin — single source of truth
+ *       with application.yml/risk.event-dates.</li>
+ *   <li>Entry window 09:30-14:30 IST.</li>
+ *   <li>One-shot per (underlying, day) — no more per-tick firing.</li>
+ *   <li>VIX range gate [12, 25].</li>
+ *   <li>Direction-aware CE/PE choice from trend candles.</li>
+ *   <li>paperTrading=true stays as the safety net until backtest validates.</li>
+ * </ul>
  */
 @Component
 public class EventDrivenBuyStrategy {
 
     private static final Logger log = LoggerFactory.getLogger(EventDrivenBuyStrategy.class);
+    private static final ZoneId IST = ZoneId.of("Asia/Kolkata");
 
-    private static final List<LocalDate> EVENT_DATES = List.of(
-        LocalDate.of(2025, 6, 6),  LocalDate.of(2025, 8, 6),
-        LocalDate.of(2025, 10, 8), LocalDate.of(2025, 12, 5),
-        LocalDate.of(2026, 2, 1),  LocalDate.of(2026, 4, 9),
-        LocalDate.of(2026, 6, 5),  LocalDate.of(2026, 8, 5),
-        LocalDate.of(2026, 10, 7), LocalDate.of(2026, 12, 4)
-    );
+    private static final LocalTime ENTRY_WINDOW_START = LocalTime.of(9, 30);
+    private static final LocalTime ENTRY_WINDOW_END   = LocalTime.of(14, 30);
+    private static final int LOOKAHEAD_DAYS = 2;
+    private static final double MIN_VIX_FOR_ENTRY = 12.0;
+    private static final double MAX_VIX_FOR_ENTRY = 25.0;
+    private static final int VELOCITY_LOOKBACK_CANDLES = 6;
+    private static final double MIN_DIRECTIONAL_MOVE_PCT = 0.15;
+
+    private final MarketGuard marketGuard;
+    private final Map<UnderlyingSymbol, LocalDate> lastFiredOn =
+            new ConcurrentHashMap<>(new EnumMap<>(UnderlyingSymbol.class));
+
+    public EventDrivenBuyStrategy(MarketGuard marketGuard) {
+        this.marketGuard = marketGuard;
+    }
 
     public Optional<StrategyDecision> evaluate(double ivRank, StrategyConfig config,
                                                UnderlyingSymbol underlying, BigDecimal spotPrice) {
-        return evaluateWithDiagnostics(ivRank, config, underlying, spotPrice).signal();
+        return evaluateWithDiagnostics(List.of(), ivRank, config, underlying, spotPrice).signal();
     }
 
-    public StrategyDiagnostics.WithSignal evaluateWithDiagnostics(double ivRank, StrategyConfig config,
+    public StrategyDiagnostics.WithSignal evaluateWithDiagnostics(List<Candle> trendCandles,
+                                                                    double ivRank, StrategyConfig config,
                                                                     UnderlyingSymbol underlying, BigDecimal spotPrice) {
         if (config == null) {
             return noTrade("noConfig");
         }
-
-        LocalDate today = LocalDate.now();
-        Optional<LocalDate> upcomingEvent = EVENT_DATES.stream()
-                .filter(d -> d.equals(today.plusDays(1)) || d.equals(today.plusDays(2)))
-                .findFirst();
-
+        LocalTime nowIst = LocalTime.now(IST);
+        if (nowIst.isBefore(ENTRY_WINDOW_START)) {
+            return noTrade("preEventBeforeWindow(" + ENTRY_WINDOW_START + ")");
+        }
+        if (nowIst.isAfter(ENTRY_WINDOW_END)) {
+            return noTrade("preEventAfterWindow(" + ENTRY_WINDOW_END + ")");
+        }
+        Optional<LocalDate> upcomingEvent = marketGuard.nextEventWithin(LOOKAHEAD_DAYS);
         if (upcomingEvent.isEmpty()) {
             return noTrade("noScheduledEvent");
         }
-
-        if (config.getMaxIvRankForBuying() != null && ivRank > config.getMaxIvRankForBuying().doubleValue()) {
+        if (config.getMaxIvRankForBuying() != null
+                && ivRank > config.getMaxIvRankForBuying().doubleValue()) {
             log.debug("[EventDriven] IV rank {} too high for event buy (max {})", ivRank,
                     config.getMaxIvRankForBuying());
             return noTrade(String.format("eventIvTooHigh(ivRank=%.1f,max=%.1f)",
                     ivRank, config.getMaxIvRankForBuying().doubleValue()));
         }
-
+        double vix = marketGuard.getCurrentVix();
+        if (vix > 0 && vix < MIN_VIX_FOR_ENTRY) {
+            return noTrade(String.format("vixTooLow(%.1f,min=%.1f)", vix, MIN_VIX_FOR_ENTRY));
+        }
+        if (vix > MAX_VIX_FOR_ENTRY) {
+            return noTrade(String.format("vixTooHigh(%.1f,max=%.1f)", vix, MAX_VIX_FOR_ENTRY));
+        }
         if (spotPrice == null || spotPrice.signum() <= 0) {
             log.warn("[EventDriven] Skipping pre-event signal - spotPrice is null/zero");
             return noTrade("noSpotPrice");
         }
-
-        log.info("[EventDriven] Pre-event signal: event={} ivRank={} spot={}", upcomingEvent.get(), ivRank, spotPrice);
+        if (trendCandles == null || trendCandles.size() < VELOCITY_LOOKBACK_CANDLES) {
+            return noTrade("insufficientCandlesForDirection("
+                    + (trendCandles == null ? 0 : trendCandles.size())
+                    + ",need=" + VELOCITY_LOOKBACK_CANDLES + ")");
+        }
+        Candle first = trendCandles.get(trendCandles.size() - VELOCITY_LOOKBACK_CANDLES);
+        Candle last  = trendCandles.getLast();
+        if (first.close() == null || first.close().signum() <= 0) {
+            return noTrade("noBaselineClose");
+        }
+        double moveRaw = last.close().doubleValue() - first.close().doubleValue();
+        double movePct = (moveRaw / first.close().doubleValue()) * 100.0;
+        if (Math.abs(movePct) < MIN_DIRECTIONAL_MOVE_PCT) {
+            return noTrade(String.format("spotFlat(%.3f%%,min=%.2f%%)", movePct, MIN_DIRECTIONAL_MOVE_PCT));
+        }
+        OptionType leg     = movePct > 0 ? OptionType.CE : OptionType.PE;
+        SignalType sigType = movePct > 0 ? SignalType.BUY_CE : SignalType.BUY_PE;
+        LocalDate today = LocalDate.now(IST);
+        LocalDate lastFired = lastFiredOn.get(underlying);
+        if (lastFired != null && lastFired.equals(today)) {
+            return noTrade("alreadyFiredToday");
+        }
+        log.info("[EventDriven] Pre-event {} signal: underlying={} event={} ivRank={} vix={} move={}% spot={}",
+                leg, underlying, upcomingEvent.get(),
+                String.format("%.1f", ivRank), String.format("%.1f", vix),
+                String.format("%+.2f", movePct), spotPrice);
+        lastFiredOn.put(underlying, today);
 
         StrategyDecision signal = new StrategyDecision(
-                Instant.now(), underlying, SignalType.BUY_CE,
+                Instant.now(), underlying, sigType,
                 spotPrice,
                 Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(),
-                Optional.empty(), Optional.empty(), Optional.of(OptionType.CE),
+                Optional.empty(), Optional.empty(), Optional.of(leg),
                 true, Optional.empty(), true,
                 BigDecimal.valueOf(80),
-                List.of("Pre-event straddle: event=" + upcomingEvent.get(),
-                        "IV rank=" + String.format("%.0f", ivRank) + " (cheap, good to buy)")
+                List.of("Pre-event premium-buy: event=" + upcomingEvent.get(),
+                        "IV rank=" + String.format("%.0f", ivRank) + " (cheap)",
+                        "VIX=" + String.format("%.1f", vix) + " in [" + MIN_VIX_FOR_ENTRY + "-" + MAX_VIX_FOR_ENTRY + "]",
+                        "Spot direction over " + VELOCITY_LOOKBACK_CANDLES + " candles: "
+                                + String.format("%+.2f%%", movePct) + " -> " + leg,
+                        "Entry window passed (" + ENTRY_WINDOW_START + "-" + ENTRY_WINDOW_END + ")",
+                        "One-shot-per-day gate honored")
         );
         return new StrategyDiagnostics.WithSignal(Optional.of(signal),
                 new StrategyDiagnostics("", null, null, null, null, null, null, null, null));

@@ -440,6 +440,14 @@ tuning:
     output-dir: reports/tuning/html
   capture:
     poll-interval-sec: 30
+  # Auto-bootstrap of historical India VIX into the iv_samples table.
+  # On startup, HistoricalVixIngestService.autoSeedIfEmpty() checks the row
+  # count: if zero, it fetches `years` of India VIX from Yahoo Finance in a
+  # background daemon thread. If the table already has rows, it's left alone
+  # (re-seeding requires explicit POST /admin/iv-samples/seed-india-vix).
+  iv-sample-bootstrap:
+    enabled: true
+    years: 5
   store:
     # DuckDB native (off-heap) memory cap. NOT JVM heap — DuckDB runs in native C++,
     # so this doesn't pressure the trading JVM's GC. 512MB gives headroom for in-process

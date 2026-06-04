@@ -13,14 +13,16 @@ import org.hibernate.annotations.ColumnDefault;
 /**
  * Per-strategy capture toggle row. One row per registered strategy adapter.
  *
- * <p>All capture defaults are <strong>OFF</strong> in production. A data week starts
- * by explicitly flipping {@code captureEnabled = true} for the target strategies via
- * the {@code /settings/tuning-capture} UI page.</p>
+ * <p>As of 4 Jun 2026, all capture defaults are <strong>ON</strong>. Fresh DB
+ * deployments and newly-registered strategy adapters auto-enable capture so a
+ * brand new run accumulates tuning data from day one. The operator can flip
+ * any strategy back OFF via the {@code /settings/tuning-capture} UI page or
+ * the {@code PUT /tuning/capture/{strategy}} endpoint.</p>
  *
  * <p>Per-event-type flags ({@code captureEvaluations}, {@code captureSignals}, etc.)
- * default to {@code true} so that turning on the master switch enables full capture
- * unless the user opts to drop a specific event type (e.g. skip high-volume evaluations
- * while keeping signal/exit data).</p>
+ * also default to {@code true} so the master switch alone enables full capture
+ * unless the user opts to drop a specific event type (e.g. skip high-volume
+ * evaluations while keeping signal/exit data).</p>
  */
 @Entity
 @Table(name = "tuning_capture_config")
@@ -33,8 +35,8 @@ public class TuningCaptureConfigEntity {
     private StrategyType strategy;
 
     @Column(name = "capture_enabled", nullable = false)
-    @ColumnDefault("false")
-    private boolean captureEnabled = false;
+    @ColumnDefault("true")
+    private boolean captureEnabled = true;
 
     @Column(name = "capture_evaluations", nullable = false)
     @ColumnDefault("true")

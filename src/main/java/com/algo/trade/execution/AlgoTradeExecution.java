@@ -325,7 +325,11 @@ public class AlgoTradeExecution {
         }
 
         // Market guard safety: circuit breaker, event day, VIX
-        String blockReason = marketGuard.longPremiumBlockReason();
+        // 4 Jun 2026: pass allowEventDay=true so the entire algo scan is not
+        // skipped on pre-event days. Strategies that need event-day caution
+        // (short premium, overnight carry) gate themselves separately. We're
+        // intraday MIS — squared off by 15:10 so no overnight exposure.
+        String blockReason = marketGuard.longPremiumBlockReason(true);
         if (blockReason != null) {
             log.info("Algo scan skipped: MarketGuard blocked — {}", blockReason);
             return;
@@ -431,6 +435,16 @@ public class AlgoTradeExecution {
                             "AlgoFlow:" + flowDecision.blockReason(), spotCandles,
                             com.algo.trade.strategy.StrategyDiagnostics.NONE, ivRank);
                     continue;
+                }
+
+                // OIST liveness heartbeat — tick BEFORE per-strategy gates so the
+                // heartbeat reflects "AlgoFlow allowed OIST for this index in this
+                // scan" rather than "evaluateWithDiagnostics was reached". Without
+                // this, when the per-strategy max-open cap is hit (e.g. 2 OIST
+                // trades already open), the OIST switch case never executes and
+                // the heartbeat goes stale → false STALE alarm (4 Jun 2026).
+                if (type == StrategyType.OI_SHIFT_TRAP && oiShiftTrapHeartbeat != null) {
+                    oiShiftTrapHeartbeat.recordTick(IndexType.from(underlying));
                 }
 
                 // ── Gate: Max open positions per strategy ──
@@ -542,7 +556,11 @@ public class AlgoTradeExecution {
             case EVENT_DRIVEN_BUY -> {
                 evaluated[0] = true;
                 BigDecimal eventSpotPrice = trendCandles.isEmpty() ? BigDecimal.ZERO : trendCandles.getLast().close();
-                var edbResult = eventDrivenBuyStrategy.evaluateWithDiagnostics(ivRank, config, underlying, eventSpotPrice);
+                // 4 Jun 2026: now passes trendCandles so the strategy can read
+                // spot direction over the lookback window and choose CE vs PE
+                // direction-aware, rather than blind-buying CE.
+                var edbResult = eventDrivenBuyStrategy.evaluateWithDiagnostics(
+                        trendCandles, ivRank, config, underlying, eventSpotPrice);
                 diagHolder[0] = edbResult.diagnostics();
                 yield edbResult.signal();
             }
@@ -609,11 +627,10 @@ public class AlgoTradeExecution {
                     diagHolder[0] = new com.algo.trade.strategy.StrategyDiagnostics(oiFailReason[0], null, null, null, null, null, null, null, null);
                     yield Optional.<StrategyDecision>empty();
                 }
-                // OIST liveness heartbeat (2 Jun 2026 — addresses the 12:10 IST silent
-                // stop that left OIST silent through the 12:30 squeeze).
-                if (oiShiftTrapHeartbeat != null) {
-                    oiShiftTrapHeartbeat.recordTick(IndexType.from(underlying));
-                }
+                // OIST liveness heartbeat tick was moved upstream of the per-
+                // strategy max-open-trades gate (see line ~440). This avoids a
+                // false STALE alarm when OIST is silently skipped because the
+                // open-trade cap is already hit.
                 OiShiftTrapStrategy.TrapEvaluation trapEval = oiShiftTrapStrategy.evaluateWithDiagnostics(
                         oiCtx.get().optionChainSnapshot(), oiSpot, config, underlying, trendCandles);
                 if (oiShiftTrapTuneRecorder != null) {

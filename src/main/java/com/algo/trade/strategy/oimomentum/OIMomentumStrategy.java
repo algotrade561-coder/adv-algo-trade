@@ -742,7 +742,11 @@ public class OIMomentumStrategy {
         }
 
         // ── MarketGuard safety: VIX, circuit breaker, event day ──
-        String mgBlock = marketGuard.longPremiumBlockReason();
+        // 4 Jun 2026: pass allowEventDay=true so intraday MIS long-buy entries
+        // are not blocked on pre-event days (we square off by 15:10, so we
+        // can't carry exposure into the next-day RBI/event announcement).
+        // Short premium block remains active separately via shortPremiumBlockReason.
+        String mgBlock = marketGuard.longPremiumBlockReason(true);
         if (mgBlock != null) {
             recordThrottleReject(indexType, state,
                     MarketGuard.normalizeLongPremiumRejectToken("market_guard", mgBlock));
@@ -2117,7 +2121,10 @@ public class OIMomentumStrategy {
             return;
         }
         // P2 #19: Allow event spikes to bypass MarketGuard
-        String mgBlock = marketGuard.longPremiumBlockReason();
+        // 4 Jun 2026: pass allowEventDay=true (intraday MIS — square off by 15:10
+        // so we don't carry into the next-day event). Short premium remains
+        // separately blocked via shortPremiumBlockReason where applicable.
+        String mgBlock = marketGuard.longPremiumBlockReason(true);
         if (!reason.startsWith("SPIKE:") && mgBlock != null) {
             recordGateReject(indexType, state,
                     MarketGuard.normalizeLongPremiumRejectToken("market_guard_entry", mgBlock), diagnostics);

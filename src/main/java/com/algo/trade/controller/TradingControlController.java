@@ -142,7 +142,11 @@ public class TradingControlController {
                         riskEngine.effectiveDailyLossLimit()));
 
         // Layer 4 — MarketGuard
-        String marketBlock = marketGuard.longPremiumBlockReason();
+        // 4 Jun 2026: allowEventDay=true matches the OIM + AlgoTradeExecution
+        // entry gates — pre-event day is no longer a hard block for long-buy
+        // intraday MIS entries. eventDay is still exposed separately if the UI
+        // wants to render an advisory.
+        String marketBlock = marketGuard.longPremiumBlockReason(true);
         if (marketBlock != null) blockingReasons.add(marketBlock);
 
         // Layer 6 — Rolling win-rate auto-pause

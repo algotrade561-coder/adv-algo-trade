@@ -50,6 +50,11 @@ public class HistoricalVixController {
 
     private final HistoricalVixIngestService ingestService;
 
+    /** Lazy to avoid forcing a hard dep chain — only used for the post-seed cache reload. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    @org.springframework.context.annotation.Lazy
+    private com.algo.trade.indicator.IVRankTracker ivRankTracker;
+
     public HistoricalVixController(HistoricalVixIngestService ingestService) {
         this.ingestService = ingestService;
     }
@@ -62,6 +67,20 @@ public class HistoricalVixController {
             List<IndexType> indices = parseIndices(indicesCsv);
             log.info("[VixIngest] seed requested: years={}, indices={}", years, indices);
             HistoricalVixIngestService.IngestResult result = ingestService.ingest(years, indices);
+            // 4 Jun 2026: also reload IVRankTracker so this endpoint can recover
+            // a running session without restart (e.g. when the in-memory cache
+            // is empty because @PostConstruct ran before the table was populated).
+            boolean reloaded = false;
+            if (ivRankTracker != null) {
+                try {
+                    ivRankTracker.reloadFromDb();
+                    reloaded = true;
+                    log.info("[VixIngest] IVRankTracker reloaded after manual seed");
+                } catch (Exception ex) {
+                    log.warn("[VixIngest] IVRankTracker reload after manual seed failed (non-fatal): {}",
+                            ex.getMessage());
+                }
+            }
             return ResponseEntity.ok(Map.of(
                     "status", "ok",
                     "rowsFromYahoo", result.rowsFromYahoo(),
@@ -70,7 +89,8 @@ public class HistoricalVixController {
                     "updated", result.updated(),
                     "skipped", result.skipped(),
                     "firstDate", String.valueOf(result.firstDate()),
-                    "lastDate", String.valueOf(result.lastDate())));
+                    "lastDate", String.valueOf(result.lastDate()),
+                    "ivRankTrackerReloaded", reloaded));
         } catch (IllegalArgumentException ex) {
             // Some library validators (Hibernate / Spring proxies) throw
             // IllegalArgumentException with cryptic messages. Log the full

@@ -202,13 +202,50 @@ public class CaptureToggleService {
     }
 
     /**
-     * Idempotent: creates a default-OFF row for the strategy if none exists. Called by
+     * Idempotent: creates a default-ON row for the strategy if none exists. Called by
      * the {@code TuningCaptureAdapterRegistry} (Phase 2) when a new strategy adapter
-     * registers, so the UI capture toggle row appears automatically.
+     * registers, so the UI capture toggle row appears automatically and starts
+     * accumulating data immediately. (As of 4 Jun 2026 capture is on by default.)
      */
     @Transactional
     public CaptureSettings ensureRowExists(StrategyType strategy, int defaultEpisodeWindowSec) {
         return ensureRowExistsInternal(strategy, defaultEpisodeWindowSec);
+    }
+
+    /**
+     * Bulk flip every existing row's {@code captureEnabled} flag. Used by the
+     * {@code POST /tuning/capture/enable-all} (and {@code /disable-all}) admin
+     * endpoint so the operator can migrate an existing DB without touching each
+     * strategy individually.
+     *
+     * @param enable true to turn capture ON for every row, false to turn OFF
+     * @param changedBy operator identity for the audit trail
+     * @param reason free-text reason (e.g. "default-on-migration")
+     * @return number of rows actually changed (rows already in target state are skipped)
+     */
+    @Transactional
+    public int setAllCaptureEnabled(boolean enable, String changedBy, String reason) {
+        int changed = 0;
+        Map<StrategyType, CaptureSettings> updated = new EnumMap<>(cache.get());
+        for (TuningCaptureConfigEntity row : configRepo.findAll()) {
+            if (row.isCaptureEnabled() == enable) {
+                continue;
+            }
+            recordIfChanged(row.getStrategy(), "captureEnabled", row.isCaptureEnabled(),
+                    enable, changedBy, reason);
+            row.setCaptureEnabled(enable);
+            row.setUpdatedAt(Instant.now());
+            row.setUpdatedBy(changedBy);
+            TuningCaptureConfigEntity saved = configRepo.save(row);
+            updated.put(saved.getStrategy(), CaptureSettings.from(saved));
+            changed++;
+        }
+        if (changed > 0) {
+            cache.set(updated);
+        }
+        log.warn("[CaptureToggleService] bulk capture {} by={} reason={} changedRows={}",
+                enable ? "ENABLED" : "DISABLED", changedBy, reason, changed);
+        return changed;
     }
 
     public CaptureSettings ensureRowExists(StrategyType strategy) {

@@ -121,7 +121,11 @@ public class MonitoringController {
         result.put("eventDay", marketGuard.isEventDay());
         result.put("preEventDay", marketGuard.isPreEventDay());
         result.put("safeForLongPremium", marketGuard.isSafeForLongPremium());
-        result.put("longPremiumBlockReason", marketGuard.longPremiumBlockReason());
+        // 4 Jun 2026: pass allowEventDay=true so the UI banner reflects the
+        // actual operational state — entries are gated only by event-DAY (not
+        // pre-event). The eventDay / preEventDay booleans above stay exposed
+        // for the UI to render an advisory chip if desired.
+        result.put("longPremiumBlockReason", marketGuard.longPremiumBlockReason(true));
         result.put("brentCrude", brentCrudeService.getLastPriceUSD());
         result.put("brentCrudeAvailable", brentCrudeService.isAvailable());
         result.put("hedgeCost", hedgeCostSummary());

@@ -37,6 +37,13 @@ public class IVRankTracker {
     private final com.algo.trade.persistence.GreeksSampleRepository greeksSampleRepository;
     private final com.algo.trade.persistence.StrategyDecisionRepository strategyDecisionRepository;
 
+    /** Lazy-injected so direct callers (AlgoFlowOrchestrator, StrategySelector)
+     *  that bypass computeLiveIvRank still get the VIX-bucket fallback when
+     *  the tracker has insufficient history. Optional — null-safe. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    @org.springframework.context.annotation.Lazy
+    private com.algo.trade.risk.MarketGuard marketGuard;
+
     public IVRankTracker(com.algo.trade.persistence.IVSampleRepository ivSampleRepository,
                          com.algo.trade.persistence.GreeksSampleRepository greeksSampleRepository,
                          com.algo.trade.persistence.StrategyDecisionRepository strategyDecisionRepository) {
@@ -48,6 +55,16 @@ public class IVRankTracker {
     /** Load persisted IV history from DB on startup. */
     @jakarta.annotation.PostConstruct
     public void loadFromDb() {
+        reloadFromDb();
+    }
+
+    /**
+     * Public reload — replaces the in-memory cache with fresh rows from DB.
+     * Called by {@code HistoricalVixIngestService.autoSeedIfEmpty()} after a
+     * background bootstrap so the tracker picks up new samples without
+     * requiring an app restart. Idempotent — replaces the deque atomically.
+     */
+    public synchronized void reloadFromDb() {
         for (IndexType idx : IndexType.values()) {
             var samples = ivSampleRepository.findByIndexTypeOrderBySampleDateAsc(idx.name());
             if (!samples.isEmpty()) {
@@ -61,11 +78,27 @@ public class IVRankTracker {
         }
     }
 
-    /** Record ATM IV for an index. Called when ATM option IV is calculated. */
+    /**
+     * Record ATM IV for an index. Called many times per second from
+     * {@code LiveInstrumentCache.updateFuturesPrice}.
+     *
+     * <p><strong>4 Jun 2026 fix (re-shipped):</strong> dedupe by calendar date.
+     * Only ONE sample per day is retained — if today's sample exists, it is
+     * OVERWRITTEN with the latest IV. Without this, every WebSocket tick
+     * appends a new sample; once we exceed {@link #MAX_SAMPLES} the historical
+     * 5-year backfill gets evicted from the front of the deque and IV rank
+     * collapses to "current IV vs last N intraday ticks" instead of the
+     * documented "current IV vs 52-week range".</p>
+     */
     public void recordIV(IndexType indexType, double iv) {
         if (iv <= 0) return;
         Deque<IVSample> deque = history.computeIfAbsent(indexType, k -> new ArrayDeque<>());
-        deque.addLast(new IVSample(LocalDate.now(), iv));
+        LocalDate today = LocalDate.now();
+        IVSample last = deque.peekLast();
+        if (last != null && today.equals(last.date())) {
+            deque.pollLast();   // overwrite today's existing entry
+        }
+        deque.addLast(new IVSample(today, iv));
         while (deque.size() > MAX_SAMPLES) deque.pollFirst();
     }
 

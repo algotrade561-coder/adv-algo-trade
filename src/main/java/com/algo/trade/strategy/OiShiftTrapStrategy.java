@@ -67,6 +67,20 @@ public class OiShiftTrapStrategy {
     // rotating against the trap direction (max-pain drift + skew + walls + OI flow).
     public static final String BLOCKER_REVERSAL_RISK_AGAINST_TRAP = "reversal_risk_against_trap";
 
+    // 4 Jun 2026 — Structural strike-position gate on imbalance-only.
+    // Heavy PE OI with spot ABOVE strike = put WRITING (bullish floor), bad PE BUY.
+    // Heavy CE OI with spot BELOW strike = call WRITING (bearish cap), bad CE BUY.
+    // Validated against today's 2 losing trades:
+    //   NIFTY 23300 PE: spot 23339 was +0.17% ABOVE strike → would have blocked
+    //   SENSEX 73900 PE: spot 74107 was +0.28% ABOVE strike → would have blocked
+    public static final String BLOCKER_IMBALANCE_PE_STRIKE_BELOW_SPOT = "imbalance_pe_strike_below_spot";
+    public static final String BLOCKER_IMBALANCE_CE_STRIKE_ABOVE_SPOT = "imbalance_ce_strike_above_spot";
+
+    /** Strike-vs-spot offset (% of strike) above which imbalance-only is rejected.
+     *  0.05% = 12 pts on NIFTY @ 23300. Tight enough to allow at-money traps,
+     *  strict enough to block the OTM-writer-floor false positives. */
+    private static final double STRIKE_OFFSET_PCT_MAX = 0.05;
+
     private final com.algo.trade.underlying.UnderlyingConfigService underlyingConfigService;
     private final OiShiftTrapConfig shiftTrapConfig;
     private final ExpiryCalendar expiryCalendar;
@@ -633,6 +647,33 @@ public class OiShiftTrapStrategy {
                         String.format("%+.3f", velocity.spotVelocity3m()),
                         level.strike());
             }
+            return Optional.empty();
+        }
+
+        // ── 4 Jun 2026: structural strike-position gate ──
+        // The velocity check above catches "spot is moving wrong way RIGHT now".
+        // This gate catches the structural setup: "spot is on the wrong SIDE of
+        // the trap strike for this to be a buyer-panic". Heavy PE OI well ABOVE
+        // spot means put WRITERS defending a floor (bullish for spot — DON'T
+        // BUY PE). Symmetric for CE. Today's 2 losing trades both had spot
+        // 0.17%-0.28% above the PE strike at entry. Velocity check missed them
+        // because v1m/v3m were not yet conclusively positive 15 sec after open.
+        BigDecimal spotMinusStrike = spotPrice.subtract(level.strike());
+        double strikeOffsetPct = spotMinusStrike.doubleValue() / level.strike().doubleValue() * 100.0;
+        if ("PE".equals(trapSide) && strikeOffsetPct > STRIKE_OFFSET_PCT_MAX) {
+            hardBlocker[0] = BLOCKER_IMBALANCE_PE_STRIKE_BELOW_SPOT;
+            log.info("[OiShiftTrap] PE imbalance BLOCKED — spot {} is {}% ABOVE strike {} "
+                    + "(writers' floor, not buyers' panic; threshold={}%)",
+                    spotPrice, String.format("%+.3f", strikeOffsetPct),
+                    level.strike(), STRIKE_OFFSET_PCT_MAX);
+            return Optional.empty();
+        }
+        if ("CE".equals(trapSide) && strikeOffsetPct < -STRIKE_OFFSET_PCT_MAX) {
+            hardBlocker[0] = BLOCKER_IMBALANCE_CE_STRIKE_ABOVE_SPOT;
+            log.info("[OiShiftTrap] CE imbalance BLOCKED — spot {} is {}% BELOW strike {} "
+                    + "(writers' cap, not buyers' panic; threshold={}%)",
+                    spotPrice, String.format("%+.3f", strikeOffsetPct),
+                    level.strike(), STRIKE_OFFSET_PCT_MAX);
             return Optional.empty();
         }
 

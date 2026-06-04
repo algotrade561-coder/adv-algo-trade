@@ -94,6 +94,15 @@ public class OiShiftTrapCaptureAdapter implements TuningCaptureAdapter {
             case "pcr_misaligned" -> "gate:PCR_MISALIGNED";
             case "cross_index_disagreement" -> "gate:CROSS_INDEX_DISAGREEMENT";
             case "underlying_volume" -> "gate:UNDERLYING_VOLUME";
+            // A1/E1/E4 imbalance-only guards (2 Jun 2026)
+            case "imbalance_pe_against_bullish_thrust" -> "gate:IMBALANCE_PE_BULLISH_THRUST";
+            case "imbalance_ce_against_bearish_thrust" -> "gate:IMBALANCE_CE_BEARISH_THRUST";
+            case "expiry_imbalance_after_1130" -> "gate:EXPIRY_AFTER_1130";
+            case "expiry_near_strike_after_1400" -> "gate:EXPIRY_NEAR_STRIKE_AFTER_1400";
+            case "reversal_risk_against_trap" -> "gate:REVERSAL_RISK_AGAINST_TRAP";
+            // 4 Jun 2026 — structural strike-position gate
+            case "imbalance_pe_strike_below_spot" -> "gate:IMBALANCE_PE_STRIKE_BELOW_SPOT";
+            case "imbalance_ce_strike_above_spot" -> "gate:IMBALANCE_CE_STRIKE_ABOVE_SPOT";
             default -> raw;
         };
     }

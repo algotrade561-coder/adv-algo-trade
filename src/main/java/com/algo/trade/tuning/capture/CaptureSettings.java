@@ -39,9 +39,12 @@ public record CaptureSettings(
         };
     }
 
-    /** Default OFF snapshot used as a fallback when no DB row exists for a strategy. */
+    /** Default-ON snapshot used as a fallback when no DB row exists for a strategy.
+     *  As of 4 Jun 2026 capture is on by default so that fresh deployments accumulate
+     *  tuning data from day one; the operator can disable per strategy via the UI.
+     *  Method name kept as {@code defaultOff} for source-compat with existing callers. */
     public static CaptureSettings defaultOff(StrategyType strategy) {
-        return new CaptureSettings(strategy, false, true, true, true, true, true, true, 60, null);
+        return new CaptureSettings(strategy, true, true, true, true, true, true, true, 60, null);
     }
 
     public static CaptureSettings from(TuningCaptureConfigEntity e) {

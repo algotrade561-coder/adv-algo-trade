@@ -5,6 +5,9 @@ import com.algo.trade.persistence.IVSampleEntity;
 import com.algo.trade.persistence.IVSampleRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -69,11 +72,91 @@ public class HistoricalVixIngestService {
     private final IVSampleRepository repository;
     private final HttpClient httpClient;
 
+    /** Injected lazily to avoid circular dependency (IVRankTracker is in a
+     *  different package and we only need it for post-seed cache refresh). */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    @org.springframework.context.annotation.Lazy
+    private com.algo.trade.indicator.IVRankTracker ivRankTracker;
+
+    /** Auto-seed on startup if the iv_samples table is empty. Default ON. Disable
+     *  with {@code tuning.iv-sample-bootstrap.enabled=false}. */
+    @Value("${tuning.iv-sample-bootstrap.enabled:true}")
+    private boolean autoSeedEnabled = true;
+
+    /** Years of India VIX history to fetch when auto-seeding. Default 5. */
+    @Value("${tuning.iv-sample-bootstrap.years:5}")
+    private int autoSeedYears = 5;
+
     public HistoricalVixIngestService(IVSampleRepository repository) {
         this.repository = repository;
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(15))
                 .build();
+    }
+
+    /**
+     * Auto-bootstrap: when the application is fully started, check whether the
+     * {@code iv_samples} table is empty. If so, pull
+     * {@code tuning.iv-sample-bootstrap.years} (default 5) of India VIX history
+     * from Yahoo Finance and populate the table. If the table already has data
+     * we leave it alone — re-seeding is an explicit operator action via
+     * {@code POST /advalgotrade/admin/iv-samples/seed-india-vix}.
+     *
+     * <p>Runs after the app is fully started (so Spring beans, scheduling, etc.
+     * are all up) and is best-effort: any Yahoo outage or network failure is
+     * logged at WARN and silently swallowed so app startup is never blocked.
+     * The IVRankTracker has a VIX-bucket proxy fallback that keeps the system
+     * usable even when this seed fails.</p>
+     *
+     * <p>Network call runs on a background daemon thread so a slow Yahoo
+     * response can't block the ApplicationReadyEvent listener chain. The
+     * seed completes in the background and {@code IVRankTracker} picks up
+     * the new samples on its next restart (samples are loaded once in
+     * its {@code @PostConstruct}).</p>
+     */
+    @EventListener(ApplicationReadyEvent.class)
+    public void autoSeedIfEmpty() {
+        if (!autoSeedEnabled) {
+            log.info("[VixIngest] auto-seed disabled by config (tuning.iv-sample-bootstrap.enabled=false)");
+            return;
+        }
+        long existing;
+        try {
+            existing = repository.count();
+        } catch (Exception ex) {
+            log.warn("[VixIngest] auto-seed: count() failed, skipping bootstrap: {}", ex.getMessage());
+            return;
+        }
+        if (existing > 0) {
+            log.info("[VixIngest] auto-seed: iv_samples table already has {} rows — leaving as-is", existing);
+            return;
+        }
+        log.warn("[VixIngest] auto-seed: iv_samples is EMPTY → scheduling background fetch of {} years "
+                + "of India VIX from Yahoo Finance", autoSeedYears);
+        Thread t = new Thread(() -> {
+            try {
+                IngestResult result = ingest(autoSeedYears, null);
+                log.warn("[VixIngest] auto-seed COMPLETE: {}", result);
+                // 4 Jun 2026: trigger an immediate IVRankTracker reload so the
+                // tracker picks up the new samples without requiring a restart.
+                if (ivRankTracker != null) {
+                    try {
+                        ivRankTracker.reloadFromDb();
+                        log.warn("[VixIngest] IVRankTracker reloaded — IV rank now backed by {} years of history",
+                                autoSeedYears);
+                    } catch (Exception ex) {
+                        log.warn("[VixIngest] IVRankTracker reload failed (non-fatal — next restart will pick up): {}",
+                                ex.getMessage());
+                    }
+                }
+            } catch (Exception ex) {
+                log.warn("[VixIngest] auto-seed FAILED — IVRankTracker will fall back to VIX-bucket proxy "
+                        + "until the operator runs POST /admin/iv-samples/seed-india-vix manually. Cause: {}",
+                        ex.getMessage());
+            }
+        }, "iv-sample-autoseed");
+        t.setDaemon(true);
+        t.start();
     }
 
     /**

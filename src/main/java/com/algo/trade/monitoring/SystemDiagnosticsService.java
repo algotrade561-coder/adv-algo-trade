@@ -315,7 +315,10 @@ public class SystemDiagnosticsService {
         }
         // Market Guard status
         dataHealth.put("safeForLongPremium", marketGuard.isSafeForLongPremium());
-        dataHealth.put("longPremiumBlockReason", marketGuard.longPremiumBlockReason());
+        // 4 Jun 2026: allowEventDay=true so this matches the entry-gate
+        // semantics (pre-event day no longer blocks long-buy intraday MIS).
+        // The eventDay / preEventDay booleans below are still exposed.
+        dataHealth.put("longPremiumBlockReason", marketGuard.longPremiumBlockReason(true));
         dataHealth.put("safeForShortPremium", marketGuard.isSafeForShortPremium());
         dataHealth.put("circuitBreakerTriggered", marketGuard.isCircuitBreakerTriggered());
         dataHealth.put("eventDay", marketGuard.isEventDay());

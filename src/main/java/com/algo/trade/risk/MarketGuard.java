@@ -289,6 +289,25 @@ public class MarketGuard {
     public boolean isEventDay() { return effectiveEventDates().contains(LocalDate.now()); }
     public boolean isPreEventDay() { return effectiveEventDates().contains(LocalDate.now().plusDays(1)); }
 
+    /**
+     * Returns the next event date within {@code maxDaysAhead} calendar days
+     * (inclusive of today), or empty if none. Used by strategies that key on
+     * "are we within an event window" (e.g. EventDrivenBuyStrategy). Single
+     * source of truth — strategies should NOT maintain their own hardcoded
+     * event-date lists; they should read from this method so application.yml's
+     * {@code risk.event-dates} stays authoritative across the system.
+     */
+    public java.util.Optional<LocalDate> nextEventWithin(int maxDaysAhead) {
+        if (maxDaysAhead < 0) return java.util.Optional.empty();
+        LocalDate today = LocalDate.now();
+        java.util.List<LocalDate> dates = effectiveEventDates();
+        for (int i = 0; i <= maxDaysAhead; i++) {
+            LocalDate probe = today.plusDays(i);
+            if (dates.contains(probe)) return java.util.Optional.of(probe);
+        }
+        return java.util.Optional.empty();
+    }
+
     public boolean isCircuitBreakerTriggered() {
         if (todayOpen <= 0) return false;
         double move = Math.abs((todayCurrent - todayOpen) / todayOpen) * 100;
