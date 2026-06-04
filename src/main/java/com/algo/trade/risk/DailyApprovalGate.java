@@ -77,6 +77,15 @@ public class DailyApprovalGate {
     private final AtomicBoolean reminderSent = new AtomicBoolean(false);
     private final AtomicReference<String> approvedBy = new AtomicReference<>("");
 
+    /** Startup confirmation log — mirrors EntryPathHeartbeatService.init() pattern. */
+    @jakarta.annotation.PostConstruct
+    public void init() {
+        log.info("[DailyApprovalGate] READY — enabled={}, autoApprove={}, "
+                + "morningAlert={}, reminder={}, autoApproveAt={}",
+                enabled, autoApproveEnabled, morningAlertTimeStr,
+                reminderTimeStr, autoApproveTimeStr);
+    }
+
     /** Returns true if today is approved for trading. */
     public boolean isApproved() {
         if (!enabled) return true;   // gate off → always approved

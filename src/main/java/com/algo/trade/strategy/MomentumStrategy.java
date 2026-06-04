@@ -63,11 +63,33 @@ public class MomentumStrategy {
     private static final LocalTime MARKET_OPEN_GUARD  = LocalTime.of(9, 30);
     private static final LocalTime MARKET_CLOSE_GUARD = LocalTime.of(15, 0);
 
+    // 3 Jun 2026: midday entry block. Both losing trades fired at 12:40 IST and
+    // hit SL within 15 min. Midday momentum signals tend to be late entries on
+    // exhaustion moves. Mirror OIM's pattern of throttling new entries 12:00–13:00.
+    private static final LocalTime MIDDAY_BLOCK_START = LocalTime.of(12, 0);
+    private static final LocalTime MIDDAY_BLOCK_END   = LocalTime.of(13, 0);
+
+    // 3 Jun 2026: raise the score-equivalent threshold during midday window —
+    // both losing trades had ROC just over the 0.40% floor (0.62%, 0.65%).
+    // During the midday block we require a stronger move to overcome the
+    // higher-than-usual reversal risk.
+    private static final double MIN_ROC_PERCENT_MIDDAY = 0.80;
+
     public StrategyDiagnostics.WithSignal evaluateWithDiagnostics(List<Candle> candles, LocalTime marketTime,
                                                                     StrategyConfig config, UnderlyingSymbol underlying) {
         // Bug fix: time filter was accepted but never applied
         if (marketTime != null && (marketTime.isBefore(MARKET_OPEN_GUARD) || marketTime.isAfter(MARKET_CLOSE_GUARD))) {
             return noTrade("outsideTradingWindow(" + marketTime + ")");
+        }
+
+        // 3 Jun 2026: midday entry block — momentum-style signals in the 12:00-13:00
+        // window have historically been late entries on exhausted moves. Today's
+        // 12:40 IST live trades (NIFTY 23300 CE + SENSEX 74100 CE) hit SL within
+        // 15 minutes each. Block new entries here.
+        if (marketTime != null
+                && !marketTime.isBefore(MIDDAY_BLOCK_START)
+                && marketTime.isBefore(MIDDAY_BLOCK_END)) {
+            return noTrade("middayEntryBlock(" + marketTime + ")");
         }
 
         if (candles.size() < Math.max(ROC_PERIOD * 2 + 1, EMA_PERIOD + 1)) {
@@ -89,8 +111,17 @@ public class MomentumStrategy {
                 .divide(priorForRoc, 6, RoundingMode.HALF_UP)
                 .multiply(BigDecimal.valueOf(100)).doubleValue();
 
-        if (Math.abs(roc) < MIN_ROC_PERCENT) {
-            return noTrade("rocTooWeak(" + String.format("%.2f", roc) + "%)");
+        // 3 Jun 2026: stricter midday threshold (after 11:30 IST — the moment
+        // institutional positioning typically settles for the day). Forces a
+        // higher conviction trigger than the morning threshold.
+        double rocThreshold = MIN_ROC_PERCENT;
+        if (marketTime != null && !marketTime.isBefore(LocalTime.of(11, 30))
+                && marketTime.isBefore(LocalTime.of(14, 30))) {
+            rocThreshold = MIN_ROC_PERCENT_MIDDAY;
+        }
+        if (Math.abs(roc) < rocThreshold) {
+            return noTrade("rocTooWeak(" + String.format("%.2f", roc)
+                    + "%,floor=" + String.format("%.2f", rocThreshold) + "%)");
         }
 
         // 2. ROC acceleration
