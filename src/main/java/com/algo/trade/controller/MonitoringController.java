@@ -157,10 +157,11 @@ public class MonitoringController {
         return "NEUTRAL";
     }
 
+    /** Per-user scoped. Optional ?userId= filter is honored only for SUPERUSER/ADMIN viewers. */
     @GetMapping("/positions")
-    public List<Position> positions() {
-        log.info("Positions endpoint called");
-        List<Position> positions = reportingService.positions();
+    public List<Position> positions(@RequestParam(value = "userId", required = false) Long userId) {
+        log.info("Positions endpoint called: userId={}", userId);
+        List<Position> positions = reportingService.positions(userId);
         log.info("Positions endpoint completed: count={}", positions.size());
         return positions;
     }
@@ -173,26 +174,29 @@ public class MonitoringController {
         return results;
     }
 
+    /** Per-user scoped. Optional ?userId= filter is honored only for SUPERUSER/ADMIN viewers. */
     @GetMapping("/orders")
-    public List<OrderEntity> orders() {
-        log.info("Orders endpoint called");
-        List<OrderEntity> orders = reportingService.orders();
+    public List<OrderEntity> orders(@RequestParam(value = "userId", required = false) Long userId) {
+        log.info("Orders endpoint called: userId={}", userId);
+        List<OrderEntity> orders = reportingService.orders(userId);
         log.info("Orders endpoint completed: count={}", orders.size());
         return orders;
     }
 
+    /** Per-user scoped. Optional ?userId= filter is honored only for SUPERUSER/ADMIN viewers. */
     @GetMapping("/trades")
-    public List<TradeEntity> trades() {
-        log.info("Trades endpoint called");
-        List<TradeEntity> trades = reportingService.trades();
+    public List<TradeEntity> trades(@RequestParam(value = "userId", required = false) Long userId) {
+        log.info("Trades endpoint called: userId={}", userId);
+        List<TradeEntity> trades = reportingService.trades(userId);
         log.info("Trades endpoint completed: count={}", trades.size());
         return trades;
     }
 
+    /** Per-user scoped. Optional ?userId= filter is honored only for SUPERUSER/ADMIN viewers. */
     @GetMapping("/pnl")
-    public PnlSnapshot pnl() {
-        log.info("PnL endpoint called");
-        PnlSnapshot pnl = reportingService.pnl();
+    public PnlSnapshot pnl(@RequestParam(value = "userId", required = false) Long userId) {
+        log.info("PnL endpoint called: userId={}", userId);
+        PnlSnapshot pnl = reportingService.pnl(userId);
         log.info("PnL endpoint completed: realized={}, unrealized={}, total={}",
                 pnl.realizedPnl(), pnl.unrealizedPnl(), pnl.totalPnl());
         return pnl;
@@ -296,7 +300,7 @@ public class MonitoringController {
 
     /** Signal counts per strategy type for today — for the monitoring dashboard. */
     @GetMapping("/signals/summary")
-    public List<java.util.Map<String, Object>> signalSummary() {
+    public List<Map<String, Object>> signalSummary() {
         log.info("Signal summary endpoint called");
         return reportingService.signalSummaryToday();
     }
@@ -324,19 +328,19 @@ public class MonitoringController {
         Instant[] range = periodToRange(period);
         Instant since = range != null ? range[0]
                 : Instant.now().minus(30, java.time.temporal.ChronoUnit.DAYS);
-        List<com.algo.trade.persistence.StrategyDecisionEntity> entries =
+        List<StrategyDecisionEntity> entries =
                 decisionRepository.findEntrySignalsSince(since);
-        Map<String, List<com.algo.trade.persistence.StrategyDecisionEntity>> byStrategy =
+        Map<String, List<StrategyDecisionEntity>> byStrategy =
                 entries.stream().collect(java.util.stream.Collectors.groupingBy(
                         e -> e.getStrategyType() != null ? e.getStrategyType() : "UNKNOWN"));
         List<Map<String, Object>> result = new java.util.ArrayList<>();
         for (var kv : byStrategy.entrySet()) {
-            List<com.algo.trade.persistence.StrategyDecisionEntity> list = kv.getValue();
+            List<StrategyDecisionEntity> list = kv.getValue();
             long filled   = list.stream().filter(e -> isFilledStage(e.getExecutionStage())).count();
             long rejected = list.stream().filter(e -> isRejectedStage(e.getExecutionStage())).count();
             double avgIvRank = list.stream()
                     .filter(e -> e.getIvRank() != null && e.getIvRank() > 0)
-                    .mapToDouble(com.algo.trade.persistence.StrategyDecisionEntity::getIvRank)
+                    .mapToDouble(StrategyDecisionEntity::getIvRank)
                     .average().orElse(0);
             double avgSpread = list.stream()
                     .filter(e -> e.getOptionAsk() != null && e.getOptionBid() != null
@@ -377,6 +381,24 @@ public class MonitoringController {
         String csv = reportingService.tradeJournalCsv();
         log.info("Trade journal CSV endpoint completed: bytes={}", csv.length());
         return csv;
+    }
+
+    /** Rejected signals CSV download — all NO_TRADE decisions for a date (default: today). */
+    @GetMapping(value = {"/reports/download/today/rejected-signals", "/monitoring/reports/download/today/rejected-signals"},
+                produces = "text/csv")
+    public ResponseEntity<String> downloadTodayRejectedSignalsCsv(
+            @RequestParam(value = "date", required = false) String dateStr) {
+        LocalDate date = (dateStr == null || dateStr.isBlank())
+                ? LocalDate.now(ZoneId.of("Asia/Kolkata"))
+                : LocalDate.parse(dateStr);
+        Instant from = date.atStartOfDay(ZoneId.of("Asia/Kolkata")).toInstant();
+        Instant to = date.plusDays(1).atStartOfDay(ZoneId.of("Asia/Kolkata")).toInstant();
+        String csv = reportingService.rejectedSignalsCsv(from, to);
+        String filename = "rejected-signals-" + date + ".csv";
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + "\"")
+                .contentType(MediaType.parseMediaType("text/csv"))
+                .body(csv);
     }
 
     /** Report APIs: {@code /reports/...} and alias {@code /monitoring/reports/...}. */

@@ -197,6 +197,13 @@ export interface OiMomentumRuntimeConfigDto {
   // Theta-decay gate
   thetaDecayCheckEnabled: boolean;
   thetaDecayMaxCostPct: number;
+  // D2 SUSTAINED_DRIFT (trend capture). overridesV3=true + shadowMode=false → D2 live alongside V3.
+  sustainedDriftEnabled: boolean;
+  sustainedDriftShadowMode: boolean;
+  sustainedDriftOverridesV3: boolean;
+  sustainedDriftMinPct: number;
+  sustainedDriftOpScoreMin: number;
+  sustainedDriftWindowMinutes: number;
   // P4 instrumentation (data-gathering week)
   recordEveryReject: boolean;
   rejectSampleIntervalSeconds: number;
@@ -275,6 +282,16 @@ export class ApiService {
   placeOrder(order: { instrumentKey: string; side: string; orderType: string; productType: string; quantity: number; limitPrice?: number; tag?: string }): Observable<ApiRecord> {
     return this.http.post<ApiRecord>(`${this.base}/orders/place`, order);
   }
+  /** Manual order strike picker: spot + ATM ± 3 strikes for all indices. */
+  manualOrderStrikes(): Observable<ApiRecord> { return this.http.get<ApiRecord>(`${this.base}/api/manual-order/strikes`); }
+  /** Intraday per-index PCR series for the daily chart (today, 09:00–15:30). */
+  pcrIntraday(): Observable<Record<string, { latest: number; series: { time: string; pcr: number }[] }>> {
+    return this.http.get<Record<string, { latest: number; series: { time: string; pcr: number }[] }>>(`${this.base}/api/pcr/intraday`);
+  }
+  /** Place a prepopulated manual order (lots-based, via ManualOrderController). */
+  placeManualOrder(body: { index: string; side: string; optionType: string; strike: number; lots: number; orderType: string; limitPrice: number; productType: string; instrumentKey: string; tradingSymbol: string }): Observable<ApiRecord> {
+    return this.http.post<ApiRecord>(`${this.base}/api/manual-order/place`, body);
+  }
   setMode(mode: TradingMode): Observable<RuntimeStatus> { return this.http.post<RuntimeStatus>(`${this.base}/mode`, { mode }); }
   routing(): Observable<RuntimeStatus> { return this.http.get<RuntimeStatus>(`${this.base}/routing`); }
   setRouting(marketDataMode: MarketDataMode, executionMode: ExecutionMode): Observable<RuntimeStatus> {
@@ -284,11 +301,13 @@ export class ApiService {
   setScanUnderlying(underlying: UnderlyingSymbol, enabled: boolean): Observable<RuntimeStatus> {
     return this.http.post<RuntimeStatus>(`${this.base}/scan/underlyings/${underlying}`, { enabled });
   }
-  positions(): Observable<ApiRecord[]> { return this.http.get<ApiRecord[]>(`${this.base}/positions`); }
+  // userId filter: only honored by the backend for SUPERUSER/ADMIN viewers
+  private userParam(userId?: number | null): string { return userId != null ? `?userId=${userId}` : ''; }
+  positions(userId?: number | null): Observable<ApiRecord[]> { return this.http.get<ApiRecord[]>(`${this.base}/positions${this.userParam(userId)}`); }
   positionHealth(): Observable<ApiRecord[]> { return this.http.get<ApiRecord[]>(`${this.base}/positions/health`); }
-  orders(): Observable<ApiRecord[]> { return this.http.get<ApiRecord[]>(`${this.base}/orders`); }
-  trades(): Observable<ApiRecord[]> { return this.http.get<ApiRecord[]>(`${this.base}/trades`); }
-  pnl(): Observable<PnlSnapshot> { return this.http.get<PnlSnapshot>(`${this.base}/pnl`); }
+  orders(userId?: number | null): Observable<ApiRecord[]> { return this.http.get<ApiRecord[]>(`${this.base}/orders${this.userParam(userId)}`); }
+  trades(userId?: number | null): Observable<ApiRecord[]> { return this.http.get<ApiRecord[]>(`${this.base}/trades${this.userParam(userId)}`); }
+  pnl(userId?: number | null): Observable<PnlSnapshot> { return this.http.get<PnlSnapshot>(`${this.base}/pnl${this.userParam(userId)}`); }
   market(): Observable<MarketSnapshot> { return this.http.get<MarketSnapshot>(`${this.base}/market`); }
   oilPrice(): Observable<OilPriceSnapshot> { return this.http.get<OilPriceSnapshot>(`${this.base}/api/oil-price/snapshot`); }
   performance(): Observable<any> { return this.http.get<any>(`${this.base}/performance`); }
@@ -298,6 +317,7 @@ export class ApiService {
   auditExport(period = 'TODAY'): Observable<any> { return this.http.get<any>(`${this.base}/analytics/audit?period=${period}`); }
   botActivity(): Observable<any> { return this.http.get<any>(`${this.base}/analytics/bot-activity`); }
   diagnosticsHealth(): Observable<any> { return this.http.get<any>(`${this.base}/diagnostics/health`); }
+  multiUserHealth(): Observable<any> { return this.http.get<any>(`${this.base}/health/multi-user`); }
   diagnosticsAudit(tradeId: string): Observable<any> { return this.http.get<any>(`${this.base}/diagnostics/audit/${tradeId}`); }
   diagnosticsSearchInstrument(key: string, period = 'TODAY'): Observable<any> { return this.http.get<any>(`${this.base}/diagnostics/search/instrument?key=${key}&period=${period}`); }
   diagnosticsSearchStrategy(type: string, period = 'TODAY'): Observable<any> { return this.http.get<any>(`${this.base}/diagnostics/search/strategy?type=${type}&period=${period}`); }
@@ -327,6 +347,10 @@ export class ApiService {
   }
   downloadTodayAnalysisPackZip(): Observable<Blob> {
     return this.http.get(`${this.base}/reports/download/today/all`, { responseType: 'blob' });
+  }
+  downloadTodayRejectedSignalsCsv(date?: string): Observable<Blob> {
+    const params = date ? `?date=${date}` : '';
+    return this.http.get(`${this.base}/reports/download/today/rejected-signals${params}`, { responseType: 'blob' });
   }
   kiteLogin(): Observable<KiteLoginResponse> { return this.http.get<KiteLoginResponse>(`${this.base}/auth/kite/login`); }
   kiteSession(): Observable<KiteSessionResponse> { return this.http.get<KiteSessionResponse>(`${this.base}/auth/kite/session`); }

@@ -73,7 +73,48 @@ import { interval, Subscription, catchError, of } from 'rxjs';
           </div>
         </div>
 
-        <!-- ── Data Health ── -->
+        <!-- ── Multi-User Connectivity ── -->
+      <h2 class="sec-title"><mat-icon class="sec-icon">group</mat-icon> Multi-User Connectivity</h2>
+      @if (multiUserHealth) {
+        <div class="mu-verdict" [class.mu-ok]="multiUserHealth.verdict === 'ALL_CONNECTED'" [class.mu-partial]="multiUserHealth.verdict === 'PARTIAL'" [class.mu-bad]="multiUserHealth.verdict === 'NONE_CONNECTED'">
+          <mat-icon>{{ multiUserHealth.verdict === 'ALL_CONNECTED' ? 'check_circle' : multiUserHealth.verdict === 'PARTIAL' ? 'warning' : 'error' }}</mat-icon>
+          <span>{{ multiUserHealth.usersReady }}/{{ multiUserHealth.usersTotal }} users ready · {{ multiUserHealth.verdict }}</span>
+        </div>
+        <div class="cards">
+          @for (u of multiUserHealth.users; track u.userId) {
+            <div class="card mu-card" [class.card-ok]="u.ready" [class.card-bad]="!u.ready">
+              <div class="mu-user-hdr">
+                <mat-icon>{{ u.ready ? 'person' : 'person_off' }}</mat-icon>
+                <strong>{{ u.email }}</strong>
+                @if (u.primaryAccount) { <span class="badge badge-ok">PRIMARY</span> }
+              </div>
+              <div class="mu-row"><span>API Key</span><strong>{{ u.apiKeyConfigured ? u.apiKeyMasked : '❌ NOT SET' }}</strong></div>
+              <div class="mu-row"><span>Token</span><strong [class.val-ok]="u.tokenValid" [class.val-bad]="!u.tokenValid">{{ u.tokenValid ? '✅ Valid (' + u.tokenExpiresInMinutes + 'min)' : '❌ ' + (u.accessTokenPresent ? 'Expired' : 'Missing') }}</strong></div>
+              <div class="mu-row"><span>Source IP</span><strong [class.val-ok]="u.sourceIpReachable === true" [class.val-bad]="u.sourceIpReachable === false">{{ u.sourceIp ?? 'Default' }} {{ u.sourceIpReachable === true ? '✅' : u.sourceIpReachable === false ? '❌ NOT ON MACHINE' : '' }}</strong></div>
+              <div class="mu-row"><span>Session</span><strong [class.val-ok]="u.sessionAuthenticated" [class.val-bad]="!u.sessionAuthenticated">{{ u.sessionAuthenticated ? '✅ Authenticated' : '❌ Not authenticated' }}</strong></div>
+              <div class="mu-row"><span>Trading</span><strong>{{ u.tradingEnabled ? '✅ Enabled' : '⏸ Disabled' }} · {{ u.entryAllowed ? 'Entries OK' : 'Entries blocked' }}</strong></div>
+              @if (u.issues?.length) {
+                <div class="mu-issues">
+                  @for (issue of u.issues; track issue) {
+                    <div class="mu-issue">⚠ {{ issue }}</div>
+                  }
+                </div>
+              }
+            </div>
+          }
+        </div>
+        <!-- Network Interfaces -->
+        <div class="mu-net">
+          <span class="mu-net-label">Server IPs:</span>
+          @for (ni of multiUserHealth.networkInterfaces; track ni.ip) {
+            <span class="mu-ip">{{ ni.interface }}={{ ni.ip }}</span>
+          }
+        </div>
+      } @else {
+        <div class="no-data">Loading multi-user diagnostics...</div>
+      }
+
+      <!-- ── Data Health ── -->
         <h2 class="sec-title"><mat-icon class="sec-icon">bar_chart</mat-icon> Data Health (Scanner Dependencies)</h2>
 
         <!-- Sub-group: Market Data Feeds -->
@@ -329,10 +370,30 @@ import { interval, Subscription, catchError, of } from 'rxjs';
     .trigger-btn { min-width: 32px !important; padding: 0 4px !important; line-height: 28px !important; }
     .trigger-btn mat-icon { font-size: 16px; width: 16px; height: 16px; }
     h3 { color: #c9d1d9; font-size: 0.95rem; margin: 14px 0 8px; }
+
+    /* Multi-user connectivity */
+    .mu-verdict { display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-radius: 8px; margin-bottom: 10px; font-weight: 600; font-size: 0.9rem; }
+    .mu-ok { background: #0d1f0d; border: 1px solid #3fb950; color: #3fb950; }
+    .mu-partial { background: #2d2600; border: 1px solid #d29922; color: #d29922; }
+    .mu-bad { background: #2d1215; border: 1px solid #f85149; color: #f85149; }
+    .mu-card { min-width: 280px; max-width: 400px; }
+    .mu-user-hdr { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; font-size: 0.85rem; color: #e6edf3; }
+    .mu-user-hdr mat-icon { font-size: 18px; width: 18px; height: 18px; }
+    .mu-row { display: flex; justify-content: space-between; align-items: center; padding: 3px 0; font-size: 0.75rem; border-bottom: 1px solid #21262d; }
+    .mu-row span { color: #8b949e; }
+    .mu-row strong { color: #c9d1d9; font-family: Consolas, monospace; font-size: 0.72rem; }
+    .val-ok { color: #3fb950 !important; }
+    .val-bad { color: #f85149 !important; }
+    .mu-issues { margin-top: 6px; padding: 6px 8px; background: #2d1215; border-radius: 4px; }
+    .mu-issue { font-size: 0.7rem; color: #f85149; padding: 2px 0; }
+    .mu-net { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; font-size: 0.72rem; color: #8b949e; }
+    .mu-net-label { font-weight: 600; }
+    .mu-ip { background: #21262d; padding: 2px 8px; border-radius: 4px; font-family: Consolas, monospace; }
   `]
 })
 export class DiagnosticsPageComponent implements OnInit, OnDestroy {
   health: any = null;
+  multiUserHealth: any = null;
   auditResult: any = null;
   failures: any = null;
   recentErrors: any[] = [];
@@ -349,13 +410,14 @@ export class DiagnosticsPageComponent implements OnInit, OnDestroy {
 
   ngOnInit(): void {
     this.load();
-    this.pollSub = interval(10000).subscribe(() => { this.loadHealth(); this.loadSchedulers(); });
+    this.pollSub = interval(10000).subscribe(() => { this.loadHealth(); this.loadSchedulers(); this.loadMultiUserHealth(); });
   }
 
   ngOnDestroy(): void { this.pollSub?.unsubscribe(); }
 
   load(): void {
     this.loadHealth();
+    this.loadMultiUserHealth();
     this.loadLookup();
     this.loadRecentErrors();
     this.loadSchedulers();
@@ -364,6 +426,13 @@ export class DiagnosticsPageComponent implements OnInit, OnDestroy {
   loadHealth(): void {
     this.api.diagnosticsHealth().pipe(catchError(() => of(null))).subscribe(d => {
       if (d) this.health = d;
+      this.cd.detectChanges();
+    });
+  }
+
+  loadMultiUserHealth(): void {
+    this.api.multiUserHealth().pipe(catchError(() => of(null))).subscribe(d => {
+      if (d) this.multiUserHealth = d;
       this.cd.detectChanges();
     });
   }

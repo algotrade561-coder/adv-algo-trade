@@ -9,12 +9,15 @@ import { MatToolbarModule } from '@angular/material/toolbar';
 import { MatListModule } from '@angular/material/list';
 import { ApiService } from './core/api.service';
 import { ServerStatusService } from './core/server-status.service';
+import { AdminService } from './core/admin.service';
 import { HealthResponse } from './core/models';
 
 interface NavItem {
   label: string;
   path: string;
   icon: string;
+  /** If set, only show this nav item to users with one of these roles */
+  requiresRole?: ('ADMIN' | 'SUPERUSER')[];
 }
 
 interface HealthDialogData {
@@ -255,7 +258,7 @@ export class HealthDialogComponent {
           </div>
         </div>
         <mat-nav-list>
-          @for (item of navItems; track item.path) {
+          @for (item of visibleNavItems(); track item.path) {
             <a mat-list-item [routerLink]="item.path" routerLinkActive="active-link"
                (click)="onNavClick()">
               <mat-icon matListItemIcon>{{ item.icon }}</mat-icon>
@@ -507,7 +510,8 @@ export class AppComponent implements OnInit, OnDestroy {
     private readonly api: ApiService,
     private readonly dialog: MatDialog,
     private readonly cd: ChangeDetectorRef,
-    readonly serverStatus: ServerStatusService
+    readonly serverStatus: ServerStatusService,
+    readonly admin: AdminService
   ) {
     this.checkMobile();
   }
@@ -528,6 +532,8 @@ export class AppComponent implements OnInit, OnDestroy {
       }
       sessionStorage.removeItem('auth_redirecting');
       this.authChecked = true;
+      // Load role-aware current-user (for admin nav gating)
+      this.admin.loadCurrentUser().subscribe({ next: () => this.cd.detectChanges(), error: () => {} });
       this.cd.detectChanges();
       this.serverStatus.markOnline();
     });
@@ -566,8 +572,20 @@ export class AppComponent implements OnInit, OnDestroy {
     { label: 'Tuning Capture', path: 'tuning-capture', icon: 'science' },
     { label: 'Diagnostics', path: 'diagnostics', icon: 'monitor_heart' },
     { label: 'Kite Auth', path: 'auth', icon: 'lock_open' },
+    { label: 'My Trading', path: 'my-trading', icon: 'person_pin' },
+    { label: 'My Broker', path: 'my-broker', icon: 'account_balance_wallet' },
+    { label: 'Users', path: 'admin/users', icon: 'group', requiresRole: ['ADMIN', 'SUPERUSER'] },
     { label: 'Settings', path: 'settings', icon: 'tune' }
   ];
+
+  /** Filters out admin-only nav items for non-admin users. */
+  visibleNavItems(): NavItem[] {
+    return this.navItems.filter(i => {
+      if (!i.requiresRole) return true;
+      const role = this.admin.currentUser()?.role;
+      return role !== undefined && i.requiresRole.includes(role as 'ADMIN' | 'SUPERUSER');
+    });
+  }
 
   openHealthDialog(): void {
     forkJoin({

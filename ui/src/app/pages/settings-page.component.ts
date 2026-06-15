@@ -240,6 +240,49 @@ import {
                 </mat-form-field>
 
                 <div class="section-hdr sub-hdr inline-hdr">
+                  <mat-icon class="icon-risk">trending_up</mat-icon>
+                  <div>
+                    <h2>D2 - Sustained drift (trend capture)</h2>
+                    <p>Catches slow one-way grind days. To go live: Overrides V3 = ON and Shadow = OFF.</p>
+                  </div>
+                </div>
+                <div class="toggle-row">
+                  <span>SUSTAINED_DRIFT enabled
+                    <small class="toggle-hint">Detector on. Fires when 60-min drift &gt;= threshold with operator agreement.</small></span>
+                  <mat-slide-toggle [(ngModel)]="oiConfig.sustainedDriftEnabled" color="primary"></mat-slide-toggle>
+                </div>
+                <div class="toggle-row">
+                  <span>SUSTAINED_DRIFT shadow mode
+                    <small class="toggle-hint">Log-only. Keep ON until you have a clean validation session.</small></span>
+                  <mat-slide-toggle [(ngModel)]="oiConfig.sustainedDriftShadowMode" color="primary"
+                    [disabled]="!oiConfig.sustainedDriftEnabled"></mat-slide-toggle>
+                </div>
+                <div class="toggle-row">
+                  <span>Overrides V3 (GO-LIVE - real money)
+                    <small class="toggle-hint">Lets D2 bind live even while V3 is on (V3 still sizes/vets). Default OFF. Requires shadow OFF.</small></span>
+                  <mat-slide-toggle [(ngModel)]="oiConfig.sustainedDriftOverridesV3" color="warn"
+                    [disabled]="!oiConfig.sustainedDriftEnabled || oiConfig.sustainedDriftShadowMode"></mat-slide-toggle>
+                </div>
+                <mat-form-field appearance="outline">
+                  <mat-label>Min 60-min drift (%)</mat-label>
+                  <input matInput type="number" min="0.05" max="2" step="0.01"
+                         [(ngModel)]="oiConfig.sustainedDriftMinPct">
+                  <mat-hint>0.20 = fire when spot drifts >= 0.20% over the window</mat-hint>
+                </mat-form-field>
+                <mat-form-field appearance="outline">
+                  <mat-label>Min operator score</mat-label>
+                  <input matInput type="number" min="0" max="100" step="5"
+                         [(ngModel)]="oiConfig.sustainedDriftOpScoreMin">
+                  <mat-hint>50 = require operator conviction >= 50 aligned with drift</mat-hint>
+                </mat-form-field>
+                <mat-form-field appearance="outline">
+                  <mat-label>Drift window (minutes)</mat-label>
+                  <input matInput type="number" min="5" max="240" step="5"
+                         [(ngModel)]="oiConfig.sustainedDriftWindowMinutes">
+                  <mat-hint>60 = measure drift over the last 60 minutes</mat-hint>
+                </mat-form-field>
+
+                <div class="section-hdr sub-hdr inline-hdr">
                   <mat-icon class="icon-risk">analytics</mat-icon>
                   <div>
                     <h2>Tuning instrumentation</h2>

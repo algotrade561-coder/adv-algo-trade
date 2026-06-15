@@ -87,11 +87,25 @@ public class ExecutionEngine {
     private final TelegramAlertService telegramAlertService;
     private final com.algo.trade.config.PositionSyncProperties positionSyncProperties;
     private final StrategyConfigService strategyConfigService;
+
+    /** Multi-user signal copy — optional, only active when multi-user mode is enabled.
+     *  @Lazy breaks the cycle: ExecutionEngine → SignalCopyService → UserAwareExecutionService → ExecutionEngine. */
+    @Autowired(required = false)
+    @org.springframework.context.annotation.Lazy
+    private com.algo.trade.multiuser.SignalCopyService signalCopyService;
+
+    /**
+     * SAFETY: should PAPER entries fan out to other users (as REAL orders)? Default NO.
+     * A paper-mode strategy means "testing without money" — it must not place real
+     * broker orders on secondary users' accounts. Enable only deliberately.
+     */
+    @org.springframework.beans.factory.annotation.Value("${trading.multiuser.signal-copy.copy-paper-signals:false}")
+    private boolean copyPaperSignals;
     private final MarketDataService marketDataService;
     private final SmartOrderRouter smartOrderRouter;
     private final Clock clock;
 
-    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    @Autowired(required = false)
     private com.algo.trade.underlying.UnderlyingConfigService underlyingConfigService;
 
     @Autowired(required = false)
@@ -268,19 +282,43 @@ public class ExecutionEngine {
         entriesInFlight.incrementAndGet();
         boolean releaseEntryInFlight = true; // default: release in finally. Set to false for pending limit orders.
         try {
+            // Multi-user: IMMEDIATELY fire orders for all other users IN PARALLEL
+            // This ensures zero delay — all users' orders go out simultaneously
+            if (signalCopyService != null && signalCopyService.isEnabled()) {
+                Long sourceUser = com.algo.trade.multiuser.UserContext.getUserId();
+                signalCopyService.fireForAllUsersAsync(sourceUser, decision, optionPremium, lotSize, strategyConfig);
+            }
+
             String clientOrderId = "ENTRY-" + UUID.randomUUID();
             // SmartOrderRouter decides MARKET vs LIMIT based on liquidity
             SmartOrderRouter.RoutingDecision routing = smartOrderRouter.route(
                     decision.selectedInstrumentKey().orElseThrow(), OrderSide.BUY, optionPremium);
 
-            // OI_MOMENTUM needs instant fills — always use MARKET with market protection
+            // OI_MOMENTUM: use MARKET for SPIKE entries (instant fill needed),
+            // but for non-spike entries use anticipatory discount (catch the dip before the move).
             OrderType entryOrderType = routing.orderType();
             Optional<BigDecimal> entryLimitPrice = routing.limitPrice().or(() -> Optional.of(optionPremium));
             String strategyTag = "strategy-entry";
             if (strategyConfig != null && strategyConfig.getStrategyType() == StrategyType.OI_MOMENTUM) {
-                entryOrderType = OrderType.MARKET;
-                entryLimitPrice = Optional.empty();
-                strategyTag = "oi-momentum-entry";
+                // Check if this is a spike/reversal entry (needs instant fill) or anticipatory (can wait)
+                String signalName = decision.signalType() != null ? decision.signalType().name() : "";
+                String reasonsStr = decision.reasons() != null ? String.join(" ", decision.reasons()) : "";
+                boolean isSpikeEntry = signalName.contains("SPIKE")
+                        || reasonsStr.contains("SPIKE") || reasonsStr.contains("REVERSE");
+                if (isSpikeEntry) {
+                    // Spike/reversal: need instant fill — use MARKET
+                    entryOrderType = OrderType.MARKET;
+                    entryLimitPrice = Optional.empty();
+                    strategyTag = "oi-momentum-spike";
+                } else {
+                    // Non-spike (CASE 0, drift, squeeze, range-fade): operator will shake out first
+                    // Use anticipatory discount to place limit below current price
+                    SmartOrderRouter.RoutingDecision discountRouting = smartOrderRouter.routeWithDiscount(
+                            decision.selectedInstrumentKey().orElseThrow(), OrderSide.BUY, optionPremium);
+                    entryOrderType = discountRouting.orderType();
+                    entryLimitPrice = discountRouting.limitPrice();
+                    strategyTag = "oi-momentum-discount";
+                }
             }
 
             OrderRequest orderRequest = new OrderRequest(clientOrderId, decision.selectedInstrumentKey().orElseThrow(),
@@ -336,6 +374,7 @@ public class ExecutionEngine {
                         order.filledQuantity(), fillPrice, Instant.now(clock), String.join("; ", decision.reasons()));
                 tradeEntity.setStrategyType(resolveStrategyType(decision, strategyConfig));
                 tradeEntity.setProductType("MIS"); // Intraday entry
+                tagOwnership(tradeEntity); // Multi-user: user_id + broker account captured at entry
                 tradeEntity.setAppliedTrailingStopActivationPercent(effectiveConfig.getTrailingStopActivationPercent());
                 tradeEntity.setAppliedTrailingGapPercent(effectiveConfig.getTrailingGapPercent());
                 if (envMetadata != null) {
@@ -349,6 +388,7 @@ public class ExecutionEngine {
                 registerShiftTrapMaeTracking(tradeEntity);
                 registerShiftTrapEntryOi(tradeEntity);
                 tradeRepository.save(tradeEntity);
+                linkOrderToTrade(order.clientOrderId(), tradeId);
                 tradingStateService.recordTradeEntry();
                 log.info("Entry trade opened: tradeId={}, instrument={}, quantity={}, entryPrice={}",
                         tradeId, order.instrumentKey(), order.filledQuantity(), fillPrice);
@@ -419,6 +459,7 @@ public class ExecutionEngine {
                 "PAPER_TRADE [" + decision.signalType().name() + "]: " + String.join("; ", decision.reasons()));
         trade.setStrategyType(resolveStrategyType(decision, strategyConfig));
         trade.setProductType("MIS"); // Paper trades default to MIS
+        tagOwnership(trade); // Multi-user: user_id + broker account captured at entry
         trade.setAppliedTrailingStopActivationPercent(effectiveConfig.getTrailingStopActivationPercent());
         trade.setAppliedTrailingGapPercent(effectiveConfig.getTrailingGapPercent());
         if (entryLiquidityRecorder != null) {
@@ -439,6 +480,17 @@ public class ExecutionEngine {
                 sizing.quantity(), sizing.riskAmount(), sizing.estimatedCost(), syntheticOrder,
                 List.of("Paper trade opened — exit managed by live monitors"), effectiveConfig);
 
+        // Multi-user: PAPER entries do NOT fan out by default — the copy path places
+        // REAL broker orders for other users, so a paper-mode strategy on the primary
+        // would trade real money on secondary accounts. Gate behind explicit opt-in.
+        if (copyPaperSignals && signalCopyService != null && signalCopyService.isEnabled()) {
+            Long sourceUser = com.algo.trade.multiuser.UserContext.getUserId();
+            log.warn("PAPER entry fan-out is ENABLED (copy-paper-signals=true) — firing REAL copies for other users");
+            signalCopyService.fireForAllUsersAsync(sourceUser, decision, optionPremium, lotSize, strategyConfig);
+        } else if (signalCopyService != null && signalCopyService.isEnabled()) {
+            log.info("PAPER entry NOT copied to other users (trading.multiuser.signal-copy.copy-paper-signals=false)");
+        }
+
         return ExecutionResult.accepted(syntheticOrder, List.of("Paper trade opened"), tradeId);
         } finally {
             entriesInFlight.decrementAndGet();
@@ -452,7 +504,7 @@ public class ExecutionEngine {
             return ExecutionResult.rejected(List.of("Close already in progress"));
         }
         try {
-            ExecutionResult result = doCloseTrade(tradeId, lastPrice, reason);
+            ExecutionResult result = runAsTradeOwner(tradeId, () -> doCloseTrade(tradeId, lastPrice, reason));
             if (result.accepted()) {
                 // Keep tradeId in closingInProgress permanently — prevents any subsequent
                 // close attempts from other monitors (scheduled backup, FailSafe, etc.)
@@ -465,6 +517,91 @@ public class ExecutionEngine {
         } catch (Exception e) {
             closingInProgress.remove(tradeId);
             throw e;
+        }
+    }
+
+    /** Optional — present when multi-user wiring is active. Resolves the broker account for tagging/verification. */
+    @Autowired(required = false)
+    private com.algo.trade.auth.UserBrokerConfigRepository userBrokerConfigRepository;
+
+    /** Broker config of the CURRENT UserContext user, if multi-user wiring is active. */
+    private Optional<com.algo.trade.auth.UserBrokerConfig> currentBrokerConfig() {
+        if (userBrokerConfigRepository == null) return Optional.empty();
+        try {
+            return userBrokerConfigRepository.findByUserId(com.algo.trade.multiuser.UserContext.getUserId());
+        } catch (Exception e) {
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * Entry-time ownership capture: user_id + broker_name + broker_client_id
+     * (e.g. ZERODHA / SX0602). The exit flow routes and verifies against these,
+     * so the close always fires on the exact account that opened the position.
+     */
+    private void tagOwnership(TradeEntity trade) {
+        trade.setUserId(com.algo.trade.multiuser.UserContext.getUserId());
+        currentBrokerConfig().ifPresent(c -> {
+            trade.setBrokerName(c.getBrokerName());
+            trade.setBrokerClientId(c.getBrokerClientId());
+        });
+    }
+
+    /**
+     * Exit-time safety check: alert loudly if the owning user's CURRENT broker
+     * account differs from the one the trade was opened on (e.g. API key swapped
+     * mid-day). The exit still proceeds — blocking would leave the position
+     * unmanaged — but operators get a critical alert to intervene.
+     */
+    private void verifyExitAccount(TradeEntity trade) {
+        if (trade.getBrokerClientId() == null || trade.getBrokerClientId().isBlank()) return; // legacy trade
+        String current = currentBrokerConfig()
+                .map(com.algo.trade.auth.UserBrokerConfig::getBrokerClientId).orElse(null);
+        if (current != null && !current.equalsIgnoreCase(trade.getBrokerClientId())) {
+            String msg = String.format(
+                    "Exit account mismatch for trade %s: opened on %s but user %s now maps to %s — verify position manually!",
+                    trade.getTradeId(), trade.getBrokerClientId(), trade.getUserId(), current);
+            log.error("[ExitVerify] {}", msg);
+            if (errorEventService != null) errorEventService.critical("ExecutionEngine", msg);
+            telegramAlertService.systemAlert("🚨 " + msg);
+        }
+    }
+
+    /**
+     * Multi-user exit routing: exit monitors (candle-close listener, scheduled backup,
+     * failsafe squareoff, watchdog, shutdown handler) run on scheduler/event threads
+     * where UserContext is NOT set. Without this, the broker token resolution falls
+     * back to the primary/file token and a non-primary user's exit order would be
+     * placed on the WRONG Zerodha account. Always execute the close under the trade
+     * owner's context (entries tag trades with user_id).
+     */
+    private ExecutionResult runAsTradeOwner(String tradeId, java.util.function.Supplier<ExecutionResult> action) {
+        Long ownerId = tradeRepository.findById(tradeId)
+                .map(TradeEntity::getUserId)
+                .orElse(null);
+        if (ownerId == null) {
+            return action.get(); // legacy/pre-multiuser trade — current behavior unchanged
+        }
+        final ExecutionResult[] result = new ExecutionResult[1];
+        com.algo.trade.multiuser.UserContext.runAs(ownerId, () -> result[0] = action.get());
+        return result[0];
+    }
+
+    /**
+     * EXIT copy: when the PRIMARY's trade closes, mirror the close to other users'
+     * open copies of the same instrument+strategy. Strategy loops (e.g. OIMomentum)
+     * only manage the primary's activeTradeId — without this, copied positions stay
+     * open until the 15:20 FailSafe. Only fans out for primary/default-owned closes,
+     * so a copied close never cascades again.
+     */
+    private void copyExitToOtherUsers(TradeEntity trade, BigDecimal price, String reason) {
+        if (signalCopyService == null || !signalCopyService.isEnabled()) return;
+        Long owner = trade.getUserId();
+        if (owner != null && !owner.equals(com.algo.trade.multiuser.UserContext.DEFAULT_USER_ID)) return;
+        try {
+            signalCopyService.fireExitForAllUsersAsync(trade, price, reason);
+        } catch (Exception e) {
+            log.warn("Exit copy fan-out failed for {}: {}", trade.getTradeId(), e.getMessage());
         }
     }
 
@@ -493,6 +630,7 @@ public class ExecutionEngine {
                     "📝 Paper Trade Closed: %s | Entry ₹%.2f → Exit ₹%.2f | P&L ₹%.2f | %s",
                     trade.getInstrumentKey(), trade.getEntryPrice().doubleValue(),
                     lastPrice.doubleValue(), realizedPnl.doubleValue(), reason));
+            copyExitToOtherUsers(trade, lastPrice, reason);
             return new ExecutionResult(true, Optional.empty(), List.of("Paper trade closed: P&L=" + realizedPnl));
         }
 
@@ -515,6 +653,7 @@ public class ExecutionEngine {
                 : new OrderRequest("EXIT-MKT-" + UUID.randomUUID(), trade.getInstrumentKey(),
                         exitSide, OrderType.MARKET, exitProductType, trade.getQuantity(), Optional.empty(),
                         "exit-mkt");
+        verifyExitAccount(trade); // assert we're closing on the same broker account the entry was placed on
         log.info("Placing exit order: tradeId={}, side={}, clientOrderId={}, instrument={}, quantity={}, limitPrice={}",
                 tradeId, exitSide, orderRequest.clientOrderId(), orderRequest.instrumentKey(), orderRequest.quantity(), exitLimitPrice);
         OrderResponse order;
@@ -548,7 +687,7 @@ public class ExecutionEngine {
                 return ExecutionResult.rejected(List.of("Exit order failed after retry: " + retryEx.getMessage()));
             }
         }
-        persistOrder(order);
+        persistOrder(order, tradeId);
         log.info("Exit order response: clientOrderId={}, brokerOrderId={}, status={}, filledQuantity={}, averageFillPrice={}, rejectionReason={}",
                 order.clientOrderId(), order.brokerOrderId().orElse(""), order.status(), order.filledQuantity(),
                 order.averageFillPrice().orElse(null), order.rejectionReason().orElse(""));
@@ -583,7 +722,7 @@ public class ExecutionEngine {
                                 exitSide, OrderType.MARKET, exitProductType, trade.getQuantity(),
                                 Optional.empty(), "exit-margin-fallback");
                         OrderResponse marketOrder = brokerClient.placeOrder(marketFallback);
-                        persistOrder(marketOrder);
+                        persistOrder(marketOrder, tradeId);
                         if (marketOrder.status() == OrderStatus.COMPLETE || marketOrder.status() == OrderStatus.OPEN
                                 || marketOrder.status() == OrderStatus.NEW) {
                             log.info("Exit MARKET fallback accepted: tradeId={}, status={}", tradeId, marketOrder.status());
@@ -594,6 +733,7 @@ public class ExecutionEngine {
                                         : mktExitPrice.subtract(trade.getEntryPrice()).multiply(BigDecimal.valueOf(trade.getQuantity()));
                                 trade.close(mktExitPrice, Instant.now(clock), mktPnl, reason);
                                 tradeRepository.save(trade);
+                                copyExitToOtherUsers(trade, mktExitPrice, reason);
                                 return ExecutionResult.accepted(marketOrder, List.of("Exit filled via MARKET fallback"));
                             }
                             return ExecutionResult.accepted(marketOrder, List.of("Exit MARKET pending — watchdog tracking"));
@@ -622,11 +762,16 @@ public class ExecutionEngine {
         tradingStateService.recordTradeOutcome(realizedPnl.signum() > 0);
         telegramAlertService.tradeClosed(tradeId, trade.getInstrumentKey(), trade.getQuantity(),
                 trade.getEntryPrice(), exitPrice, realizedPnl, reason, order);
+        copyExitToOtherUsers(trade, exitPrice, reason);
         return ExecutionResult.accepted(order, List.of("Exit order filled and trade journal updated"));
     }
 
     @Transactional(timeout = 30)
     public ExecutionResult closePartialTrade(String tradeId, int partialQuantity, BigDecimal lastPrice, String layerReason) {
+        return runAsTradeOwner(tradeId, () -> doClosePartialTrade(tradeId, partialQuantity, lastPrice, layerReason));
+    }
+
+    private ExecutionResult doClosePartialTrade(String tradeId, int partialQuantity, BigDecimal lastPrice, String layerReason) {
         log.info("Partial close requested: tradeId={}, partialQuantity={}, lastPrice={}, layer={}", tradeId, partialQuantity, lastPrice, layerReason);
         TradeEntity trade = tradeRepository.findById(tradeId)
                 .orElseThrow(() -> new IllegalArgumentException("Unknown tradeId: " + tradeId));
@@ -660,6 +805,7 @@ public class ExecutionEngine {
         OrderRequest orderRequest = new OrderRequest("PARTIAL-" + UUID.randomUUID(), trade.getInstrumentKey(),
                 OrderSide.SELL, OrderType.LIMIT, partialProductType, partialQuantity, Optional.of(partialExitPrice),
                 "partial-exit");
+        verifyExitAccount(trade); // assert we're closing on the same broker account the entry was placed on
         OrderResponse order;
         try {
             order = brokerClient.placeOrder(orderRequest);
@@ -677,7 +823,7 @@ public class ExecutionEngine {
                 return ExecutionResult.rejected(List.of("Partial exit failed after retry: " + retryEx.getMessage()));
             }
         }
-        persistOrder(order);
+        persistOrder(order, tradeId);
         if (order.status() != OrderStatus.COMPLETE) {
             log.warn("Partial exit order not filled: tradeId={}, status={}", tradeId, order.status());
             return ExecutionResult.rejected(List.of("Partial exit order not filled: " + order.status()));
@@ -721,6 +867,10 @@ public class ExecutionEngine {
                 String.join("; ", decision.reasons()));
         entity.setStrategyType(resolveStrategyType(decision, explicitConfig));
         entity.setPaperTrade(paperTrade);
+        // Multi-user: tag the signal with the current user's ID for per-user filtering
+        if (com.algo.trade.multiuser.UserContext.isSet()) {
+            entity.setUserId(com.algo.trade.multiuser.UserContext.getUserId());
+        }
         return decisionRepository.save(entity);
     }
 
@@ -733,11 +883,33 @@ public class ExecutionEngine {
     }
 
     private void persistOrder(OrderResponse order) {
+        persistOrder(order, null);
+    }
+
+    /** Back-links the persisted entry order to the trade it materialized into. */
+    private void linkOrderToTrade(String clientOrderId, String tradeId) {
+        try {
+            orderRepository.findById(clientOrderId).ifPresent(o -> {
+                o.setTradeId(tradeId);
+                orderRepository.save(o);
+            });
+        } catch (Exception e) {
+            log.debug("Order→trade back-link failed for {}: {}", clientOrderId, e.getMessage());
+        }
+    }
+
+    private void persistOrder(OrderResponse order, String tradeId) {
         OrderEntity entity = new OrderEntity(order.clientOrderId(), order.brokerOrderId().orElse(null),
                 order.instrumentKey(), order.side().name(), order.status(), order.requestedQuantity(),
                 order.filledQuantity(), order.averageFillPrice().orElse(null), order.rejectionReason().orElse(null),
                 order.updatedAt());
         entity.setOrderPlacedAt(Instant.now(clock));
+        entity.setUserId(com.algo.trade.multiuser.UserContext.getUserId());
+        entity.setTradeId(tradeId);
+        currentBrokerConfig().ifPresent(c -> {
+            entity.setBrokerName(c.getBrokerName());
+            entity.setBrokerClientId(c.getBrokerClientId());
+        });
         orderRepository.save(entity);
     }
 
@@ -749,6 +921,11 @@ public class ExecutionEngine {
         entity.setSignalTimestamp(signalTimestamp);
         entity.setOrderPlacedAt(Instant.now(clock));
         entity.setStrategyType(strategyType);
+        entity.setUserId(com.algo.trade.multiuser.UserContext.getUserId());
+        currentBrokerConfig().ifPresent(c -> {
+            entity.setBrokerName(c.getBrokerName());
+            entity.setBrokerClientId(c.getBrokerClientId());
+        });
         if (order.averageFillPrice().isPresent() && limitPrice != null) {
             entity.setSlippage(order.averageFillPrice().get().subtract(limitPrice).abs());
         }
@@ -810,20 +987,26 @@ public class ExecutionEngine {
                 TradeStatus.OPEN, filledQty, fillPrice, entryTime, entryReason);
         // Set product type — default to MIS for watchdog-recovered orders (they were placed by our system as MIS)
         trade.setProductType("MIS");
+        tagOwnership(trade); // Multi-user: user_id + broker account captured at entry
         // Use strategy type stored on the order entity at placement time
         if (orderEntity.getStrategyType() != null && !orderEntity.getStrategyType().isBlank()) {
             trade.setStrategyType(orderEntity.getStrategyType());
             // Set trailing stop params from the strategy config so exit monitors use consistent values
             try {
                 StrategyConfig entryConfig = strategyConfigService.getConfig(
-                        com.algo.trade.strategy.StrategyType.valueOf(orderEntity.getStrategyType()), underlying);
-                trade.setAppliedTrailingStopActivationPercent(entryConfig.getTrailingStopActivationPercent());
-                trade.setAppliedTrailingGapPercent(entryConfig.getTrailingGapPercent());
-                // Fix #4 (2026-06-02): Freeze SL/target at entry-time config so
-                // later UI/config changes don't retroactively alter audit trail.
-                // Also captures bid/ask/volume/OI baseline for liquidity exits.
-                if (entryLiquidityRecorder != null) {
-                    entryLiquidityRecorder.recordTradeEntry(trade, entryConfig);
+                        StrategyType.valueOf(orderEntity.getStrategyType()), underlying);
+                if (entryConfig != null) {
+                    trade.setAppliedTrailingStopActivationPercent(entryConfig.getTrailingStopActivationPercent());
+                    trade.setAppliedTrailingGapPercent(entryConfig.getTrailingGapPercent());
+                    // Fix #4 (2026-06-02): Freeze SL/target at entry-time config so
+                    // later UI/config changes don't retroactively alter audit trail.
+                    // Also captures bid/ask/volume/OI baseline for liquidity exits.
+                    if (entryLiquidityRecorder != null) {
+                        entryLiquidityRecorder.recordTradeEntry(trade, entryConfig);
+                    }
+                } else {
+                    log.warn("No strategy config for {}/{} — trailing params not set on watchdog trade {}",
+                            orderEntity.getStrategyType(), underlying, tradeId);
                 }
             } catch (IllegalArgumentException ignored) {
                 log.debug("Unknown strategy type on order {}: {} — trailing params not set",
@@ -917,7 +1100,7 @@ public class ExecutionEngine {
     private void scheduleEntryInFlightRelease(int minutes) {
         Thread.ofVirtual().name("entry-gate-safety-release").start(() -> {
             try {
-                Thread.sleep(java.time.Duration.ofMinutes(minutes));
+                Thread.sleep(Duration.ofMinutes(minutes));
                 int prev = entriesInFlight.getAndUpdate(v -> Math.max(0, v - 1));
                 if (prev > 0) {
                     log.warn("entriesInFlight safety release after {}min: {} → {} — watchdog may have missed the order",
@@ -942,7 +1125,7 @@ public class ExecutionEngine {
         // Count open trades + ALL pending orders (OPEN/NEW in DB) + in-flight orders not yet in DB.
         // This prevents multiple entries within a single scan cycle from exceeding maxOpenTrades.
         int pendingFromDb = orderRepository.findByStatusIn(
-                List.of(com.algo.trade.domain.OrderStatus.OPEN, com.algo.trade.domain.OrderStatus.NEW)).size();
+                List.of(OrderStatus.OPEN, OrderStatus.NEW)).size();
         int effectiveInFlight = Math.max(0, entriesInFlight.get() - pendingFromDb);
 
         // Total positions = open trades + pending orders + in-flight (not yet in DB)
@@ -1004,7 +1187,7 @@ public class ExecutionEngine {
                 .count();
         // Also count pending limit orders as "open" — they'll become trades when filled
         int pendingOrders = orderRepository.findByStatusIn(
-                List.of(com.algo.trade.domain.OrderStatus.OPEN, com.algo.trade.domain.OrderStatus.NEW)).size();
+                List.of(OrderStatus.OPEN, OrderStatus.NEW)).size();
         return openTrades + pendingOrders;
     }
 
@@ -1056,7 +1239,7 @@ public class ExecutionEngine {
             // SHORT_POSITION is set by PositionSynchronizer for broker short positions
             if ("SHORT_POSITION".equals(trade.getStrategyType())) return true;
             try {
-                return com.algo.trade.strategy.StrategyType.valueOf(trade.getStrategyType()).isSellingStrategy();
+                return StrategyType.valueOf(trade.getStrategyType()).isSellingStrategy();
             } catch (IllegalArgumentException ignored) {}
         }
         // Fallback: check entry reason for SELL/SHORT markers
@@ -1079,10 +1262,10 @@ public class ExecutionEngine {
 
     /** Extract strategy type name from a StrategyDecision's reasons list. */
     private String extractStrategyType(StrategyDecision decision) {
-        com.algo.trade.strategy.StrategyType[] typesByLength =
-                com.algo.trade.strategy.StrategyType.values();
+        StrategyType[] typesByLength =
+                StrategyType.values();
         typesByLength = Arrays.copyOf(typesByLength, typesByLength.length);
-        Arrays.sort(typesByLength, Comparator.comparingInt((com.algo.trade.strategy.StrategyType t) -> t.name().length())
+        Arrays.sort(typesByLength, Comparator.comparingInt((StrategyType t) -> t.name().length())
                 .reversed());
 
         for (String reason : decision.reasons()) {
@@ -1093,7 +1276,7 @@ public class ExecutionEngine {
             if (reason.toLowerCase().contains("breakout confirmation")) continue;
 
             String upper = reason.toUpperCase().replace(" ", "_").replace("-", "_").replace("&", "AND");
-            for (com.algo.trade.strategy.StrategyType type : typesByLength) {
+            for (StrategyType type : typesByLength) {
                 if (upper.contains(type.name())) return type.name();
             }
             if (upper.contains("ITM") && upper.contains("CONVICTION")) return "ITM_CONVICTION";
@@ -1243,7 +1426,7 @@ public class ExecutionEngine {
 
         // 5. Per-underlying max entry premium cap — applies to ALL option buying strategies
         if (underlyingConfigService != null && optionPremium != null && optionPremium.signum() > 0) {
-            java.math.BigDecimal maxPremium = underlyingConfigService.getMaxEntryPremium(decision.underlying());
+            BigDecimal maxPremium = underlyingConfigService.getMaxEntryPremium(decision.underlying());
             if (maxPremium.signum() > 0 && optionPremium.compareTo(maxPremium) > 0) {
                 rejections.add("Premium ₹" + optionPremium.setScale(0, java.math.RoundingMode.HALF_UP)
                         + " exceeds max ₹" + maxPremium.setScale(0, java.math.RoundingMode.HALF_UP)
@@ -1335,7 +1518,7 @@ public class ExecutionEngine {
     private BigDecimal applyExitProtection(BigDecimal lastPrice, OrderSide side) {
         if (lastPrice == null || lastPrice.signum() <= 0) return lastPrice;
         double protectionPct = 1.0;
-        BigDecimal protection = lastPrice.multiply(BigDecimal.valueOf(protectionPct / 100), java.math.MathContext.DECIMAL64);
+        BigDecimal protection = lastPrice.multiply(BigDecimal.valueOf(protectionPct / 100), MathContext.DECIMAL64);
         BigDecimal raw = side == OrderSide.BUY
                 ? lastPrice.add(protection)
                 : lastPrice.subtract(protection).max(BigDecimal.ONE);

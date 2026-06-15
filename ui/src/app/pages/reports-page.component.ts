@@ -107,6 +107,19 @@ import { DailyBundleSummary } from '../core/models';
             <mat-icon>archive</mat-icon> Download all
           </button>
         </div>
+
+        <div class="panel">
+          <div class="panel-hdr">
+            <mat-icon class="hdr-icon">block</mat-icon>
+            <div>
+              <h2>Rejected signals</h2>
+              <p>All NO_TRADE decisions with rejection reasons for today (from DB).</p>
+            </div>
+          </div>
+          <button mat-flat-button color="primary" (click)="downloadToday('rejected')" [disabled]="downloading">
+            <mat-icon>file_download</mat-icon> Download CSV
+          </button>
+        </div>
       </div>
 
       @if (downloadError) {
@@ -467,19 +480,21 @@ export class ReportsPageComponent implements OnInit {
     });
   }
 
-  downloadToday(kind: 'signals' | 'logs' | 'chain' | 'all'): void {
+  downloadToday(kind: 'signals' | 'logs' | 'chain' | 'all' | 'rejected'): void {
     const date = this.bundleSummary?.date ?? 'today';
     const filenameByKind: Record<typeof kind, string> = {
       signals: `entry-signals-${date}.zip`,
       logs: `application-logs-${date}.zip`,
       chain: `chain-snapshots-${date}.zip`,
-      all: `analysis-pack-${date}.zip`
+      all: `analysis-pack-${date}.zip`,
+      rejected: `rejected-signals-${date}.csv`
     };
     const requestByKind = {
       signals: () => this.api.downloadTodaySignalsZip(),
       logs: () => this.api.downloadTodayLogsZip(),
       chain: () => this.api.downloadTodayChainSnapshotsZip(),
-      all: () => this.api.downloadTodayAnalysisPackZip()
+      all: () => this.api.downloadTodayAnalysisPackZip(),
+      rejected: () => this.api.downloadTodayRejectedSignalsCsv()
     } as const;
 
     this.downloading = true;

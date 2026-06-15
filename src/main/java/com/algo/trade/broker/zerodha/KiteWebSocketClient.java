@@ -79,6 +79,9 @@ public class KiteWebSocketClient {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.algo.trade.monitoring.ErrorEventService errorEventService;
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.strategy.ExpiryBehaviorTuner expiryBehaviorTuner;
+
     /**
      * Bug #4 fix (29 May 2026): NOT final anymore. When Kite poisons a session
      * (rapid reconnects → backend marks the session as suspicious), fresh TCP
@@ -132,8 +135,8 @@ public class KiteWebSocketClient {
     private volatile int sustainedTicksSinceReconnect = 0;
     private static final int SUSTAINED_TICKS_TO_RESET = 100;
     private volatile ScheduledExecutorService heartbeatExecutor;
-    private final java.util.concurrent.ExecutorService alertExecutor =
-            java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+    private final ExecutorService alertExecutor =
+            Executors.newSingleThreadExecutor(r -> {
                 Thread t = new Thread(r, "ws-telegram-alert");
                 t.setDaemon(true);
                 return t;
@@ -558,6 +561,15 @@ public class KiteWebSocketClient {
 
     // ── Binary tick parser ────────────────────────────────────────────────────
 
+    /** True if the token is an index spot token (indices use a different packet layout). */
+    private static boolean isIndexToken(long token) {
+        if (token == INDIA_VIX_TOKEN) return true;
+        for (IndexType idx : IndexType.values()) {
+            if (token == idx.spotToken()) return true;
+        }
+        return false;
+    }
+
     private void parseBinaryTicks(byte[] data) {
         if (data.length < 2) return;
         lastTickTime = Instant.now();
@@ -604,7 +616,14 @@ public class KiteWebSocketClient {
             double bestBid = 0, bestAsk = 0;
             long bidQty = 0, askQty = 0;
 
-            if (len >= 44) {
+            if ((len == 28 || len == 32) && isIndexToken(token)) {
+                // Index quote/full packet (Kite layout differs from equity):
+                // token, ltp, high, low, open, close, change[, exchange_ts]
+                high  = pb.getInt() / 100.0;
+                low   = pb.getInt() / 100.0;
+                open  = pb.getInt() / 100.0;
+                close = pb.getInt() / 100.0;
+            } else if (len >= 44) {
                 pb.getInt(); // last_qty
                 pb.getInt(); // avg_price
                 volume = pb.getInt() & 0xFFFFFFFFL;
@@ -660,6 +679,10 @@ public class KiteWebSocketClient {
                     // Feed circuit breaker: open price from packet, current = ltp
                     if (open > 0) {
                         marketGuard.updateIndexPrice(open, ltp);
+                    }
+                    // Feed expiry behavior tuner (crash halt / reversal / momentum / pinning)
+                    if (expiryBehaviorTuner != null && open > 0 && low > 0) {
+                        expiryBehaviorTuner.updatePrice(idx, open, ltp, low);
                     }
                     // Feed tick-based VPVR — volume from Kite is cumulative daily, use as-is
                     // (TickVolumeProfileService handles delta internally via bucket accumulation)

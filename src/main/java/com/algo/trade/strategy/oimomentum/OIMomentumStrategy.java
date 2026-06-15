@@ -49,6 +49,7 @@ public class OIMomentumStrategy {
 
     private final OIMomentumConfig config;
     private final TickMomentumDetector momentumDetector;
+    private final PremiumVelocityTracker premiumVelocityTracker;
     private final LiveInstrumentCache liveInstrumentCache;
     private final InstrumentCache instrumentCache;
     private final MarketDataService marketDataService;
@@ -118,8 +119,8 @@ public class OIMomentumStrategy {
         /** Trip-once flag — once true, no further entries this trading day. */
         volatile boolean haltedForDay = false;
         /** Per-strike last-loss timestamp for anti-pyramid check. */
-        final java.util.concurrent.ConcurrentHashMap<Integer, Instant> lastLossExitByStrike =
-                new java.util.concurrent.ConcurrentHashMap<>();
+        final ConcurrentHashMap<Integer, Instant> lastLossExitByStrike =
+                new ConcurrentHashMap<>();
     }
 
     /** P1 #8: Cached config per underlying to avoid DB hit every tick. */
@@ -216,6 +217,43 @@ public class OIMomentumStrategy {
     private OperatorSqueezeDetector operatorSqueezeDetector;
 
     /**
+     * OPERATOR INTENT RADAR (5 Jun 2026) — anticipatory layer that detects institutional
+     * positioning BEFORE price breakouts. Adds [+0..25] bonus to bias scoring based on:
+     * OI magnet detection, hourly cycle confirmation, cross-index radar, max pain shifts,
+     * and reversal zone flagging.
+     */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private OperatorIntentRadar operatorIntentRadar;
+
+    /**
+     * PCR Momentum Reversal — detects put-writer unwinding from high PCR peaks.
+     * Provides bias bonus for bearish entries when PCR is declining.
+     */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.strategy.PcrMomentumReversalStrategy pcrMomentumReversalStrategy;
+
+    /**
+     * Option-Leads-Index Detector — detects when option premiums break out
+     * before the index moves, providing early directional signals.
+     */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.strategy.OptionLeadsIndexDetector optionLeadsIndexDetector;
+
+    /**
+     * Universal Call Orchestrator — centralized signal aggregation.
+     * Receives signals from all strategies for lot scaling and conflict resolution.
+     */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.strategy.UniversalCallOrchestrator universalCallOrchestrator;
+
+    /**
+     * Expiry Operator Trap Detector — detects post-2PM manipulation patterns.
+     * Provides max pain direction bias and trap warnings on expiry days.
+     */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.strategy.ExpiryOperatorTrapDetector expiryTrapDetector;
+
+    /**
      * T5 — Capture / entry-path heartbeat (2 Jun 2026 — addresses 1 Jun silent
      * 13:51 stop). Optional; when wired, every detectEntry tick records a
      * liveness ping so the scheduled checker can alert on staleness.
@@ -231,6 +269,14 @@ public class OIMomentumStrategy {
      */
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.algo.trade.config.GlobalConfigService globalConfigService;
+
+    /**
+     * Capital-based lot ceiling — caps lots based on available margin, open trades,
+     * and volatility regime. Integrated from algo-trading friend's CapitalAllocator.
+     * When null, only conviction-based sizing applies (no capital ceiling).
+     */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.risk.CapitalAllocator capitalAllocator;
 
     /**
      * Phase 6: unified tuning pipeline is now the sole capture path. When the
@@ -260,8 +306,8 @@ public class OIMomentumStrategy {
             evaluationAggregator;
 
     /** Latched once we log the dual-write wiring status on the first reject. */
-    private final java.util.concurrent.atomic.AtomicBoolean firstRejectLogged =
-            new java.util.concurrent.atomic.AtomicBoolean(false);
+    private final AtomicBoolean firstRejectLogged =
+            new AtomicBoolean(false);
 
     /**
      * CASE 4 watch-list state (P1-3): when CASE 4 (OI conflicts momentum) fires, we
@@ -273,12 +319,13 @@ public class OIMomentumStrategy {
         final Instant atTime;
         Case4WatchEntry(int oiDir, Instant at) { this.oiDirection = oiDir; this.atTime = at; }
     }
-    private final java.util.concurrent.ConcurrentHashMap<IndexType, Case4WatchEntry> case4Watch =
-            new java.util.concurrent.ConcurrentHashMap<>();
-    private static final java.time.Duration CASE4_WATCH_TTL = java.time.Duration.ofMinutes(20);
+    private final ConcurrentHashMap<IndexType, Case4WatchEntry> case4Watch =
+            new ConcurrentHashMap<>();
+    private static final Duration CASE4_WATCH_TTL = Duration.ofMinutes(20);
 
     public OIMomentumStrategy(OIMomentumConfig config,
                                TickMomentumDetector momentumDetector,
+                               PremiumVelocityTracker premiumVelocityTracker,
                                LiveInstrumentCache liveInstrumentCache,
                                InstrumentCache instrumentCache,
                                MarketDataService marketDataService,
@@ -289,6 +336,7 @@ public class OIMomentumStrategy {
                                ExpiryCalendar expiryCalendar) {
         this.config = config;
         this.momentumDetector = momentumDetector;
+        this.premiumVelocityTracker = premiumVelocityTracker;
         this.liveInstrumentCache = liveInstrumentCache;
         this.instrumentCache = instrumentCache;
         this.marketDataService = marketDataService;
@@ -298,14 +346,14 @@ public class OIMomentumStrategy {
         this.marketGuard = marketGuard;
         this.expiryCalendar = expiryCalendar;
         int windowSec = Math.max(1, config.getRejectEpisodeWindowSeconds());
-        java.time.Duration win = java.time.Duration.ofSeconds(windowSec);
+        Duration win = Duration.ofSeconds(windowSec);
         this.evaluationAggregator = new com.algo.trade.tuning.infra.EpisodeAggregator<>(win, win);
     }
 
     /** Hot-update the reject-episode max-age window from the runtime config service. */
     public void updateRejectEpisodeWindow(int newWindowSeconds) {
         if (newWindowSeconds < 1) return;
-        evaluationAggregator.setMaxAge(java.time.Duration.ofSeconds(newWindowSeconds));
+        evaluationAggregator.setMaxAge(Duration.ofSeconds(newWindowSeconds));
         log.info("[OIMomentum] reject episode max-age updated to {}s", newWindowSeconds);
     }
 
@@ -451,6 +499,16 @@ public class OIMomentumStrategy {
             if (!isMarketHours()) return;
             if (tradingStateService.killSwitchEnabled()) return;
             if (!tradingStateService.running()) return;
+
+            // Multi-user: set default user context for the strategy loop.
+            // All analysis runs once (shared market data). At execution time,
+            // the UserContext determines which user's trade/order gets tagged.
+            // For multi-user execution (sending same signal to multiple users),
+            // the MultiUserStrategyLoop handles per-user dispatching separately.
+            if (!com.algo.trade.multiuser.UserContext.isSet()) {
+                com.algo.trade.multiuser.UserContext.setUserId(
+                        com.algo.trade.multiuser.UserContext.DEFAULT_USER_ID);
+            }
 
             // P1 #10: Real pause — strategy stops until pausedUntil passes
             if (pausedUntil != null) {
@@ -742,11 +800,7 @@ public class OIMomentumStrategy {
         }
 
         // ── MarketGuard safety: VIX, circuit breaker, event day ──
-        // 4 Jun 2026: pass allowEventDay=true so intraday MIS long-buy entries
-        // are not blocked on pre-event days (we square off by 15:10, so we
-        // can't carry exposure into the next-day RBI/event announcement).
-        // Short premium block remains active separately via shortPremiumBlockReason.
-        String mgBlock = marketGuard.longPremiumBlockReason(true);
+        String mgBlock = marketGuard.longPremiumBlockReason();
         if (mgBlock != null) {
             recordThrottleReject(indexType, state,
                     MarketGuard.normalizeLongPremiumRejectToken("market_guard", mgBlock));
@@ -859,6 +913,10 @@ public class OIMomentumStrategy {
         //     12:30 tape — every gate would have passed at 12:35 close). ──
         if (operatorSqueezeDetector != null) {
             operatorSqueezeDetector.tick(indexType);
+        }
+        // OPERATOR INTENT RADAR (5 Jun 2026) — update magnet tracking + reversal detection
+        if (operatorIntentRadar != null) {
+            operatorIntentRadar.tick(indexType);
         }
         OperatorSqueezeDetector.Decision squeezeDecision = (operatorSqueezeDetector != null)
                 ? operatorSqueezeDetector.evaluate(indexType, config)
@@ -1029,6 +1087,34 @@ public class OIMomentumStrategy {
             momentum = momentumDetector.detectInWindow(indexType, config.getShortTimeframeThresholdPct(), 5);
         }
 
+        // ── Premium Velocity: gamma-regime alternate momentum path ──
+        // On expiry days, spot may move 0.2% while ATM premiums swing 15-20%.
+        // Sample premiums every tick and check if we're in a gamma regime.
+        double spot0 = liveInstrumentCache.getFuturesPrice(indexType);
+        int atm0 = spot0 > 0 ? indexType.roundToATM(spot0) : 0;
+        if (atm0 > 0) {
+            premiumVelocityTracker.sample(indexType, atm0, spot0);
+        }
+
+        if (!momentum.isPresent()) {
+            // No spot momentum — check premium velocity as alternate signal.
+            // This catches gamma-driven moves on expiry where spot barely moves
+            // but ATM options swing 5-20% in under a minute.
+            PremiumVelocityTracker.PremiumVelocity premVel = premiumVelocityTracker.getVelocity(indexType);
+            if (premVel.hasSignal() && premVel.gammaRegime()) {
+                // Synthesize a momentum signal from premium velocity direction
+                momentum = new TickMomentumDetector.MomentumSignal(
+                        premVel.direction(), "PREMIUM_VELOCITY", premVel.maxPremiumVelocityPct(),
+                        spot0);
+                log.info("[OIMomentum][{}] GAMMA_REGIME: premium velocity {}% (spot only {}%) — " +
+                                "using premium direction as momentum signal (amplification={}x)",
+                        indexType,
+                        String.format("%.1f", premVel.maxPremiumVelocityPct()),
+                        String.format("%.3f", premVel.spotVelocityPct()),
+                        String.format("%.1f", premVel.amplification()));
+            }
+        }
+
         if (!momentum.isPresent()) {
             // Calm-market diagnostic — record "no momentum on any timeframe" so the
             // tuning report can distinguish "strategy was running but markets flat"
@@ -1135,7 +1221,14 @@ public class OIMomentumStrategy {
                 if (momentum.direction() == state.lastConfirmedDir) {
                     state.confirmationCount++;
                 } else {
-                    // Direction changed or first signal — reset streak
+                    // Direction changed or first signal — reset streak.
+                    // Count the discarded streak as rejected (those momentum ticks were
+                    // never resolved to entered/rejected, breaking the counter invariant).
+                    if (state.confirmationCount > 0 && state.lastConfirmedDir != 0) {
+                        rejectedCount.addAndGet(state.confirmationCount);
+                        log.debug("[OIMomentum][{}] Confirmation streak discarded: dir={} ticks={} (direction flip)",
+                                indexType, state.lastConfirmedDir, state.confirmationCount);
+                    }
                     state.confirmationCount = 1;
                     state.lastConfirmedDir = momentum.direction();
                 }
@@ -1499,6 +1592,7 @@ public class OIMomentumStrategy {
 
     private void recordGateReject(IndexType indexType, IndexState state, String reason,
                                   OiMomentumEntryDiagnostics diagnostics) {
+        rejectedCount.incrementAndGet();
         state.lastRejectReason = reason;
         state.lastRejectSampleTime = recordReject(indexType, state, reason, diagnostics);
     }
@@ -1841,9 +1935,9 @@ public class OIMomentumStrategy {
             //   - clear lastEntryDecisionKey and lastEntryDiagnostics so the
             //     next entry's tune-CSV row gets fresh fields
             if (trade != null) {
-                java.math.BigDecimal entryPx = trade.getEntryPrice();
-                java.math.BigDecimal exitPx = trade.getExitPrice();
-                java.math.BigDecimal pnl = trade.getRealizedPnl();
+                BigDecimal entryPx = trade.getEntryPrice();
+                BigDecimal exitPx = trade.getExitPrice();
+                BigDecimal pnl = trade.getRealizedPnl();
                 String exitReason = trade.getExitReason();
                 log.warn("[OIMomentum][{}] activeTradeId={} closed externally (reason={}, exit={}, pnl={}) — auto-healing state",
                         indexType, trade.getTradeId(), exitReason, exitPx, pnl);
@@ -2092,8 +2186,16 @@ public class OIMomentumStrategy {
 
     private void enter(IndexType indexType, IndexState state, int direction, String reason, double spot,
                        OiMomentumEntryDiagnostics diagnostics) {
-        if (state.activeTradeId != null) return;
-        if (state.pendingEntryInstrumentKey != null) return;
+        if (state.activeTradeId != null) {
+            rejectedCount.incrementAndGet();
+            state.lastRejectReason = "active_trade_exists";
+            return;
+        }
+        if (state.pendingEntryInstrumentKey != null) {
+            rejectedCount.incrementAndGet();
+            state.lastRejectReason = "pending_entry_exists";
+            return;
+        }
         enterWithGates(indexType, state, direction, reason, spot, diagnostics);
     }
 
@@ -2121,10 +2223,7 @@ public class OIMomentumStrategy {
             return;
         }
         // P2 #19: Allow event spikes to bypass MarketGuard
-        // 4 Jun 2026: pass allowEventDay=true (intraday MIS — square off by 15:10
-        // so we don't carry into the next-day event). Short premium remains
-        // separately blocked via shortPremiumBlockReason where applicable.
-        String mgBlock = marketGuard.longPremiumBlockReason(true);
+        String mgBlock = marketGuard.longPremiumBlockReason();
         if (!reason.startsWith("SPIKE:") && mgBlock != null) {
             recordGateReject(indexType, state,
                     MarketGuard.normalizeLongPremiumRejectToken("market_guard_entry", mgBlock), diagnostics);
@@ -2282,6 +2381,21 @@ public class OIMomentumStrategy {
         // This guarantees the broker always sees a quantity that is an exact
         // multiple of the contract lot size (a hard requirement at Zerodha / Upstox).
         int legacyLotCount = computeLegacyLotCount(reason);
+
+        // CapitalAllocator ceiling: if wired, cap lots based on available capital + vol regime.
+        // This ensures we never exceed capital limits regardless of conviction score.
+        if (capitalAllocator != null && premium.doubleValue() > 0) {
+            int openTrades = (int) indexStates.values().stream()
+                    .filter(s -> s.activeTradeId != null).count();
+            int capitalCap = capitalAllocator.getMaxLotsForTrade(
+                    indexType, premium, openTrades);
+            if (legacyLotCount > capitalCap) {
+                log.debug("[OIMomentum][{}] CapitalAllocator cap applied: {} → {} lots (premium=₹{})",
+                        indexType, legacyLotCount, capitalCap, premium);
+                legacyLotCount = capitalCap;
+            }
+        }
+
         int lotSize = (v3OverrideLots > 0 && config.isV3Enabled() && !config.isV3ShadowMode())
                 ? v3OverrideLots * indexType.lotSize()
                 : legacyLotCount * indexType.lotSize();
@@ -2322,6 +2436,14 @@ public class OIMomentumStrategy {
             var result = executionEngine.executePaperEntry(decision, premium, lotSize, oiConfig);
             state.activeTradeId = result.tradeId().orElse(null);
         } else {
+            // Publish signal to Universal Call Orchestrator for aggregation + lot scaling
+            if (universalCallOrchestrator != null) {
+                var orcSignal = com.algo.trade.strategy.UniversalCallOrchestrator.StrategySignal.withStrike(
+                        "OI_MOMENTUM", indexType, direction,
+                        70, // Entry already passed bias floor — 70 = confirmed conviction
+                        atm, direction > 0 ? "CE" : "PE", reason);
+                universalCallOrchestrator.submitSignal(orcSignal);
+            }
             var oiConfig = getCachedConfig(indexType);
             var result = executionEngine.executeEntry(decision, premium, lotSize, oiConfig);
             state.activeTradeId = result.tradeId().orElse(null);
@@ -2356,14 +2478,14 @@ public class OIMomentumStrategy {
                 try {
                     maeMfeTracker.onEntry(new com.algo.trade.tuning.infra.MaeMfeTracker.EntryContext(
                             state.activeTradeId,
-                            com.algo.trade.strategy.StrategyType.OI_MOMENTUM,
+                            StrategyType.OI_MOMENTUM,
                             indexType,
                             state.lastEntryDecisionKey,
                             com.algo.trade.tuning.infra.MaeMfeTracker.Direction.LONG,
                             instrumentKey,
                             atm,
-                            direction > 0 ? com.algo.trade.domain.OptionType.CE
-                                          : com.algo.trade.domain.OptionType.PE,
+                            direction > 0 ? OptionType.CE
+                                          : OptionType.PE,
                             premium,
                             spot,
                             state.lastEntryTime));
@@ -2630,6 +2752,36 @@ public class OIMomentumStrategy {
             }
         }
 
+        // ── [+0..30] Operator Intent Radar (5 Jun 2026) ───────────────────────────
+        // Anticipatory detection: OI magnets, hourly cycle confirmation, cross-index
+        // radar, max pain shifts, OI laddering, liquidity awareness, bias persistence.
+        // Detects operator positioning BEFORE price breakouts.
+        if (operatorIntentRadar != null) {
+            OperatorIntentRadar.IntentSignal intent = operatorIntentRadar.evaluate(indexType, momentumDir);
+            if (intent.bonus() > 0) {
+                score += intent.bonus();
+                sig.append(String.format(" RADAR(+%d%s)", intent.bonus(), intent.signals()));
+            }
+            if (intent.reversalReady()) {
+                sig.append(" REVERSAL_ZONE");
+            }
+            if (intent.intentLocked()) {
+                sig.append(" INTENT_LOCKED");
+            }
+            if (intent.probeEntryRecommended()) {
+                sig.append(" PROBE_REC");
+            }
+            if (intent.scaleUpRecommended()) {
+                sig.append(" SCALE_UP");
+            }
+            if (intent.flipRecommended()) {
+                sig.append(" FLIP_REC");
+            }
+            if (intent.exitRecommended()) {
+                sig.append(" EXIT_DECAY");
+            }
+        }
+
         // ── [+8] Bid-ask order book imbalance ─────────────────────────────────────
         // When the ATM option in the momentum direction has bid qty >> ask qty,
         // institutional buyers are lifting the ask — early accumulation footprint.
@@ -2695,6 +2847,64 @@ public class OIMomentumStrategy {
                         sig.append(String.format(" MAXPAIN=%d", maxPainStrike));
                     }
                 }
+            }
+        }
+
+        // ── [+15/+20] PCR Momentum Reversal — put-writer unwinding signal ──────────
+        // When PCR was high (>1.5, heavy put writing = support) and starts declining,
+        // it signals put-writers are unwinding → support eroding → bearish reversal.
+        // Jun 11 pattern: PCR 1.98 → 1.4, Sensex dropped 74,400 → 73,800.
+        // Only boosts bearish direction (PE buys). Complementary to level + slope signals.
+        // Bonus scaled by historical data: 82% confidence from 4 occurrences in Mar-Jun 2026.
+        if (pcrMomentumReversalStrategy != null && momentumDir < 0) {
+            double pcrDrop = pcrMomentumReversalStrategy.getPcrDropFromPeak(indexType);
+            if (pcrDrop >= 0.15) {
+                int reversalBonus = pcrDrop >= 0.3 ? 20 : 15;
+                score += reversalBonus;
+                sig.append(String.format(" PCR_UNWIND(+%d,drop=%.2f)", reversalBonus, pcrDrop));
+            }
+        }
+
+        // ── [+10..+30 / −10] Option-Leads-Index — option premium breakout before spot ─────
+        // Options move first (positioning, hedging, operator intent). When ATM option
+        // breaks its session high with OI rising and index hasn't followed yet → early entry.
+        // Index confirming later → confidence boost. Index diverging → reduce.
+        // Confidence scaled by historical data: 78% for option-leads, 86% for cross-index.
+        if (optionLeadsIndexDetector != null) {
+            var optLead = optionLeadsIndexDetector.evaluate(indexType, atm,
+                    liveInstrumentCache.getFuturesPrice(indexType));
+            if (optLead.hasSignal() && optLead.direction() == momentumDir) {
+                int leadBonus = optLead.confidenceBoost();
+                if (optLead.isImmediate()) leadBonus = Math.max(leadBonus, 20); // abnormal spike → aggressive
+                if (leadBonus > 0) {
+                    score += leadBonus;
+                    sig.append(String.format(" OPT_LEAD(+%d,%s)", leadBonus, optLead.phase().name()));
+                }
+            } else if (optLead.isDiverging() && optLead.direction() != momentumDir) {
+                score -= 10;
+                sig.append(" OPT_DIVERGE(-10)");
+            }
+        }
+
+        // ── [+10 / −15] Expiry Max Pain Bias — post-2:30 PM pin toward max pain ──────
+        // After 2:30 on expiry day, operators push spot toward max pain. If momentum
+        // direction aligns with max pain direction → boost. If opposing → heavy penalty.
+        if (expiryTrapDetector != null && expiryTrapDetector.isMaxPainBiasActive(indexType)) {
+            int mpDir = expiryTrapDetector.getMaxPainDirection(indexType);
+            if (mpDir != 0) {
+                if (mpDir == momentumDir) {
+                    score += 10;
+                    sig.append(String.format(" MAXPAIN_ALIGN(+10,mp=%d)", expiryTrapDetector.getMaxPainTarget(indexType)));
+                } else {
+                    score -= 15;
+                    sig.append(String.format(" MAXPAIN_OPPOSE(-15,mp=%d)", expiryTrapDetector.getMaxPainTarget(indexType)));
+                }
+            }
+            // Extra penalty if OI divergence trap is active
+            var trap = expiryTrapDetector.assess(indexType);
+            if (trap.oiDivergenceTrap()) {
+                score -= 10;
+                sig.append(" OI_TRAP(-10)");
             }
         }
 

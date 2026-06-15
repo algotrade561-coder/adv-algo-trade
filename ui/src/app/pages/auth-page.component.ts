@@ -1,89 +1,66 @@
-import { ChangeDetectorRef, Component, OnInit } from '@angular/core';
+import { ChangeDetectorRef, Component, OnDestroy, OnInit } from '@angular/core';
+import { CommonModule } from '@angular/common';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
-import { ApiService } from '../core/api.service';
-import { KiteLoginResponse, KiteSessionResponse } from '../core/models';
+import { AdminService, MyBrokerConfig } from '../core/admin.service';
 
 @Component({
   selector: 'app-auth-page',
   standalone: true,
-  imports: [MatButtonModule, MatIconModule],
+  imports: [CommonModule, MatButtonModule, MatIconModule],
   template: `
     <section class="page">
       <h1 class="page-title">Kite Auth</h1>
-      <p class="page-subtitle">Zerodha login and daily access token management.</p>
+      <p class="page-subtitle">
+        Each user logs into Zerodha with their <strong>own API key</strong>.
+        The access token lands in your account row in the database and is used to place your entry &amp; exit orders.
+      </p>
 
-      <!-- Session Status -->
-      <div class="status-card" [class.sc-ok]="session?.authenticated" [class.sc-warn]="session && !session.authenticated">
-        <mat-icon class="sc-icon">{{ session?.authenticated ? 'verified_user' : 'shield' }}</mat-icon>
-        <div class="sc-body">
-          <span class="sc-title">{{ session?.authenticated ? 'Authenticated' : 'Not Authenticated' }}</span>
-          @if (session?.authenticated) {
-            <span class="sc-detail">User: {{ session!.userId }} · Since: {{ session!.authenticatedAt }}</span>
-          } @else {
-            <span class="sc-detail">Start a session or complete the login flow below.</span>
-          }
-        </div>
-        <button mat-stroked-button [disabled]="sessionLoading" (click)="checkSession()">
-          <mat-icon>{{ sessionLoading ? 'hourglass_empty' : 'refresh' }}</mat-icon>
-          {{ sessionLoading ? 'Checking...' : 'Check Session' }}
-        </button>
-      </div>
-
-      <div class="grid two">
-        <!-- Login Flow -->
-        <div class="panel">
-          <div class="panel-hdr">
-            <mat-icon class="hdr-icon">login</mat-icon>
-            <div>
-              <h2>Login Flow</h2>
-              <p>Launch Zerodha login and capture the daily access token via callback.</p>
-            </div>
+      <!-- Per-user Kite login (this user's account) -->
+      <div class="panel highlight">
+        <div class="panel-hdr">
+          <mat-icon class="hdr-icon">person</mat-icon>
+          <div>
+            <h2>Your Kite Account</h2>
+            <p>Logged in as <strong>{{ admin.currentUser()?.email || '—' }}</strong>
+               · API key: <strong>{{ broker?.apiKey || 'not configured' }}</strong>
+               · Token: <strong [class.pos]="broker?.tokenValid" [class.neg]="broker && !broker.tokenValid"
+                         [title]="broker?.tokenVerifyMessage || ''">
+                 {{ broker?.tokenValid ? 'valid ✓' : (broker?.accessTokenPresent ? 'present, rejected by broker ✗' : 'missing') }}
+               </strong>
+               @if (broker?.primaryAccount) { · <span class="badge primary">PRIMARY</span> }
+            </p>
           </div>
+        </div>
+        @if (!broker?.apiKey) {
+          <div class="info-strip">
+            <mat-icon>info</mat-icon> Save your Kite API key on the <a href="/advalgotrade/my-broker">My Broker</a> page first.
+          </div>
+        } @else {
           <div class="btn-row">
-            <button mat-flat-button color="primary" (click)="initiateLogin()">
-              <mat-icon>launch</mat-icon> Initiate Login
+            <button mat-flat-button color="primary" (click)="loginAsCurrentUser()" [disabled]="myLoading">
+              <mat-icon>{{ myLoading ? 'hourglass_empty' : 'login' }}</mat-icon>
+              {{ myLoading ? 'Preparing...' : 'Login to Kite (' + (admin.currentUser()?.email || 'me') + ')' }}
             </button>
-            @if (login?.loginUrl) {
-              <a mat-stroked-button [href]="login!.loginUrl" target="_blank" rel="noreferrer">
+            @if (myLoginUrl) {
+              <a mat-stroked-button [href]="myLoginUrl" target="_blank" rel="noreferrer">
                 <mat-icon>open_in_new</mat-icon> Open Kite Login
               </a>
             }
           </div>
-          @if (login?.message) {
-            <div class="info-strip">
-              <mat-icon>info</mat-icon> {{ login!.message }}
-            </div>
-          }
-          @if (loginError) {
-            <div class="error-strip">
-              <mat-icon>error_outline</mat-icon> {{ loginError }}
-            </div>
-          }
-        </div>
-
-        <!-- Session Validate -->
-        <div class="panel">
-          <div class="panel-hdr">
-            <mat-icon class="hdr-icon">key</mat-icon>
-            <div>
-              <h2>Session</h2>
-              <p>Validate the persisted or configured access token.</p>
-            </div>
-          </div>
-          <button mat-flat-button color="primary" [disabled]="sessionLoading" (click)="checkSession()">
-            <mat-icon>{{ sessionLoading ? 'hourglass_empty' : 'verified_user' }}</mat-icon>
-            {{ sessionLoading ? 'Validating...' : 'Validate Session' }}
-          </button>
-          @if (session) {
-            <div class="detail-grid">
-              <div class="dg-item"><span>Status</span><strong [class.pos]="session.authenticated" [class.neg]="!session.authenticated">{{ session.authenticated ? 'Authenticated' : 'Needs Login' }}</strong></div>
-              <div class="dg-item"><span>User ID</span><strong>{{ session.userId || '-' }}</strong></div>
-              <div class="dg-item"><span>Authenticated At</span><strong>{{ session.authenticatedAt || '-' }}</strong></div>
-            </div>
-          }
-        </div>
+          @if (myInfo)  { <div class="info-strip"><mat-icon>info</mat-icon>{{ myInfo }}</div> }
+          @if (myError) { <div class="error-strip"><mat-icon>error_outline</mat-icon>{{ myError }}</div> }
+          <p class="hint">
+            After Kite redirects back, your access token will be saved to your own row in the database
+            and used for your future entry/exit orders.
+          </p>
+        }
       </div>
+
+      <p class="hint">
+        The shared market-analysis feed uses the account flagged <strong>PRIMARY</strong> —
+        a superuser sets this on the <a href="/advalgotrade/admin/users">Users</a> page.
+      </p>
     </section>
   `,
   styles: [`
@@ -131,37 +108,69 @@ import { KiteLoginResponse, KiteSessionResponse } from '../core/models';
     .dg-item strong { display: block; font-size: 13px; color: var(--ink); margin-top: 3px; }
     .pos { color: var(--ok) !important; }
     .neg { color: var(--bad) !important; }
+    .panel.highlight { border-color: rgba(97,168,255,.5); background: rgba(97,168,255,.04); margin-bottom: 16px; }
+    .section-h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); font-weight: 700; margin: 22px 0 12px; }
+    .badge.primary { display:inline-block; padding:2px 8px; border-radius:10px; font-size:10px; font-weight:700; background: rgba(97,168,255,.15); color: var(--accent); }
+    .hint { font-size: 12px; color: var(--muted); margin: 10px 0 0; }
   `]
 })
-export class AuthPageComponent implements OnInit {
-  login?: KiteLoginResponse;
-  loginError = '';
-  session?: KiteSessionResponse;
-  sessionLoading = false;
+export class AuthPageComponent implements OnInit, OnDestroy {
+  // Per-user fields
+  broker: MyBrokerConfig | null = null;
+  myLoading = false;
+  myLoginUrl = '';
+  myInfo = '';
+  myError = '';
 
-  constructor(private readonly api: ApiService, private readonly cd: ChangeDetectorRef) {}
+  // Refresh token status when the user returns to this tab after Kite login
+  private readonly onWindowFocus = () => this.loadMyBroker();
 
-  ngOnInit(): void { this.checkSession(); }
+  constructor(public readonly admin: AdminService,
+              private readonly cd: ChangeDetectorRef) {}
 
-  initiateLogin(): void {
-    this.loginError = '';
+  ngOnInit(): void {
+    this.loadMyBroker();
+    window.addEventListener('focus', this.onWindowFocus);
+    // If we just came back from Kite (?kite=linked), refresh and clean URL
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('kite') === 'linked') {
+      this.myInfo = 'Kite linked ✅ — your access token is now stored in the database.';
+      history.replaceState(null, '', window.location.pathname);
+    }
+  }
+
+  ngOnDestroy(): void {
+    window.removeEventListener('focus', this.onWindowFocus);
+  }
+
+  loadMyBroker(): void {
+    this.admin.getMyBroker().subscribe({
+      next: b => { this.broker = b; this.cd.detectChanges(); },
+      error: () => {}
+    });
+  }
+
+  loginAsCurrentUser(): void {
+    this.myError = ''; this.myInfo = ''; this.myLoading = true;
+    // Open the tab synchronously (inside the click handler) so popup blockers allow it,
+    // then point it at the Kite login URL once the API responds. The Google session
+    // cookie is shared across tabs, so /me/broker/kite/callback still authenticates.
     const win = window.open('about:blank', '_blank');
-    if (win) win.opener = null;
-    this.api.kiteLogin().subscribe({
+    this.admin.kiteLoginUrl().subscribe({
       next: r => {
-        this.login = r;
-        if (r.loginUrl) { win ? (win.location.href = r.loginUrl) : window.open(r.loginUrl, '_blank', 'noopener,noreferrer'); }
-        else { win?.close(); }
+        this.myLoginUrl = r.loginUrl;
+        this.myLoading = false;
+        if (win) { win.location.href = r.loginUrl; }
+        else { window.open(r.loginUrl, '_blank'); }
+        this.myInfo = 'Complete the Kite login in the new tab — this page refreshes automatically when you return.';
+        this.cd.detectChanges();
       },
-      error: () => { win?.close(); this.loginError = 'Failed to initiate login flow.'; }
+      error: e => {
+        win?.close();
+        this.myError = e?.error?.error || 'Failed to build Kite login URL';
+        this.myLoading = false; this.cd.detectChanges();
+      }
     });
   }
 
-  checkSession(): void {
-    this.sessionLoading = true;
-    this.api.kiteSession().subscribe({
-      next: s => { this.session = s; this.sessionLoading = false; this.cd.detectChanges(); },
-      error: () => { this.sessionLoading = false; this.cd.detectChanges(); }
-    });
-  }
 }

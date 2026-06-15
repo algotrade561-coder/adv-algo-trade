@@ -5,6 +5,7 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 import { MatTabsModule } from '@angular/material/tabs';
 import { ApiService, StrategyDto } from '../core/api.service';
+import { AdminService, AdminUser } from '../core/admin.service';
 import { ApiRecord, JvmHealth, PnlSnapshot, RuntimeStatus, TradingStatus } from '../core/models';
 
 type ScorecardRow = { strategyType: string; totalEntries: number; filled: number; rejected: number; fillRate: number; avgIvRank: number; avgSpread: number; ivRankSource: string };
@@ -23,6 +24,15 @@ type ScorecardRow = { strategyType: string; totalEntries: number; filled: number
           <p class="page-subtitle">Live and paper trading overview — positions, orders, trades, and signals.</p>
         </div>
         <span class="spacer"></span>
+        @if (admin.isAdmin()) {
+          <select class="user-filter" [value]="viewUserId ?? ''" (change)="onViewUserChange($event)"
+                  title="View data for a specific user (admin / superuser)">
+            <option value="">All users</option>
+            @for (u of monitorUsers; track u.id) {
+              <option [value]="u.id">{{ u.email }}</option>
+            }
+          </select>
+        }
         @if (lastRefreshed) { <span class="refresh-ts">Updated {{ refreshedLabel }}</span> }
         <button mat-stroked-button (click)="load()"><mat-icon>refresh</mat-icon> Refresh</button>
       </div>
@@ -505,6 +515,8 @@ type ScorecardRow = { strategyType: string; totalEntries: number; filled: number
     .page-title { font-size: 22px; font-weight: 800; color: var(--ink); margin: 0 0 4px; }
     .page-subtitle { color: var(--muted); font-size: 13px; margin: 0; }
     .refresh-ts { font-size: 11px; color: var(--muted); }
+    .user-filter { background: var(--panel); color: var(--ink); border: 1px solid var(--line);
+                   border-radius: 8px; padding: 6px 10px; font-size: 12px; }
     .muted { color: var(--muted); }
 
     /* Banners */
@@ -732,6 +744,7 @@ export class MonitoringPageComponent implements OnInit, OnDestroy {
 
   private jvmSub?: import('rxjs').Subscription;
   private mainDataSub?: import('rxjs').Subscription;
+  private pnlPollSub?: import('rxjs').Subscription;
   private healthPollSub: Subscription | null = null;
   positionHealth: ApiRecord[] = [];
 
@@ -785,23 +798,43 @@ export class MonitoringPageComponent implements OnInit, OnDestroy {
       .filter(o => this.isToday(String(o['orderPlacedAt'] ?? o['updatedAt'] ?? '')));
   }
 
-  constructor(private readonly api: ApiService, private readonly cd: ChangeDetectorRef) {}
+  /** Superuser-only per-user view filter. null = all users. */
+  viewUserId: number | null = null;
+  monitorUsers: AdminUser[] = [];
+
+  constructor(private readonly api: ApiService,
+              public readonly admin: AdminService,
+              private readonly cd: ChangeDetectorRef) {}
+
+  onViewUserChange(event: Event): void {
+    const val = (event.target as HTMLSelectElement).value;
+    this.viewUserId = val ? Number(val) : null;
+    this.load();
+  }
 
   ngOnInit(): void {
     this.load();
     this.loadJvm();
+    // Superuser: load the user list for the per-user view dropdown.
+    // Non-admins get a 403 → silently ignored, dropdown never shows.
+    this.admin.listUsers()
+      .pipe(catchError(() => of([] as AdminUser[])))
+      .subscribe(users => { this.monitorUsers = users; this.cd.detectChanges(); });
     // Retry positions once after 4s — broker client may not be ready on cold start
     timer(4000).subscribe(() => {
       if (this.positions.length === 0) { this.loadPositions(); }
     });
     this.jvmSub    = interval(15000).subscribe(() => this.loadJvm());
     this.mainDataSub = interval(60000).subscribe(() => this.load());
+    // Fast P&L + positions refresh every 5 seconds (unrealized changes with every tick)
+    this.pnlPollSub = interval(5000).subscribe(() => this.refreshPnlAndPositions());
   }
 
   ngOnDestroy(): void {
     this.jvmSub?.unsubscribe();
     this.mainDataSub?.unsubscribe();
     this.healthPollSub?.unsubscribe();
+    this.pnlPollSub?.unsubscribe();
   }
 
   private loadJvm(): void {
@@ -810,8 +843,23 @@ export class MonitoringPageComponent implements OnInit, OnDestroy {
       .subscribe(j => { if (j) { this.jvm = j; this.cd.detectChanges(); } });
   }
 
+  /** Fast P&L + positions refresh (every 5s) — keeps unrealized P&L current without full reload */
+  private refreshPnlAndPositions(): void {
+    forkJoin({
+      pnl: this.api.pnl(this.viewUserId).pipe(catchError(() => of(null))),
+      positions: this.api.positions(this.viewUserId).pipe(catchError(() => of([] as ApiRecord[]))),
+      status: this.api.tradingStatus().pipe(catchError(() => of(null)))
+    }).subscribe(({ pnl, positions, status }) => {
+      if (pnl) this.pnl = pnl as PnlSnapshot;
+      if (positions.length > 0 || this.positions.length > 0) this.positions = positions;
+      if (status) this.tradingStatus = status as TradingStatus;
+      this.lastRefreshed = new Date();
+      this.cd.detectChanges();
+    });
+  }
+
   private loadPositions(): void {
-    this.api.positions()
+    this.api.positions(this.viewUserId)
       .pipe(catchError(() => of([] as ApiRecord[])))
       .subscribe(p => { this.positions = p; this.startHealthPolling(); this.cd.detectChanges(); });
   }
@@ -867,10 +915,10 @@ export class MonitoringPageComponent implements OnInit, OnDestroy {
   load(): void {
     forkJoin({
       config:     this.api.config().pipe(catchError(() => of(null))),
-      positions:  this.api.positions().pipe(catchError(() => of([] as ApiRecord[]))),
-      orders:     this.api.orders().pipe(catchError(() => of([] as ApiRecord[]))),
-      trades:     this.api.trades().pipe(catchError(() => of([] as ApiRecord[]))),
-      pnl:        this.api.pnl().pipe(catchError(() => of(null))),
+      positions:  this.api.positions(this.viewUserId).pipe(catchError(() => of([] as ApiRecord[]))),
+      orders:     this.api.orders(this.viewUserId).pipe(catchError(() => of([] as ApiRecord[]))),
+      trades:     this.api.trades(this.viewUserId).pipe(catchError(() => of([] as ApiRecord[]))),
+      pnl:        this.api.pnl(this.viewUserId).pipe(catchError(() => of(null))),
       signals:    this.api.recentSignals().pipe(catchError(() => of([] as ApiRecord[]))),
       status:     this.api.tradingStatus().pipe(catchError(() => of(null))),
       strategies: this.api.getStrategies().pipe(catchError(() => of([] as StrategyDto[]))),

@@ -473,12 +473,12 @@ public class RuleBasedOptionsStrategy {
             boolean oiDivergenceRejected,
             boolean resistanceHeadroomPassed
     ) {
-        // Hard blocks: only reject on clear contradictions
-        // 1. VWAP must confirm direction (price on right side)
-        // 2. OI divergence must not be extreme (smart money opposing)
-        // Everything else (breakout, volume, OI support) is already captured in the confidence score.
-        // If the score passes the threshold without these, the other signals are strong enough.
-        return vwapPassed && !oiDivergenceRejected;
+        // Hard block: only reject on clear contradictions
+        // OI divergence (smart money opposing) is the only hard gate.
+        // VWAP is now a soft factor (15-point score component) — during midday ranging,
+        // price oscillates around VWAP constantly; strict gating blocks too many setups
+        // where other indicators are strong.
+        return !oiDivergenceRejected;
     }
 
     private boolean oiSupportRequired(OptionType optionType) {

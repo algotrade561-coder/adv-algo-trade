@@ -110,9 +110,9 @@ public class IVRankTracker {
         if (lastSample == null) return 50.0;
         double current = lastSample.iv();
         if (current <= 0) return 50.0;
-        double low  = samples.stream().filter(java.util.Objects::nonNull)
+        double low  = samples.stream().filter(Objects::nonNull)
                 .mapToDouble(s -> s.iv() > 0 ? s.iv() : Double.MAX_VALUE).min().orElse(current);
-        double high = samples.stream().filter(java.util.Objects::nonNull)
+        double high = samples.stream().filter(Objects::nonNull)
                 .mapToDouble(s -> s.iv() > 0 ? s.iv() : 0).max().orElse(current);
         if (high <= low || high == 0) return 50.0;
         return ((current - low) / (high - low)) * 100.0;

@@ -1,4 +1,4 @@
-import { ChangeDetectorRef, Component, OnInit, signal } from '@angular/core';
+import { ChangeDetectorRef, Component, OnDestroy, OnInit, signal } from '@angular/core';
 import { DecimalPipe } from '@angular/common';
 import { FormBuilder, FormsModule, ReactiveFormsModule, Validators } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
@@ -198,15 +198,107 @@ import { ApiRecord, ExecutionMode, MarketDataMode, RuntimeStatus, TradingMode, U
         </div>
       </div>
 
-      <!-- ── Manual Order ──────────────────────────────────────────── -->
+      <!-- ── Manual Order — Strike Picker ──────────────────────────── -->
       <div class="panel" style="margin-top:16px">
-        <div class="top-row" style="margin-bottom:0">
+        <div class="top-row" style="margin-bottom:8px">
           <h2 style="margin:0"><mat-icon class="hi">receipt_long</mat-icon> Manual Order</h2>
           <span class="spacer"></span>
-          <button mat-flat-button color="primary" (click)="openOrderModal()"><mat-icon>add_circle</mat-icon> Place Order</button>
+          <button mat-stroked-button (click)="openOrderModal()"><mat-icon>edit</mat-icon> Custom Order</button>
         </div>
-        <p class="page-subtitle" style="margin-top:6px">Route through Paper or Zerodha based on current routing config.</p>
+        <p class="page-subtitle" style="margin:0 0 12px">
+          Live ATM ± 3 strikes — click BUY on a strike to prefill the order. Quotes refresh every 5s.
+          Routes through Paper or Zerodha based on current routing config.
+        </p>
+
+        <div class="mo-tabs">
+          @for (ix of moIndices; track ix) {
+            <button class="mo-tab" [class.mo-tab-active]="ix === moActive()" (click)="moActive.set(ix)">{{ ix }}</button>
+          }
+        </div>
+
+        @if (moData()[moActive()]; as d) {
+          <div class="mo-banner">
+            <div class="mo-item"><span class="mo-lbl">Spot</span><span class="mo-val">{{ d.spot | number:'1.2-2' }}</span></div>
+            <div class="mo-item"><span class="mo-lbl">ATM Strike</span><span class="mo-val">{{ d.atm }}</span></div>
+            <div class="mo-item"><span class="mo-lbl">Lot Size</span><span class="mo-val">{{ d.lotSize }}</span></div>
+            <div class="mo-item"><span class="mo-lbl">Expiry</span><span class="mo-val">{{ d.expiry }}</span></div>
+            @if (d.isExpiryDay) { <span class="mo-badge">EXPIRY DAY</span> }
+          </div>
+
+          <div class="mo-table-wrap">
+            <table class="mo-table">
+              <tr><th colspan="4">CALL (CE)</th><th>Strike</th><th colspan="4">PUT (PE)</th></tr>
+              <tr><th>OI</th><th>IV</th><th>LTP</th><th></th><th></th><th></th><th>LTP</th><th>IV</th><th>OI</th></tr>
+              @for (s of d.strikes; track s.strike) {
+                <tr [class.mo-atm]="s.isATM">
+                  <td class="mo-dim">{{ fmtOi(s.ceOi) }}</td>
+                  <td class="mo-dim">{{ fmtIv(s.ceIv) }}</td>
+                  <td class="mo-ltp">{{ fmtLtp(s.ceLtp) }}</td>
+                  <td>@if (s.ceSymbol) { <button class="mo-buy" (click)="openStrikeOrder(d, s, 'CE')">BUY</button> } @else { <span class="mo-dim">–</span> }</td>
+                  <td class="mo-strike" [class.mo-strike-atm]="s.isATM">{{ s.strike }}<div class="mo-dim">{{ s.label }}</div></td>
+                  <td>@if (s.peSymbol) { <button class="mo-buy" (click)="openStrikeOrder(d, s, 'PE')">BUY</button> } @else { <span class="mo-dim">–</span> }</td>
+                  <td class="mo-ltp">{{ fmtLtp(s.peLtp) }}</td>
+                  <td class="mo-dim">{{ fmtIv(s.peIv) }}</td>
+                  <td class="mo-dim">{{ fmtOi(s.peOi) }}</td>
+                </tr>
+              }
+            </table>
+          </div>
+        } @else {
+          <div class="mo-empty">No live data for {{ moActive() }} — market closed or feed not connected.</div>
+        }
       </div>
+
+      <!-- ── Prepopulated Strike Order Modal ───────────────────────── -->
+      @if (strikeOrderOpen()) {
+        <div class="overlay" (click)="closeStrikeOrder()"></div>
+        <div class="modal">
+          <div class="modal-hdr">
+            <h3>{{ strikeOrder.tradingSymbol }}</h3>
+            <button mat-icon-button (click)="closeStrikeOrder()"><mat-icon>close</mat-icon></button>
+          </div>
+          <div class="modal-body">
+            <div class="mo-meta">
+              {{ strikeOrder.index }} &nbsp;·&nbsp; {{ strikeOrder.strike }} {{ strikeOrder.optionType }}
+              &nbsp;·&nbsp; LTP &#8377;{{ strikeOrder.ltp | number:'1.2-2' }}
+            </div>
+            <div class="modal-2col">
+              <mat-form-field appearance="outline"><mat-label>Side</mat-label>
+                <mat-select [(ngModel)]="strikeOrder.side"><mat-option value="BUY">BUY</mat-option><mat-option value="SELL">SELL</mat-option></mat-select>
+              </mat-form-field>
+              <mat-form-field appearance="outline"><mat-label>Lots (&#215; {{ strikeOrder.lotSize }})</mat-label>
+                <input matInput type="number" min="1" [(ngModel)]="strikeOrder.lots">
+              </mat-form-field>
+            </div>
+            <div class="mo-qty-note">= {{ (strikeOrder.lots || 1) * strikeOrder.lotSize }} qty</div>
+            <div class="modal-2col">
+              <mat-form-field appearance="outline"><mat-label>Order Type</mat-label>
+                <mat-select [(ngModel)]="strikeOrder.orderType"><mat-option value="MARKET">MARKET</mat-option><mat-option value="LIMIT">LIMIT</mat-option></mat-select>
+              </mat-form-field>
+              <mat-form-field appearance="outline"><mat-label>Product</mat-label>
+                <mat-select [(ngModel)]="strikeOrder.productType"><mat-option value="MIS">MIS</mat-option><mat-option value="NRML">NRML</mat-option></mat-select>
+              </mat-form-field>
+            </div>
+            @if (strikeOrder.orderType === 'LIMIT') {
+              <mat-form-field appearance="outline" class="full"><mat-label>Limit Price (&#8377;)</mat-label>
+                <input matInput type="number" step="0.05" [(ngModel)]="strikeOrder.limitPrice">
+              </mat-form-field>
+            }
+            @if (strikeOrderResult(); as r) {
+              <div class="or or-bad">
+                <strong>Order failed</strong>
+                <span class="or-err">{{ r['error'] ?? 'Unknown error' }}</span>
+              </div>
+            }
+            <div class="modal-actions">
+              <button mat-flat-button color="primary" [disabled]="(strikeOrder.lots || 0) < 1" (click)="submitStrikeOrder()">
+                <mat-icon>send</mat-icon> {{ strikeOrder.side }} {{ strikeOrder.tradingSymbol }}
+              </button>
+              <button mat-stroked-button (click)="closeStrikeOrder()">Cancel</button>
+            </div>
+          </div>
+        </div>
+      }
 
       <!-- ── Order Modal ───────────────────────────────────────────── -->
       @if (orderModalOpen()) {
@@ -394,9 +486,36 @@ import { ApiRecord, ExecutionMode, MarketDataMode, RuntimeStatus, TradingMode, U
     .or-ok { background: rgba(69,209,140,.08); border: 1px solid rgba(69,209,140,.3); color: var(--ok); }
     .or-bad { background: rgba(255,113,106,.08); border: 1px solid rgba(255,113,106,.3); color: var(--bad); }
     .or-err { color: var(--bad); }
+
+    /* Manual order — strike picker */
+    .mo-tabs { display: flex; gap: 8px; margin-bottom: 12px; }
+    .mo-tab { padding: 7px 18px; background: rgba(255,255,255,.02); border: 1px solid var(--line); border-radius: 8px;
+      cursor: pointer; font-weight: 700; font-size: 12px; color: var(--muted); }
+    .mo-tab-active { color: var(--accent); border-color: rgba(97,168,255,.5); background: rgba(97,168,255,.08); }
+    .mo-banner { display: flex; flex-wrap: wrap; gap: 22px; align-items: center; border: 1px solid var(--line);
+      border-radius: 10px; padding: 10px 16px; margin-bottom: 12px; background: rgba(255,255,255,.02); }
+    .mo-item { display: flex; flex-direction: column; gap: 1px; }
+    .mo-lbl { font-size: 10px; font-weight: 700; text-transform: uppercase; color: var(--muted); letter-spacing: .04em; }
+    .mo-val { font-size: 15px; font-weight: 800; color: var(--ink); }
+    .mo-badge { background: var(--bad); color: #fff; font-size: 10px; font-weight: 800; padding: 3px 10px; border-radius: 10px; }
+    .mo-table-wrap { overflow-x: auto; }
+    .mo-table { width: 100%; border-collapse: collapse; }
+    .mo-table th, .mo-table td { padding: 7px 10px; text-align: center; font-size: 12.5px; border-bottom: 1px solid var(--line); }
+    .mo-table th { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }
+    .mo-atm { background: rgba(97,168,255,.07); }
+    .mo-strike { font-weight: 700; color: var(--ink); }
+    .mo-strike-atm { color: var(--accent); font-weight: 800; }
+    .mo-ltp { font-weight: 700; color: var(--ink); }
+    .mo-dim { color: var(--muted); font-size: 11px; }
+    .mo-buy { background: var(--ok); color: #071018; border: 0; border-radius: 5px; padding: 4px 14px;
+      font-weight: 800; font-size: 11px; cursor: pointer; }
+    .mo-buy:hover { filter: brightness(1.15); }
+    .mo-empty { padding: 24px; text-align: center; color: var(--muted); font-size: 13px; }
+    .mo-meta { font-size: 13px; font-weight: 600; color: var(--muted); padding: 4px 2px; }
+    .mo-qty-note { font-size: 12px; color: var(--muted); margin: -6px 0 0 2px; }
   `]
 })
-export class ExecutionPageComponent implements OnInit {
+export class ExecutionPageComponent implements OnInit, OnDestroy {
   readonly tradingModes: TradingMode[] = ['PAPER', 'BACKTEST', 'LIVE'];
   readonly marketDataModes: MarketDataMode[] = ['MOCK', 'ZERODHA'];
   readonly executionModes: ExecutionMode[] = ['PAPER', 'ZERODHA'];
@@ -410,11 +529,29 @@ export class ExecutionPageComponent implements OnInit {
   orderResult = signal<ApiRecord | null>(null);
   orderForm = { instrumentKey: '', side: 'BUY', orderType: 'MARKET', productType: 'MIS', quantity: 75, limitPrice: undefined as number | undefined, tag: 'manual-ui' };
 
+  // ── Manual order strike picker ──────────────────────────────────────
+  readonly moIndices = ['NIFTY', 'BANKNIFTY', 'SENSEX'];
+  moData = signal<any>({});
+  moActive = signal('NIFTY');
+  strikeOrderOpen = signal(false);
+  strikeOrderResult = signal<ApiRecord | null>(null);
+  strikeOrder = {
+    index: '', strike: 0, optionType: 'CE', tradingSymbol: '', instrumentKey: '',
+    side: 'BUY', lots: 1, orderType: 'MARKET', productType: 'MIS',
+    limitPrice: 0, lotSize: 0, ltp: 0
+  };
+  private moTimer?: ReturnType<typeof setInterval>;
+
   readonly modeForm = this.fb.nonNullable.group({ mode: ['PAPER' as TradingMode, Validators.required] });
   readonly routingForm = this.fb.nonNullable.group({ marketDataMode: ['MOCK' as MarketDataMode, Validators.required], executionMode: ['PAPER' as ExecutionMode, Validators.required] });
 
   constructor(private readonly api: ApiService, private readonly fb: FormBuilder, private readonly cd: ChangeDetectorRef) {}
-  ngOnInit(): void { this.load(); }
+  ngOnInit(): void {
+    this.load();
+    this.refreshStrikes();
+    this.moTimer = setInterval(() => this.refreshStrikes(), 5000);
+  }
+  ngOnDestroy(): void { if (this.moTimer) clearInterval(this.moTimer); }
 
   load(): void {
     this.toast.set(''); this.toastErr.set('');
@@ -455,6 +592,60 @@ export class ExecutionPageComponent implements OnInit {
     (v ? this.api.enableStrategy(s.type, s.underlying) : this.api.disableStrategy(s.type, s.underlying)).subscribe({
       next: () => { this.toast.set(s.displayName + (v ? ' enabled' : ' disabled')); this.api.getStrategies().subscribe({ next: s => this.strategies.set(s) }); },
       error: (e: any) => this.toastErr.set(e?.error?.error ?? 'Failed')
+    });
+  }
+
+  // ── Strike picker logic ─────────────────────────────────────────────
+  refreshStrikes(): void {
+    this.api.manualOrderStrikes().subscribe({
+      next: d => { this.moData.set(d ?? {}); this.cd.detectChanges(); },
+      error: () => { /* keep last good data; table shows empty state if none */ }
+    });
+  }
+
+  fmtLtp(v: any): string { return (v == null || v <= 0) ? '–' : Number(v).toLocaleString('en-IN', { maximumFractionDigits: 2 }); }
+  fmtOi(v: any): string { return (v == null || v <= 0) ? '–' : (v >= 100000 ? (v / 100000).toFixed(1) + 'L' : Number(v).toLocaleString('en-IN')); }
+  fmtIv(v: any): string { return (v == null || v <= 0) ? '–' : Number(v).toFixed(1) + '%'; }
+
+  openStrikeOrder(d: any, s: any, type: 'CE' | 'PE'): void {
+    const symbol = type === 'CE' ? s.ceSymbol : s.peSymbol;
+    const ltp = (type === 'CE' ? s.ceLtp : s.peLtp) ?? 0;
+    this.strikeOrder = {
+      index: this.moActive(), strike: s.strike, optionType: type,
+      tradingSymbol: symbol,
+      // Kite instrument keys use the option exchange (NFO for NSE indices, BFO for SENSEX)
+      instrumentKey: d.exchange + ':' + symbol,
+      side: 'BUY', lots: 1, orderType: 'MARKET', productType: 'MIS',
+      limitPrice: ltp, lotSize: d.lotSize, ltp
+    };
+    this.strikeOrderResult.set(null);
+    this.strikeOrderOpen.set(true);
+  }
+  closeStrikeOrder(): void { this.strikeOrderOpen.set(false); }
+
+  submitStrikeOrder(): void {
+    const o = this.strikeOrder;
+    this.strikeOrderResult.set(null);
+    const body = {
+      index: o.index, side: o.side, optionType: o.optionType, strike: o.strike,
+      lots: o.lots || 1, orderType: o.orderType,
+      limitPrice: o.orderType === 'LIMIT' ? (o.limitPrice || 0) : 0,
+      productType: o.productType, instrumentKey: o.instrumentKey, tradingSymbol: o.tradingSymbol
+    };
+    this.api.placeManualOrder(body).subscribe({
+      next: (r: any) => {
+        if (r?.['success']) {
+          this.toast.set(`✓ ${r['side']} ${r['instrument']} ×${r['quantity']} — ${r['status']} (${r['orderId']})`);
+          this.strikeOrderOpen.set(false);
+        } else {
+          this.strikeOrderResult.set(r ?? { error: 'Unknown error' });
+        }
+        this.cd.detectChanges();
+      },
+      error: (e: any) => {
+        this.strikeOrderResult.set({ error: e?.error?.error ?? e?.message ?? 'Request failed' });
+        this.cd.detectChanges();
+      }
     });
   }
 

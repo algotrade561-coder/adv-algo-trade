@@ -9,6 +9,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.core.oidc.user.OidcUser;
 import org.springframework.web.bind.annotation.*;
@@ -57,6 +58,7 @@ public class OiMomentumSettingsController {
     }
 
     @PostMapping
+    @PreAuthorize("hasAnyRole('ADMIN', 'SUPERUSER')")
     public ResponseEntity<Map<String, Object>> update(@RequestBody UpdateRequest body,
                                                        @AuthenticationPrincipal OidcUser principal) {
         try {
@@ -85,6 +87,7 @@ public class OiMomentumSettingsController {
      * which indices. Empty indices list = all.
      */
     @PostMapping("/resume")
+    @PreAuthorize("hasAnyRole('ADMIN', 'SUPERUSER')")
     public ResponseEntity<Map<String, Object>> resume(@RequestBody ResumeRequest body,
                                                        @AuthenticationPrincipal OidcUser principal) {
         if (strategy == null) {
@@ -118,6 +121,7 @@ public class OiMomentumSettingsController {
      * portfolio trading.
      */
     @PostMapping("/halts/extend")
+    @PreAuthorize("hasAnyRole('ADMIN', 'SUPERUSER')")
     public ResponseEntity<Map<String, Object>> extend(@RequestBody ResumeRequest body,
                                                        @AuthenticationPrincipal OidcUser principal) {
         if (strategy == null) {
@@ -146,6 +150,7 @@ public class OiMomentumSettingsController {
     }
 
     @PostMapping("/kill")
+    @PreAuthorize("hasAnyRole('ADMIN', 'SUPERUSER')")
     public ResponseEntity<Map<String, Object>> kill(@RequestBody KillRequest body,
                                                      @AuthenticationPrincipal OidcUser principal) {
         try {

@@ -6,6 +6,7 @@ import { MatIconModule } from '@angular/material/icon';
 import { RouterLink } from '@angular/router';
 import { ApiService } from '../core/api.service';
 import { MarketSnapshot, OilPriceSnapshot, PnlSnapshot, RuntimeStatus, StrategyDecision, TradingStatus } from '../core/models';
+import { PcrChartComponent } from '../shared/pcr-chart.component';
 
 interface TuningHealth {
   generatedAt?: string;
@@ -66,7 +67,7 @@ interface TuningHealth {
 @Component({
   selector: 'app-dashboard-page',
   standalone: true,
-  imports: [DecimalPipe, MatButtonModule, MatIconModule, RouterLink],
+  imports: [DecimalPipe, MatButtonModule, MatIconModule, RouterLink, PcrChartComponent],
   template: `
     <section class="page">
       <div class="top-row">
@@ -257,6 +258,9 @@ interface TuningHealth {
           </div>
 
         </div>
+
+        <!-- ── Intraday PCR daily chart (per index, 09:00–15:30) ─────── -->
+        <app-pcr-chart />
 
         <!-- ── Entry Status ──────────────────────────────────────────── -->
         @if (tradingStatus) {

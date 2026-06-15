@@ -32,35 +32,39 @@ public class AuthUserController {
     @GetMapping("/user")
     public ResponseEntity<?> currentUser(jakarta.servlet.http.HttpServletRequest request) {
         if (!isGoogleAuthEnabled()) {
-            return ResponseEntity.ok(Map.of("authenticated", true, "email", "local", "name", "Local User"));
+            // Local dev — return SUPERUSER so all admin pages are reachable
+            return ResponseEntity.ok(Map.of(
+                    "authenticated", true,
+                    "email", "local",
+                    "name", "Local User",
+                    "role", "SUPERUSER",
+                    "userId", 0));
         }
         try {
             var auth = org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication();
             if (auth == null || !auth.isAuthenticated() || auth instanceof org.springframework.security.authentication.AnonymousAuthenticationToken) {
                 return ResponseEntity.ok(Map.of("authenticated", false));
             }
-            // Don't access OAuth2User attributes — they cause ClassCastException on some JVMs
-            // Just confirm the user is authenticated
-            String name = auth.getName(); // returns the sub (Google user ID)
-            // Try to get email from the AppUser table instead
-            var users = userRepository.findAll();
-            String email = users.stream()
-                    .filter(u -> u.getLastLoginAt() != null)
-                    .max(java.util.Comparator.comparing(AppUser::getLastLoginAt))
-                    .map(AppUser::getEmail)
-                    .orElse("authenticated");
-            String displayName = users.stream()
-                    .filter(u -> u.getEmail().equals(email))
-                    .map(AppUser::getName)
-                    .filter(n -> n != null && !n.isBlank())
-                    .findFirst()
-                    .orElse(name);
+            // Pull email + name directly from the OAuth2User principal — this is the
+            // ACTUAL logged-in user, not whoever last logged in globally.
+            String email = null, displayName = null, picture = null;
+            Object principal = auth.getPrincipal();
+            if (principal instanceof OAuth2User o) {
+                email       = o.getAttribute("email");
+                displayName = o.getAttribute("name");
+                picture     = o.getAttribute("picture");
+            }
+            if (email == null || email.isBlank()) email = auth.getName();
+            String emailKey = email == null ? null : email.toLowerCase();
 
-            java.util.Map<String, Object> result = new java.util.LinkedHashMap<>();
+            AppUser dbUser = emailKey == null ? null : userRepository.findByEmail(emailKey).orElse(null);
+            Map<String, Object> result = new java.util.LinkedHashMap<>();
             result.put("authenticated", true);
-            result.put("email", email);
-            result.put("name", displayName);
-            result.put("picture", "");
+            result.put("email", emailKey);
+            result.put("name", displayName != null ? displayName : (dbUser != null ? dbUser.getName() : email));
+            result.put("picture", picture != null ? picture : "");
+            result.put("role", dbUser != null ? dbUser.getRole() : "USER");
+            result.put("userId", dbUser != null ? dbUser.getId() : null);
             return ResponseEntity.ok(result);
         } catch (Exception e) {
             return ResponseEntity.ok(Map.of("authenticated", false, "error", e.getMessage()));

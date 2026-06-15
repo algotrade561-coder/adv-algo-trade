@@ -8,12 +8,16 @@ import { EntrySignalsPageComponent } from './pages/entry-signals-page.component'
 import { RejectedSignalsPageComponent } from './pages/rejected-signals-page.component';
 import { StrategiesPageComponent } from './pages/strategies-page.component';
 import { SettingsPageComponent } from './pages/settings-page.component';
+import { adminGuard } from './core/admin.guard';
 import { UnderlyingConfigPageComponent } from './pages/underlying-config-page.component';
 import { DiagnosticsPageComponent } from './pages/diagnostics-page.component';
 import { TuningCapturePageComponent } from './pages/tuning-capture-page.component';
 import { TuningReportPageComponent } from './pages/tuning-report-page.component';
 import { TuningStrategyPageComponent } from './pages/tuning-strategy-page.component';
 import { TuningExplorePageComponent } from './pages/tuning-explore-page.component';
+import { AdminUsersPageComponent } from './pages/admin-users-page.component';
+import { MyBrokerPageComponent } from './pages/my-broker-page.component';
+import { MyTradingPageComponent } from './pages/my-trading-page.component';
 
 export const routes: Routes = [
   { path: '', pathMatch: 'full', redirectTo: 'dashboard' },
@@ -32,6 +36,9 @@ export const routes: Routes = [
   { path: 'rejected-signals', component: RejectedSignalsPageComponent },
   { path: 'reports', component: ReportsPageComponent },
   { path: 'auth', component: AuthPageComponent },
+  { path: 'my-broker', component: MyBrokerPageComponent },
+  { path: 'my-trading', component: MyTradingPageComponent },
+  { path: 'admin/users', component: AdminUsersPageComponent, canActivate: [adminGuard] },
   { path: 'diagnostics', component: DiagnosticsPageComponent },
   { path: '**', redirectTo: 'dashboard' }
 ];

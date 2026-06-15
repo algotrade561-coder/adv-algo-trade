@@ -43,6 +43,17 @@ class PositionSynchronizerTest {
         } catch (Exception e) {
             throw new RuntimeException("Failed to inject SchedulerRegistry mock", e);
         }
+        // Pin the late-day import cutoff clock to mid-session (10:00 IST) so the
+        // "skip imports after 15:00" guard is deterministic regardless of run time.
+        try {
+            java.time.ZoneId ist = java.time.ZoneId.of("Asia/Kolkata");
+            Instant tenAmIst = java.time.LocalDate.now(ist).atTime(10, 0).atZone(ist).toInstant();
+            var clockField = PositionSynchronizer.class.getDeclaredField("importClock");
+            clockField.setAccessible(true);
+            clockField.set(synchronizer, java.time.Clock.fixed(tenAmIst, ist));
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to inject importClock", e);
+        }
     }
 
     @Test

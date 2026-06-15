@@ -1,6 +1,6 @@
 import { bootstrapApplication } from '@angular/platform-browser';
 import { provideAnimations } from '@angular/platform-browser/animations';
-import { provideHttpClient, withInterceptors } from '@angular/common/http';
+import { provideHttpClient, withInterceptors, withXsrfConfiguration } from '@angular/common/http';
 import { importProvidersFrom } from '@angular/core';
 import { MatSnackBarModule } from '@angular/material/snack-bar';
 import { provideRouter, withComponentInputBinding, withHashLocation } from '@angular/router';
@@ -12,7 +12,10 @@ bootstrapApplication(AppComponent, {
   providers: [
     provideAnimations(),
     importProvidersFrom(MatSnackBarModule),
-    provideHttpClient(withInterceptors([apiErrorInterceptor])),
+    provideHttpClient(
+      withInterceptors([apiErrorInterceptor]),
+      withXsrfConfiguration({ cookieName: 'XSRF-TOKEN', headerName: 'X-XSRF-TOKEN' })
+    ),
     provideRouter(routes, withComponentInputBinding(), withHashLocation())
   ]
 }).catch((error) => console.error(error));

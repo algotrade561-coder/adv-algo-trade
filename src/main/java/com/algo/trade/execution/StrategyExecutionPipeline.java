@@ -50,8 +50,12 @@ public class StrategyExecutionPipeline {
     private final com.algo.trade.underlying.UnderlyingConfigService underlyingConfigService;
     private final com.algo.trade.commodity.CrudeContextProvider crudeContextProvider;
 
+    /** Universal Call Orchestrator — receives signals from all strategies. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private UniversalCallOrchestrator universalCallOrchestrator;
+
     // Signal de-dup: suppress identical (strategy+instrument+side) signals for 30s after rejection
-    private final java.util.concurrent.ConcurrentHashMap<String, java.time.Instant> rejectedSignalCache = new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.concurrent.ConcurrentHashMap<String, Instant> rejectedSignalCache = new java.util.concurrent.ConcurrentHashMap<>();
     private static final long SIGNAL_DEDUP_SECONDS = 30;
 
     public StrategyExecutionPipeline(
@@ -205,8 +209,8 @@ public class StrategyExecutionPipeline {
 
         // Signal de-dup: suppress identical signals that were recently rejected (30s window)
         String dedupKey = type.name() + "|" + enriched.selectedInstrumentKey().orElse("") + "|" + signalName;
-        java.time.Instant lastRejection = rejectedSignalCache.get(dedupKey);
-        if (lastRejection != null && java.time.Instant.now().isBefore(lastRejection.plusSeconds(SIGNAL_DEDUP_SECONDS))) {
+        Instant lastRejection = rejectedSignalCache.get(dedupKey);
+        if (lastRejection != null && Instant.now().isBefore(lastRejection.plusSeconds(SIGNAL_DEDUP_SECONDS))) {
             return false; // Suppress — same signal was rejected within 30s
         }
 
@@ -253,9 +257,9 @@ public class StrategyExecutionPipeline {
         }
         // Record rejection in de-dup cache to suppress identical signals for 30s
         if (!executed) {
-            rejectedSignalCache.put(dedupKey, java.time.Instant.now());
+            rejectedSignalCache.put(dedupKey, Instant.now());
             // Evict stale entries older than 60s to prevent unbounded growth
-            rejectedSignalCache.entrySet().removeIf(e -> e.getValue().isBefore(java.time.Instant.now().minusSeconds(60)));
+            rejectedSignalCache.entrySet().removeIf(e -> e.getValue().isBefore(Instant.now().minusSeconds(60)));
         }
 
         Timeframe csvTf = resolveTimeframe(config.getCandleTimeframe(), Timeframe.ONE_MINUTE);
@@ -301,6 +305,21 @@ public class StrategyExecutionPipeline {
         BigDecimal premium = decision.optionPrice().orElse(decision.underlyingPrice());
 
         if (decision.signalType().name().startsWith("BUY_") && decision.selectedInstrumentKey().isPresent()) {
+            // Publish to Universal Call Orchestrator for aggregation tracking
+            if (universalCallOrchestrator != null) {
+                IndexType idx = IndexType.from(underlying);
+                int dir = decision.signalType() == SignalType.BUY_CE ? 1 : -1;
+                int confidence = decision.confidenceScore() != null
+                        ? decision.confidenceScore().intValue() : 70;
+                int strike = decision.selectedStrike().map(BigDecimal::intValue).orElse(0);
+                String optType = dir > 0 ? "CE" : "PE";
+                String reason = decision.reasons().isEmpty() ? "" : decision.reasons().get(0);
+                var signal = UniversalCallOrchestrator.StrategySignal.withStrike(
+                        config.getStrategyType() != null ? config.getStrategyType().name() : "UNKNOWN",
+                        idx, dir, confidence, strike, optType, reason);
+                universalCallOrchestrator.submitSignal(signal);
+            }
+
             // 4 Jun 2026 PM: cross-index correlation block. NIFTY/BANKNIFTY/SENSEX
             // are highly correlated — taking same-side BUY on two of them within
             // 60s doubles directional exposure. Today's 09:20 losses were exactly
@@ -375,12 +394,12 @@ public class StrategyExecutionPipeline {
                     .strategyType(type.name())
                     .underlying(ctx.underlying())
                     .decision(new StrategyDecision(
-                            java.time.Instant.now(), ctx.underlying(),
-                            com.algo.trade.domain.SignalType.NO_TRADE, spotPrice,
-                            java.util.Optional.empty(), java.util.Optional.empty(), java.util.Optional.empty(),
-                            java.util.Optional.empty(), java.util.Optional.empty(), java.util.Optional.empty(),
-                            java.util.Optional.of(ot), false, java.util.Optional.empty(), false,
-                            java.math.BigDecimal.ZERO, java.util.List.of(noTradeReason)))
+                            Instant.now(), ctx.underlying(),
+                            SignalType.NO_TRADE, spotPrice,
+                            Optional.empty(), Optional.empty(), Optional.empty(),
+                            Optional.empty(), Optional.empty(), Optional.empty(),
+                            Optional.of(ot), false, Optional.empty(), false,
+                            BigDecimal.ZERO, List.of(noTradeReason)))
                     .underlyingCandles(csvCandles)
                     .ivRank(ctx.ivRank())
                     .vixLevel(ctx.vixLevel() > 0 ? ctx.vixLevel() : null)
@@ -563,7 +582,7 @@ public class StrategyExecutionPipeline {
         try {
             if (candles == null || candles.size() < period + 1) return null;
             List<BigDecimal> closes = candles.stream().map(Candle::close).toList();
-            return new com.algo.trade.indicator.RsiIndicator().calculate(closes, period).doubleValue();
+            return new RsiIndicator().calculate(closes, period).doubleValue();
         } catch (Exception e) { return null; }
     }
 
@@ -587,7 +606,7 @@ public class StrategyExecutionPipeline {
         try {
             if (candles == null || candles.size() < 22) return null;
             List<BigDecimal> closes = candles.stream().map(Candle::close).toList();
-            var ema = new com.algo.trade.indicator.EmaIndicator();
+            var ema = new EmaIndicator();
             BigDecimal ema9 = ema.calculate(closes, 9);
             BigDecimal ema21 = ema.calculate(closes, 21);
             if (ema21.signum() == 0) return null;
@@ -602,11 +621,11 @@ public class StrategyExecutionPipeline {
             if (instrumentKey == null) return null;
             return marketDataService.quote(instrumentKey)
                     .flatMap(q -> {
-                        if (q.bid().isEmpty() || q.ask().isEmpty()) return java.util.Optional.<Double>empty();
+                        if (q.bid().isEmpty() || q.ask().isEmpty()) return Optional.<Double>empty();
                         BigDecimal bid = q.bid().get();
                         BigDecimal ask = q.ask().get();
-                        if (bid.signum() <= 0 || ask.signum() <= 0 || q.lastPrice().signum() <= 0) return java.util.Optional.<Double>empty();
-                        return java.util.Optional.of(ask.subtract(bid).divide(q.lastPrice(), java.math.MathContext.DECIMAL64)
+                        if (bid.signum() <= 0 || ask.signum() <= 0 || q.lastPrice().signum() <= 0) return Optional.<Double>empty();
+                        return Optional.of(ask.subtract(bid).divide(q.lastPrice(), java.math.MathContext.DECIMAL64)
                                 .multiply(BigDecimal.valueOf(100)).doubleValue());
                     }).orElse(null);
         } catch (Exception e) { return null; }
