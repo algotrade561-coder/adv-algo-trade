@@ -1,0 +1,17 @@
+# systemd service (oneshot) for the daily edge study.
+# Install: copy to /etc/systemd/system/edge-study.service (edit paths/User), then enable edge-study.timer.
+[Unit]
+Description=Edge study over option-chain snapshots (no-lookahead signal/edge + net-of-cost tradability)
+After=network-online.target
+
+[Service]
+Type=oneshot
+# EDIT: the user that owns the repo + the absolute repo path on the EC2 box.
+User=ubuntu
+WorkingDirectory=/opt/adv-algo-trade/unified-algo-trade
+ExecStart=/usr/bin/env bash tools/edge-study/run-edge-study.sh
+# Study NIFTY by default; override here if you also capture BANKNIFTY/SENSEX:
+Environment=EDGE_UNDERLYINGS=NIFTY
+# Lightweight caps (no daemon; finishes in seconds).
+MemoryMax=256M
+Nice=10

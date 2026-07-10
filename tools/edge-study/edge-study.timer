@@ -1,0 +1,18 @@
+# systemd timer — fire the edge study at 15:30 IST on weekdays.
+# Install: copy to /etc/systemd/system/edge-study.timer, then:
+#   sudo systemctl daemon-reload && sudo systemctl enable --now edge-study.timer
+#   systemctl list-timers edge-study.timer     # verify the next run time
+[Unit]
+Description=Run edge-study at 15:30 IST (weekdays)
+
+[Timer]
+# OnCalendar supports an explicit timezone suffix on modern systemd (v240+): this fires at 15:30
+# Asia/Kolkata REGARDLESS of the server's OS timezone — the robust option.
+OnCalendar=Mon..Fri 15:30 Asia/Kolkata
+# If your systemd is too old to accept the TZ suffix, DELETE the line above and use ONE of:
+#   OnCalendar=Mon..Fri 10:00      # when the OS timezone is UTC  (15:30 IST = 10:00 UTC)
+#   OnCalendar=Mon..Fri 15:30      # when the OS timezone is Asia/Kolkata
+Persistent=false
+
+[Install]
+WantedBy=timers.target
