@@ -22,8 +22,8 @@ public enum TimeOfDayMode {
     /** 10:30–11:30 IST — trend-continuation phase. */
     TREND_FOLLOW(3, 0.85),
 
-    /** 11:30–13:30 IST — retail-dominant chop. Strict 4-of-4 with WRITER_SQUEEZE carve-out. */
-    MIDDAY_DISCIPLINE(4, 0.7),
+    /** 11:30–13:30 IST — retail-dominant chop. Requires 3-of-4 gates (was 4-of-4, too strict). */
+    MIDDAY_DISCIPLINE(3, 0.7),
 
     /** 13:30–14:45 IST — afternoon institutional positioning + trap setups. */
     AFTERNOON_POSITION(3, 0.9),

@@ -279,6 +279,11 @@ import { ApiRecord, ExecutionMode, MarketDataMode, RuntimeStatus, TradingMode, U
                 <mat-select [(ngModel)]="strikeOrder.productType"><mat-option value="MIS">MIS</mat-option><mat-option value="NRML">NRML</mat-option></mat-select>
               </mat-form-field>
             </div>
+            <div class="modal-2col">
+              <mat-form-field appearance="outline"><mat-label>Variety</mat-label>
+                <mat-select [(ngModel)]="strikeOrder.variety"><mat-option value="REGULAR">REGULAR</mat-option><mat-option value="AMO">AMO</mat-option></mat-select>
+              </mat-form-field>
+            </div>
             @if (strikeOrder.orderType === 'LIMIT') {
               <mat-form-field appearance="outline" class="full"><mat-label>Limit Price (&#8377;)</mat-label>
                 <input matInput type="number" step="0.05" [(ngModel)]="strikeOrder.limitPrice">
@@ -327,6 +332,11 @@ import { ApiRecord, ExecutionMode, MarketDataMode, RuntimeStatus, TradingMode, U
               </mat-form-field>
               <mat-form-field appearance="outline"><mat-label>Qty</mat-label>
                 <input matInput type="number" min="1" [(ngModel)]="orderForm.quantity">
+              </mat-form-field>
+            </div>
+            <div class="modal-2col">
+              <mat-form-field appearance="outline"><mat-label>Variety</mat-label>
+                <mat-select [(ngModel)]="orderForm.variety"><mat-option value="REGULAR">REGULAR</mat-option><mat-option value="AMO">AMO</mat-option></mat-select>
               </mat-form-field>
             </div>
             @if (orderForm.orderType === 'LIMIT') {
@@ -527,7 +537,7 @@ export class ExecutionPageComponent implements OnInit, OnDestroy {
   toastErr = signal('');
   orderModalOpen = signal(false);
   orderResult = signal<ApiRecord | null>(null);
-  orderForm = { instrumentKey: '', side: 'BUY', orderType: 'MARKET', productType: 'MIS', quantity: 75, limitPrice: undefined as number | undefined, tag: 'manual-ui' };
+  orderForm = { instrumentKey: '', side: 'BUY', orderType: 'MARKET', productType: 'MIS', variety: 'REGULAR', quantity: 75, limitPrice: undefined as number | undefined, tag: 'manual-ui' };
 
   // ── Manual order strike picker ──────────────────────────────────────
   readonly moIndices = ['NIFTY', 'BANKNIFTY', 'SENSEX'];
@@ -538,7 +548,7 @@ export class ExecutionPageComponent implements OnInit, OnDestroy {
   strikeOrder = {
     index: '', strike: 0, optionType: 'CE', tradingSymbol: '', instrumentKey: '',
     side: 'BUY', lots: 1, orderType: 'MARKET', productType: 'MIS',
-    limitPrice: 0, lotSize: 0, ltp: 0
+    limitPrice: 0, lotSize: 0, ltp: 0, variety: 'REGULAR'
   };
   private moTimer?: ReturnType<typeof setInterval>;
 
@@ -616,7 +626,7 @@ export class ExecutionPageComponent implements OnInit, OnDestroy {
       // Kite instrument keys use the option exchange (NFO for NSE indices, BFO for SENSEX)
       instrumentKey: d.exchange + ':' + symbol,
       side: 'BUY', lots: 1, orderType: 'MARKET', productType: 'MIS',
-      limitPrice: ltp, lotSize: d.lotSize, ltp
+      limitPrice: ltp, lotSize: d.lotSize, ltp, variety: 'REGULAR'
     };
     this.strikeOrderResult.set(null);
     this.strikeOrderOpen.set(true);
@@ -630,7 +640,8 @@ export class ExecutionPageComponent implements OnInit, OnDestroy {
       index: o.index, side: o.side, optionType: o.optionType, strike: o.strike,
       lots: o.lots || 1, orderType: o.orderType,
       limitPrice: o.orderType === 'LIMIT' ? (o.limitPrice || 0) : 0,
-      productType: o.productType, instrumentKey: o.instrumentKey, tradingSymbol: o.tradingSymbol
+      productType: o.productType, variety: o.variety,
+      instrumentKey: o.instrumentKey, tradingSymbol: o.tradingSymbol
     };
     this.api.placeManualOrder(body).subscribe({
       next: (r: any) => {
@@ -655,7 +666,7 @@ export class ExecutionPageComponent implements OnInit, OnDestroy {
 
   submitOrder(): void {
     this.orderResult.set(null);
-    const p: any = { instrumentKey: this.orderForm.instrumentKey, side: this.orderForm.side, orderType: this.orderForm.orderType, productType: this.orderForm.productType, quantity: this.orderForm.quantity, tag: this.orderForm.tag || 'manual-ui' };
+    const p: any = { instrumentKey: this.orderForm.instrumentKey, side: this.orderForm.side, orderType: this.orderForm.orderType, productType: this.orderForm.productType, variety: this.orderForm.variety, quantity: this.orderForm.quantity, tag: this.orderForm.tag || 'manual-ui' };
     if (this.orderForm.orderType === 'LIMIT' && this.orderForm.limitPrice != null) p.limitPrice = this.orderForm.limitPrice;
     this.api.placeOrder(p).subscribe({ next: (r: ApiRecord) => this.orderResult.set(r), error: (e: any) => this.orderResult.set({ accepted: false, reason: e?.error?.reason ?? 'Order failed' }) });
   }

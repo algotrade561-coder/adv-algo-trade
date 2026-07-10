@@ -87,7 +87,9 @@ public class McxCrudeOilService {
                     .min(Comparator.comparing(i -> i.expiry().get()));
 
             if (crudeOil.isEmpty()) {
-                log.warn("[MCX Crude Oil] No active contract found in instruments");
+                // Observational-only feed (oil-spike market context; not used in any entry filter) and
+                // MCX may need a separate data subscription — DEBUG, not WARN, to avoid daily noise.
+                log.debug("[MCX Crude Oil] No active contract found in instruments");
                 return;
             }
 
@@ -133,7 +135,7 @@ public class McxCrudeOilService {
                     Timeframe.FIFTEEN_MINUTE, false);
             List<com.algo.trade.domain.Candle> candles = marketDataService.historicalCandles(request);
             if (candles.isEmpty()) {
-                log.warn("[MCX Crude Oil] No previous-session candles returned for {}", inst.instrumentKey());
+                log.debug("[MCX Crude Oil] No previous-session candles returned for {}", inst.instrumentKey());
                 return;
             }
             Instant todayStart = today.atStartOfDay(IST).toInstant();

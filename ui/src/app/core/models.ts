@@ -96,6 +96,8 @@ export interface MarketSnapshot {
   banknifty: number;
   sensex: number;
   ivRank: number;
+  ivPercentile: number;
+  atmIvPercentile?: number | null;
   vixStatus: 'UNKNOWN' | 'LOW' | 'NORMAL' | 'ELEVATED' | 'HIGH';
   pcrBias: 'UNKNOWN' | 'BULLISH' | 'NEUTRAL' | 'BEARISH';
   circuitBreakerTriggered: boolean;
@@ -103,6 +105,8 @@ export interface MarketSnapshot {
   preEventDay: boolean;
   safeForLongPremium: boolean;
   longPremiumBlockReason: string | null;
+  safeForShortPremium: boolean;
+  shortPremiumBlockReason: string | null;
 }
 
 export interface StrategyDecision {

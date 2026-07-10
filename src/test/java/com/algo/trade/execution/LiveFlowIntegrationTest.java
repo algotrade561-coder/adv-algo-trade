@@ -67,6 +67,15 @@ class LiveFlowIntegrationTest {
         when(globalConfigService.getDailyProfitTarget()).thenReturn(BigDecimal.ZERO);
         when(globalConfigService.getMaxPendingOrders()).thenReturn(3);
         when(globalConfigService.getLimitOrderCancelMinutes()).thenReturn(1);
+        // logArmedExits reads the global exit profile after every trade materialization — leaving these
+        // null NPEs the entry path and turns an accepted fill into a rejected result.
+        when(globalConfigService.getStopLossPercent()).thenReturn(BigDecimal.valueOf(10));
+        when(globalConfigService.getTargetPercent()).thenReturn(BigDecimal.valueOf(20));
+        when(globalConfigService.getTrailingStopActivationPercent()).thenReturn(BigDecimal.valueOf(8));
+        when(globalConfigService.getTrailingGapPercent()).thenReturn(BigDecimal.valueOf(4));
+        // §LOT-CAP counts this user's REAL open lots per underlying; unstubbed (0→clamped to 1) it
+        // blocks any second position and masks what the tests actually exercise.
+        when(globalConfigService.getMaxLotsPerTrade()).thenReturn(2);
 
         brokerClient = mock(BrokerClient.class);
         tradingStateService = mock(TradingStateService.class);
@@ -233,6 +242,10 @@ class LiveFlowIntegrationTest {
                 "EXIT-test", Optional.of("BRK-EXIT"), "NFO:NIFTY26APR24500CE",
                 OrderSide.SELL, OrderStatus.COMPLETE, 65, 65,
                 Optional.of(BigDecimal.valueOf(25)), Optional.empty(), Instant.now(clock)));
+        // Broker-flat exit guard (§B2): the engine verifies the broker actually holds the position
+        // before selling; an empty positions() would reconcile-close WITHOUT placing the SELL.
+        when(brokerClient.positions()).thenReturn(List.of(new Position(
+                "NFO:NIFTY26APR24500CE", 65, BigDecimal.valueOf(30), BigDecimal.valueOf(25), BigDecimal.ZERO)));
 
         ExecutionResult result = executionEngine.closeTrade("TRD-real", BigDecimal.valueOf(25), "STOP_LOSS");
 
@@ -255,6 +268,11 @@ class LiveFlowIntegrationTest {
         TradeEntity realTrade = new TradeEntity("TRD-1", "NFO:NIFTY26APR24600CE",
                 "NIFTY", "CE", TradeStatus.OPEN, 65, BigDecimal.valueOf(25), Instant.now(clock), "REAL");
         when(tradeRepository.findByStatus(TradeStatus.OPEN)).thenReturn(List.of(paperTrade, realTrade));
+
+        // §D2 concentration cap (trading.max-open-per-underlying, default 1) counts REAL NIFTY trades
+        // only. At 2 it discriminates exactly what this test asserts: paper counted → 2/2 rejected;
+        // paper excluded → 1/2 accepted.
+        org.springframework.test.util.ReflectionTestUtils.setField(executionEngine, "maxOpenPerUnderlying", 2);
 
         // Real entry should succeed — only 1 real open trade, not 2
         StrategyDecision decision = testDecision("DIRECTIONAL_BUY test");
@@ -297,9 +315,16 @@ class LiveFlowIntegrationTest {
         TradeEntity openTrade = new TradeEntity("TRD-open", "NFO:NIFTY26APR24500CE",
                 "NIFTY", "CE", TradeStatus.OPEN, 65, BigDecimal.valueOf(30), Instant.now(clock), "test");
         when(tradeRepository.findByStatus(TradeStatus.OPEN)).thenReturn(List.of(openTrade));
+        // The multi-user exit path resolves the trade by instrument+owner (findOpenTradesByInstrumentForUser),
+        // not by the global OPEN scan — the setUp stub returns empty for this query.
+        when(tradeRepository.findByInstrumentKeyAndStatus("NFO:NIFTY26APR24500CE", TradeStatus.OPEN))
+                .thenReturn(List.of(openTrade));
 
         OrderEntity exitOrder = mock(OrderEntity.class);
         when(exitOrder.getClientOrderId()).thenReturn("EXIT-abc");
+        // Owner match: an unstubbed getUserId() mock returns 0, which fails the sameUser filter
+        // against the trade's default owner (user 1) and the exit is silently dropped.
+        when(exitOrder.getUserId()).thenReturn(com.algo.trade.multiuser.UserContext.DEFAULT_USER_ID);
         when(exitOrder.getInstrumentKey()).thenReturn("NFO:NIFTY26APR24500CE");
         when(exitOrder.getAverageFillPrice()).thenReturn(BigDecimal.valueOf(36));
         when(exitOrder.getUpdatedAt()).thenReturn(Instant.now(clock));

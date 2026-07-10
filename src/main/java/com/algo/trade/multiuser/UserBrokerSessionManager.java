@@ -368,6 +368,17 @@ public class UserBrokerSessionManager implements com.algo.trade.broker.zerodha.K
             return config != null && config.hasValidToken() && config.isTradingEnabled();
         }
 
+        /**
+         * Authentication-only readiness: a valid token, regardless of tradingEnabled.
+         * tradingEnabled is a business gate on NEW entries (enforced upstream in
+         * MultiUserStrategyLoop / SignalCopyService / UserAwareExecutionService) — it must
+         * NOT block authenticated reads (positions) or EXITS. Disabling a user's trading is
+         * exactly when the operator most needs to view and flatten their positions.
+         */
+        public boolean hasAuth() {
+            return config != null && config.hasValidToken();
+        }
+
         public String getApiKey() { return config != null ? config.getApiKey() : null; }
         public String getAccessToken() { return config != null ? config.getAccessToken() : null; }
         public String getAuthHeader() {

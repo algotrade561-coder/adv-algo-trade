@@ -25,10 +25,12 @@ class TimeOfDayModeTest {
     }
 
     @Test
-    void middayDiscipline_requires4Of4() {
+    void middayDiscipline_requires3Of4() {
+        // MIDDAY_DISCIPLINE was relaxed from 4-of-4 to 3-of-4 gates (see TimeOfDayMode:
+        // "was 4-of-4, too strict"). Test updated to match the intentional code change.
         TimeOfDayMode m = TimeOfDayMode.classify(LocalTime.of(12, 0));
         assertEquals(TimeOfDayMode.MIDDAY_DISCIPLINE, m);
-        assertEquals(4, m.requiredGates());
+        assertEquals(3, m.requiredGates());
     }
 
     @Test

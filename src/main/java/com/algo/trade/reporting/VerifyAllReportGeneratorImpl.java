@@ -629,7 +629,6 @@ public class VerifyAllReportGeneratorImpl implements VerifyAllReportGenerator {
             cfgItem(html, "Bearish Imbalance ×", fmt(gc.getBearishImbalanceThreshold()));
             cfgItem(html, "Min Liquidity Vol", String.valueOf(gc.getMinLiquidityVolume()));
             cfgItem(html, "Max IV %", fmt(gc.getMaxIvPercent()));
-            cfgItem(html, "Min Signal Score %", fmt(gc.getMinSignalScorePercent()));
             cfgItem(html, "CE OI Support", String.valueOf(gc.isCeOiSupportRequired()));
             cfgItem(html, "PE OI Support", String.valueOf(gc.isPeOiSupportRequired()));
             cfgItem(html, "CE OI Divergence", String.valueOf(gc.isCeOiDivergenceFilterEnabled()));
@@ -662,11 +661,6 @@ public class VerifyAllReportGeneratorImpl implements VerifyAllReportGenerator {
             // Risk
             html.append("<div class='cfg-section'><h3>Risk Limits (GlobalConfig)</h3><div class='cfg-grid'>");
             cfgItem(html, "Total Capital", fmt(gc.getTotalCapital()));
-            cfgItem(html, "Max Risk/Trade %", fmt(gc.getMaxRiskPerTradePercent()));
-            cfgItem(html, "Max Daily Loss %", fmt(gc.getMaxDailyLossPercent()));
-            cfgItem(html, "Max Trades/Day", String.valueOf(gc.getMaxTradesPerDay()));
-            cfgItem(html, "Max Consec Losses", String.valueOf(gc.getMaxConsecutiveLosses()));
-            cfgItem(html, "Max Open Trades", String.valueOf(gc.getMaxOpenTrades()));
             cfgItem(html, "Cooldown (min)", String.valueOf(gc.getCooldownMinutes()));
             cfgItem(html, "Daily Profit Target", fmt(gc.getDailyProfitTarget()));
             html.append("</div></div>");

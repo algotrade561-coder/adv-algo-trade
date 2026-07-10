@@ -41,3 +41,27 @@ logging:
 trading:
   broker:
     ngrok-enabled: false
+
+# ──────────────────────────────────────────────────────────────────────────
+# Per-user source-IP automation (SEBI static-IP rule). LIVE = ON.
+# Credentials come from the EC2 instance IAM role (Ec2ssmrole) via IMDSv2 —
+# no AWS keys stored here. See docs/AWS_SETUP_algo-trade_FILLED.md.
+# ──────────────────────────────────────────────────────────────────────────
+ip-automation:
+  enabled: true                    # live AWS provisioning ON
+  auto-provision-on-create: true   # allocate + assign an IP when a user is added
+  max-eips: 20                      # region EIP quota (raise after quota increase approved)
+  eni-secondary-ip-capacity: 0     # instance-type secondary-IP limit (0 = unknown)
+  network-interface: ens5          # OS NIC on this instance
+  # 2026-06-26 Mumbai migration fix: these were PINNED to Sydney (ap-southeast-2) infra —
+  # region/eni/subnet/primary-private-ip — and because config overrides IMDS, the box kept
+  # allocating EIPs in SYDNEY even after moving to Mumbai (ap-south-1). Left blank, the
+  # InstanceMetadataProvider auto-detects the correct values from IMDSv2 on whatever box runs,
+  # so the instance is self-configuring and we never re-pin a region by hand again.
+  region:                          # blank → IMDS placement/region (ap-south-1 on Mumbai)
+  eni-id:                          # blank → IMDS primary ENI interface-id
+  subnet-cidr:                     # blank → IMDS subnet-ipv4-cidr-block
+  primary-private-ip:              # blank → IMDS local-ipv4 (box's own IP; reconciler protects its EIP)
+  reconcile-cron: "0 30 6 * * *"   # Phase 3 daily reconcile (server time); boot reconcile always runs
+  os:
+    use-sudo: true                 # `ip addr add/del` via the narrow sudoers entry

@@ -35,7 +35,7 @@ public class GlobalConfigController {
 
     /** Update global config. Returns updated DTO or 400 on validation failure. */
     @PutMapping
-    @PreAuthorize("hasAnyRole('ADMIN', 'SUPERUSER')")
+    @PreAuthorize("hasRole('SUPERUSER')")
     public ResponseEntity<Map<String, Object>> update(@RequestBody GlobalConfig body) {
         try {
             GlobalConfig updated = globalConfigService.update(body);
@@ -48,7 +48,7 @@ public class GlobalConfigController {
 
     /** Reset global config to YAML defaults. */
     @PostMapping("/reset")
-    @PreAuthorize("hasAnyRole('ADMIN', 'SUPERUSER')")
+    @PreAuthorize("hasRole('SUPERUSER')")
     public Map<String, Object> reset() {
         GlobalConfig reset = globalConfigService.resetToDefaults();
         log.info("GlobalConfig reset to defaults via REST");
@@ -72,8 +72,9 @@ public class GlobalConfigController {
         m.put("bearishImbalanceThreshold", c.getBearishImbalanceThreshold());
         m.put("minLiquidityVolume", c.getMinLiquidityVolume());
         m.put("maxIvPercent", c.getMaxIvPercent());
-        m.put("minSignalScorePercent", c.getMinSignalScorePercent());
-        m.put("minEnvironmentScore", c.getMinEnvironmentScore());
+        m.put("vixMinForLongPremium", c.getVixMinForLongPremium());
+        m.put("vixMinForShortPremium", c.getVixMinForShortPremium());
+        m.put("vixMaxForShortPremium", c.getVixMaxForShortPremium());
         m.put("ceOiSupportRequired", c.isCeOiSupportRequired());
         m.put("peOiSupportRequired", c.isPeOiSupportRequired());
         m.put("ceOiDivergenceFilterEnabled", c.isCeOiDivergenceFilterEnabled());
@@ -101,15 +102,11 @@ public class GlobalConfigController {
         m.put("manageSyncedTrades", c.isManageSyncedTrades());
         // Risk fields
         m.put("totalCapital", c.getTotalCapital());
-        m.put("maxRiskPerTradePercent", c.getMaxRiskPerTradePercent());
-        m.put("maxDailyLossPercent", c.getMaxDailyLossPercent());
-        m.put("maxTradesPerDay", c.getMaxTradesPerDay());
-        m.put("maxConsecutiveLosses", c.getMaxConsecutiveLosses());
-        m.put("maxOpenTrades", c.getMaxOpenTrades());
         m.put("cooldownMinutes", c.getCooldownMinutes());
         m.put("maxOpenPositionsPerStrategy", c.getMaxOpenPositionsPerStrategy());
         m.put("dailyProfitTarget", c.getDailyProfitTarget());
-        m.put("maxLotsPerTrade", c.getMaxLotsPerTrade());
+        m.put("memorySuspensionAfterLosses", c.getMemorySuspensionAfterLosses());
+        m.put("avalancheTradingEnabled", c.getAvalancheTradingEnabled());
         m.put("mlVirtualTradeThreshold", c.getMlVirtualTradeThreshold());
         // Execution tuning
         m.put("limitOrderCancelMinutes", c.getLimitOrderCancelMinutes());

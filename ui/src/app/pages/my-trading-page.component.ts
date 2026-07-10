@@ -289,7 +289,7 @@ export class MyTradingPageComponent implements OnInit, OnDestroy {
   }
 
   formatTime(t: string): string {
-    try { return new Date(t).toLocaleTimeString(); } catch { return t; }
+    try { return new Date(t).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' }); } catch { return t; }
   }
 
   asNum(v: unknown): number {

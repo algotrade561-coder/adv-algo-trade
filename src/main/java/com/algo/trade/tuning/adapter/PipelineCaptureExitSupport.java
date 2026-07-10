@@ -95,7 +95,13 @@ public final class PipelineCaptureExitSupport {
         BigDecimal entryAbs = entryNet.abs();
         double realizedPnlPct = 0.0;
         if (entryAbs.signum() > 0) {
-            realizedPnlPct = entryNet.subtract(exitNet, MathContext.DECIMAL64)
+            // SIGN FIX (2026-07-02): profit = (exit value − entry value) / |entry|. netSpreadDebit is
+            // BUY−SELL, so a rising MTM value = profit for the held structure. Works for BOTH debit spreads
+            // (long straddle: 200→260 = +30%) and credit spreads (short strangle: −200→−80 = +60%). The old
+            // (entry−exit) form inverted BOTH — winners were written to exit.csv as losers, flipping the
+            // scorecard win%/avg P&L for all 12 spread strategies. Matches AbstractSpreadStrategy's own
+            // profit convention ((currentNet−entryNet)/entryNet).
+            realizedPnlPct = exitNet.subtract(entryNet, MathContext.DECIMAL64)
                     .divide(entryAbs, MathContext.DECIMAL64)
                     .doubleValue() * 100.0;
         }

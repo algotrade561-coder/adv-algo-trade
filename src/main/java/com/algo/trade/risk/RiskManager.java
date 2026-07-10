@@ -119,8 +119,18 @@ public class RiskManager {
     public BigDecimal getDailyPnl() {
         Instant start = LocalDate.now(IST).atStartOfDay(IST).toInstant();
         Instant end   = LocalDate.now(IST).plusDays(1).atStartOfDay(IST).toInstant();
+        // PER-USER (2026-07-02): only THIS user's realized P&L. Pooling all users' P&L skewed per-user position
+        // sizing (AdaptivePositionSizer reads this) and daily-loss alerts off other users' losses. Also exclude
+        // MANUAL/SYNC positions — a user's manual trade P&L isn't the bot's daily book.
+        Long me = com.algo.trade.multiuser.UserContext.getUserId();
+        Long meId = me != null ? me : com.algo.trade.multiuser.UserContext.DEFAULT_USER_ID;
         return tradeRepository.findByEntryTimeBetween(start, end).stream()
                 .filter(t -> !t.isPaperTrade())
+                .filter(t -> t.getTradeId() == null || !t.getTradeId().startsWith("SYNC-"))
+                .filter(t -> {
+                    Long owner = t.getUserId() != null ? t.getUserId() : com.algo.trade.multiuser.UserContext.DEFAULT_USER_ID;
+                    return owner.equals(meId);
+                })
                 .map(TradeEntity::getRealizedPnl)
                 .filter(p -> p != null)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);

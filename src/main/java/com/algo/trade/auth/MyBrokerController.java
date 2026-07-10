@@ -89,8 +89,10 @@ public class MyBrokerController {
         if (req.webhookUrl() != null) c.setWebhookUrl(blankToNull(req.webhookUrl().trim()));
         if (req.totalCapital() != null) c.setTotalCapital(req.totalCapital());
         if (req.dailyMaxLoss() != null) c.setDailyMaxLoss(req.dailyMaxLoss());
-        if (req.maxOpenPositions() != null) c.setMaxOpenPositions(req.maxOpenPositions());
-        if (req.maxLotsPerTrade() != null) c.setMaxLotsPerTrade(req.maxLotsPerTrade());
+        // maxOpenPositions / maxLotsPerTrade are NO LONGER writable here — the risk profile
+        // (risk_profile_definition, via the assigned profile) is the single authority for lots/open/count.
+        // The UI removed these inputs (34dbcce); we also refuse the server-side write so a stale/old bundle
+        // or a direct POST can't re-introduce a second, conflicting limit. (2026-07-02)
         if (req.tradingEnabled() != null) c.setTradingEnabled(req.tradingEnabled());
         if (req.sourceIp() != null) {
             String ip = blankToNull(req.sourceIp().trim());
@@ -98,7 +100,7 @@ public class MyBrokerController {
                 // Guard (incident 2026-06-08): a wrong sourceIp — a public/Elastic IP, an
                 // address not on this box, or another user's egress IP — silently routes
                 // this user's orders out the wrong interface and Zerodha 403s a valid token.
-                String reason = com.algo.trade.multiuser.SourceIpValidator.reasonIfInvalid(ip);
+                String reason = com.algo.trade.multiuser.SourceIpValidator.reasonIfInvalid(ip, c.isPrimaryAccount());
                 if (reason != null) {
                     log.warn("[MyBroker] user={} rejected sourceIp='{}': {}", u.getEmail(), ip, reason);
                     return ResponseEntity.badRequest().body(Map.of("error", reason));
@@ -115,11 +117,28 @@ public class MyBrokerController {
                     return ResponseEntity.badRequest().body(Map.of("error", msg));
                 }
             }
+            // Only churn clients/WS when the IP actually moves (this block is entered
+            // on any save that includes the field, even if unchanged).
+            String oldIp = c.getSourceIp();
+            boolean ipChanged = !java.util.Objects.equals(oldIp, ip);
             c.setSourceIp(ip);
-            if (sourceIpFactory != null) sourceIpFactory.invalidate(u.getId());
+            if (ipChanged) {
+                // Full invalidate chain (2026-06-14 fix): REST factory + per-user OkHttp
+                // client (token exchange) + WebSocket. Previously only the REST factory was
+                // invalidated, so the cached OkHttp/WS client kept the OLD bind address until
+                // restart and could egress token-exchange from the wrong IP (Zerodha 403).
+                if (sourceIpFactory != null) sourceIpFactory.invalidate(u.getId());
+                sessionManager.invalidateHttpClient(u.getId());
+                if (userWebSocketManager != null) userWebSocketManager.disconnectUser(u.getId());
+                log.info("[MyBroker] user={} sourceIp changed '{}' -> '{}' — invalidated REST+OkHttp clients and bounced WS for rebind",
+                        u.getEmail(), oldIp, ip);
+            }
         }
 
         configRepository.save(c);
+        // If an IP was provisioned before this broker config existed, link it now (idempotent;
+        // only fills a blank source_ip, never overrides a value just entered above). §7.1.
+        if (sourceIpLinker != null) sourceIpLinker.linkOnBrokerConfigSave(u.getId());
         log.info("[MyBroker] user={} saved broker config (apiKey={}, new={})",
                 u.getEmail(), mask(c.getApiKey()), !wasPresent);
 
@@ -343,6 +362,14 @@ public class MyBrokerController {
     /** Optional — present when source-IP routing is active. Cache invalidation on save. */
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.algo.trade.multiuser.SourceIpRoutingRequestFactory sourceIpFactory;
+
+    /** Optional — bounce the user's market-data WebSocket so it reconnects from the new source IP. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.multiuser.UserWebSocketManager userWebSocketManager;
+
+    /** Optional — links a pre-provisioned allocation's private IP into source_ip on first save (§7.1). */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.multiuser.ip.SourceIpLinker sourceIpLinker;
 
     /** Published when a primary user changes their API key / secret — triggers WS reconnect. */
     public record PrimaryAccountChangedEvent(Long userId) {}

@@ -28,6 +28,30 @@ public class GlobalConfigService {
     private final PositionSyncProperties positionSyncProperties;
     private volatile GlobalConfig cached;
 
+    // ── Per-user layering (Settings redesign, 2026-06-25) ─────────────────────────────
+    // When present + enabled, the per-user-relevant getters below resolve through the
+    // TradingConfigResolver (user override → risk profile → this global baseline) so RiskEngine,
+    // MarketGuard, exit monitors and strategies become per-user-aware with ZERO call-site changes.
+    // Behavior-neutral: a user with no row / profile=BALANCED resolves to today's global values.
+    // @Lazy breaks the cycle (resolver depends on this service); reads are fail-safe (fall back to
+    // the cached entity on any error), and the resolver reads Layer-1 from getCached() — no recursion.
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    @org.springframework.context.annotation.Lazy
+    private com.algo.trade.config.usersettings.TradingConfigResolver tradingConfigResolver;
+
+    @org.springframework.beans.factory.annotation.Value("${config.per-user-settings.enabled:true}")
+    private boolean perUserSettingsEnabled;
+
+    /** Resolved per-user snapshot for the current thread's user, or null to use the global baseline. */
+    private com.algo.trade.config.usersettings.EffectiveTradingConfig effOrNull() {
+        if (!perUserSettingsEnabled || tradingConfigResolver == null) return null;
+        try {
+            return tradingConfigResolver.resolveForCurrentUser();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     public GlobalConfigService(GlobalConfigRepository repository,
                                 TradingProperties tradingProperties,
                                 PositionSyncProperties positionSyncProperties) {
@@ -52,9 +76,9 @@ public class GlobalConfigService {
                     seeded.isManageSyncedTrades());
         }
         log.info("[Config] Effective runtime config: cooldown={}min, maxOpenTrades={}, maxTradesPerDay={}, entryCutoff={}, forcedExit={}, maxDailyLoss={}%, envScore={}",
-            cached.getCooldownMinutes(), cached.getMaxOpenTrades(), cached.getMaxTradesPerDay(),
+            cached.getCooldownMinutes(), getMaxOpenTrades(), getMaxTradesPerDay(),
             cached.getEntryCutoffTimeAsLocalTime(), cached.getForcedExitTimeAsLocalTime(),
-            cached.getMaxDailyLossPercent(), cached.getMinEnvironmentScore());
+            getMaxDailyLossPercent(), getMinEnvironmentScore());
     }
 
     // ── Full entity accessor ──────────────────────────────────
@@ -100,9 +124,13 @@ public class GlobalConfigService {
 
     public BigDecimal getMaxIvPercent() { return cached.getMaxIvPercent(); }
 
-    public BigDecimal getMinSignalScorePercent() { return cached.getMinSignalScorePercent(); }
+    public BigDecimal getVixMinForLongPremium() { return cached.getVixMinForLongPremium(); }
+    public BigDecimal getVixMinForShortPremium() { return cached.getVixMinForShortPremium(); }
+    public BigDecimal getVixMaxForShortPremium() { return cached.getVixMaxForShortPremium(); }
 
-    public int getMinEnvironmentScore() { return cached.getMinEnvironmentScore(); }
+    public BigDecimal getMinSignalScorePercent() { var e = effOrNull(); return e != null ? e.getMinSignalScorePercent() : java.math.BigDecimal.valueOf(com.algo.trade.config.usersettings.RiskProfile.BALANCED.bundle().minSignalScorePercent()); }
+
+    public int getMinEnvironmentScore() { var e = effOrNull(); return e != null ? e.getMinEnvironmentScore() : com.algo.trade.config.usersettings.RiskProfile.BALANCED.bundle().minEnvironmentScore(); }
 
     public boolean isCeOiSupportRequired() { return cached.isCeOiSupportRequired(); }
 
@@ -120,9 +148,9 @@ public class GlobalConfigService {
 
     public int getPeBreakoutConfirmationCandles() { return cached.getPeBreakoutConfirmationCandles(); }
 
-    public LocalTime getEntryStartTime() { return cached.getEntryStartTimeAsLocalTime(); }
+    public LocalTime getEntryStartTime() { var e = effOrNull(); return e != null ? LocalTime.parse(e.getEntryStartTime()) : cached.getEntryStartTimeAsLocalTime(); }
 
-    public LocalTime getEntryCutoffTime() { return cached.getEntryCutoffTimeAsLocalTime(); }
+    public LocalTime getEntryCutoffTime() { var e = effOrNull(); return e != null ? LocalTime.parse(e.getEntryCutoffTime()) : cached.getEntryCutoffTimeAsLocalTime(); }
 
     public boolean isAllowFirstMinutesEntry() { return cached.isAllowFirstMinutesEntry(); }
 
@@ -138,22 +166,22 @@ public class GlobalConfigService {
 
     // ── Exit accessors ────────────────────────────────────────
 
-    public BigDecimal getStopLossPercent() { return cached.getStopLossPercent(); }
+    public BigDecimal getStopLossPercent() { var e = effOrNull(); return e != null ? e.getStopLossPercent() : cached.getStopLossPercent(); }
 
-    public BigDecimal getTargetPercent() { return cached.getTargetPercent(); }
+    public BigDecimal getTargetPercent() { var e = effOrNull(); return e != null ? e.getTargetPercent() : cached.getTargetPercent(); }
 
-    public BigDecimal getTrailingStopActivationPercent() { return cached.getTrailingStopActivationPercent(); }
+    public BigDecimal getTrailingStopActivationPercent() { var e = effOrNull(); return e != null ? e.getTrailingStopActivationPercent() : cached.getTrailingStopActivationPercent(); }
 
-    public BigDecimal getTrailingGapPercent() { return cached.getTrailingGapPercent(); }
+    public BigDecimal getTrailingGapPercent() { var e = effOrNull(); return e != null ? e.getTrailingGapPercent() : cached.getTrailingGapPercent(); }
 
-    public LocalTime getForcedExitTime() { return cached.getForcedExitTimeAsLocalTime(); }
+    public LocalTime getForcedExitTime() { var e = effOrNull(); return e != null ? LocalTime.parse(e.getForcedExitTime()) : cached.getForcedExitTimeAsLocalTime(); }
 
-    public boolean isPartialProfitBookingEnabled() { return cached.isPartialProfitBookingEnabled(); }
-    public boolean isVwapExitEnabled() { return cached.isVwapExitEnabled(); }
+    public boolean isPartialProfitBookingEnabled() { var e = effOrNull(); return e != null ? e.isPartialProfitBookingEnabled() : cached.isPartialProfitBookingEnabled(); }
+    public boolean isVwapExitEnabled() { var e = effOrNull(); return e != null ? e.isVwapExitEnabled() : cached.isVwapExitEnabled(); }
 
     public boolean isGlobalExitOverride() { return cached.isGlobalExitOverride(); }
 
-    public int getMaxHoldMinutes() { return cached.getMaxHoldMinutes(); }
+    public int getMaxHoldMinutes() { var e = effOrNull(); return e != null ? e.getMaxHoldMinutes() : cached.getMaxHoldMinutes(); }
 
     /**
      * Hot-path accessor for the runtime "manage synced trades" toggle.
@@ -161,41 +189,52 @@ public class GlobalConfigService {
      * GracefulShutdownHandler. Initial value comes from position-sync.* YAML
      * on first boot; thereafter editable from the Settings UI.
      */
-    public boolean isManageSyncedTrades() { return cached.isManageSyncedTrades(); }
+    public boolean isManageSyncedTrades() { var e = effOrNull(); return e != null ? e.isManageSyncedTrades() : cached.isManageSyncedTrades(); }
 
     // ── Risk accessors ────────────────────────────────────────
 
-    public BigDecimal getTotalCapital() { return cached.getTotalCapital(); }
+    public BigDecimal getTotalCapital() { var e = effOrNull(); return e != null ? e.getTotalCapital() : cached.getTotalCapital(); }
 
-    public BigDecimal getMaxRiskPerTradePercent() { return cached.getMaxRiskPerTradePercent(); }
+    public BigDecimal getMaxRiskPerTradePercent() { var e = effOrNull(); return e != null ? e.getMaxRiskPerTradePercent() : java.math.BigDecimal.valueOf(com.algo.trade.config.usersettings.RiskProfile.BALANCED.bundle().maxRiskPerTradePercent()); }
 
-    public BigDecimal getMaxDailyLossPercent() { return cached.getMaxDailyLossPercent(); }
+    public BigDecimal getMaxDailyLossPercent() { var e = effOrNull(); return e != null ? e.getMaxDailyLossPercent() : java.math.BigDecimal.valueOf(com.algo.trade.config.usersettings.RiskProfile.BALANCED.bundle().maxDailyLossPercent()); }
 
-    public int getMaxTradesPerDay() { return cached.getMaxTradesPerDay(); }
+    public int getMaxTradesPerDay() { var e = effOrNull(); return e != null ? e.getMaxTradesPerDay() : com.algo.trade.config.usersettings.RiskProfile.BALANCED.bundle().maxTradesPerDay(); }
 
-    public int getMaxConsecutiveLosses() { return cached.getMaxConsecutiveLosses(); }
+    public int getMaxConsecutiveLosses() { var e = effOrNull(); return e != null ? e.getMaxConsecutiveLosses() : com.algo.trade.config.usersettings.RiskProfile.BALANCED.bundle().maxConsecutiveLosses(); }
 
-    public int getMaxOpenTrades() { return cached.getMaxOpenTrades(); }
+    public int getMaxOpenTrades() { var e = effOrNull(); return e != null ? e.getMaxOpenTrades() : com.algo.trade.config.usersettings.RiskProfile.BALANCED.bundle().maxOpenTrades(); }
 
-    public int getCooldownMinutes() { return cached.getCooldownMinutes(); }
+    public int getCooldownMinutes() { var e = effOrNull(); return e != null ? e.getCooldownMinutes() : cached.getCooldownMinutes(); }
 
-    public int getDirectionFlipCooldownMinutes() { return cached.getDirectionFlipCooldownMinutes(); }
+    public int getDirectionFlipCooldownMinutes() { var e = effOrNull(); return e != null ? e.getDirectionFlipCooldownMinutes() : cached.getDirectionFlipCooldownMinutes(); }
 
-    public int getMaxOpenPositionsPerStrategy() { return cached.getMaxOpenPositionsPerStrategy(); }
+    public int getMaxOpenPositionsPerStrategy() { var e = effOrNull(); return e != null ? e.getMaxOpenPositionsPerStrategy() : cached.getMaxOpenPositionsPerStrategy(); }
 
-    public BigDecimal getDailyProfitTarget() { return cached.getDailyProfitTarget(); }
+    /** V5 avalanche master switch (GLOBAL — the avalanche scanner runs as u:sys). NULL = enabled.
+     *  Hot: reads the cached entity, refreshed on every UI save. */
+    public boolean isAvalancheTradingEnabled() {
+        Boolean v = cached != null ? cached.getAvalancheTradingEnabled() : null;
+        return v == null || v;
+    }
 
-    public int getMaxLotsPerTrade() { return cached.getMaxLotsPerTrade(); }
+    public BigDecimal getDailyProfitTarget() { var e = effOrNull(); return e != null ? e.getDailyProfitTarget() : cached.getDailyProfitTarget(); }
+
+    public int getMaxLotsPerTrade() { var e = effOrNull(); return e != null ? e.getMaxLotsPerTrade() : com.algo.trade.config.usersettings.RiskProfile.BALANCED.bundle().maxLotsPerTrade(); }
 
     public BigDecimal getMlVirtualTradeThreshold() { return cached.getMlVirtualTradeThreshold(); }
 
+    /** V5 episode-suspension threshold override (system-wide — the memory engine is global, not
+     *  per-user). NULL = use the engine's yml default; 0 = suspension disabled. Hot (DB-cached). */
+    public Integer getMemorySuspensionAfterLosses() { return cached.getMemorySuspensionAfterLosses(); }
+
     public int getLimitOrderCancelMinutes() { return cached.getLimitOrderCancelMinutes(); }
-    public LocalTime getFailSafeSquareoffTime() { return cached.getFailSafeSquareoffTimeAsLocalTime(); }
+    public LocalTime getFailSafeSquareoffTime() { var e = effOrNull(); return e != null ? LocalTime.parse(e.getFailSafeSquareoffTime()) : cached.getFailSafeSquareoffTimeAsLocalTime(); }
     public int getMaxPendingOrders() { return cached.getMaxPendingOrders(); }
     public BigDecimal getIvCollapseExitThresholdPercent() { return cached.getIvCollapseExitThresholdPercent(); }
-    public BigDecimal getIvCollapseMaxProfitPercent() { return cached.getIvCollapseMaxProfitPercent(); }
-    public int getMaxEntriesPerScanPerUnderlying() { return cached.getMaxEntriesPerScanPerUnderlying(); }
-    public int getMaxEntriesPerScan() { return cached.getMaxEntriesPerScan(); }
+    public BigDecimal getIvCollapseMaxProfitPercent() { var e = effOrNull(); return e != null ? e.getIvCollapseMaxProfitPercent() : cached.getIvCollapseMaxProfitPercent(); }
+    public int getMaxEntriesPerScanPerUnderlying() { var e = effOrNull(); return e != null ? e.getMaxEntriesPerScanPerUnderlying() : cached.getMaxEntriesPerScanPerUnderlying(); }
+    public int getMaxEntriesPerScan() { var e = effOrNull(); return e != null ? e.getMaxEntriesPerScan() : cached.getMaxEntriesPerScan(); }
 
     // ── Write operations ──────────────────────────────────────
 
@@ -210,6 +249,7 @@ public class GlobalConfigService {
         validate(config);
         config.setId(1L);
         cached = repository.save(config);
+        if (tradingConfigResolver != null) tradingConfigResolver.invalidateAll(); // baseline moved → drop resolved snapshots
         log.info("GlobalConfig updated and cache refreshed");
         return cached;
     }
@@ -224,6 +264,7 @@ public class GlobalConfigService {
         defaults.setManageSyncedTrades(positionSyncProperties.manageSyncedTrades());
         defaults.setId(1L);
         cached = repository.save(defaults);
+        if (tradingConfigResolver != null) tradingConfigResolver.invalidateAll();
         log.info("GlobalConfig reset to TradingProperties defaults");
         return cached;
     }
@@ -236,15 +277,6 @@ public class GlobalConfigService {
         }
         if (config.getTargetPercent() != null && config.getTargetPercent().compareTo(BigDecimal.ZERO) < 0) {
             throw new IllegalArgumentException("targetPercent must be >= 0");
-        }
-        if (config.getMaxTradesPerDay() < 1) {
-            throw new IllegalArgumentException("maxTradesPerDay must be >= 1");
-        }
-        if (config.getMaxLotsPerTrade() < 1) {
-            throw new IllegalArgumentException("maxLotsPerTrade must be >= 1");
-        }
-        if (config.getMaxOpenTrades() < 1) {
-            throw new IllegalArgumentException("maxOpenTrades must be >= 1");
         }
         if (config.getTotalCapital() != null && config.getTotalCapital().compareTo(BigDecimal.ZERO) < 0) {
             throw new IllegalArgumentException("totalCapital must be >= 0");

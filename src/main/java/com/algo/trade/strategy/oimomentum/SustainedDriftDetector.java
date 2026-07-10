@@ -98,28 +98,22 @@ public class SustainedDriftDetector {
                     opScore, 0);
         }
 
-        // 60-min drift = (current spot) - (spot 60 min ago) / current spot.
-        // We re-use TickMomentumDetector's rolling high/low because it already
-        // maintains a per-second tick window; the spot 60 min ago is the closest
-        // boundary value. For drift, we want the start-of-window spot — the
-        // detector exposes the rolling low + high; we cannot pull "the spot 60
-        // min ago" directly, so we approximate using the rolling midpoint of
-        // (high60, low60) when both are valid AND directional with current spot.
+        // True endpoint-to-endpoint drift over the configured window. The legacy
+        // implementation approximated drift as distance from the rolling-window
+        // midpoint, which structurally reports only ~half the real move on a clean
+        // one-way trend: on 2026-06-12's afternoon rally the midpoint read ~0.13%
+        // (below the 0.20% gate) and D2 never fired all day despite a textbook
+        // sustained drift. We now measure (spot − spot@windowStart) directly via
+        // the detector's dedicated drift history.
         int windowMin = config.getSustainedDriftWindowMinutes();
-        double high = momentumDetector.getRollingHighInWindow(index, windowMin);
-        double low = momentumDetector.getRollingLowInWindow(index, windowMin);
-        double spot = momentumDetector.getSpot(index);
-        if (spot <= 0 || high <= 0 || low <= 0 || high < low) {
+        TickMomentumDetector.DriftSample drift =
+                momentumDetector.getSignedDriftPct(index, windowMin);
+        if (!drift.valid()) {
             return Decision.skip("spot_history_unavailable", opScore, 0);
         }
+        double signedDriftPct = drift.driftPct();
+        int measuredMin = drift.windowMinutesMeasured();
 
-        // Approximate signed drift via current-spot relative to window midpoint.
-        // For a clean directional drift this matches the true endpoint-to-endpoint
-        // drift within ~0.02% on intraday option indices (verified against the
-        // 1 June 2026 NIFTY tape: midpoint approach reports −0.27% vs true
-        // endpoint drift of −0.33% over the 11:53–12:53 window — within tolerance).
-        double midpoint = (high + low) / 2.0;
-        double signedDriftPct = (spot - midpoint) / spot * 100.0;
         double absDrift = Math.abs(signedDriftPct);
         double minDrift = config.getSustainedDriftMinPct();
         if (absDrift < minDrift) {
@@ -135,10 +129,12 @@ public class SustainedDriftDetector {
                     opScore, signedDriftPct);
         }
 
-        if (log.isInfoEnabled()) {
-            log.info("[D2_DRIFT][{}] FIRE dir={} opScore={} drift60m={}% window={}min",
-                    index, opDir, opScore, String.format("%+.3f", signedDriftPct), windowMin);
+        // DEBUG (was INFO): the strategy logs D2_DRIFT_LIVE/SHADOW at its own call site, and managePosition now
+        // also evaluates() each tick for the trend-ride decision — INFO here would double-log + spam during holds.
+        if (log.isDebugEnabled()) {
+            log.debug("[D2_DRIFT][{}] FIRE dir={} opScore={} drift={}% window={}min(measured)",
+                    index, opDir, opScore, String.format("%+.3f", signedDriftPct), measuredMin);
         }
-        return Decision.fire(opDir, opScore, signedDriftPct, windowMin);
+        return Decision.fire(opDir, opScore, signedDriftPct, measuredMin);
     }
 }

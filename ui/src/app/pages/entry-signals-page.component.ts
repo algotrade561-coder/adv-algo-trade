@@ -414,7 +414,11 @@ export class EntrySignalsPageComponent implements OnInit {
   openAudit(signal: ApiRecord): void { this.selectedSignal = signal; this.showDrawer = true; }
   closeDrawer(): void { this.showDrawer = false; }
 
-  fmt(v: unknown): string { return v != null && v !== '' ? '₹' + v : '-'; }
+  fmt(v: unknown): string {
+    if (v == null || v === '') return '-';
+    const n = Number(v);
+    return isNaN(n) ? '₹' + v : '₹' + n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
 
   spreadVal(s: ApiRecord): number {
     const ask = Number(s['optionAsk'] ?? 0);

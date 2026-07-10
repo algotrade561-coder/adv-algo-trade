@@ -38,17 +38,20 @@ public class UserAwareExecutionService {
     private final UserTradingStateManager stateManager;
     private final UserBrokerConfigRepository configRepository;
     private final TradeRepository tradeRepository;
+    private final com.algo.trade.config.GlobalConfigService globalConfigService;
 
     public UserAwareExecutionService(ExecutionEngine executionEngine,
                                       UserBrokerSessionManager sessionManager,
                                       UserTradingStateManager stateManager,
                                       UserBrokerConfigRepository configRepository,
-                                      TradeRepository tradeRepository) {
+                                      TradeRepository tradeRepository,
+                                      com.algo.trade.config.GlobalConfigService globalConfigService) {
         this.executionEngine = executionEngine;
         this.sessionManager = sessionManager;
         this.stateManager = stateManager;
         this.configRepository = configRepository;
         this.tradeRepository = tradeRepository;
+        this.globalConfigService = globalConfigService;
     }
 
     /**
@@ -83,18 +86,21 @@ public class UserAwareExecutionService {
             return ExecutionResult.rejected(List.of(reason));
         }
 
-        // 3. Enforce per-user position limits (hard block, not advisory)
-        UserBrokerConfig config = session.config;
-        if (config != null && config.getMaxOpenPositions() > 0) {
+        // 3. Enforce per-user position limits (hard block, not advisory).
+        // Max-open comes from the user's RESOLVED RISK PROFILE (risk_profile_definition), NOT the legacy
+        // UserBrokerConfig.maxOpenPositions — the risk profile is the single authority for lots/open/count.
+        // Resolve under the user's own context so it maps to THEIR profile (e.g. AGGRESSIVE=2). (2026-07-02)
+        int profileMaxOpen = com.algo.trade.multiuser.UserContext.callAs(userId, globalConfigService::getMaxOpenTrades);
+        if (profileMaxOpen > 0) {
             int openTradesForUser = tradeRepository.findByUserIdAndStatus(userId, TradeStatus.OPEN).size();
-            if (openTradesForUser >= config.getMaxOpenPositions()) {
+            if (openTradesForUser >= profileMaxOpen) {
                 String reason = "User " + userId + " max open positions reached ("
-                        + openTradesForUser + "/" + config.getMaxOpenPositions() + ")";
+                        + openTradesForUser + "/" + profileMaxOpen + ")";
                 log.warn("[MultiUser] Entry rejected: {}", reason);
                 return ExecutionResult.rejected(List.of(reason));
             }
-            log.debug("[MultiUser] User {} positions: open={}, max={}, maxLotsPerTrade={}",
-                    userId, openTradesForUser, config.getMaxOpenPositions(), config.getMaxLotsPerTrade());
+            log.debug("[MultiUser] User {} positions: open={}, maxOpenTrades(profile)={}",
+                    userId, openTradesForUser, profileMaxOpen);
         }
 
         // 4. Set user context and delegate to ExecutionEngine

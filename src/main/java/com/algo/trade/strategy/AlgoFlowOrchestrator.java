@@ -395,20 +395,13 @@ public class AlgoFlowOrchestrator {
                         Double.isNaN(rb.atrRatio()) ? 0.0 : rb.atrRatio(),
                         Double.isNaN(rb.efficiency()) ? 0.0 : rb.efficiency());
                 if (rb.rangeBound()) {
-                    // Only block directional buying strategies, not spreads or event-driven
-                    if (!strategyType.isSellingStrategy()
-                            && strategyType != StrategyType.EVENT_DRIVEN_BUY
-                            && strategyType != StrategyType.LONG_STRADDLE
-                            && strategyType != StrategyType.LONG_STRANGLE) {
-                        failed.add("RANGE_BOUND:CHOPPY_MARKET[" + metrics + "]");
-                        log.info("[AlgoFlow] Range-bound block: strategy={} underlying={} {}",
-                                strategyType, underlying, metrics);
-                        return EntryDecision.blocked(
-                                "Market is range-bound/choppy — directional strategies blocked "
-                                        + "[" + metrics + "]",
-                                passed, failed);
-                    }
-                    passed.add("RANGE_BOUND:CHOPPY[" + metrics + "](allowed_for_" + strategyType.name() + ")");
+                    // Range-bound: log as warning but allow through (soft gate).
+                    // Previous behavior: hard block for directional strategies → starved entries.
+                    // New behavior: record as passed-with-caveat for lot scaling downstream.
+                    // The operator and conviction gates provide sufficient risk control.
+                    passed.add("RANGE_BOUND:CHOPPY_ALLOWED[" + metrics + "](strategy=" + strategyType.name() + ")");
+                    log.info("[AlgoFlow] Range-bound detected but ALLOWING: strategy={} underlying={} {} — "
+                            + "conviction gates will control risk", strategyType, underlying, metrics);
                 } else {
                     passed.add("RANGE_BOUND:TRENDING[" + metrics + "]");
                 }
@@ -420,6 +413,7 @@ public class AlgoFlowOrchestrator {
         }
 
         // 2a-extra. DTE Gate — block directional buying when too far from expiry (per-underlying config)
+        // Quality filter: only trade near-expiry contracts (≤ maxDte days) for better gamma/premium.
         {
             IndexType idx = IndexType.from(underlying);
             int maxDte = underlyingConfigService.getMaxDteForBuying(underlying);
@@ -438,13 +432,16 @@ public class AlgoFlowOrchestrator {
             passed.add("DTE_GATE:OK(" + currentDte + "d<=" + maxDte + "d)");
         }
 
-        // 2a-extra. Per-underlying max entry premium cap
+        // 2a-extra. Per-underlying premium range gate (min + max)
+        // Ensures only quality, affordable options are traded.
+        // BANKNIFTY: 300–350, NIFTY: 150–200 (configurable via Settings UI).
         {
+            java.math.BigDecimal minPremium = underlyingConfigService.getMinEntryPremium(underlying);
             java.math.BigDecimal maxPremium = underlyingConfigService.getMaxEntryPremium(underlying);
-            if (maxPremium.signum() > 0) {
-                passed.add("PREMIUM_CAP:CONFIGURED(max=" + maxPremium + ")");
-                // Note: actual premium check happens at execution time in ExecutionEngine
-                // This just records that a cap exists for audit trail
+            if (minPremium.signum() > 0 || maxPremium.signum() > 0) {
+                passed.add("PREMIUM_RANGE:CONFIGURED(min=" + minPremium + ",max=" + maxPremium + ")");
+                // Actual premium validation happens at execution time (ExecutionEngine)
+                // where the live quote is available. This records that a range is active.
             }
         }
 
@@ -539,6 +536,16 @@ public class AlgoFlowOrchestrator {
             envScore = -1;
             envBreakdown = "COMPUTATION_FAILED";
             passed.add("ENV_SCORE:COMPUTATION_FAILED");
+        }
+
+        // Per-user ENV-SCORE cap (risk profile) — previously the env score was computed + stored but NEVER
+        // gated. Block when it's below the user's minimum. minEnvironmentScore=0 (e.g. AGGRESSIVE) disables
+        // the gate; envScore<0 means it couldn't be computed → don't block on a measurement gap.
+        int minEnvScore = globalConfigService.getMinEnvironmentScore();
+        if (envScore >= 0 && minEnvScore > 0 && envScore < minEnvScore) {
+            failed.add("ENV_SCORE_GATE:BLOCKED(" + envScore + "<" + minEnvScore + ")");
+            return EntryDecision.blocked("Environment score too low: " + envScore + " < " + minEnvScore
+                    + " (risk profile)", passed, failed, envScore, envBreakdown);
         }
 
         // Regime + Session Gate evaluation

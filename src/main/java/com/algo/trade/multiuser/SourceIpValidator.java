@@ -32,10 +32,29 @@ public final class SourceIpValidator {
     private SourceIpValidator() {}
 
     /**
+     * Backward-compatible overload — treats the IP as belonging to a NON-primary user,
+     * so the host's default-egress address is still rejected (reserved for the primary).
+     *
      * @return null if {@code ip} is an acceptable bind source on this host, otherwise
      *         a human-readable reason it was rejected.
      */
     public static String reasonIfInvalid(String ip) {
+        return reasonIfInvalid(ip, false);
+    }
+
+    /**
+     * @param isPrimaryAccount when {@code true}, the account is allowed to pin the host's
+     *        default-egress address as its own source IP. Previously the default egress was
+     *        reserved for "the primary" by being left blank; to make a primary-account
+     *        SWITCH seamless, every account — including whichever one is currently primary —
+     *        may now carry its OWN explicit whitelisted IP in the table, and entry/exit
+     *        binds to it via {@link SourceIpRoutingRequestFactory}. Cross-user uniqueness
+     *        (no two users sharing one egress IP) is still enforced by the caller, so at
+     *        most one account can hold the default-egress address.
+     * @return null if {@code ip} is an acceptable bind source on this host, otherwise
+     *         a human-readable reason it was rejected.
+     */
+    public static String reasonIfInvalid(String ip, boolean isPrimaryAccount) {
         if (ip == null || ip.isBlank()) {
             return null; // blank == "use default interface", handled by caller
         }
@@ -51,11 +70,16 @@ public final class SourceIpValidator {
                     + "interface on this server (a public/Elastic IP cannot be a bind "
                     + "source — use the matching private IP, e.g. 172.31.x.x).";
         }
-        String egress = defaultEgressIp();
-        if (egress != null && egress.equals(trimmed)) {
-            return "Source IP " + trimmed + " is this server's default egress address, "
-                    + "reserved for the primary account. Assign a distinct secondary IP "
-                    + "to this user, or leave it blank to use the default.";
+        // The default-egress address is only off-limits to SECONDARY users — pinning it to a
+        // secondary would route their orders out the wrong interface. The primary account is
+        // explicitly allowed to claim it as its own whitelisted source IP.
+        if (!isPrimaryAccount) {
+            String egress = defaultEgressIp();
+            if (egress != null && egress.equals(trimmed)) {
+                return "Source IP " + trimmed + " is this server's default egress address, "
+                        + "reserved for the primary account. Assign a distinct secondary IP "
+                        + "to this user, or leave it blank to use the default.";
+            }
         }
         return null;
     }

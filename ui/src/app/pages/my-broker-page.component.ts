@@ -132,29 +132,11 @@ import {
           </div>
         </div>
 
-        <!-- Risk / capital -->
+        <!-- Trading toggle (risk caps controlled from Risk Profile section) -->
         <div class="panel">
           <div class="panel-hdr">
             <mat-icon class="hdr-icon">tune</mat-icon>
-            <div><h2>Trading Limits</h2><p>Per-user risk caps applied on every fan-out order.</p></div>
-          </div>
-          <div class="form-row">
-            <mat-form-field appearance="outline">
-              <mat-label>Total Capital (₹)</mat-label>
-              <input matInput type="number" [(ngModel)]="form.totalCapital" [placeholder]="config?.totalCapital?.toString() || '60000'" />
-            </mat-form-field>
-            <mat-form-field appearance="outline">
-              <mat-label>Daily Max Loss (₹)</mat-label>
-              <input matInput type="number" [(ngModel)]="form.dailyMaxLoss" [placeholder]="config?.dailyMaxLoss?.toString() || '5000'" />
-            </mat-form-field>
-            <mat-form-field appearance="outline">
-              <mat-label>Max Open Positions</mat-label>
-              <input matInput type="number" [(ngModel)]="form.maxOpenPositions" [placeholder]="config?.maxOpenPositions?.toString() || '3'" />
-            </mat-form-field>
-            <mat-form-field appearance="outline">
-              <mat-label>Max Lots / Trade</mat-label>
-              <input matInput type="number" [(ngModel)]="form.maxLotsPerTrade" [placeholder]="config?.maxLotsPerTrade?.toString() || '2'" />
-            </mat-form-field>
+            <div><h2>Trading Control</h2><p>Enable/disable signal reception for this broker account. Risk caps are managed in the Risk Profile section.</p></div>
           </div>
           <div class="toggle-row">
             <mat-slide-toggle [(ngModel)]="tradingEnabled">Trading Enabled</mat-slide-toggle>

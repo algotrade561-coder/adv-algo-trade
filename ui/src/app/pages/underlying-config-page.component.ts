@@ -86,6 +86,11 @@ import { ApiService, UnderlyingConfigDto } from '../core/api.service';
                     <input matInput type="number" step="10" min="0" [(ngModel)]="cfg.maxEntryPremium">
                     <mat-hint>0 = no cap. Rejects options above this price.</mat-hint>
                   </mat-form-field>
+                  <mat-form-field appearance="outline">
+                    <mat-label>Min Entry Premium (₹)</mat-label>
+                    <input matInput type="number" step="5" min="0" [(ngModel)]="cfg.minEntryPremium">
+                    <mat-hint>0 = no floor. Blocks cheap options where ₹50 charges eat the trade.</mat-hint>
+                  </mat-form-field>
                 </div>
 
                 <!-- Volume -->

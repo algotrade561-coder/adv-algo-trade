@@ -5,6 +5,9 @@ import com.algo.trade.reporting.MarketHoursBlockedException;
 import com.algo.trade.reporting.ReportCooldownException;
 import com.algo.trade.strategy.StrategyType;
 import com.algo.trade.tuning.TuningEventType;
+import com.algo.trade.tuning.analyzer.DecisionRecord;
+import com.algo.trade.tuning.analyzer.EventScan;
+import com.algo.trade.tuning.analyzer.TuningEventQuery;
 import com.algo.trade.tuning.capture.TuningReportJobEntity;
 import com.algo.trade.tuning.capture.TuningReportJobStatus;
 import com.algo.trade.tuning.store.TuningEventStore;
@@ -33,6 +36,9 @@ public class TuningReportController {
 
     private final TuningReportService reportService;
     private final TuningEventStore eventStore;
+
+    @org.springframework.beans.factory.annotation.Value("${tuning.chain-snapshots-dir:data/chain-snapshots}")
+    private String chainSnapshotsDir;
 
     public TuningReportController(TuningReportService reportService, TuningEventStore eventStore) {
         this.reportService = reportService;
@@ -83,6 +89,75 @@ public class TuningReportController {
         } catch (IllegalStateException ex) {
             return ResponseEntity.status(HttpStatus.CONFLICT).body(ex.getMessage());
         }
+    }
+
+    /** The machine-readable ranked tuning actions ({@code actions.json}) for a completed report job. */
+    @GetMapping(value = "/jobs/{jobId}/actions", produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<String> jobActions(@PathVariable String jobId) {
+        try {
+            return ResponseEntity.ok(reportService.readActions(jobId));
+        } catch (IllegalStateException ex) {
+            return ResponseEntity.status(HttpStatus.CONFLICT).body("{\"error\":\"" + ex.getMessage() + "\"}");
+        }
+    }
+
+    /**
+     * Exports the canonical {@link DecisionRecord} for offline analysis / ML, as CSV. {@code grain=trade}
+     * (signal→exec→exit→forward) or {@code grain=eval} (evaluation→reject-forward). Empty CSV if no data.
+     */
+    @GetMapping(value = "/decision-record", produces = "text/csv")
+    public ResponseEntity<String> decisionRecord(
+            @RequestParam LocalDate from,
+            @RequestParam LocalDate to,
+            @RequestParam(defaultValue = "trade") String grain,
+            @RequestParam(defaultValue = "false") boolean chain) {
+        TuningEventQuery query = new TuningEventQuery(from, to, Set.of(StrategyType.OI_MOMENTUM), eventStore);
+        boolean eval = "eval".equalsIgnoreCase(grain);
+        TuningEventType gate = eval ? TuningEventType.EVALUATION : TuningEventType.SIGNAL;
+        if (!EventScan.hasData(query, StrategyType.OI_MOMENTUM, gate)) {
+            return ResponseEntity.ok("# no " + (eval ? "evaluation" : "signal") + " data in range\n");
+        }
+        String sql;
+        if (eval) {
+            sql = DecisionRecord.evalRecordSql(query);
+        } else {
+            sql = DecisionRecord.tradeRecordSql(query);
+            // Optional multi-source enrichment: ASOF-join option-chain context (PCR / ATM / OI) by nearest snapshot.
+            if (chain) {
+                var chainFiles = com.algo.trade.tuning.analyzer.ChainContext.snapshotFiles(
+                        java.nio.file.Path.of(chainSnapshotsDir), from, to);
+                sql = com.algo.trade.tuning.analyzer.ChainContext.enrichTradeSql(sql, chainFiles);
+            }
+        }
+        List<Map<String, Object>> rows = eventStore.query(sql);
+        return ResponseEntity.ok(toCsv(rows));
+    }
+
+    /** Minimal CSV serialiser (header from first row's keys; values quoted when they contain , " or newline). */
+    private static String toCsv(List<Map<String, Object>> rows) {
+        if (rows.isEmpty()) {
+            return "";
+        }
+        List<String> cols = new java.util.ArrayList<>(rows.get(0).keySet());
+        StringBuilder sb = new StringBuilder();
+        sb.append(String.join(",", cols)).append('\n');
+        for (Map<String, Object> r : rows) {
+            for (int i = 0; i < cols.size(); i++) {
+                if (i > 0) sb.append(',');
+                sb.append(csvCell(r.get(cols.get(i))));
+            }
+            sb.append('\n');
+        }
+        return sb.toString();
+    }
+
+    private static String csvCell(Object v) {
+        if (v == null) return "";
+        String s = v.toString();
+        if (s.indexOf(',') >= 0 || s.indexOf('"') >= 0 || s.indexOf('\n') >= 0) {
+            return '"' + s.replace("\"", "\"\"") + '"';
+        }
+        return s;
     }
 
     @GetMapping("/strategy/{name}/today")

@@ -51,11 +51,72 @@ class OrderFillWatchdogTest {
                 OrderStatus.COMPLETE, 300, 300, Optional.of(BigDecimal.valueOf(101)),
                 Optional.empty(), Instant.now()
         )));
+        when(executionEngine.findOpenTradesByInstrumentForUser("NFO:NIFTY24APR24000CE", null))
+                .thenReturn(List.of());
 
         watchdog.checkPendingOrders();
 
         verify(orderRepository).save(pending);
         verify(executionEngine).openTradeFromFilledOrder(pending);
+    }
+
+    /**
+     * Multi-user signal-copy: secondary fill on the same strike must not block primary trade creation.
+     * (2026-07-02 incident: primary NIFTY CE sat unarmed for ~9 min because u:8's trade existed.)
+     */
+    @Test
+    void createsSeparateTradesForDifferentUsersOnSameInstrument() {
+        OrderEntity primary = new OrderEntity("ENTRY-P", "BROKER-P", "NFO:NIFTY2670724100CE",
+                "BUY", OrderStatus.OPEN, 130, 0, null, null, Instant.now());
+        primary.setUserId(1L);
+        OrderEntity secondary = new OrderEntity("ENTRY-S", "BROKER-S", "NFO:NIFTY2670724100CE",
+                "BUY", OrderStatus.OPEN, 130, 0, null, null, Instant.now());
+        secondary.setUserId(8L);
+
+        when(orderRepository.findByStatusIn(any())).thenReturn(List.of(primary, secondary));
+        when(brokerClient.orderStatus("BROKER-P")).thenReturn(Optional.of(new OrderResponse(
+                "ENTRY-P", Optional.of("BROKER-P"), "NFO:NIFTY2670724100CE", OrderSide.BUY,
+                OrderStatus.COMPLETE, 130, 130, Optional.of(BigDecimal.valueOf(143.4)),
+                Optional.empty(), Instant.now()
+        )));
+        when(brokerClient.orderStatus("BROKER-S")).thenReturn(Optional.of(new OrderResponse(
+                "ENTRY-S", Optional.of("BROKER-S"), "NFO:NIFTY2670724100CE", OrderSide.BUY,
+                OrderStatus.COMPLETE, 130, 130, Optional.of(BigDecimal.valueOf(143.4)),
+                Optional.empty(), Instant.now()
+        )));
+        when(executionEngine.findOpenTradesByInstrumentForUser("NFO:NIFTY2670724100CE", 1L))
+                .thenReturn(List.of());
+        when(executionEngine.findOpenTradesByInstrumentForUser("NFO:NIFTY2670724100CE", 8L))
+                .thenReturn(List.of());
+
+        watchdog.checkPendingOrders();
+
+        verify(executionEngine).openTradeFromFilledOrder(primary);
+        verify(executionEngine).openTradeFromFilledOrder(secondary);
+    }
+
+    @Test
+    void marksMaterializedWhenSameUserAlreadyHasOpenTradeOnInstrument() {
+        OrderEntity pending = new OrderEntity("ENTRY-DUP", "BROKER-D", "NFO:NIFTY2670724100CE",
+                "BUY", OrderStatus.OPEN, 130, 0, null, null, Instant.now());
+        pending.setUserId(1L);
+        var existing = new com.algo.trade.persistence.TradeEntity(
+                "TRD-existing", "NFO:NIFTY2670724100CE", "NIFTY", "CE",
+                com.algo.trade.domain.TradeStatus.OPEN, 130, BigDecimal.valueOf(140),
+                Instant.now(), "prior");
+        when(orderRepository.findByStatusIn(any())).thenReturn(List.of(pending));
+        when(brokerClient.orderStatus("BROKER-D")).thenReturn(Optional.of(new OrderResponse(
+                "ENTRY-DUP", Optional.of("BROKER-D"), "NFO:NIFTY2670724100CE", OrderSide.BUY,
+                OrderStatus.COMPLETE, 130, 130, Optional.of(BigDecimal.valueOf(143.4)),
+                Optional.empty(), Instant.now()
+        )));
+        when(executionEngine.findOpenTradesByInstrumentForUser("NFO:NIFTY2670724100CE", 1L))
+                .thenReturn(List.of(existing));
+
+        watchdog.checkPendingOrders();
+
+        verify(executionEngine).markFilledOrderMaterialized(pending, "TRD-existing");
+        verify(executionEngine, never()).openTradeFromFilledOrder(pending);
     }
 
     @Test

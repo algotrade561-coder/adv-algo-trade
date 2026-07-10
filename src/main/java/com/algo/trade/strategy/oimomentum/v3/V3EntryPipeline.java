@@ -128,6 +128,24 @@ public class V3EntryPipeline {
                                      double spot, double vix,
                                      ChainSnapshot snapshot, QuoteResolver quoteResolver,
                                      int baseLots) {
+        // Backward-compatible overload — no high-conviction ITM strike (normal selection).
+        return evaluate(ix, momentumDir, momentumType, momentumMagPct, spot, vix,
+                snapshot, quoteResolver, baseLots, false, 0);
+    }
+
+    /**
+     * Full evaluation with an optional high-conviction ITM strike candidate.
+     *
+     * @param highConvictionItm when true, the multi-strike picker additionally considers an ITM strike
+     *                          (see {@link MultiStrikePicker#rankCandidates}); G4 still filters it. When
+     *                          false the picker behaves exactly as before (no ITM candidate generated).
+     * @param itmDepth          ITM depth in strike intervals (only used when {@code highConvictionItm}).
+     */
+    public V3EntryDecision evaluate(IndexType ix,
+                                     int momentumDir, String momentumType, double momentumMagPct,
+                                     double spot, double vix,
+                                     ChainSnapshot snapshot, QuoteResolver quoteResolver,
+                                     int baseLots, boolean highConvictionItm, int itmDepth) {
         if (momentumDir == 0) {
             return V3EntryDecision.skip("no_momentum");
         }
@@ -158,9 +176,13 @@ public class V3EntryPipeline {
         int maxPain = marketContext.maxPainStrike(ix);
         boolean isExpiry = regimes.contains(Regime.EXPIRY_DAY);
         List<MultiStrikePicker.Candidate> ranked = picker.rankCandidates(ix, snapshot, signal,
-                momentumDir, walls[0], walls[1], maxPain, isExpiry);
+                momentumDir, walls[0], walls[1], maxPain, isExpiry, highConvictionItm, itmDepth);
         if (ranked.isEmpty()) {
             return V3EntryDecision.skip("no_viable_strike");
+        }
+        if (highConvictionItm && itmDepth > 0) {
+            log.info("[V3][{}] high-conviction ITM candidate enabled (depth={}) — {} candidates ranked",
+                    ix, itmDepth, ranked.size());
         }
 
         // ── LIQUIDITY_REROUTE (review P1): try candidates in order; pick first that
@@ -170,7 +192,11 @@ public class V3EntryPipeline {
         // Go-live safety: capped at 1 attempt until production data validates
         // non-ATM picks (TRAP / GAMMA_WALL / MAX_PAIN). Bump to 3 once V3 has shown
         // it picks sensible alternatives.
-        final int MAX_REROUTE_ATTEMPTS = Math.min(1, ranked.size());
+        // EXCEPTION (2026-07-07): when a high-conviction ITM candidate is in play, allow the reroute
+        // to try up to 3 candidates so a G4-failing ITM strike FALLS BACK to the next (ATM/ATM±1)
+        // instead of skipping the whole high-conviction entry. Normal (non-conviction) path stays at 1.
+        int rerouteCap = (highConvictionItm && itmDepth > 0) ? 3 : 1;
+        final int MAX_REROUTE_ATTEMPTS = Math.min(rerouteCap, ranked.size());
         for (int i = 0; i < MAX_REROUTE_ATTEMPTS; i++) {
             MultiStrikePicker.Candidate c = ranked.get(i);
             Quote q = null;
@@ -220,9 +246,8 @@ public class V3EntryPipeline {
             }
         }
 
-        // ── Gate threshold check (with MIDDAY_DISCIPLINE SQUEEZE carve-out) ──
+        // ── Gate threshold check ──
         int required = mode.requiredGates();
-        if (mode == TimeOfDayMode.MIDDAY_DISCIPLINE && signal.isSqueeze()) required = 3;
         if (!verdict.meetsThreshold(required)) {
             return V3EntryDecision.skip(
                     "gates_below_threshold:" + verdict.passedCount() + "of4 req=" + required);

@@ -2,6 +2,8 @@ package com.algo.trade.notification;
 
 import com.algo.trade.auth.UserBrokerConfig;
 import com.algo.trade.auth.UserBrokerConfigRepository;
+import com.algo.trade.multiuser.ip.UserIpAllocation;
+import com.algo.trade.multiuser.ip.UserIpAllocationRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import okhttp3.FormBody;
@@ -46,7 +48,16 @@ public class TelegramLinkService {
     @Value("${TELEGRAM_BOT_USERNAME:}")
     private String botUsername;
 
+    /**
+     * The Kite redirect (callback) URL the user must register in the Zerodha developer console.
+     * Reuses the runtime broker config so the link always reflects the active environment; the
+     * default is the production callback URL.
+     */
+    @Value("${trading.broker.redirect-url:https://www.api-algo-trade.com/advalgotrade/me/broker/kite/callback}")
+    private String kiteRedirectUrl;
+
     private final UserBrokerConfigRepository configRepository;
+    private final UserIpAllocationRepository ipAllocationRepository;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     private final OkHttpClient http = new OkHttpClient.Builder()
@@ -62,8 +73,10 @@ public class TelegramLinkService {
     private volatile long lastUpdateId = 0;
     private volatile boolean started = false;
 
-    public TelegramLinkService(UserBrokerConfigRepository configRepository) {
+    public TelegramLinkService(UserBrokerConfigRepository configRepository,
+                               UserIpAllocationRepository ipAllocationRepository) {
         this.configRepository = configRepository;
+        this.ipAllocationRepository = ipAllocationRepository;
     }
 
     @EventListener(ApplicationReadyEvent.class)
@@ -211,11 +224,74 @@ public class TelegramLinkService {
             // No broker config row yet → create a minimal one so we can store the chat_id
             c = new UserBrokerConfig(link.userId, "", "");
         }
+        boolean firstLink = c.getKiteSetupSentAt() == null;
         c.setTelegramChatId(String.valueOf(chatId));
         configRepository.save(c);
         log.info("[TelegramLink] ✅ userId={} linked to chatId={}", link.userId, chatId);
         sendTelegram(String.valueOf(chatId),
                 "✅ Linked! You'll now receive entry, exit, and risk alerts here. Send /unlink any time to stop.");
+
+        // One-time onboarding: on the FIRST successful Telegram link, send the Kite setup
+        // instructions (redirect URL to register + the user's auto-assigned public IP to
+        // whitelist). Guarded by kiteSetupSentAt so it's sent exactly once, even across
+        // unlink/re-link cycles or app restarts.
+        if (firstLink) {
+            sendKiteSetupInstructions(link.userId, chatId, c);
+        }
+    }
+
+    /**
+     * Sends the one-time setup message with all 3 steps a user must complete before orders are
+     * accepted: (1) the Kite redirect/callback URL to register in Zerodha, (2) the public (Elastic)
+     * IP to whitelist in Zerodha for the SEBI static-IP rule, and (3) the private source IP the user
+     * enters on the AlgoTrade "My Broker" page so the app binds their outbound traffic to it. Stamps
+     * {@code kiteSetupSentAt} so it is never sent twice. The private IP is a non-routable VPC address
+     * shown only because the user must paste it into the My Broker "Source IP" field.
+     */
+    private void sendKiteSetupInstructions(Long userId, long chatId, UserBrokerConfig config) {
+        var ipAlloc = ipAllocationRepository.findByUserId(userId).orElse(null);
+        String publicIp = (ipAlloc != null && ipAlloc.getPublicIp() != null && !ipAlloc.getPublicIp().isBlank())
+                ? ipAlloc.getPublicIp() : null;
+        String privateIp = (ipAlloc != null && ipAlloc.getPrivateIp() != null && !ipAlloc.getPrivateIp().isBlank())
+                ? ipAlloc.getPrivateIp() : null;
+        String pending = "(being provisioned — you'll receive it here shortly)";
+
+        StringBuilder msg = new StringBuilder();
+        msg.append("🔧 One-time setup to start trading\n\n")
+           .append("Complete all 3 steps below so your orders are accepted.\n\n")
+           .append("━━━ In Zerodha ━━━\n")
+           .append("Open https://developers.kite.trade → log in → open your Kite Connect app, then:\n\n")
+           .append("1) Redirect URL — set it EXACTLY to:\n")
+           .append(kiteRedirectUrl).append("\n\n")
+           .append("2) Whitelist this trading IP (SEBI static-IP rule) under the app's API settings, then Save:\n")
+           .append(publicIp != null ? publicIp : pending).append("\n\n")
+           .append("━━━ In the AlgoTrade app ━━━\n")
+           .append("3) Open the AlgoTrade app → go to the \"My Broker\" page → find the \"Source IP\" field → "
+                 + "paste the value below and click Save:\n")
+           .append(privateIp != null ? privateIp : pending).append("\n\n")
+           .append("Trading stays blocked until all 3 are saved. This message is sent only once.");
+
+        boolean sent = sendTelegram(String.valueOf(chatId), msg.toString());
+        if (!sent) {
+            log.warn("[TelegramLink] Kite setup instructions failed to send for userId={} — will retry on next first-link", userId);
+            return;
+        }
+
+        config.setKiteSetupSentAt(Instant.now());
+        configRepository.save(config);
+        log.info("[TelegramLink] Sent one-time Kite setup instructions to userId={} (publicIp={})",
+                userId, publicIp != null ? publicIp : "pending");
+
+        // Mirror onto the IP allocation's idempotency marker (§5.6) when the public IP was
+        // actually included, so any future allocation-ACTIVE notify path won't duplicate it.
+        if (publicIp != null) {
+            ipAllocationRepository.findByUserId(userId).ifPresent(alloc -> {
+                if (alloc.getIpNotifiedAt() == null) {
+                    alloc.setIpNotifiedAt(Instant.now());
+                    ipAllocationRepository.save(alloc);
+                }
+            });
+        }
     }
 
     private void handleUnlink(long chatId) {

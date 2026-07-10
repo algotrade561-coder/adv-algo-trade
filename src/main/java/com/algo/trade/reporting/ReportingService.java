@@ -150,8 +150,86 @@ public class ReportingService {
                         .map(com.algo.trade.auth.UserBrokerConfig::hasValidToken).orElse(false);
         if (!hasOwnSession) return List.of();
         final List<Position>[] result = new List[]{ List.<Position>of() };
-        com.algo.trade.multiuser.UserContext.runAs(viewUser, () -> result[0] = brokerClient.positions());
+        try {
+            com.algo.trade.multiuser.UserContext.runAs(viewUser, () -> result[0] = brokerClient.positions());
+        } catch (Exception e) {
+            // Never 500 the whole monitoring page over one user's broker hiccup — the UI would
+            // silently keep the PREVIOUS user's rows on screen (wrong-owner close risk).
+            log.warn("fetchLivePositions(userId={}) failed — returning empty: {}", viewUser, e.getMessage());
+            return List.of();
+        }
         return result[0];
+    }
+
+    /**
+     * The single owner a close/preview action targets, privilege-checked:
+     * regular user → always themselves (requested id ignored); SUPERUSER/ADMIN → the requested
+     * user, or themselves when none requested. Shared by close, close-preview, and the
+     * direct-broker fallback so no path can trust a client-supplied userId unchecked.
+     */
+    public Long resolveCloseTargetUser(Long requestedUserId) {
+        final Long self = com.algo.trade.multiuser.UserContext.getUserId();
+        final Long target = (isPrivilegedViewer() && requestedUserId != null) ? requestedUserId : self;
+        return target != null ? target : com.algo.trade.multiuser.UserContext.DEFAULT_USER_ID;
+    }
+
+    // §B5 (2026-06-29): the BROKER's own day P&L is the ONLY trustworthy number. The bot's per-trade
+    // realized_pnl is unreliable when orders chase / partial-fill / overlap (recorded prices != actual broker
+    // fills), so it badly overstated P&L (reported +3084 while the broker showed -449). positions() already
+    // carries Kite's "pnl" field (= realised + unrealised) in Position.unrealizedPnl — summing it per user
+    // gives exactly what Zerodha shows. Cached briefly so dashboard refreshes don't hammer the broker API.
+    private record CachedPnl(long ts, BigDecimal val) {}
+    private final java.util.concurrent.ConcurrentHashMap<Long, CachedPnl> brokerPnlCache = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final long BROKER_PNL_TTL_MS = 10_000;
+
+    /** The broker's authoritative day P&L for a user (sum of positions() pnl). Null if no broker data. */
+    private BigDecimal brokerDayPnl(Long userId) {
+        Long key = userId != null ? userId : com.algo.trade.multiuser.UserContext.getUserId();
+        if (key == null) key = com.algo.trade.multiuser.UserContext.DEFAULT_USER_ID;
+        long now = System.currentTimeMillis();
+        CachedPnl cached = brokerPnlCache.get(key);
+        if (cached != null && now - cached.ts() < BROKER_PNL_TTL_MS) return cached.val();
+        try {
+            // "Own" = this is the PRIMARY user (DEFAULT_USER_ID) whose token lives in the global
+            // BrokerClient session. For ANY other userId, we must go through fetchLivePositions which
+            // runs under that user's own broker session via UserContext.runAs(). Previously, a secondary
+            // user viewing their own P&L (own=true because userId==current) would hit brokerClient.positions()
+            // which always returns the PRIMARY's positions — the cross-contamination bug.
+            boolean isPrimary = key.equals(com.algo.trade.multiuser.UserContext.DEFAULT_USER_ID);
+            List<Position> positions = isPrimary ? brokerClient.positions() : fetchLivePositions(key);
+            if (positions == null || positions.isEmpty()) {
+                log.info("brokerDayPnl[u:{}]: no broker positions (primary={}) — trade-based fallback", key, isPrimary);
+                return cached != null ? cached.val() : null;
+            }
+            BigDecimal sum = positions.stream().map(Position::unrealizedPnl).filter(Objects::nonNull)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+            log.info("brokerDayPnl[u:{}] = {} from {} broker positions (primary={})", key, sum, positions.size(), isPrimary);
+            brokerPnlCache.put(key, new CachedPnl(now, sum));
+            return sum;
+        } catch (Exception e) {
+            log.warn("brokerDayPnl[u:{}] failed — trade-based fallback: {}", key, e.getMessage());
+            return cached != null ? cached.val() : null;
+        }
+    }
+
+    /**
+     * Open trades the current viewer is allowed to CLOSE for an instrument, role-scoped to a single owner:
+     * <ul>
+     *   <li>Regular user → only their own open trades (any requested {@code filterUserId} is ignored).</li>
+     *   <li>SUPERUSER/ADMIN with {@code filterUserId} → that user's open trades (the dropdown workflow).</li>
+     *   <li>SUPERUSER/ADMIN without {@code filterUserId} → their OWN open trades (safe default; never a
+     *       blanket close across every user from the "All users" view).</li>
+     * </ul>
+     * Always resolves to exactly one target owner, so a close action can never fan out across users.
+     */
+    public List<TradeEntity> closableOpenTrades(String instrumentKey, Long filterUserId) {
+        if (instrumentKey == null || instrumentKey.isBlank()) return List.of();
+        final Long norm = resolveCloseTargetUser(filterUserId);
+        return tradeRepository.findByStatus(com.algo.trade.domain.TradeStatus.OPEN).stream()
+                .filter(t -> instrumentKey.equals(t.getInstrumentKey()))
+                .filter(t -> norm.equals(t.getUserId() != null
+                        ? t.getUserId() : com.algo.trade.multiuser.UserContext.DEFAULT_USER_ID))
+                .toList();
     }
 
     public List<OrderEntity> orders() {
@@ -160,9 +238,19 @@ public class ReportingService {
 
     public List<OrderEntity> orders(Long filterUserId) {
         var ownerPred = ownerFilter(filterUserId);
-        List<OrderEntity> orders = orderRepository.findAll().stream()
-                .filter(o -> ownerPred.test(o.getUserId()))
-                .toList();
+        // Only today's orders — mirrors the trades() date-scoping. The old findAll() loaded the entire
+        // order history (grows unboundedly), making the monitoring page progressively slower with each day.
+        java.time.LocalDate today = java.time.LocalDate.now(ZoneId.of("Asia/Kolkata"));
+        Instant dayStart = today.atStartOfDay(ZoneId.of("Asia/Kolkata")).toInstant();
+        Instant dayEnd = today.plusDays(1).atStartOfDay(ZoneId.of("Asia/Kolkata")).toInstant();
+        List<OrderEntity> orders;
+        if (filterUserId != null) {
+            orders = orderRepository.findByUserIdAndUpdatedAtBetween(filterUserId, dayStart, dayEnd);
+        } else {
+            orders = orderRepository.findByUpdatedAtBetween(dayStart, dayEnd).stream()
+                    .filter(o -> ownerPred.test(o.getUserId()))
+                    .toList();
+        }
         log.debug("Reporting orders completed: count={}", orders.size());
         return orders;
     }
@@ -198,6 +286,12 @@ public class ReportingService {
 
     public PnlSnapshot pnl(Long filterUserId) {
         log.debug("Reporting PnL calculation started: filterUserId={}", filterUserId);
+        // §B5: prefer the BROKER's authoritative day P&L (matches Zerodha exactly). Only fall back to the
+        // bot's trade-derived calc when no broker data is available (no token / off-hours).
+        BigDecimal authoritative = brokerDayPnl(filterUserId);
+        if (authoritative != null) {
+            return new PnlSnapshot(Instant.now(), authoritative, BigDecimal.ZERO, authoritative);
+        }
         var ownerPred = ownerFilter(filterUserId);
         java.time.LocalDate today = java.time.LocalDate.now(ZoneId.of("Asia/Kolkata"));
         Instant dayStart = today.atStartOfDay(ZoneId.of("Asia/Kolkata")).toInstant();

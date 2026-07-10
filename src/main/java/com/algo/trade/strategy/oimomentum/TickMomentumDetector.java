@@ -2,6 +2,7 @@ package com.algo.trade.strategy.oimomentum;
 
 import com.algo.trade.domain.IndexType;
 import com.algo.trade.marketdata.LiveInstrumentCache;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.util.Deque;
@@ -25,11 +26,50 @@ public class TickMomentumDetector {
     private final Map<IndexType, Deque<PriceSample>> priceHistory = new ConcurrentHashMap<>();
     private static final long WINDOW_MS = 30 * 60 * 1000L; // 30 minutes
 
+    // Longer-retention history dedicated to sustained-drift measurement. Kept
+    // deliberately separate from the 30-min priceHistory so the existing 30-min
+    // consumers (detect, detectSpike, getRolling30Min*) are completely unaffected.
+    // 65 min of retention so a 60-min endpoint lookback always has a boundary sample.
+    private final Map<IndexType, Deque<PriceSample>> driftHistory = new ConcurrentHashMap<>();
+    private static final long DRIFT_WINDOW_MS = 65 * 60 * 1000L; // 65 minutes
+
     // Spike detection: 10-minute window for event spike
     private static final long SPIKE_WINDOW_MS = 10 * 60 * 1000L;
 
+    // ── Momentum-gate v2 (§3.3, 2026-06-27) — config-gated, DEFAULT OFF (needs backtest) ──
+    // The legacy gate fires on an instantaneous 0.02% pierce of the 30-min range or a 4bps move over
+    // 5s — both noise-level, which is why blocked "no_momentum" periods had the same forward-move
+    // distribution as traded ones. v2 makes the breakout range-relative and requires the short signed
+    // drift to agree in direction (filters counter-trend mean-reversion pierces). Off by default so it
+    // can be A/B-tested against the recorded events before changing live behaviour.
+    @Value("${oi-momentum.momentum-gate.range-relative-enabled:false}")
+    private boolean rangeRelativeEnabled;
+    @Value("${oi-momentum.momentum-gate.range-relative-factor:0.25}")
+    private double rangeRelativeFactor;
+    @Value("${oi-momentum.momentum-gate.drift-confirm-enabled:false}")
+    private boolean driftConfirmEnabled;
+    @Value("${oi-momentum.momentum-gate.drift-confirm-window-min:3}")
+    private int driftConfirmWindowMin;
+
     public TickMomentumDetector(LiveInstrumentCache liveInstrumentCache) {
         this.liveInstrumentCache = liveInstrumentCache;
+    }
+
+    /** Min breakout distance: max(0.02%, factor × 30-min range%) when range-relative gating is on,
+     *  else the legacy flat 0.02%. A pierce then only counts when it is meaningful vs recent vol. */
+    private double minBreakoutPct(double high30m, double low30m, double spot) {
+        if (!rangeRelativeEnabled || spot <= 0) return 0.02;
+        double rangePct = (high30m - low30m) / spot * 100.0;
+        return Math.max(0.02, rangeRelativeFactor * rangePct);
+    }
+
+    /** When drift-confirm is on, suppress a signal whose direction is OPPOSITE the short signed drift
+     *  (a counter-trend pierce). Returns true (allow) when disabled, drift invalid, or drift agrees. */
+    private boolean driftAgrees(IndexType indexType, int dir) {
+        if (!driftConfirmEnabled) return true;
+        DriftSample d = getSignedDriftPct(indexType, driftConfirmWindowMin);
+        if (!d.valid()) return true;        // not enough history → don't suppress
+        return dir * d.driftPct() >= 0;     // same direction or flat
     }
 
     /**
@@ -44,6 +84,15 @@ public class TickMomentumDetector {
         // Evict samples older than 30 minutes
         while (!history.isEmpty() && (now - history.peekFirst().timestamp) > WINDOW_MS) {
             history.pollFirst();
+        }
+
+        // Mirror the same sample into the longer drift-history window. Isolated
+        // retention (65 min) so sustained-drift can look back a full hour without
+        // perturbing the 30-min range/breakout logic above.
+        Deque<PriceSample> drift = driftHistory.computeIfAbsent(indexType, k -> new ConcurrentLinkedDeque<>());
+        drift.addLast(new PriceSample(now, spot));
+        while (!drift.isEmpty() && (now - drift.peekFirst().timestamp) > DRIFT_WINDOW_MS) {
+            drift.pollFirst();
         }
     }
 
@@ -87,10 +136,12 @@ public class TickMomentumDetector {
         }
         if (high30m <= 0 || low30m == Double.MAX_VALUE) return MomentumSignal.NONE;
 
+        double minBreakoutPct = minBreakoutPct(high30m, low30m, spot);
+
         // Breakout above 30-min high (excluding recent ticks)
         if (spot > high30m) {
             double breakoutPct = (spot - high30m) / high30m * 100;
-            if (breakoutPct > 0.02) {
+            if (breakoutPct > minBreakoutPct && driftAgrees(indexType, 1)) {
                 return new MomentumSignal(1, "30M_HIGH_BREAK", breakoutPct, spot);
             }
         }
@@ -98,7 +149,7 @@ public class TickMomentumDetector {
         // Breakdown below 30-min low (excluding recent ticks)
         if (spot < low30m) {
             double breakdownPct = (low30m - spot) / low30m * 100;
-            if (breakdownPct > 0.02) {
+            if (breakdownPct > minBreakoutPct && driftAgrees(indexType, -1)) {
                 return new MomentumSignal(-1, "30M_LOW_BREAK", breakdownPct, spot);
             }
         }
@@ -116,7 +167,10 @@ public class TickMomentumDetector {
             double movePct = (spot - fiveSecSample.price) / fiveSecSample.price * 100;
             if (Math.abs(movePct) >= momentumThresholdPct) {
                 int direction = movePct > 0 ? 1 : -1;
-                return new MomentumSignal(direction, "LARGE_MOVE", Math.abs(movePct), spot);
+                // v2: a 5s spike must agree with the short signed drift, else it's a single-tick blip.
+                if (driftAgrees(indexType, direction)) {
+                    return new MomentumSignal(direction, "LARGE_MOVE", Math.abs(movePct), spot);
+                }
             }
         }
 
@@ -246,6 +300,78 @@ public class TickMomentumDetector {
     }
 
     /**
+     * True endpoint-to-endpoint signed drift over the last {@code windowMinutes}.
+     *
+     * <p>Replaces the legacy midpoint approximation that D2 SUSTAINED_DRIFT used to
+     * rely on. That approach measured distance from the rolling-window midpoint and
+     * therefore reported only ~half the real move on a clean one-way trend — on the
+     * 2026-06-12 afternoon rally it read ~0.13% (below the 0.20% gate) so D2 never
+     * fired all day despite a textbook sustained drift.</p>
+     *
+     * <p>Drift = (currentSpot − spotAtWindowStart) / currentSpot × 100, where
+     * spotAtWindowStart is the most recent sample at or before the window boundary
+     * (or the oldest available sample before a full window has accumulated). Reads
+     * the isolated {@link #driftHistory} (65-min retention). Requires at least
+     * {@code min(windowMinutes, 30)} minutes of history so a "60-min sustained
+     * drift" is never computed off a few minutes of ticks.</p>
+     *
+     * @return signed drift plus the window actually measured; {@link DriftSample#INVALID}
+     *         when spot/history is unavailable or the measured window is too short.
+     */
+    public DriftSample getSignedDriftPct(IndexType indexType, int windowMinutes) {
+        double spot = liveInstrumentCache.getFuturesPrice(indexType);
+        if (spot <= 0) return DriftSample.INVALID;
+        Deque<PriceSample> history = driftHistory.get(indexType);
+        if (history == null || history.isEmpty()) return DriftSample.INVALID;
+
+        long now = System.currentTimeMillis();
+        long boundaryTs = now - (long) windowMinutes * 60_000L;
+
+        // Walk oldest → newest, keeping the last sample at or before the window
+        // boundary — that is the spot ~windowMinutes ago.
+        PriceSample startSample = null;
+        for (PriceSample s : history) {
+            if (s.timestamp <= boundaryTs) {
+                startSample = s;
+            } else {
+                break;
+            }
+        }
+        // Not enough history to reach the boundary yet — fall back to the oldest sample.
+        if (startSample == null) {
+            startSample = history.peekFirst();
+        }
+        if (startSample == null || startSample.price <= 0) return DriftSample.INVALID;
+
+        int measuredMin = (int) Math.round((now - startSample.timestamp) / 60_000.0);
+        if (measuredMin < Math.min(windowMinutes, 30)) return DriftSample.INVALID;
+
+        double driftPct = (spot - startSample.price) / spot * 100.0;
+        return new DriftSample(driftPct, measuredMin, true);
+    }
+
+    /**
+     * Signed % move of spot over the last {@code windowSec} seconds (endpoint-to-endpoint).
+     * Used by the fast adverse-gap reaction to confirm a violent move in the UNDERLYING (the
+     * driver — see docs/SPIKE-FOOTPRINT-ANALYSIS-2026-06-28.md) over a few seconds. Returns 0
+     * when spot/history is unavailable or no sample spans the window yet.
+     */
+    public double getShortWindowMovePct(IndexType indexType, int windowSec) {
+        double spotNow = liveInstrumentCache.getFuturesPrice(indexType);
+        if (spotNow <= 0) return 0;
+        Deque<PriceSample> history = priceHistory.get(indexType);
+        if (history == null || history.isEmpty()) return 0;
+        long boundary = System.currentTimeMillis() - (long) windowSec * 1000L;
+        PriceSample start = null;
+        for (PriceSample s : history) {
+            if (s.timestamp <= boundary) start = s; else break;
+        }
+        if (start == null) start = history.peekFirst();
+        if (start == null || start.price <= 0) return 0;
+        return (spotNow - start.price) / start.price * 100.0;
+    }
+
+    /**
      * Get current spot price for an index.
      */
     public double getSpot(IndexType indexType) {
@@ -255,6 +381,11 @@ public class TickMomentumDetector {
     // ── Records ──
 
     private record PriceSample(long timestamp, double price) {}
+
+    /** Result of an endpoint-drift measurement. {@code valid=false} ⇒ ignore the values. */
+    public record DriftSample(double driftPct, int windowMinutesMeasured, boolean valid) {
+        public static final DriftSample INVALID = new DriftSample(0, 0, false);
+    }
 
     public record MomentumSignal(int direction, String type, double magnitude, double spotPrice) {
         public static final MomentumSignal NONE = new MomentumSignal(0, "NONE", 0, 0);

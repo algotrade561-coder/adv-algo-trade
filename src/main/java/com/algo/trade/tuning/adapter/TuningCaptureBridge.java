@@ -7,7 +7,9 @@ import com.algo.trade.persistence.TradeEntity;
 import com.algo.trade.reporting.SignalDecisionKey;
 import com.algo.trade.strategy.SignalRecordContext;
 import com.algo.trade.strategy.StrategyType;
+import com.algo.trade.tuning.EvaluationEvent;
 import com.algo.trade.tuning.ExitEvent;
+import com.algo.trade.tuning.SignalEvent;
 import com.algo.trade.tuning.infra.EpisodeAggregator;
 import com.algo.trade.tuning.infra.MaeMfeTracker;
 import com.algo.trade.tuning.recorder.TuningEventRecorder;
@@ -128,12 +130,16 @@ public class TuningCaptureBridge {
                     : Instant.now();
 
             if (isFiredSignal(decision)) {
-                recorder.record(capture.buildSignalEvent(ctx, correlationKey));
+                SignalEvent se = capture.buildSignalEvent(ctx, correlationKey);
+                enrichMarketContext(se.attributes(), ctx);
+                recorder.record(se);
                 return;
             }
 
             if (capture.cadence() == CadenceHint.LOW) {
-                recorder.record(capture.buildImmediateEvaluationEvent(ctx, eventTime));
+                EvaluationEvent ev = capture.buildImmediateEvaluationEvent(ctx, eventTime);
+                enrichMarketContext(ev.attributes(), ctx);
+                recorder.record(ev);
                 return;
             }
 
@@ -146,7 +152,9 @@ public class TuningCaptureBridge {
                     evalAggregators.get(strategy);
             for (EpisodeAggregator.EpisodeRow<IndexType, String, SignalRecordContext> row
                     : aggregator.record(index, blocker, ctx, eventTime)) {
-                recorder.record(capture.buildEvaluationEvent(row));
+                EvaluationEvent ev = capture.buildEvaluationEvent(row);
+                enrichMarketContext(ev.attributes(), row.firstPayload());
+                recorder.record(ev);
             }
         } catch (Exception ex) {
             log.warn("[TuningCaptureBridge] dual-write failed for {} (non-fatal): {}",
@@ -229,12 +237,47 @@ public class TuningCaptureBridge {
             try {
                 for (EpisodeAggregator.EpisodeRow<IndexType, String, SignalRecordContext> row
                         : entry.getValue().flushExpired(now)) {
-                    recorder.record(capture.buildEvaluationEvent(row));
+                    EvaluationEvent ev = capture.buildEvaluationEvent(row);
+                    enrichMarketContext(ev.attributes(), row.firstPayload());
+                    recorder.record(ev);
                 }
             } catch (Exception ex) {
                 log.warn("[TuningCaptureBridge] episode flush failed for {} (non-fatal): {}",
                         entry.getKey(), ex.getMessage());
             }
+        }
+    }
+
+    /**
+     * Flush ALL in-flight eval episodes at shutdown. The @Scheduled flushExpired can't run once the context
+     * is stopping, so without this every open BLOCKED episode (up to ~60s of accumulated ticks per
+     * strategy×index stream) was silently dropped on each restart — 11 restarts on 2026-07-01 discarded
+     * hundreds of episode-rows'-worth of ticks with no drop counter. Mirrors flushExpiredEpisodes but uses
+     * flushAll(). (2026-07-02) — closes tuning-audit finding #107/#186.
+     */
+    @jakarta.annotation.PreDestroy
+    public void flushAllEpisodesOnShutdown() {
+        int flushed = 0;
+        for (var entry : evalAggregators.entrySet()) {
+            TuningPipelineCapture capture = captures.get(entry.getKey());
+            if (capture == null || capture.cadence() == CadenceHint.LOW) {
+                continue;
+            }
+            try {
+                for (EpisodeAggregator.EpisodeRow<IndexType, String, SignalRecordContext> row
+                        : entry.getValue().flushAll()) {
+                    EvaluationEvent ev = capture.buildEvaluationEvent(row);
+                    enrichMarketContext(ev.attributes(), row.firstPayload());
+                    recorder.record(ev);
+                    flushed++;
+                }
+            } catch (Exception ex) {
+                log.warn("[TuningCaptureBridge] shutdown episode flush failed for {} (non-fatal): {}",
+                        entry.getKey(), ex.getMessage());
+            }
+        }
+        if (flushed > 0) {
+            log.info("[TuningCaptureBridge] flushed {} in-flight eval episode(s) at shutdown", flushed);
         }
     }
 
@@ -247,6 +290,68 @@ public class TuningCaptureBridge {
         }
         String raw = ctx.strategyType() + "|" + ctx.underlying() + "|" + Instant.now();
         return Integer.toUnsignedString(raw.hashCode(), 16);
+    }
+
+    /**
+     * Centrally stamps the underlying <b>spot</b> (plus VIX / DTE when available) onto every
+     * pipeline-strategy event's attributes, so the report's missed-opportunity reconstruction and
+     * per-strategy market-context work identically to OI Momentum without editing all ~13 adapters.
+     * Best-effort and idempotent: {@code putIfAbsent} semantics (never clobbers an adapter-provided
+     * value), and any immutable-map / null surprise is swallowed — market context is nice-to-have,
+     * never worth failing a capture over.
+     */
+    static void enrichMarketContext(Map<String, Object> attrs, SignalRecordContext ctx) {
+        if (attrs == null || ctx == null) {
+            return;
+        }
+        try {
+            if (!attrs.containsKey("spot")) {
+                Double spot = spotOf(ctx);
+                if (spot != null && spot > 0) {
+                    attrs.put("spot", spot);
+                }
+            }
+            if (!attrs.containsKey("vix") && ctx.vixLevel() != null) {
+                attrs.put("vix", ctx.vixLevel());
+            }
+            if (!attrs.containsKey("dte") && ctx.daysToExpiry() != null) {
+                attrs.put("dte", ctx.daysToExpiry());
+            }
+        } catch (RuntimeException ignore) {
+            // Immutable attrs map (e.g. an adapter using Map.of()) or an unexpected value — skip.
+        }
+    }
+
+    /**
+     * Underlying spot at eval time. Prefer the decision's underlyingPrice, then the last underlying-candle
+     * close. 2026-07-03 (C1): several pipeline strategies (directional_buy, momentum, scalping) build their
+     * REJECT/eval payload without an underlyingPrice on the decision AND without underlyingCandles — so the
+     * old two-source lookup returned null and the missed-opportunity reconstruction had no spot. Fall back
+     * to the TREND candles (populated by those strategies) so spot lands centrally without editing each
+     * adapter. Best-effort; returns null only when no source carries the underlying price.
+     */
+    private static Double spotOf(SignalRecordContext ctx) {
+        StrategyDecision d = ctx.decision();
+        if (d != null && d.underlyingPrice() != null) {
+            return d.underlyingPrice().doubleValue();
+        }
+        Double fromUnderlying = lastClose(ctx.underlyingCandles());
+        if (fromUnderlying != null) {
+            return fromUnderlying;
+        }
+        return lastClose(ctx.trendCandles());
+    }
+
+    /** Last non-null close of a candle list, or null if empty/unavailable. */
+    private static Double lastClose(java.util.List<com.algo.trade.domain.Candle> candles) {
+        if (candles == null || candles.isEmpty()) {
+            return null;
+        }
+        var last = candles.get(candles.size() - 1);
+        if (last != null && last.close() != null) {
+            return last.close().doubleValue();
+        }
+        return null;
     }
 
     public static boolean isFiredSignal(StrategyDecision decision) {

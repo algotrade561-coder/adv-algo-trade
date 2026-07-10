@@ -236,14 +236,14 @@ public record TradingProperties(
                     true,   // vwapFilterEnabled
                     true,   // trendFilterEnabled
                     BigDecimal.valueOf(1.2),   // volumeSpikeMultiplier
-                    new BigDecimal("0.05"),     // breakoutBufferPercent
-                    15,     // breakoutLookback
+                    new BigDecimal("0.03"),     // breakoutBufferPercent (relaxed from 0.05)
+                    10,     // breakoutLookback (reduced from 15 — shorter range, easier break)
                     5,      // volumeLookback
                     BigDecimal.valueOf(1.2),   // bullishImbalanceThreshold
                     BigDecimal.valueOf(0.8),   // bearishImbalanceThreshold
                     5_000,  // minLiquidityVolume
                     BigDecimal.valueOf(80),    // maxIvPercent
-                    BigDecimal.valueOf(70),    // minSignalScorePercent
+                    BigDecimal.valueOf(55),    // minSignalScorePercent (lowered from 70; rebalanced scoring weights OI higher)
                     false,  // ceOiSupportRequired
                     false,  // peOiSupportRequired
                     true,   // ceOiDivergenceFilterEnabled

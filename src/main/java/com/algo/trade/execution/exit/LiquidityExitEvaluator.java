@@ -195,12 +195,18 @@ public class LiquidityExitEvaluator {
                     true));
         }
 
+        // Relative spread widening vs entry — ALSO require the spread to be wide in
+        // ABSOLUTE terms (>= warn threshold). Without this, a razor-tight entry spread
+        // (0.1%) makes a perfectly healthy 0.3% spread trigger a false "emergency"
+        // exit (observed 2026-06-12: NIFTY 23550CE killed 12s after entry at 0.3%).
         if (entrySpreadPct != null && entrySpreadPct > 0
-                && spreadPct >= entrySpreadPct * properties.spreadVsEntryMultiplier()) {
+                && spreadPct >= entrySpreadPct * properties.spreadVsEntryMultiplier()
+                && spreadPct >= properties.spreadWarnPercent()) {
             return Optional.of(new LiquidityExitSignal(
                     LiquidityExitReasons.SPREAD_VS_ENTRY,
-                    String.format("Spread %.1f%% >= %.1fx entry %.1f%%",
-                            spreadPct, properties.spreadVsEntryMultiplier(), entrySpreadPct),
+                    String.format("Spread %.1f%% >= %.1fx entry %.1f%% (and >= warn %.1f%%)",
+                            spreadPct, properties.spreadVsEntryMultiplier(), entrySpreadPct,
+                            properties.spreadWarnPercent()),
                     true));
         }
 

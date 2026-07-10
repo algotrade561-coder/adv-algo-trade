@@ -81,15 +81,19 @@ public class OperatorFilterGate {
         int[] walls = ctx.gammaWalls(ix);
         boolean g2Pass = true;
         StringBuilder g2 = new StringBuilder();
-        // Gamma wall too close in move direction?
+        // Gamma wall proximity: only block if wall is VERY close (< 0.15% from spot).
+        // Walls at 0.15-0.30% are "soft resistance" — informational, not a veto.
+        // Previous threshold (0.30%) was too aggressive and blocked normal intraday noise.
         if (momentumDir > 0 && walls[0] > 0) {
             double distPct = (walls[0] - spot) / spot * 100.0;
             g2.append("wallAbove=").append(walls[0]).append("(").append(String.format("%.2f", distPct)).append("%)");
-            if (distPct < 0.30) { g2Pass = false; g2.append("[BLOCK]"); }
+            if (distPct < 0.15) { g2Pass = false; g2.append("[BLOCK]"); }
+            else if (distPct < 0.30) { g2.append("[SOFT]"); }
         } else if (momentumDir < 0 && walls[1] > 0) {
             double distPct = (spot - walls[1]) / spot * 100.0;
             g2.append("wallBelow=").append(walls[1]).append("(").append(String.format("%.2f", distPct)).append("%)");
-            if (distPct < 0.30) { g2Pass = false; g2.append("[BLOCK]"); }
+            if (distPct < 0.15) { g2Pass = false; g2.append("[BLOCK]"); }
+            else if (distPct < 0.30) { g2.append("[SOFT]"); }
         }
         // VWAP alignment (unless OI signal is a SQUEEZE — those can go counter-VWAP)
         if (g2Pass && !oiSignal.isSqueeze()) {
@@ -103,16 +107,20 @@ public class OperatorFilterGate {
         }
         // PCR slope confirmation (review #47):
         // PCR rising → put-writing dominating → bullish bias. Falling → bearish.
-        // If PCR slope strongly opposes momentum (|slope| > 0.05 / 5min in wrong dir),
-        // veto G2 unless the OI pattern is a SQUEEZE.
+        // Only veto if slope STRONGLY opposes momentum (|slope| > 0.03).
+        // Previous threshold (0.05) was correct for clear opposition; lowered to 0.03
+        // to catch more subtle slope disagreements. Values < 0.03 are noise — ignored.
         double pcrSlope = ctx.pcrSlope5Min(ix);
-        if (Math.abs(pcrSlope) > 0.05) {
+        if (Math.abs(pcrSlope) > 0.03) {
             int pcrDir = pcrSlope > 0 ? +1 : -1;
             g2.append(",pcrSlope=").append(String.format("%+.3f", pcrSlope)).append("(dir=").append(pcrDir).append(")");
             if (g2Pass && !oiSignal.isSqueeze() && pcrDir != momentumDir) {
                 g2Pass = false;
                 g2.append("[PCR_AGAINST]");
             }
+        } else if (Math.abs(pcrSlope) > 0.001) {
+            // Noise-range slope: record but don't gate
+            g2.append(",pcrSlope=").append(String.format("%+.3f", pcrSlope)).append("[NOISE_IGNORE]");
         }
         // Max-pain alignment on 0-1 DTE (informational only otherwise)
         if (regimes.contains(Regime.EXPIRY_DAY)) {
@@ -133,30 +141,31 @@ public class OperatorFilterGate {
         String g2Reason = g2.length() == 0 ? "no_walls" : g2.toString();
 
         // ── G3: Volatility Regime — multi-signal long-vol gate (review #44) ──
-        // Previous looser implementation auto-passed via ivPct=50 default.
-        // New stricter logic requires AT LEAST ONE positive long-vol signal AND
-        // none of the bearish-for-long-premium signals:
+        // Requires AT LEAST ONE positive long-vol signal. IV > 85 is a WARNING
+        // (premium expensive) but NOT a hard veto — strong G1+G2+G4 conviction should
+        // still allow entries with expensive IV (the direction signal matters more than
+        // getting cheap premium). VIX crush (dropping > 5% intraday) remains a hard veto.
         //
         //   POSITIVE  (any one passes the gate):
-        //     P1. IV percentile < 50 (genuinely cheap; replaces old <70 default)
+        //     P1. IV percentile < 50 (genuinely cheap)
         //     P2. VIX % change vs session open ≥ +3%
         //     P3. VIX session percentile ≥ VIX_SESSION_ELEVATED_PERCENTILE
         //     P4. Expiry day (gamma rules)
+        //     P5. IV percentile 50–85 (neutral — not cheap but not expensive)
         //
-        //   NEGATIVE (any one VETOES even if a positive signal exists):
-        //     N1. IV percentile > 85 (premium expensive — long-vol losing edge)
-        //     N2. VIX dropping > 5% intraday (vol-crush regime)
+        //   NEGATIVE (hard veto):
+        //     N1. VIX dropping > 5% intraday (vol-crush regime)
         //
-        // Note on history: when MarketContextService has fewer than 3 IV samples,
-        // ivPercentile returns 50 (sentinel). We treat 50 specifically as "unknown" —
-        // it does NOT count as a positive signal but is also not a veto.
+        //   WARNING (logged, does NOT veto):
+        //     W1. IV percentile > 85 (premium expensive — noted but allowed)
         boolean g3Pass = false;
         boolean g3Veto = false;
         StringBuilder g3 = new StringBuilder();
         double ivPct = ctx.ivPercentile(ix);
         g3.append("ivPct=").append(String.format("%.0f", ivPct));
         if (ivPct > 0 && ivPct < 50 && ivPct != 50) { g3Pass = true; g3.append("[CHEAP]"); }
-        if (ivPct > 85) { g3Veto = true; g3.append("[EXPENSIVE]"); }
+        else if (ivPct > 85) { g3.append("[EXPENSIVE_WARN]"); } // Warning only, not a veto
+        else if (ivPct > 0 && ivPct != 50 && ivPct <= 85) { g3Pass = true; g3.append("[NEUTRAL_OK]"); }
 
         double vixPctVsOpen = ctx.vixPctVsSessionOpen();
         g3.append(",vixVsOpen=").append(String.format("%+.2f%%", vixPctVsOpen));

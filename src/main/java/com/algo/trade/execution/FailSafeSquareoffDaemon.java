@@ -90,7 +90,23 @@ public class FailSafeSquareoffDaemon {
 
         int spreadClosed = spreadEodSquareoffService.squareOffAllOpenGroups("FailSafe square-off " + getFailSafeTime());
 
-        List<TradeEntity> openTrades = tradeRepository.findByStatus(TradeStatus.OPEN);
+        // Leave MANUAL / broker-synced positions alone unless explicitly managed — consistent with
+        // GracefulShutdownHandler / LivePositionExitMonitor / SignalCopyService copy-exit. The bot must NOT
+        // force-close a user's own manual position at EOD (it's theirs to hold or close); doing so hammered
+        // u:8's margin-blocked SYNC-da685755 with futile margin/AMO rejections on 2026-07-02. (2026-07-02)
+        List<TradeEntity> allOpen = tradeRepository.findByStatus(TradeStatus.OPEN);
+        List<TradeEntity> skippedSync = allOpen.stream()
+                .filter(t -> globalConfigService != null && !globalConfigService.isManageSyncedTrades()
+                        && t.getTradeId() != null && t.getTradeId().startsWith("SYNC-"))
+                .toList();
+        if (!skippedSync.isEmpty()) {
+            log.info("[FailSafe] Leaving {} MANUAL/synced position(s) untouched (manageSyncedTrades=false): {}",
+                    skippedSync.size(), skippedSync.stream().map(TradeEntity::getTradeId).toList());
+        }
+        List<TradeEntity> openTrades = allOpen.stream()
+                .filter(t -> globalConfigService == null || globalConfigService.isManageSyncedTrades()
+                        || t.getTradeId() == null || !t.getTradeId().startsWith("SYNC-"))
+                .toList();
         if (openTrades.isEmpty() && spreadClosed == 0) return;
 
         log.warn("[FailSafe] {} open trades, {} spread groups squared off after {}",

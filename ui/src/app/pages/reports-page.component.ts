@@ -7,7 +7,9 @@ import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
 import { RouterLink } from '@angular/router';
+import { forkJoin } from 'rxjs';
 import { ApiService } from '../core/api.service';
+import { AdminService } from '../core/admin.service';
 import { DailyBundleSummary } from '../core/models';
 
 @Component({
@@ -33,6 +35,18 @@ import { DailyBundleSummary } from '../core/models';
           <div><span class="lc-title">Rejected Signals</span><span class="lc-desc">Browse NO_TRADE decisions</span></div>
           <mat-icon class="lc-arrow">chevron_right</mat-icon>
         </a>
+        <a class="link-card" routerLink="/microstructure">
+          <mat-icon class="lc-icon lc-info">insights</mat-icon>
+          <div><span class="lc-title">Microstructure Explorer</span><span class="lc-desc">OI cadence &amp; strike timeline</span></div>
+          <mat-icon class="lc-arrow">chevron_right</mat-icon>
+        </a>
+        @if (admin.isSuperUser()) {
+          <a class="link-card" routerLink="/tuning-capture">
+            <mat-icon class="lc-icon lc-info">science</mat-icon>
+            <div><span class="lc-title">Tuning Capture</span><span class="lc-desc">Per-strategy capture toggles</span></div>
+            <mat-icon class="lc-arrow">chevron_right</mat-icon>
+          </a>
+        }
       </div>
 
       <div class="section-hdr">
@@ -130,8 +144,8 @@ import { DailyBundleSummary } from '../core/models';
       <div class="section-hdr tuning-hdr">
         <h2 class="section-title">Signal tuning report</h2>
         <p class="section-desc">
-          Trigger a forked-JVM HTML report over the unified tuning events (DuckDB on reports/tuning/events).
-          Trading-app heap is unaffected — the analyzer runs in its own JVM.
+          Generate an HTML tuning report over unified capture events (DuckDB on reports/tuning/events).
+          Runs in-process after market close — scheduled at 15:30 IST when the scanner is idle.
         </p>
       </div>
 
@@ -177,7 +191,7 @@ import { DailyBundleSummary } from '../core/models';
         <div class="tuning-actions">
           <button mat-flat-button color="primary" (click)="generateTuningReport()" [disabled]="tuningGenerating">
             <mat-icon>{{ tuningGenerating ? 'hourglass_top' : 'play_circle' }}</mat-icon>
-            {{ tuningGenerating ? 'Running… (forked JVM)' : 'Generate report' }}
+            {{ tuningGenerating ? 'Running…' : 'Generate report' }}
           </button>
           <button mat-stroked-button (click)="loadJobs()">
             <mat-icon>refresh</mat-icon> Refresh jobs
@@ -196,6 +210,9 @@ import { DailyBundleSummary } from '../core/models';
               <a class="report-link" [routerLink]="['/tuning/reports', tuningJobId]">
                 <mat-icon>open_in_new</mat-icon> Open report
               </a>
+              <a class="report-link" href="javascript:void(0)" (click)="downloadReport(tuningJobId)">
+                <mat-icon>download</mat-icon> Download report
+              </a>
             }
           </div>
         }
@@ -205,7 +222,7 @@ import { DailyBundleSummary } from '../core/models';
 
       <div class="section-hdr">
         <h2 class="section-title">Recent jobs</h2>
-        <p class="section-desc">Most-recent 20 tuning-report runs. Click View to open the HTML.</p>
+        <p class="section-desc">Most-recent 20 tuning-report runs. <strong>View</strong> opens the HTML; <strong>Download</strong> saves a single self-contained HTML with the recommended actions merged in.</p>
       </div>
 
       @if (jobsLoading) {
@@ -224,6 +241,7 @@ import { DailyBundleSummary } from '../core/models';
                 <th>Period</th>
                 <th>Requested</th>
                 <th>Duration</th>
+                <th></th>
                 <th></th>
               </tr>
             </thead>
@@ -251,12 +269,73 @@ import { DailyBundleSummary } from '../core/models';
                       <span class="err-text">{{ j.errorMessage }}</span>
                     }
                   </td>
+                  <td>
+                    @if (j.status === 'COMPLETE') {
+                      <a class="report-link" href="javascript:void(0)"
+                         [class.disabled]="downloadingReport === j.jobId" (click)="downloadReport(j.jobId)">
+                        <mat-icon>download</mat-icon>
+                        {{ downloadingReport === j.jobId ? 'Downloading…' : 'Download' }}
+                      </a>
+                    }
+                  </td>
                 </tr>
               }
             </tbody>
           </table>
         </div>
       }
+
+      <div class="section-hdr" style="margin-top:34px">
+        <h2 class="section-title">Edge Research</h2>
+        <p class="section-desc">Automated post-close edge studies (Bonferroni multiple-testing + cross-day persistence + net-of-cost). <strong>View</strong> opens the brief; <strong>Download</strong> saves it. Runs daily ~15:35 IST.
+          <a class="report-link" href="javascript:void(0)" [class.disabled]="researchRunning" (click)="runResearchNow()">
+            <mat-icon>{{ researchRunning ? 'hourglass_top' : 'play_arrow' }}</mat-icon> {{ researchRunning ? 'Running…' : 'Run now' }}
+          </a>
+        </p>
+        @if (researchStatus) {
+          <p class="muted" style="margin-top:2px">
+            <mat-icon style="vertical-align:middle;font-size:16px;width:16px;height:16px">info</mat-icon>
+            {{ researchStatus }}
+          </p>
+        }
+      </div>
+      @if (researchLoading) {
+        <p class="muted"><mat-icon style="vertical-align:middle;font-size:16px;width:16px;height:16px">hourglass_top</mat-icon> Loading research briefs…</p>
+      } @else if (researchJobs.length === 0) {
+        <p class="muted">No research briefs yet — the daily run produces one each evening, or click <strong>Run now</strong>.</p>
+      } @else {
+        <div class="panel">
+          <table class="jobs-table">
+            <thead>
+              <tr><th>Date</th><th>Coverage</th><th>Verdict</th><th></th><th></th></tr>
+            </thead>
+            <tbody>
+              @for (r of researchJobs; track r.date) {
+                <tr>
+                  <td class="mono">{{ r.date }}</td>
+                  <td>{{ researchDays(r) }}d</td>
+                  <td class="verdict-cell">{{ r.verdict || '—' }}</td>
+                  <td>
+                    @if (r.hasHtml) {
+                      <a class="report-link" href="javascript:void(0)" (click)="viewResearch(r.date)">
+                        <mat-icon>visibility</mat-icon> View
+                      </a>
+                    }
+                  </td>
+                  <td>
+                    @if (r.hasHtml) {
+                      <a class="report-link" href="javascript:void(0)" (click)="downloadResearch(r.date)">
+                        <mat-icon>download</mat-icon> Download
+                      </a>
+                    }
+                  </td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+      }
+      @if (researchError) { <p class="download-error">{{ researchError }}</p> }
 
     </section>
   `,
@@ -280,7 +359,7 @@ import { DailyBundleSummary } from '../core/models';
     .hdr-icon { font-size: 20px; width: 20px; height: 20px; color: var(--accent); margin-top: 1px; }
     .file-meta { font-size: 12px; color: var(--muted); margin: 0 0 12px; }
 
-    .link-bar { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px; }
+    .link-bar { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin-bottom: 20px; }
     .link-card {
       display: flex; align-items: center; gap: 12px;
       padding: 14px 18px; border-radius: 12px;
@@ -292,6 +371,7 @@ import { DailyBundleSummary } from '../core/models';
     .lc-icon { font-size: 22px; width: 22px; height: 22px; }
     .lc-ok { color: var(--ok); }
     .lc-warn { color: var(--warn); }
+    .lc-info { color: var(--accent); }
     .lc-title { display: block; font-size: 13px; font-weight: 700; color: var(--ink); }
     .lc-desc { display: block; font-size: 11px; color: var(--muted); margin-top: 1px; }
     .lc-arrow { margin-left: auto; color: var(--muted); font-size: 20px; width: 20px; height: 20px; }
@@ -317,6 +397,7 @@ import { DailyBundleSummary } from '../core/models';
       font-size: 13px; font-weight: 600; color: var(--accent); text-decoration: none;
     }
     .report-link:hover { text-decoration: underline; }
+    .report-link.disabled { pointer-events: none; opacity: 0.6; }
     .report-link mat-icon { font-size: 18px; width: 18px; height: 18px; }
 
     .job-strip {
@@ -362,12 +443,114 @@ export class ReportsPageComponent implements OnInit {
   jobsLoading = true;     // start in loading state so the page renders the spinner, not "No jobs"
   jobsLoadError?: string;
 
+  // ── Edge Research (separate from the tuning report) ──
+  researchJobs: ResearchJobRow[] = [];
+  researchLoading = true;
+  researchError?: string;
+  researchRunning = false;
+  researchStatus?: string;
+  private researchPollTimer?: ReturnType<typeof setTimeout>;
+
   constructor(private readonly api: ApiService,
+              readonly admin: AdminService,
               private readonly cd: ChangeDetectorRef) {}
 
   ngOnInit(): void {
     this.refreshBundleSummary();
     this.loadJobs();
+    this.loadResearchJobs();
+  }
+
+  loadResearchJobs(): void {
+    this.researchLoading = true;
+    this.api.listResearchJobs(30).subscribe({
+      next: list => { this.researchJobs = (list as unknown as ResearchJobRow[]) ?? []; this.researchLoading = false; this.cd.detectChanges(); },
+      error: () => { this.researchLoading = false; this.cd.detectChanges(); }
+    });
+  }
+
+  researchDays(r: ResearchJobRow): number {
+    return r?.coverage?.days ?? 0;
+  }
+
+  viewResearch(date: string): void {
+    this.researchError = undefined;
+    this.api.getResearchHtml(date).subscribe({
+      next: htmlStr => {
+        const url = URL.createObjectURL(new Blob([htmlStr], { type: 'text/html' }));
+        window.open(url, '_blank');
+        setTimeout(() => URL.revokeObjectURL(url), 60000);
+      },
+      error: err => { this.researchError = extractApiError(err) ?? 'Failed to open brief.'; this.cd.detectChanges(); }
+    });
+  }
+
+  downloadResearch(date: string): void {
+    this.researchError = undefined;
+    this.api.getResearchHtml(date).subscribe({
+      next: htmlStr => this.saveBlob(new Blob([htmlStr], { type: 'text/html' }), `research-brief-${date}.html`),
+      error: err => { this.researchError = extractApiError(err) ?? 'Failed to download brief.'; this.cd.detectChanges(); }
+    });
+  }
+
+  runResearchNow(): void {
+    if (this.researchRunning) { return; }
+    this.researchRunning = true;
+    this.researchError = undefined;
+    // The orchestrator is long-running (~5–7 min); the POST returns STARTED in ms. Remember today's
+    // current report timestamp so we can poll and detect when the NEW brief lands, instead of the old
+    // single 4s refresh that always fired minutes too early (→ "Run now does nothing").
+    const today = this.istToday();
+    const prevUpdatedAt = this.researchJobs.find(r => r.date === today)?.updatedAt;
+    this.api.runResearch().subscribe({
+      next: () => {
+        this.researchStatus = 'Research started — generating the brief (~5 min). This panel refreshes automatically.';
+        this.pollForResearch(today, prevUpdatedAt, 0);
+        this.cd.detectChanges();
+      },
+      error: err => {
+        this.researchRunning = false;
+        this.researchStatus = undefined;
+        this.researchError = extractApiError(err) ?? 'Run failed.';
+        this.cd.detectChanges();
+      }
+    });
+  }
+
+  /** Today's date in IST (YYYY-MM-DD) — matches the server's report-dir naming. */
+  private istToday(): string {
+    // en-CA gives ISO YYYY-MM-DD; force the IST zone so it matches the box's report date.
+    return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
+  }
+
+  /** Poll the jobs list until today's brief timestamp changes (new report landed) or we time out (~8 min). */
+  private pollForResearch(today: string, prevUpdatedAt: string | undefined, attempt: number): void {
+    const MAX_ATTEMPTS = 32; // 32 × 15s ≈ 8 min — comfortably longer than a full run
+    if (this.researchPollTimer) { clearTimeout(this.researchPollTimer); }
+    this.researchPollTimer = setTimeout(() => {
+      this.api.listResearchJobs(30).subscribe({
+        next: list => {
+          this.researchJobs = (list as unknown as ResearchJobRow[]) ?? [];
+          const cur = this.researchJobs.find(r => r.date === today);
+          const landed = !!cur?.updatedAt && cur.updatedAt !== prevUpdatedAt;
+          if (landed) {
+            this.researchRunning = false;
+            this.researchStatus = 'Research brief updated — open it with View.';
+          } else if (attempt + 1 >= MAX_ATTEMPTS) {
+            this.researchRunning = false;
+            this.researchStatus = 'Still running — it will appear shortly; refresh the page if needed.';
+          } else {
+            this.pollForResearch(today, prevUpdatedAt, attempt + 1);
+          }
+          this.cd.detectChanges();
+        },
+        error: () => {
+          if (attempt + 1 >= MAX_ATTEMPTS) { this.researchRunning = false; }
+          else { this.pollForResearch(today, prevUpdatedAt, attempt + 1); }
+          this.cd.detectChanges();
+        }
+      });
+    }, 15000);
   }
 
   refreshBundleSummary(): void {
@@ -406,7 +589,7 @@ export class ReportsPageComponent implements OnInit {
 
   formatTs(ts?: string | null): string {
     if (!ts) return '—';
-    try { return new Date(ts).toLocaleString(); } catch { return ts; }
+    try { return new Date(ts).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }); } catch { return ts; }
   }
 
   shortJobId(id?: string): string {
@@ -443,6 +626,57 @@ export class ReportsPageComponent implements OnInit {
         this.cd.detectChanges();
       }
     });
+  }
+
+  /**
+   * Downloads a SINGLE self-contained HTML report for a completed job, with the ranked actions JSON merged in:
+   * the report HTML gets an appended "Recommended Actions" section (pretty-printed) plus a machine-readable
+   * <script type="application/json"> block. One click → one file that holds both the report and the actions.
+   */
+  downloadingReport?: string; // jobId currently downloading (disables the row's button)
+  downloadReport(jobId: string | undefined): void {
+    if (!jobId || this.downloadingReport === jobId) { return; }
+    this.downloadingReport = jobId;
+    this.tuningError = undefined;
+    forkJoin({
+      html: this.api.getTuningReportHtml(jobId),
+      actions: this.api.getTuningReportActions(jobId)
+    }).subscribe({
+      next: ({ html, actions }) => {
+        const merged = this.mergeActionsIntoHtml(html, actions);
+        this.saveBlob(new Blob([merged], { type: 'text/html' }), `tuning-report-${this.shortJobId(jobId)}.html`);
+        this.downloadingReport = undefined;
+        this.cd.detectChanges();
+      },
+      error: err => {
+        this.downloadingReport = undefined;
+        this.tuningError = extractApiError(err) ?? 'Failed to download report.';
+        this.cd.detectChanges();
+      }
+    });
+  }
+
+  /** Appends the actions JSON to the report HTML as a readable section + an embedded JSON block, returning a
+   *  valid standalone document (wraps the body if the report is only a fragment). */
+  private mergeActionsIntoHtml(html: string, actions: string): string {
+    let pretty = actions;
+    try { pretty = JSON.stringify(JSON.parse(actions), null, 2); } catch { /* keep raw text */ }
+    const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const safeForScript = pretty.replace(/<\/script>/gi, '<\\/script>');
+    const section =
+      '\n<section style="margin-top:32px;padding:16px 0;border-top:2px solid #d0d7de;'
+      + 'font-family:system-ui,Segoe UI,Arial,sans-serif">'
+      + '<h2 style="font-size:18px;margin:0 0 8px">Recommended Actions</h2>'
+      + '<pre style="white-space:pre-wrap;background:#f6f8fa;padding:12px;border-radius:6px;'
+      + 'font-size:12px;line-height:1.45;overflow:auto">' + esc(pretty) + '</pre>'
+      + '</section>\n'
+      + '<script id="tuning-actions" type="application/json">' + safeForScript + '</script>\n';
+    if (/<\/body>/i.test(html)) {
+      return html.replace(/<\/body>/i, section + '</body>');
+    }
+    // Report is a fragment — wrap it into a minimal standalone document.
+    return '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Tuning Report '
+      + this.shortJobId(this.tuningJobId ?? '') + '</title></head><body>' + html + section + '</body></html>';
   }
 
   private pollTuningJob(jobId: string, attempt: number): void {
@@ -531,6 +765,18 @@ interface TuningJobRow {
   requestedAt?: string;
   durationSec?: number;
   errorMessage?: string;
+}
+
+interface ResearchJobRow {
+  jobId: string;
+  date: string;
+  hasHtml?: boolean;
+  verdict?: string;
+  coverage?: { days?: number; from?: string; to?: string; combos?: number };
+  counts?: { candidateEdge?: number; persisting?: number; rawSig?: number; bonfSig?: number };
+  generatedAt?: string;
+  updatedAt?: string;
+  error?: string;
 }
 
 function extractApiError(err: { error?: unknown; message?: string }): string | undefined {

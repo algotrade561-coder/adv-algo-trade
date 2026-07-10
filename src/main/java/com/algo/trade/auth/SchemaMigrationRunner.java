@@ -39,6 +39,9 @@ public class SchemaMigrationRunner {
             widenColumn(jdbc, "user_broker_config", "telegram_bot_token", "VARCHAR(1024)");
             widenColumn(jdbc, "user_broker_config", "webhook_url",        "VARCHAR(2048)");
             widenColumn(jdbc, "user_broker_config", "api_key",            "VARCHAR(512)");
+            // One-time Kite setup instruction (redirect URL + public IP) idempotency marker,
+            // stamped on first Telegram link.
+            addColumn(jdbc, "user_broker_config", "kite_setup_sent_at", "TIMESTAMP");
             backfill(jdbc,  "UPDATE user_broker_config SET primary_account = FALSE WHERE primary_account IS NULL");
         };
     }

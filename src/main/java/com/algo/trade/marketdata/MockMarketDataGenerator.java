@@ -77,7 +77,8 @@ public class MockMarketDataGenerator {
     }
 
     private int lotSize(UnderlyingSymbol underlying) {
-        return underlying == UnderlyingSymbol.NIFTY ? 75 : 35;
+        // Use IndexType (single source of truth): NIFTY=65, BANKNIFTY=30, etc.
+        return com.algo.trade.domain.IndexType.from(underlying).lotSize();
     }
 
     private BigDecimal basePrice(String instrumentKey) {

@@ -16,7 +16,7 @@ import java.util.UUID;
 public class TradeSimulator {
 
     private static final double DEFAULT_SLIPPAGE_PERCENT = 0.1; // 0.1% slippage
-    private static final int DEFAULT_LOT_SIZE_NIFTY = 75;
+    private static final int DEFAULT_LOT_SIZE_NIFTY = 65; // NSE circular Jan 2026 (was 75)
     private static final int DEFAULT_LOT_SIZE_BANKNIFTY = 30;
 
     private final double slippagePercent;

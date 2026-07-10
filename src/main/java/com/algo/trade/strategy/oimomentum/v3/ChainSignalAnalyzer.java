@@ -46,6 +46,20 @@ public class ChainSignalAnalyzer {
     /** Tracks last spot per index so we can decide "moving toward strike". */
     private final Map<IndexType, Double> lastSpotForTrend = new ConcurrentHashMap<>();
 
+    // ── DYNAMIC OI-shift wiring (2026-07-08) ─────────────────────────────────────────────────────
+    // Optional collaborator: null (unit tests) or enabled=false → the absolute OI floors below stay at their
+    // exact legacy static-final values. Shares the single kill-switch oi-momentum.dynamic-floor.enabled.
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.strategy.oimomentum.DynamicOiFloor dynamicOiFloor;
+
+    /** Fraction of this snapshot's chain-wide |Δ| activity that re-bases the significance floor on busy days. */
+    @org.springframework.beans.factory.annotation.Value("${oi-momentum.dynamic-floor.v3.significance-frac:0.08}")
+    private double v3SignificanceFrac = 0.08;
+
+    /** Max multiple the V3 OI floors may be scaled UP on a high-activity (expiry) snapshot. */
+    @org.springframework.beans.factory.annotation.Value("${oi-momentum.dynamic-floor.v3.scale-max:8.0}")
+    private double v3ScaleMax = 8.0;
+
     /** Snapshot of opening OI direction kept for reversal detection. */
     private record BaselineSnapshot(int direction, double strength, Instant capturedAt) {}
 
@@ -63,6 +77,7 @@ public class ChainSignalAnalyzer {
         int atm = snapshot.atmStrike();
         long sumCeChg = 0;
         long sumPeChg = 0;
+        long sumAbsChg = 0;
         long maxCeBuild = Long.MIN_VALUE;
         long maxPeBuild = Long.MIN_VALUE;
         int maxCeStrike = 0;
@@ -73,6 +88,7 @@ public class ChainSignalAnalyzer {
             long peChg = s.peOiChange();
             sumCeChg += ceChg;
             sumPeChg += peChg;
+            sumAbsChg += Math.abs(ceChg) + Math.abs(peChg);
             // Track largest CE build at-or-above ATM (forming resistance)
             if (s.strike() >= atm && ceChg > maxCeBuild) {
                 maxCeBuild = ceChg;
@@ -87,6 +103,21 @@ public class ChainSignalAnalyzer {
         if (maxCeBuild == Long.MIN_VALUE) maxCeBuild = 0;
         if (maxPeBuild == Long.MIN_VALUE) maxPeBuild = 0;
 
+        // SLOT V3 (2026-07-08): the absolute OI floors are DYNAMIC — a fixed 500k SIGNIFICANCE means a
+        // rare event on a fresh-week snapshot but ordinary noise on an expiry snapshot (chain |Δ| runs ~10×
+        // higher). Re-base every V3 floor on THIS snapshot's own chain-wide |Δ| activity. sigScale =
+        // clamp(frac * Σ|Δ| / SIGNIFICANCE, 1.0, scale-max): 1.0 on a normal snapshot (byte-identical to the
+        // legacy constants) and rising toward ~5× on a violent expiry snapshot. Clamped LOW at 1.0 so the
+        // dynamic path can only RAISE the bar (never fire a squeeze/trap more easily than today). Disabled /
+        // no collaborator (unit tests) → scale 1.0 = exact legacy constants.
+        boolean v3Dyn = dynamicOiFloor != null && dynamicOiFloor.isEnabled() && sumAbsChg > 0;
+        double sigScale = v3Dyn
+                ? Math.max(1.0, Math.min(v3ScaleMax, v3SignificanceFrac * sumAbsChg / (double) SIGNIFICANCE))
+                : 1.0;
+        long dynSignificance = Math.round(SIGNIFICANCE * sigScale);
+        long dynTrapMinOi = Math.round(TRAP_MIN_ABSOLUTE_OI * sigScale);
+        long dynStrikeChgFloor = Math.round(3_000L * sigScale);
+
         // ── P1b: TRAP_APPROACH — single-strike imbalance with spot approaching ──
         // Scan strikes for high CE/PE imbalance (writers caught at a strike); if spot
         // is moving toward that strike, emit TRAP_APPROACH biased toward the trap dir.
@@ -95,11 +126,12 @@ public class ChainSignalAnalyzer {
         int spotMoveDir = (lastSpot != null && spot > lastSpot) ? +1
                 : (lastSpot != null && spot < lastSpot) ? -1 : 0;
         OiSignal trap = detectTrapApproach(snapshot, atm, spot, spotMoveDir,
-                sumCeChg, sumPeChg, maxCeBuild, maxPeBuild, maxCeStrike, maxPeStrike);
+                sumCeChg, sumPeChg, maxCeBuild, maxPeBuild, maxCeStrike, maxPeStrike,
+                dynTrapMinOi, dynStrikeChgFloor);
         if (trap != null) return trap;
 
         // BULL WRITER_SQUEEZE: heavy CE unwind + PE growing
-        if (sumCeChg < -SIGNIFICANCE && sumPeChg > 0) {
+        if (sumCeChg < -dynSignificance && sumPeChg > 0) {
             double strength = Math.abs(sumCeChg) / (double) Math.max(sumPeChg, 1);
             recordOpeningBaseline(ix, +1, strength);
             return new OiSignal(+1, OiPattern.WRITER_SQUEEZE.name(),
@@ -107,7 +139,7 @@ public class ChainSignalAnalyzer {
                     sumCeChg, sumPeChg, maxCeBuild, maxPeBuild);
         }
         // BEAR PE_SQUEEZE: heavy PE unwind + CE growing
-        if (sumPeChg < -SIGNIFICANCE && sumCeChg > 0) {
+        if (sumPeChg < -dynSignificance && sumCeChg > 0) {
             double strength = Math.abs(sumPeChg) / (double) Math.max(sumCeChg, 1);
             recordOpeningBaseline(ix, -1, strength);
             return new OiSignal(-1, OiPattern.PE_SQUEEZE.name(),
@@ -140,7 +172,7 @@ public class ChainSignalAnalyzer {
         }
         // Conflicting: both sides building significantly → SKIP
         if (sumCeChg > 0 && sumPeChg > 0
-                && Math.min(sumCeChg, sumPeChg) > SIGNIFICANCE * 0.5) {
+                && Math.min(sumCeChg, sumPeChg) > dynSignificance * 0.5) {
             return new OiSignal(0, OiPattern.CONFLICTING.name(),
                     1.0, maxPeStrike, maxCeStrike,
                     sumCeChg, sumPeChg, maxCeBuild, maxPeBuild);
@@ -160,7 +192,8 @@ public class ChainSignalAnalyzer {
     private OiSignal detectTrapApproach(ChainSnapshot snap, int atm, double spot,
                                           int spotMoveDir, long sumCeChg, long sumPeChg,
                                           long maxCeBuild, long maxPeBuild,
-                                          int maxCeStrike, int maxPeStrike) {
+                                          int maxCeStrike, int maxPeStrike,
+                                          long trapMinOi, long strikeChgFloor) {
         if (spotMoveDir == 0) return null;
 
         int bestStrike = 0;
@@ -173,8 +206,8 @@ public class ChainSignalAnalyzer {
 
             // Spot rising → look for trapped CE writers at strikes ABOVE spot
             if (spotMoveDir > 0 && s.strike() >= atm) {
-                if (s.ceOI() < TRAP_MIN_ABSOLUTE_OI) continue;
-                if (s.ceOiChange() < 3_000) continue;
+                if (s.ceOI() < trapMinOi) continue;
+                if (s.ceOiChange() < strikeChgFloor) continue;
                 double imb = s.ceOI() / (double) Math.max(s.peOI(), 1);
                 if (imb >= TRAP_IMBALANCE_RATIO && imb > bestImbalance) {
                     bestImbalance = imb;
@@ -185,8 +218,8 @@ public class ChainSignalAnalyzer {
             }
             // Spot falling → look for trapped PE writers at strikes BELOW spot
             if (spotMoveDir < 0 && s.strike() <= atm) {
-                if (s.peOI() < TRAP_MIN_ABSOLUTE_OI) continue;
-                if (s.peOiChange() < 3_000) continue;
+                if (s.peOI() < trapMinOi) continue;
+                if (s.peOiChange() < strikeChgFloor) continue;
                 double imb = s.peOI() / (double) Math.max(s.ceOI(), 1);
                 if (imb >= TRAP_IMBALANCE_RATIO && imb > bestImbalance) {
                     bestImbalance = imb;

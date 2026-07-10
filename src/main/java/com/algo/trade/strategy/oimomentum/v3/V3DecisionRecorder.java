@@ -32,7 +32,12 @@ public class V3DecisionRecorder {
     @Value("${oi-momentum.v3.decision-log-dir:data/v3-decisions}")
     private String decisionLogDir;
 
-    @Value("${oi-momentum.v3.decision-log-enabled:true}")
+    // P1.4 (2026-06-26): default OFF. This standalone CSV recorder was retired in Phase 6 — V3 decisions
+    // now flow through the unified tuning pipeline (OiMomentumCaptureAdapter eval events, blocker=v3_skip:*),
+    // and nothing calls record() anymore. Left enabled, it only spun an idle 5s flusher and re-created an
+    // empty data/v3-decisions/ dir each boot — the very thing that made V3 look "not writing" in the audit.
+    // Set true only to revive the legacy standalone log.
+    @Value("${oi-momentum.v3.decision-log-enabled:false}")
     private boolean enabled;
 
     private final ConcurrentLinkedQueue<String> pendingRows = new ConcurrentLinkedQueue<>();

@@ -47,9 +47,12 @@ public class SnapshotRetentionCleaner {
     }
 
     /**
-     * Runs daily at 00:30 IST. Deletes date directories older than retention period.
+     * Runs at 15:40 IST (post-close, while the box is up). Deletes date directories older than the retention
+     * period. Moved 00:30 → 15:40 (2026-06-29): the box now stops 15:50 / starts 08:45 on a stop/start schedule
+     * to save cost, so an overnight 00:30 run would never fire. 15:40 is inside the on-window with margin before
+     * the 15:50 stop (this is a fast local file delete — seconds, not minutes).
      */
-    @Scheduled(cron = "0 30 0 * * *", zone = "Asia/Kolkata")
+    @Scheduled(cron = "0 40 15 * * *", zone = "Asia/Kolkata")
     public void cleanExpiredSnapshots() {
         if (!schedulerRegistry.isEnabled(TASK_NAME)) return;
 

@@ -774,7 +774,7 @@ public class BacktestEngine {
                 gc.getVolumeSpikeMultiplier(), gc.getBreakoutBufferPercent(),
                 gc.getBreakoutLookback(), gc.getVolumeLookback(),
                 gc.getBullishImbalanceThreshold(), gc.getBearishImbalanceThreshold(),
-                gc.getMinLiquidityVolume(), gc.getMaxIvPercent(), gc.getMinSignalScorePercent(),
+                gc.getMinLiquidityVolume(), gc.getMaxIvPercent(), globalConfigService.getMinSignalScorePercent(),
                 gc.isCeOiSupportRequired(), gc.isPeOiSupportRequired(),
                 gc.isCeOiDivergenceFilterEnabled(), gc.isPeOiDivergenceFilterEnabled(),
                 gc.getOiDivergenceMultiplier(), gc.getOiDivergenceMinChange(),
@@ -791,9 +791,9 @@ public class BacktestEngine {
                 properties.exit().exitModeSetting(),
                 properties.exit().trailingModeSetting());
         var risk = new TradingProperties.Risk(
-                gc.getTotalCapital(), gc.getMaxRiskPerTradePercent(), gc.getMaxDailyLossPercent(),
-                gc.getMaxTradesPerDay(), properties.risk().maxOrdersPerDay(), gc.getMaxConsecutiveLosses(),
-                gc.getMaxOpenTrades(), properties.risk().sameInstrumentReentryMinPriceMovePercent(),
+                gc.getTotalCapital(), globalConfigService.getMaxRiskPerTradePercent(), globalConfigService.getMaxDailyLossPercent(),
+                globalConfigService.getMaxTradesPerDay(), properties.risk().maxOrdersPerDay(), globalConfigService.getMaxConsecutiveLosses(),
+                globalConfigService.getMaxOpenTrades(), properties.risk().sameInstrumentReentryMinPriceMovePercent(),
                 gc.getCooldownMinutes(), gc.getDailyProfitTarget());
         return new TradingProperties(
                 properties.mode(), properties.marketDataMode(), properties.executionMode(),

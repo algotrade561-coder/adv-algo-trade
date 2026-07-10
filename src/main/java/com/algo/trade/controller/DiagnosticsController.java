@@ -23,15 +23,18 @@ public class DiagnosticsController {
     private final OrderAuditService orderAuditService;
     private final com.algo.trade.monitoring.ErrorEventService errorEventService;
     private final SchedulerRegistry schedulerRegistry;
+    private final com.algo.trade.persistence.DatabaseRetentionService databaseRetentionService;
 
     public DiagnosticsController(SystemDiagnosticsService diagnosticsService,
                                   OrderAuditService orderAuditService,
                                   com.algo.trade.monitoring.ErrorEventService errorEventService,
-                                  SchedulerRegistry schedulerRegistry) {
+                                  SchedulerRegistry schedulerRegistry,
+                                  com.algo.trade.persistence.DatabaseRetentionService databaseRetentionService) {
         this.diagnosticsService = diagnosticsService;
         this.orderAuditService = orderAuditService;
         this.errorEventService = errorEventService;
         this.schedulerRegistry = schedulerRegistry;
+        this.databaseRetentionService = databaseRetentionService;
     }
 
     /** Full system health snapshot — WebSocket, REST, DB, scanner, orders, trades. */
@@ -108,5 +111,15 @@ public class DiagnosticsController {
     public Map<String, Object> triggerScheduler(@PathVariable String name) {
         boolean triggered = schedulerRegistry.triggerNow(name);
         return Map.of("name", name, "triggered", triggered);
+    }
+
+    /**
+     * Force-run the DB retention purge now and return per-table counts.
+     * {@code ?dryRun=true} previews what would be deleted without deleting.
+     * (Also runnable via Schedulers → {@code dbRetention} → trigger.)
+     */
+    @PostMapping("/db-retention/run")
+    public Map<String, Object> runDbRetention(@RequestParam(defaultValue = "false") boolean dryRun) {
+        return databaseRetentionService.runNow(dryRun);
     }
 }

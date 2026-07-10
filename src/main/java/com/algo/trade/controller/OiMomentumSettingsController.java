@@ -209,6 +209,18 @@ public class OiMomentumSettingsController {
         // Theta-decay gate
         m.put("thetaDecayCheckEnabled", c.isThetaDecayCheckEnabled());
         m.put("thetaDecayMaxCostPct", c.getThetaDecayMaxCostPct());
+        // Charges-aware gate v2
+        m.put("chargesGateV2Enabled", c.isChargesGateV2Enabled());
+        m.put("chargesGateTargetPct", c.getChargesGateTargetPct());
+        m.put("chargesGateMinNetProfit", c.getChargesGateMinNetProfit());
+        m.put("chargesGateResizeUp", c.isChargesGateResizeUp());
+        // D2 SUSTAINED_DRIFT (trend capture). overridesV3=true + shadow=false → D2 live alongside V3.
+        m.put("sustainedDriftEnabled", c.isSustainedDriftEnabled());
+        m.put("sustainedDriftShadowMode", c.isSustainedDriftShadowMode());
+        m.put("sustainedDriftOverridesV3", c.isSustainedDriftOverridesV3());
+        m.put("sustainedDriftMinPct", c.getSustainedDriftMinPct());
+        m.put("sustainedDriftOpScoreMin", c.getSustainedDriftOpScoreMin());
+        m.put("sustainedDriftWindowMinutes", c.getSustainedDriftWindowMinutes());
         // P4 instrumentation (data-gathering week)
         m.put("recordEveryReject", c.isRecordEveryReject());
         m.put("rejectSampleIntervalSeconds", c.getRejectSampleIntervalSeconds());
@@ -257,6 +269,18 @@ public class OiMomentumSettingsController {
         // Theta-decay gate
         public Boolean thetaDecayCheckEnabled;
         public Double  thetaDecayMaxCostPct;
+
+        public Boolean chargesGateV2Enabled;
+        public Double  chargesGateTargetPct;
+        public Double  chargesGateMinNetProfit;
+        public Boolean chargesGateResizeUp;
+        // D2 SUSTAINED_DRIFT (trend capture)
+        public Boolean sustainedDriftEnabled;
+        public Boolean sustainedDriftShadowMode;
+        public Boolean sustainedDriftOverridesV3;
+        public Double  sustainedDriftMinPct;
+        public Integer sustainedDriftOpScoreMin;
+        public Integer sustainedDriftWindowMinutes;
         // P4 instrumentation
         public Boolean recordEveryReject;
         public Integer rejectSampleIntervalSeconds;
@@ -298,6 +322,17 @@ public class OiMomentumSettingsController {
             // Theta-decay gate
             u.thetaDecayCheckEnabled = thetaDecayCheckEnabled;
             u.thetaDecayMaxCostPct = thetaDecayMaxCostPct;
+            u.chargesGateV2Enabled = chargesGateV2Enabled;
+            u.chargesGateTargetPct = chargesGateTargetPct;
+            u.chargesGateMinNetProfit = chargesGateMinNetProfit;
+            u.chargesGateResizeUp = chargesGateResizeUp;
+            // D2 SUSTAINED_DRIFT (trend capture)
+            u.sustainedDriftEnabled = sustainedDriftEnabled;
+            u.sustainedDriftShadowMode = sustainedDriftShadowMode;
+            u.sustainedDriftOverridesV3 = sustainedDriftOverridesV3;
+            u.sustainedDriftMinPct = sustainedDriftMinPct;
+            u.sustainedDriftOpScoreMin = sustainedDriftOpScoreMin;
+            u.sustainedDriftWindowMinutes = sustainedDriftWindowMinutes;
             // P4 instrumentation
             u.recordEveryReject = recordEveryReject;
             u.rejectSampleIntervalSeconds = rejectSampleIntervalSeconds;

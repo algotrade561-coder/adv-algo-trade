@@ -32,7 +32,7 @@ public class GapAndGoStrategy implements TimeBoundedStrategy {
     private static final LocalTime NSE_MARKET_OPEN = LocalTime.of(9, 15);
     private static final LocalTime ENTRY_START = LocalTime.of(9, 20);
     private static final LocalTime ENTRY_CUTOFF = LocalTime.of(9, 45);
-    private static final double MIN_BODY_PERCENT = 0.40;
+    private static final double MIN_BODY_PERCENT = 0.20;
     /** Minimum gap from previous close to today's open as % of previous close. */
     private static final double MIN_GAP_PERCENT = 0.15;
     /** First candle volume must be at least this multiple of average volume. */
@@ -41,6 +41,10 @@ public class GapAndGoStrategy implements TimeBoundedStrategy {
     private final LiveInstrumentCache liveInstrumentCache;
     private final com.algo.trade.marketdata.MarketDataService marketDataService;
     private final com.algo.trade.config.TradingProperties tradingProperties;
+
+    /** PCR direction filter (2026-07-04): skip gap entries when PCR opposes the gap direction. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.marketdata.PcrCalculator pcrCalculator;
 
     /** Cache: once we fetch prev close for an index today, don't fetch again. */
     private final java.util.concurrent.ConcurrentHashMap<IndexType, Double> prevCloseCache = new java.util.concurrent.ConcurrentHashMap<>();
@@ -177,6 +181,27 @@ public class GapAndGoStrategy implements TimeBoundedStrategy {
 
         if (!volumeConfirmed) {
             return noTrade("lowVolume(ratio=" + String.format("%.1f", volumeRatio) + "x)");
+        }
+
+        // ── Gate 6: PCR direction check (2026-07-04) ──────────────────────────────────
+        // If PCR opposes the gap direction (e.g., gap-up but PCR bearish = operators likely to fade),
+        // skip the entry. PCR > 1.1 = put-heavy = bearish (opposes CE buy); PCR < 0.9 = call-heavy =
+        // bullish (opposes PE buy). Neutral (0.9–1.1) is allowed for both directions.
+        if (pcrCalculator != null) {
+            IndexType idx = IndexType.fromName(underlying.name());
+            if (idx != null) {
+                double pcr = pcrCalculator.getPcr(idx);
+                if (pcr > 0) {
+                    boolean pcrBearish = pcr > 1.1;
+                    boolean pcrBullish = pcr < 0.9;
+                    if (bullish && pcrBearish) {
+                        return noTrade("pcrOpposes(CE buy, pcr=" + String.format("%.2f", pcr) + ">1.1)");
+                    }
+                    if (!bullish && pcrBullish) {
+                        return noTrade("pcrOpposes(PE buy, pcr=" + String.format("%.2f", pcr) + "<0.9)");
+                    }
+                }
+            }
         }
 
         // ── Graduated confidence score ──

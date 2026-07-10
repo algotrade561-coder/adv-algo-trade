@@ -47,7 +47,7 @@ class PositionSynchronizerTest {
         // "skip imports after 15:00" guard is deterministic regardless of run time.
         try {
             java.time.ZoneId ist = java.time.ZoneId.of("Asia/Kolkata");
-            Instant tenAmIst = java.time.LocalDate.now(ist).atTime(10, 0).atZone(ist).toInstant();
+            java.time.Instant tenAmIst = java.time.LocalDate.now(ist).atTime(10, 0).atZone(ist).toInstant();
             var clockField = PositionSynchronizer.class.getDeclaredField("importClock");
             clockField.setAccessible(true);
             clockField.set(synchronizer, java.time.Clock.fixed(tenAmIst, ist));
@@ -94,6 +94,8 @@ class PositionSynchronizerTest {
         assertThat(created.getStatus()).isEqualTo(TradeStatus.OPEN);
         assertThat(created.getEntryReason()).contains("position-sync");
         assertThat(created.getTradeId()).startsWith("SYNC-");
+        // P0-2: synced trade must be owner-stamped (default user in single-user mode), never null.
+        assertThat(created.getUserId()).isEqualTo(com.algo.trade.multiuser.UserContext.DEFAULT_USER_ID);
     }
 
     @Test

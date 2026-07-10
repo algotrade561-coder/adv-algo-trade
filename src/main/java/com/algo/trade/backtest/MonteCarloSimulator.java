@@ -49,7 +49,7 @@ public class MonteCarloSimulator {
             @RequestParam(defaultValue = "short_straddle") String strategy,
             @RequestParam(defaultValue = "0") double strike,
             @RequestParam(defaultValue = "250") double premium,
-            @RequestParam(defaultValue = "75") int qty) {
+            @RequestParam(defaultValue = "65") int qty) {
 
         // ── Input validation ──────────────────────────────────────────────
         if (spot <= 0) return badRequest("spot must be positive");

@@ -4,6 +4,8 @@ import com.algo.trade.strategy.StrategyType;
 import com.algo.trade.tuning.TuningEventType;
 import com.algo.trade.tuning.adapter.TuningCaptureAdapter;
 import com.algo.trade.tuning.adapter.TuningCaptureAdapterRegistry;
+import com.algo.trade.tuning.analyzer.core.CaptureHealthSection;
+import com.algo.trade.tuning.analyzer.core.CrossStrategyScorecard;
 import com.algo.trade.tuning.analyzer.core.StandardBreakdownSections;
 import com.algo.trade.tuning.store.TuningEventStore;
 import java.time.LocalDate;
@@ -25,13 +27,16 @@ public class TuningAnalyzerCoordinator {
 
     private final TuningEventStore store;
     private final List<TuningAnalyzerPlugin> plugins;
+    private final List<GenericStrategyAnalyzerPlugin> genericPlugins;
     private final TuningCaptureAdapterRegistry adapterRegistry;
 
     public TuningAnalyzerCoordinator(TuningEventStore store,
                                        List<TuningAnalyzerPlugin> plugins,
+                                       List<GenericStrategyAnalyzerPlugin> genericPlugins,
                                        TuningCaptureAdapterRegistry adapterRegistry) {
         this.store = store;
         this.plugins = plugins;
+        this.genericPlugins = genericPlugins;
         this.adapterRegistry = adapterRegistry;
     }
 
@@ -65,6 +70,22 @@ public class TuningAnalyzerCoordinator {
                             + "<p>" + escape(list) + "</p>"));
         }
 
+        // Cross-strategy scorecard — the one-glance "tune each strategy from here" table, up top.
+        if (!withData.isEmpty()) {
+            try {
+                report.addSection(CrossStrategyScorecard.section(query, withData));
+            } catch (Exception ex) {
+                log.warn("[TuningAnalyzer] scorecard failed (non-fatal): {}", ex.getMessage());
+            }
+            // Capture-health — the report showing its own data quality (coverage / degraded checkpoints)
+            // so the numbers below are read with the right trust. (#180)
+            try {
+                report.addSection(CaptureHealthSection.section(query, withData));
+            } catch (Exception ex) {
+                log.warn("[TuningAnalyzer] capture-health failed (non-fatal): {}", ex.getMessage());
+            }
+        }
+
         // Per-strategy sections — banner first ("## " sentinel), then standard
         // breakdowns and custom plugin sections, each title prefixed with the
         // strategy display name for self-identification. The "## " prefix is
@@ -75,6 +96,30 @@ public class TuningAnalyzerCoordinator {
             report.addSection(AnalyzerSection.htmlOnly(
                     "## " + name,
                     "<p class=\"strategy-subtitle\">Captured events in window — see sections below.</p>"));
+
+            // Plugins for this strategy, ordered: negative order() renders BEFORE the standard breakdowns
+            // (e.g. the data-health header), order >= 0 renders after — both ascending.
+            List<TuningAnalyzerPlugin> mine = plugins.stream()
+                    .filter(p -> p.strategy() == strategy)
+                    .sorted(Comparator.comparingInt(TuningAnalyzerPlugin::order))
+                    .toList();
+            List<TuningAnalyzerPlugin> pre = mine.stream().filter(p -> p.order() < 0).toList();
+            List<TuningAnalyzerPlugin> post = mine.stream().filter(p -> p.order() >= 0).toList();
+
+            // Generic (cross-strategy) plugins run for EVERY strategy, same order convention.
+            List<GenericStrategyAnalyzerPlugin> genPre = genericPlugins.stream()
+                    .filter(p -> p.order() < 0)
+                    .sorted(Comparator.comparingInt(GenericStrategyAnalyzerPlugin::order)).toList();
+            List<GenericStrategyAnalyzerPlugin> genPost = genericPlugins.stream()
+                    .filter(p -> p.order() >= 0)
+                    .sorted(Comparator.comparingInt(GenericStrategyAnalyzerPlugin::order)).toList();
+
+            for (TuningAnalyzerPlugin plugin : pre) {
+                runPlugin(plugin, query, name, report);
+            }
+            for (GenericStrategyAnalyzerPlugin plugin : genPre) {
+                runGenericPlugin(plugin, query, strategy, name, report);
+            }
             TuningCaptureAdapter adapter = adapterRegistry.find(strategy).orElse(null);
             if (adapter != null) {
                 for (AnalyzerSection s : standardBreakdowns(query, strategy)) {
@@ -84,22 +129,45 @@ public class TuningAnalyzerCoordinator {
                 report.addSection(AnalyzerSection.htmlOnly(name + " — adapter",
                         "<p><em>No capture adapter registered for this strategy.</em></p>"));
             }
-            for (TuningAnalyzerPlugin plugin : plugins) {
-                if (plugin.strategy() != strategy) continue;
-                try {
-                    for (AnalyzerSection s : plugin.customSections(query)) {
-                        report.addSection(prefix(name, s));
-                    }
-                } catch (Exception ex) {
-                    log.warn("[TuningAnalyzer] plugin {} failed: {}",
-                            plugin.getClass().getSimpleName(), ex.getMessage());
-                    report.addSection(AnalyzerSection.htmlOnly(
-                            name + " — " + plugin.getClass().getSimpleName(),
-                            "<p class=\"error\">Plugin failed: " + escape(ex.getMessage()) + "</p>"));
-                }
+            for (TuningAnalyzerPlugin plugin : post) {
+                runPlugin(plugin, query, name, report);
+            }
+            for (GenericStrategyAnalyzerPlugin plugin : genPost) {
+                runGenericPlugin(plugin, query, strategy, name, report);
             }
         }
         return report;
+    }
+
+    /** Runs one plugin's sections into the report, prefixed + fail-safe (a bad plugin can't break the report). */
+    private void runPlugin(TuningAnalyzerPlugin plugin, TuningEventQuery query, String name, TuningReport report) {
+        try {
+            for (AnalyzerSection s : plugin.customSections(query)) {
+                report.addSection(prefix(name, s));
+            }
+        } catch (Exception ex) {
+            log.warn("[TuningAnalyzer] plugin {} failed: {}",
+                    plugin.getClass().getSimpleName(), ex.getMessage());
+            report.addSection(AnalyzerSection.htmlOnly(
+                    name + " — " + plugin.getClass().getSimpleName(),
+                    "<p class=\"error\">Plugin failed: " + escape(ex.getMessage()) + "</p>"));
+        }
+    }
+
+    /** Runs one generic (cross-strategy) plugin's sections for a strategy — prefixed + fail-safe. */
+    private void runGenericPlugin(GenericStrategyAnalyzerPlugin plugin, TuningEventQuery query,
+                                  StrategyType strategy, String name, TuningReport report) {
+        try {
+            for (AnalyzerSection s : plugin.customSections(query, strategy)) {
+                report.addSection(prefix(name, s));
+            }
+        } catch (Exception ex) {
+            log.warn("[TuningAnalyzer] generic plugin {} failed for {}: {}",
+                    plugin.getClass().getSimpleName(), strategy, ex.getMessage());
+            report.addSection(AnalyzerSection.htmlOnly(
+                    name + " — " + plugin.getClass().getSimpleName(),
+                    "<p class=\"error\">Plugin failed: " + escape(ex.getMessage()) + "</p>"));
+        }
     }
 
     /** Prepend the strategy display name to a section's title so it's self-identifying. */
@@ -117,7 +185,10 @@ public class TuningAnalyzerCoordinator {
                 TuningEventType.EXECUTION, TuningEventType.EXIT,
                 TuningEventType.FORWARD_CHECKPOINT, TuningEventType.SHADOW_GATE,
                 TuningEventType.LEG)) {
-            if (!store.listEventFiles(strategy, type, from, to).isEmpty()) {
+            // Check BOTH the recent CSVs and the rolled Parquet archive — for an older date range the CSVs
+            // were rolled+deleted, so a CSV-only check wrongly reports "no events" and skips the strategy.
+            if (!store.listEventFiles(strategy, type, from, to).isEmpty()
+                    || !store.listArchiveFiles(strategy, type, from, to).isEmpty()) {
                 return true;
             }
         }

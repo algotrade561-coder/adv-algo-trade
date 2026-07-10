@@ -84,7 +84,12 @@ body {
     var(--bg);
   background-attachment: fixed;
   color: var(--text);
-  font-family: Inter, Arial, sans-serif;
+  font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 14px;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   min-width: 320px;
 }
 
@@ -106,7 +111,7 @@ a {
 
 .page-title {
   margin: 0 0 6px;
-  font-size: 32px;
+  font-size: 26px;
   font-weight: 800;
   letter-spacing: 0;
   color: var(--ink);
@@ -217,7 +222,7 @@ a {
 
 .panel h2 {
   margin: 0 0 16px;
-  font-size: 18px;
+  font-size: 16px;
   letter-spacing: 0;
   color: var(--ink);
 }
@@ -239,7 +244,7 @@ a {
 }
 
 .metric-value {
-  font-size: 28px;
+  font-size: 24px;
   font-weight: 800;
   overflow-wrap: anywhere;
   line-height: 1.05;
@@ -247,7 +252,7 @@ a {
 
 .metric-note {
   color: var(--muted);
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .row {
@@ -282,7 +287,7 @@ a {
   border: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.045);
   color: var(--ink);
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 700;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
@@ -473,7 +478,7 @@ pre {
   margin: 0;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .json-box {
@@ -679,11 +684,11 @@ pre {
   }
 
   .page-title {
-    font-size: 24px;
+    font-size: 20px;
   }
 
   .metric-value {
-    font-size: 22px;
+    font-size: 18px;
   }
 
   .metric {

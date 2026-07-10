@@ -63,15 +63,42 @@ public class MultiStrikePicker {
                                           OiSignal oiSignal, int momentumDir,
                                           int gammaWallAbove, int gammaWallBelow,
                                           int maxPainStrike, boolean isExpiryDay) {
+        // Backward-compatible overload — no ITM-on-conviction candidate (normal selection).
+        return rankCandidates(ix, snapshot, oiSignal, momentumDir, gammaWallAbove, gammaWallBelow,
+                maxPainStrike, isExpiryDay, false, 0);
+    }
+
+    /**
+     * Build and rank candidates, optionally adding an ITM candidate on high operator conviction.
+     *
+     * <p>When {@code includeItm} is true and {@code itmDepth > 0}, the strike {@code atm − depth×interval}
+     * (CE) / {@code atm + depth×interval} (PE) is added to the candidate set. It is scored by the SAME
+     * formula — a deeper-ITM strike carries more delta, so it ranks naturally, and the caller's G4
+     * liquidity gate still applies (an illiquid ITM strike loses on the spread penalty → the caller falls
+     * back to ATM). When {@code includeItm} is false the ITM strike is NEVER generated, so normal
+     * (non-high-conviction) selection is provably identical to before.</p>
+     */
+    public List<Candidate> rankCandidates(IndexType ix, ChainSnapshot snapshot,
+                                          OiSignal oiSignal, int momentumDir,
+                                          int gammaWallAbove, int gammaWallBelow,
+                                          int maxPainStrike, boolean isExpiryDay,
+                                          boolean includeItm, int itmDepth) {
         if (snapshot == null || momentumDir == 0) return List.of();
         int atm = snapshot.atmStrike();
         int interval = ix.strikeInterval();
         OptionType ot = momentumDir > 0 ? OptionType.CE : OptionType.PE;
 
-        // Build candidate strike set (de-duped via simple list — sizes ≤ 5)
+        // Build candidate strike set (de-duped via simple list — sizes ≤ 6)
         List<Integer> candidateStrikes = new ArrayList<>();
         candidateStrikes.add(atm);
         candidateStrikes.add(atm + (momentumDir > 0 ? interval : -interval));  // ATM±1 toward momentum
+        // ITM-on-conviction (2026-07-07): only generated when the caller signals high conviction. CE → below
+        // spot, PE → above spot (more delta, less theta). Scoring's delta term ranks it; G4 still filters.
+        int itm = 0;
+        if (includeItm && itmDepth > 0) {
+            itm = atm + (momentumDir > 0 ? -itmDepth * interval : itmDepth * interval);
+            if (itm > 0 && !candidateStrikes.contains(itm)) candidateStrikes.add(itm);
+        }
         // Trap strike
         int trap = momentumDir > 0 ? oiSignal.resistanceStrike() : oiSignal.supportStrike();
         if (trap > 0 && !candidateStrikes.contains(trap)) candidateStrikes.add(trap);
@@ -98,6 +125,7 @@ public class MultiStrikePicker {
             String role;
             double bonus = 0;
             if (strike == atm) role = "ATM";
+            else if (itm != 0 && strike == itm) role = "ITM";
             else if (Math.abs(strike - atm) == interval) role = "ATM±1";
             else if (strike == trap) { role = "TRAP"; bonus += 15; }
             else if (strike == wall) { role = "GAMMA_WALL"; bonus += 10; }

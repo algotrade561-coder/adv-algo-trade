@@ -52,7 +52,7 @@ public class StrategyExecutionPipeline {
 
     /** Universal Call Orchestrator — receives signals from all strategies. */
     @org.springframework.beans.factory.annotation.Autowired(required = false)
-    private UniversalCallOrchestrator universalCallOrchestrator;
+    private com.algo.trade.strategy.UniversalCallOrchestrator universalCallOrchestrator;
 
     // Signal de-dup: suppress identical (strategy+instrument+side) signals for 30s after rejection
     private final java.util.concurrent.ConcurrentHashMap<String, Instant> rejectedSignalCache = new java.util.concurrent.ConcurrentHashMap<>();
@@ -314,7 +314,7 @@ public class StrategyExecutionPipeline {
                 int strike = decision.selectedStrike().map(BigDecimal::intValue).orElse(0);
                 String optType = dir > 0 ? "CE" : "PE";
                 String reason = decision.reasons().isEmpty() ? "" : decision.reasons().get(0);
-                var signal = UniversalCallOrchestrator.StrategySignal.withStrike(
+                var signal = com.algo.trade.strategy.UniversalCallOrchestrator.StrategySignal.withStrike(
                         config.getStrategyType() != null ? config.getStrategyType().name() : "UNKNOWN",
                         idx, dir, confidence, strike, optType, reason);
                 universalCallOrchestrator.submitSignal(signal);

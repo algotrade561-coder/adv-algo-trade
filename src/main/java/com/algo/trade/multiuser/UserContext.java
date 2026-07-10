@@ -62,12 +62,18 @@ public final class UserContext {
     public static void runAs(Long userId, Runnable action) {
         Long previousUser = CURRENT_USER_ID.get();
         String previousEmail = CURRENT_USER_EMAIL.get();
+        // P0-2: propagate the user into the logging MDC so logs emitted under runAs show the real
+        // owner (key "userId", consumed by logback's %X{userId:-sys}) instead of "[u:sys]".
+        String previousMdc = org.slf4j.MDC.get("userId");
         try {
             setUserId(userId);
             // Clear any inherited email so getUserEmail() can't leak the previous
             // user's email while running as a different userId. Callers that need
             // the email under runAs should set it explicitly inside the action.
             CURRENT_USER_EMAIL.remove();
+            if (userId != null) {
+                org.slf4j.MDC.put("userId", String.valueOf(userId));
+            }
             action.run();
         } finally {
             if (previousUser != null) {
@@ -80,6 +86,22 @@ public final class UserContext {
             } else {
                 CURRENT_USER_EMAIL.remove();
             }
+            if (previousMdc != null) {
+                org.slf4j.MDC.put("userId", previousMdc);
+            } else {
+                org.slf4j.MDC.remove("userId");
+            }
         }
+    }
+
+    /**
+     * Run a value-returning action with a specific user context, then restore. Same save/restore
+     * semantics as {@link #runAs(Long, Runnable)} — use this to resolve a user's per-profile config
+     * (e.g. {@code callAs(userId, globalConfigService::getMaxOpenTrades)}) off that user's thread.
+     */
+    public static <T> T callAs(Long userId, java.util.function.Supplier<T> action) {
+        java.util.concurrent.atomic.AtomicReference<T> ref = new java.util.concurrent.atomic.AtomicReference<>();
+        runAs(userId, () -> ref.set(action.get()));
+        return ref.get();
     }
 }

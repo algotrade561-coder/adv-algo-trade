@@ -1,8 +1,11 @@
 package com.algo.trade.controller;
 
+import com.algo.trade.domain.IndexType;
 import com.algo.trade.domain.UnderlyingSymbol;
 import com.algo.trade.indicator.GreeksCalculator;
 import com.algo.trade.risk.PortfolioGreeksService;
+import com.algo.trade.strategy.oimomentum.GammaExposureService;
+import com.algo.trade.strategy.oimomentum.OiPriceMatrixService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
@@ -21,15 +24,88 @@ import java.util.Map;
 @RequestMapping("/greeks")
 public class GreeksDashboardController {
 
-    private final PortfolioGreeksService portfolioGreeksService;
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(GreeksDashboardController.class);
 
-    public GreeksDashboardController(PortfolioGreeksService portfolioGreeksService) {
+    private final PortfolioGreeksService portfolioGreeksService;
+    private final GammaExposureService gexService;
+    private final OiPriceMatrixService oiMatrixService;
+
+    public GreeksDashboardController(PortfolioGreeksService portfolioGreeksService,
+                                      GammaExposureService gexService,
+                                      OiPriceMatrixService oiMatrixService) {
         this.portfolioGreeksService = portfolioGreeksService;
+        this.gexService = gexService;
+        this.oiMatrixService = oiMatrixService;
     }
 
     /**
-     * GET /greeks/portfolio — aggregate portfolio Greeks
+     * GET /greeks/gex/{index} — GEX profile for an index (flip point, walls, per-strike)
      */
+    @GetMapping("/gex/{index}")
+    public ResponseEntity<?> getGex(@PathVariable String index) {
+        if (index == null || index.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Index parameter is required"));
+        }
+        try {
+            IndexType indexType = IndexType.fromName(index);
+            if (indexType == null) {
+                return ResponseEntity.badRequest().body(Map.of("error", "Unknown index: " + index));
+            }
+            GammaExposureService.GexSnapshot snap = gexService.evaluate(indexType);
+            if (!snap.isValid()) {
+                return ResponseEntity.ok(Map.of("status", "no_data", "index", index));
+            }
+            Map<String, Object> resp = new LinkedHashMap<>();
+            resp.put("index", indexType.name());
+            resp.put("spot", snap.spot());
+            resp.put("totalGex", snap.totalGex());
+            resp.put("atmGex", snap.atmGex());
+            resp.put("flipStrike", snap.flipStrike());
+            resp.put("wallAbove", snap.wallAbove());
+            resp.put("wallBelow", snap.wallBelow());
+            int regime = gexService.dealerRegime(indexType);
+            resp.put("dealerRegime", regime > 0 ? "DAMPENING" : regime < 0 ? "AMPLIFYING" : "NEUTRAL");
+            resp.put("strikes", snap.strikes());
+            return ResponseEntity.ok(resp);
+        } catch (Exception e) {
+            log.warn("[GreeksDashboard] GEX request failed for index={}: {}", index, e.getMessage(), e);
+            return ResponseEntity.badRequest().body(Map.of("error",
+                    e.getMessage() != null ? e.getMessage() : "Unexpected error computing GEX"));
+        }
+    }
+
+    /**
+     * GET /greeks/oi-matrix/{index} — OI+Price 4-cell matrix for ATM ±5 strikes
+     */
+    @GetMapping("/oi-matrix/{index}")
+    public ResponseEntity<?> getOiMatrix(@PathVariable String index) {
+        if (index == null || index.isBlank()) {
+            return ResponseEntity.badRequest().body(Map.of("error", "Index parameter is required"));
+        }
+        try {
+            IndexType indexType = IndexType.fromName(index);
+            if (indexType == null) {
+                return ResponseEntity.badRequest().body(Map.of("error", "Unknown index: " + index));
+            }
+            OiPriceMatrixService.MatrixSnapshot snap = oiMatrixService.evaluate(indexType, 5);
+            Map<String, Object> resp = new LinkedHashMap<>();
+            resp.put("index", indexType.name());
+            resp.put("longBuildupCount", snap.longBuildupCount());
+            resp.put("shortBuildupCount", snap.shortBuildupCount());
+            resp.put("shortCoveringCount", snap.shortCoveringCount());
+            resp.put("longUnwindingCount", snap.longUnwindingCount());
+            resp.put("netBullishCells", snap.netBullishCells());
+            resp.put("dominantCell", snap.dominantCell().name());
+            resp.put("directionSignal", snap.directionSignal());
+            resp.put("cells", snap.cells());
+            return ResponseEntity.ok(resp);
+        } catch (Exception e) {
+            log.warn("[GreeksDashboard] OI-matrix request failed for index={}: {}", index, e.getMessage(), e);
+            return ResponseEntity.badRequest().body(Map.of("error",
+                    e.getMessage() != null ? e.getMessage() : "Unexpected error computing OI matrix"));
+        }
+    }
+
     @GetMapping("/portfolio")
     public ResponseEntity<?> getPortfolioGreeks() {
         return ResponseEntity.ok(portfolioGreeksService.compute());

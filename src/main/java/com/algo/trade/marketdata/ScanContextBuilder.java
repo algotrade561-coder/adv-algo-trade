@@ -36,6 +36,7 @@ public class ScanContextBuilder {
     private final LiveInstrumentCache liveInstrumentCache;
     private final com.algo.trade.strategy.RegimeAwareStrikeSelector regimeAwareStrikeSelector;
     private final com.algo.trade.underlying.UnderlyingConfigService underlyingConfigService;
+    private final com.algo.trade.strategy.filter.DynamicEntryPremiumService dynamicEntryPremiumService;
 
     /** Previous scan quotes for OI change delta calculation. */
     private final Map<String, Quote> previousQuotes = new ConcurrentHashMap<>();
@@ -47,7 +48,8 @@ public class ScanContextBuilder {
                                MarketDataService marketDataService,
                                LiveInstrumentCache liveInstrumentCache,
                                com.algo.trade.strategy.RegimeAwareStrikeSelector regimeAwareStrikeSelector,
-                               com.algo.trade.underlying.UnderlyingConfigService underlyingConfigService) {
+                               com.algo.trade.underlying.UnderlyingConfigService underlyingConfigService,
+                               com.algo.trade.strategy.filter.DynamicEntryPremiumService dynamicEntryPremiumService) {
         this.properties = properties;
         this.globalConfigService = globalConfigService;
         this.strategyConfigService = strategyConfigService;
@@ -56,6 +58,7 @@ public class ScanContextBuilder {
         this.liveInstrumentCache = liveInstrumentCache;
         this.regimeAwareStrikeSelector = regimeAwareStrikeSelector;
         this.underlyingConfigService = underlyingConfigService;
+        this.dynamicEntryPremiumService = dynamicEntryPremiumService;
     }
 
     // ── Result type ───────────────────────────────────────────────────────
@@ -154,7 +157,7 @@ public class ScanContextBuilder {
             // directly at whichever cap is binding.
             BigDecimal riskBasedCap = maxTradablePremium(underlying, options.stream().findFirst()
                     .map(Instrument::lotSize).orElse(0));
-            BigDecimal underlyingCap = underlyingConfigService.getMaxEntryPremium(underlying);
+            BigDecimal underlyingCap = dynamicEntryPremiumService.effectiveMaxEntryPremium(underlying);
             BigDecimal effectiveCap = riskBasedCap;
             String capSource = "risk-based";
             if (underlyingCap.signum() > 0 && underlyingCap.compareTo(riskBasedCap) < 0) {
@@ -313,8 +316,8 @@ public class ScanContextBuilder {
             Optional<Instrument> instrument = findOption(options, strike, optionType);
             if (instrument.isEmpty()) continue;
             BigDecimal maxPremium = maxTradablePremium(underlying, instrument.get().lotSize());
-            // Also apply per-underlying premium cap from UnderlyingConfig
-            BigDecimal underlyingCap = underlyingConfigService.getMaxEntryPremium(underlying);
+            // Also apply per-underlying premium cap (dynamic ATM-anchored when enabled, else configured)
+            BigDecimal underlyingCap = dynamicEntryPremiumService.effectiveMaxEntryPremium(underlying);
             if (underlyingCap.signum() > 0) {
                 maxPremium = maxPremium.min(underlyingCap);
             }

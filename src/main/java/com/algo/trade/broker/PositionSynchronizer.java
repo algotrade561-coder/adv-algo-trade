@@ -43,6 +43,11 @@ public class PositionSynchronizer {
     private final com.algo.trade.notification.TelegramAlertService telegramAlertService;
     private final com.algo.trade.monitoring.ErrorEventService errorEventService;
 
+    /** @Lazy — sell-price re-entry reference for MANUAL closes (2026-07-03); lazy breaks any bean cycle. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    @org.springframework.context.annotation.Lazy
+    private com.algo.trade.execution.ExecutionEngine executionEngine;
+
     @org.springframework.beans.factory.annotation.Autowired
     private com.algo.trade.monitoring.SchedulerRegistry schedulerRegistry;
 
@@ -50,8 +55,25 @@ public class PositionSynchronizer {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.algo.trade.auth.UserBrokerConfigRepository userBrokerConfigRepository;
 
-    /** Prevents concurrent sync runs from the event listener and the scheduled timer. */
-    private final java.util.concurrent.atomic.AtomicBoolean syncInProgress = new java.util.concurrent.atomic.AtomicBoolean(false);
+    /** Per-user concurrency guard: the event listener and the scheduled timer may both trigger a sync for the
+     *  SAME user — only one runs at a time per user, while different users reconcile in parallel. A single
+     *  global flag (the old design) serialized all users behind one lock and defeated the fan-out below. */
+    private final java.util.concurrent.ConcurrentHashMap<Long, java.util.concurrent.atomic.AtomicBoolean> syncInProgressByUser =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** Bounded pool for the periodic per-user fan-out. Daemon threads so they never block JVM shutdown.
+     *  Independent broker accounts + per-user DB filtering make concurrent user syncs safe. */
+    private final java.util.concurrent.ExecutorService syncPool =
+            java.util.concurrent.Executors.newFixedThreadPool(4, r -> {
+                Thread t = new Thread(r, "position-sync");
+                t.setDaemon(true);
+                return t;
+            });
+
+    /** Optional — materialize filled entry orders immediately on order COMPLETE (SL/target/trail arming). */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    @org.springframework.context.annotation.Lazy
+    private com.algo.trade.execution.OrderFillWatchdog orderFillWatchdog;
 
     /** Clock for the late-day import cutoff (IST-zoned). Overridable in tests so the
      *  15:00 cutoff is deterministic regardless of when the suite runs. */
@@ -91,16 +113,24 @@ public class PositionSynchronizer {
         log.info("Order completed event received: orderId={} symbol={} — triggering immediate position sync",
                 event.orderId(), event.tradingSymbol());
         // Multi-user: look up which user owns this order and sync THEIR positions
+        boolean syncedForOwner = false;
         if (orderRepository != null && event.orderId() != null && !event.orderId().isBlank()) {
-            orderRepository.findByBrokerOrderId(event.orderId()).ifPresent(order -> {
-                Long ownerId = order.getUserId();
+            var orderOpt = orderRepository.findByBrokerOrderId(event.orderId());
+            if (orderOpt.isPresent()) {
+                Long ownerId = orderOpt.get().getUserId();
+                if (orderFillWatchdog != null) {
+                    orderFillWatchdog.promptMaterializeByBrokerOrderId(event.orderId(), ownerId);
+                }
                 if (ownerId != null) {
                     com.algo.trade.multiuser.UserContext.runAs(ownerId, this::syncPositions);
-                    return;
+                    syncedForOwner = true;   // owner reconciled — do NOT also run a context-less DEFAULT-user sync
                 }
-            });
+            }
         }
-        syncPositions();
+        // Fallback only when the order owner is unknown (legacy/pre-multiuser). Previously this ran
+        // UNCONDITIONALLY after the owner sync — an extra DEFAULT-user broker positions() round-trip per
+        // secondary fill (the trailing return only exited the lambda, not the method). (2026-07-02)
+        if (!syncedForOwner) syncPositions();
     }
 
     /**
@@ -112,18 +142,23 @@ public class PositionSynchronizer {
     public void onSchedule() {
         if (!schedulerRegistry.isEnabled("positionSync")) return;
 
-        // Multi-user: sync for each active user independently
+        // Multi-user: reconcile each active user independently AND in parallel. Fanning the per-user syncs onto
+        // a bounded pool means one user's broker round-trips (positions + order history, ~hundreds of ms) no
+        // longer gate the next user's reconciliation. The per-user guard in syncPositions() prevents a slow
+        // user from overlapping itself across 60s ticks. Fire-and-forget: the scheduler thread returns at once.
         if (userBrokerConfigRepository != null) {
             var activeUsers = userBrokerConfigRepository.findByTradingEnabled(true);
             if (activeUsers != null && !activeUsers.isEmpty()) {
                 for (var config : activeUsers) {
                     if (!config.hasValidToken()) continue;
                     Long userId = config.getUserId();
-                    try {
-                        com.algo.trade.multiuser.UserContext.runAs(userId, this::syncPositions);
-                    } catch (Exception e) {
-                        log.warn("[PositionSync] Failed for userId={}: {}", userId, e.getMessage());
-                    }
+                    syncPool.submit(() -> {
+                        try {
+                            com.algo.trade.multiuser.UserContext.runAs(userId, this::syncPositions);
+                        } catch (Exception e) {
+                            log.warn("[PositionSync] Failed for userId={}: {}", userId, e.getMessage());
+                        }
+                    });
                 }
                 return;
             }
@@ -141,14 +176,20 @@ public class PositionSynchronizer {
             log.debug("Position sync skipped: broker session not active");
             return;
         }
-        if (!syncInProgress.compareAndSet(false, true)) {
-            log.debug("Position sync skipped: another sync is already running");
+        // Per-user guard so concurrent users don't serialize behind one lock, but the same user can't run two
+        // overlapping syncs (event listener + scheduled timer). Keyed on the current UserContext user (which
+        // resolves to DEFAULT_USER_ID outside multi-user mode, preserving single-user behavior).
+        Long uid = com.algo.trade.multiuser.UserContext.getUserId();
+        java.util.concurrent.atomic.AtomicBoolean guard =
+                syncInProgressByUser.computeIfAbsent(uid, k -> new java.util.concurrent.atomic.AtomicBoolean(false));
+        if (!guard.compareAndSet(false, true)) {
+            log.debug("Position sync skipped for user {}: another sync already running", uid);
             return;
         }
         try {
             doSyncPositions();
         } finally {
-            syncInProgress.set(false);
+            guard.set(false);
         }
     }
 
@@ -249,10 +290,17 @@ public class PositionSynchronizer {
             return;
         }
 
-        // Already tracked check
-        boolean alreadyTracked = !tradeRepository.findByInstrumentKeyAndStatus(pos.instrumentKey(), TradeStatus.OPEN).isEmpty();
+        // Already tracked check — P0-2b: scope to the CURRENT user. A different user's open trade for
+        // the same instrument must not suppress importing THIS user's position (sync runs per-user).
+        Long currentUserId = com.algo.trade.multiuser.UserContext.getUserId();
+        boolean alreadyTracked = tradeRepository.findByInstrumentKeyAndStatus(pos.instrumentKey(), TradeStatus.OPEN)
+                .stream()
+                .anyMatch(t -> {
+                    Long owner = t.getUserId() != null ? t.getUserId() : com.algo.trade.multiuser.UserContext.DEFAULT_USER_ID;
+                    return owner.equals(currentUserId);
+                });
         if (alreadyTracked) {
-            log.debug("Position sync: {} already has an OPEN trade — skipping", pos.instrumentKey());
+            log.debug("Position sync: {} already has an OPEN trade for userId={} — skipping", pos.instrumentKey(), currentUserId);
             return;
         }
 
@@ -270,9 +318,14 @@ public class PositionSynchronizer {
             // Collect all broker order IDs already tracked in our local orders table
             Set<String> trackedBrokerOrderIds = new java.util.HashSet<>();
             try {
+                // P0-2b: scope tracked broker order ids to the CURRENT user. The broker fetch is already
+                // per-user (runAs), so "untracked" must be judged against THIS user's local orders only.
                 for (var lo : orderRepository.findAll()) {
                     if (lo.getBrokerOrderId() != null && !lo.getBrokerOrderId().isBlank()) {
-                        trackedBrokerOrderIds.add(lo.getBrokerOrderId());
+                        Long owner = lo.getUserId() != null ? lo.getUserId() : com.algo.trade.multiuser.UserContext.DEFAULT_USER_ID;
+                        if (owner.equals(currentUserId)) {
+                            trackedBrokerOrderIds.add(lo.getBrokerOrderId());
+                        }
                     }
                 }
             } catch (Exception e) {
@@ -334,6 +387,10 @@ public class PositionSynchronizer {
                     isShort ? "position-sync: SHORT position found in broker" : "position-sync: found in broker"
             );
             entity.setProductType(pos.productType() != null ? pos.productType() : "MIS");
+            // P0-2 FIX: stamp the owning user (sync runs under runAs(userId)). Without this the
+            // entity.userId stays null and is treated as the DEFAULT/primary user — booking a
+            // secondary user's position (and its P&L) onto the primary account.
+            entity.setUserId(com.algo.trade.multiuser.UserContext.getUserId());
             if (isShort) {
                 entity.setStrategyType("SHORT_POSITION");
             }
@@ -349,6 +406,7 @@ public class PositionSynchronizer {
                             absQuantity, absQuantity, entryPrice, null,
                             untrackedOrder.updatedAt());
                     orderEntity.setTradeMaterialized(true);
+                    orderEntity.setUserId(com.algo.trade.multiuser.UserContext.getUserId()); // P0-2b: per-user tracking
                     orderRepository.save(orderEntity);
                 }
             } catch (Exception orderEx) {
@@ -399,21 +457,11 @@ public class PositionSynchronizer {
                     ? com.algo.trade.domain.OrderSide.BUY
                     : com.algo.trade.domain.OrderSide.SELL;
             var orders = brokerClient.orders();
-
-            // Collect tracked broker order IDs to find the untracked exit order
-            Set<String> trackedBrokerOrderIds = new java.util.HashSet<>();
-            try {
-                for (var lo : orderRepository.findAll()) {
-                    if (lo.getBrokerOrderId() != null && !lo.getBrokerOrderId().isBlank()) {
-                        trackedBrokerOrderIds.add(lo.getBrokerOrderId());
-                    }
-                }
-            } catch (Exception e) {
-                log.debug("Position sync: could not load local orders for exit matching: {}", e.getMessage());
-            }
+            // (P0-2b review note: a global trackedBrokerOrderIds set was built here but never used —
+            //  removed as dead code. The exit-price lookup below matches by instrument/side/time only.
+            //  brokerClient.orders() is already per-user via runAs.)
 
             // Find the most recent completed exit order for this instrument
-            // Prefer untracked orders (manual exits), but fall back to any exit order
             var exitOrder = orders.stream()
                     .filter(o -> fresh.getInstrumentKey().equals(o.instrumentKey()))
                     .filter(o -> o.side() == exitSide)
@@ -453,6 +501,16 @@ public class PositionSynchronizer {
                 "position-sync: manually closed from broker app");
         tradeRepository.save(fresh);
 
+        // Anchor the sell-price re-entry rule on MANUAL closes too (2026-07-03): without this, "user sells
+        // on Kite, bot re-buys near the sell price" — the most common manual churn — was unprotected.
+        if (executionEngine != null) {
+            try {
+                executionEngine.recordExternalSellReference(fresh.getUserId(), fresh.getInstrumentKey(), exitPrice);
+            } catch (Exception ex) {
+                log.debug("Position sync: sell-reference record failed (non-fatal): {}", ex.getMessage());
+            }
+        }
+
         log.warn("Position sync closed trade (manual broker close): tradeId={}, instrument={}, entry={}, exit={}, pnl={}",
                 fresh.getTradeId(), fresh.getInstrumentKey(), fresh.getEntryPrice(), exitPrice, fresh.getRealizedPnl());
 
@@ -482,6 +540,9 @@ public class PositionSynchronizer {
         BigDecimal exitPrice = pos.lastPrice().signum() > 0 ? pos.lastPrice() : pos.averagePrice();
         Instant entryTime = Instant.now();
         Instant exitTime = Instant.now();
+        // P0-2 idempotency: every broker order consumed by this closed trade, so we can mark them
+        // tracked and prevent the same order being re-imported as a new OPEN trade later.
+        java.util.Set<String> consumedBrokerOids = new java.util.HashSet<>();
 
         // Try to find actual entry and exit orders from broker order history
         try {
@@ -492,6 +553,10 @@ public class PositionSynchronizer {
                     .filter(o -> o.filledQuantity() > 0)
                     .sorted((a, b) -> a.updatedAt().compareTo(b.updatedAt())) // chronological
                     .toList();
+
+            for (var o : instrumentOrders) {
+                o.brokerOrderId().ifPresent(consumedBrokerOids::add);
+            }
 
             if (!instrumentOrders.isEmpty()) {
                 // Find BUY orders (entry for long, exit for short)
@@ -554,13 +619,34 @@ public class PositionSynchronizer {
                 "position-sync: closed position found in broker (traded while app was down)"
         );
         entity.setProductType(pos.productType() != null ? pos.productType() : "MIS");
+        // P0-2 FIX: stamp the owning user so a secondary user's closed position isn't booked on primary.
+        entity.setUserId(com.algo.trade.multiuser.UserContext.getUserId());
         // Close immediately with actual prices
         entity.close(exitPrice, exitTime, realizedPnl,
                 "position-sync: already closed in broker");
         tradeRepository.save(entity);
 
-        log.info("Position sync recorded closed trade: tradeId={}, instrument={}, entry=₹{}, exit=₹{}, pnl=₹{}",
-                tradeId, pos.instrumentKey(), entryPrice, exitPrice, realizedPnl);
+        // P0-2 IDEMPOTENCY: record every consumed broker order as tracked so the same order can NEVER
+        // be re-imported as a new OPEN trade on a later cycle (the phantom -4225: an order closed at
+        // 13:07 was re-imported at 14:05 at a stale entry the market never traded in that window).
+        for (String oid : consumedBrokerOids) {
+            try {
+                if (orderRepository.findByBrokerOrderId(oid).isEmpty()) {
+                    var tracking = new com.algo.trade.persistence.OrderEntity(
+                            "SYNC-CLOSED-ORDER-" + oid, oid, pos.instrumentKey(),
+                            "UNKNOWN", com.algo.trade.domain.OrderStatus.COMPLETE,
+                            0, 0, entryPrice, null, exitTime);
+                    tracking.setTradeMaterialized(true);
+                    tracking.setUserId(com.algo.trade.multiuser.UserContext.getUserId());
+                    orderRepository.save(tracking);
+                }
+            } catch (Exception e) {
+                log.debug("Position sync (closed): could not persist order tracking for {}: {}", oid, e.getMessage());
+            }
+        }
+
+        log.info("Position sync recorded closed trade: tradeId={}, instrument={}, entry=₹{}, exit=₹{}, pnl=₹{} (tracked {} broker order(s))",
+                tradeId, pos.instrumentKey(), entryPrice, exitPrice, realizedPnl, consumedBrokerOids.size());
     }
 
     /**

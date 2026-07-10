@@ -37,8 +37,9 @@ public class UnderlyingConfig {
     @Column(columnDefinition = "VARCHAR(20)")
     private String expiryPreference = "NEAREST";
 
-    /** Max days-to-expiry for directional buying strategies. Beyond this, entry is blocked. */
-    private int maxDteForBuying = 7;
+    /** Max days-to-expiry for directional buying strategies. Beyond this, entry is blocked.
+     *  Default 5: prefer near-expiry (weekly or ≤5 day) contracts for quality, low-premium entries. */
+    private int maxDteForBuying = 5;
 
     // ── Breakout & Entry Filters ──────────────────────────────
 
@@ -82,7 +83,13 @@ public class UnderlyingConfig {
 
     // ── Premium Cap ───────────────────────────────────────────
 
-    /** Maximum option premium (₹) for directional buying strategies. 0 = no cap. */
+    /** Minimum option premium (₹) for directional buying strategies. 0 = no floor.
+     *  BANKNIFTY: 300, NIFTY: 150 — ensures sufficient delta/liquidity. */
+    @Column(precision = 19, scale = 2)
+    private BigDecimal minEntryPremium = BigDecimal.ZERO;
+
+    /** Maximum option premium (₹) for directional buying strategies. 0 = no cap.
+     *  BANKNIFTY: 350, NIFTY: 200 — keeps trades affordable. */
     @Column(precision = 19, scale = 2)
     private BigDecimal maxEntryPremium = BigDecimal.ZERO;
 
@@ -111,6 +118,7 @@ public class UnderlyingConfig {
     public String getMiddayChopStart() { return middayChopStart; }
     public String getMiddayChopEnd() { return middayChopEnd; }
     public boolean isNormalizeScoreForNoVolume() { return normalizeScoreForNoVolume; }
+    public BigDecimal getMinEntryPremium() { return minEntryPremium != null ? minEntryPremium : BigDecimal.ZERO; }
     public BigDecimal getMaxEntryPremium() { return maxEntryPremium; }
 
     // ── Setters ───────────────────────────────────────────────
@@ -127,6 +135,7 @@ public class UnderlyingConfig {
     public void setMiddayChopStart(String middayChopStart) { this.middayChopStart = middayChopStart; }
     public void setMiddayChopEnd(String middayChopEnd) { this.middayChopEnd = middayChopEnd; }
     public void setNormalizeScoreForNoVolume(boolean normalizeScoreForNoVolume) { this.normalizeScoreForNoVolume = normalizeScoreForNoVolume; }
+    public void setMinEntryPremium(BigDecimal minEntryPremium) { this.minEntryPremium = minEntryPremium; }
     public void setMaxEntryPremium(BigDecimal maxEntryPremium) { this.maxEntryPremium = maxEntryPremium; }
 
     // ── Convenience ───────────────────────────────────────────

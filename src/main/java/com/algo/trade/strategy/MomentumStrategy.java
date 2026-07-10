@@ -33,7 +33,7 @@ public class MomentumStrategy {
     private static final Logger log = LoggerFactory.getLogger(MomentumStrategy.class);
     private static final int ROC_PERIOD = 5;
     /** Raised 0.25 → 0.40 (2026-06-01) — 0.305% entries reliably picked tops. */
-    private static final double MIN_ROC_PERCENT = 0.40;
+    private static final double MIN_ROC_PERCENT = 0.25;
     private static final int EMA_PERIOD = 21;
     private static final double MIN_VOLUME_RATIO = 1.2;
     private static final int ATR_PERIOD = 14;
@@ -59,13 +59,13 @@ public class MomentumStrategy {
         return evaluateWithDiagnostics(candles, marketTime, config, underlying).signal();
     }
 
-    // No trades in the noisy open (first 15 min) or illiquid close (last 30 min)
-    private static final LocalTime MARKET_OPEN_GUARD  = LocalTime.of(9, 30);
-    private static final LocalTime MARKET_CLOSE_GUARD = LocalTime.of(15, 0);
+    // Relaxed: allow entries from 9:20 (after auction noise) through 15:15 (before squareoff)
+    private static final LocalTime MARKET_OPEN_GUARD  = LocalTime.of(9, 20);
+    private static final LocalTime MARKET_CLOSE_GUARD = LocalTime.of(15, 15);
 
-    // 3 Jun 2026: midday entry block. Both losing trades fired at 12:40 IST and
-    // hit SL within 15 min. Midday momentum signals tend to be late entries on
-    // exhaustion moves. Mirror OIM's pattern of throttling new entries 12:00–13:00.
+    // 3 Jun 2026: midday entry block REPLACED with stricter ROC threshold.
+    // Previously hard-blocked 12:00-13:00; now allows entries with ROC >= 0.45%.
+    // This keeps participation during midday while still requiring stronger conviction.
     private static final LocalTime MIDDAY_BLOCK_START = LocalTime.of(12, 0);
     private static final LocalTime MIDDAY_BLOCK_END   = LocalTime.of(13, 0);
 
@@ -73,7 +73,7 @@ public class MomentumStrategy {
     // both losing trades had ROC just over the 0.40% floor (0.62%, 0.65%).
     // During the midday block we require a stronger move to overcome the
     // higher-than-usual reversal risk.
-    private static final double MIN_ROC_PERCENT_MIDDAY = 0.80;
+    private static final double MIN_ROC_PERCENT_MIDDAY = 0.45;
 
     public StrategyDiagnostics.WithSignal evaluateWithDiagnostics(List<Candle> candles, LocalTime marketTime,
                                                                     StrategyConfig config, UnderlyingSymbol underlying) {
@@ -82,15 +82,8 @@ public class MomentumStrategy {
             return noTrade("outsideTradingWindow(" + marketTime + ")");
         }
 
-        // 3 Jun 2026: midday entry block — momentum-style signals in the 12:00-13:00
-        // window have historically been late entries on exhausted moves. Today's
-        // 12:40 IST live trades (NIFTY 23300 CE + SENSEX 74100 CE) hit SL within
-        // 15 minutes each. Block new entries here.
-        if (marketTime != null
-                && !marketTime.isBefore(MIDDAY_BLOCK_START)
-                && marketTime.isBefore(MIDDAY_BLOCK_END)) {
-            return noTrade("middayEntryBlock(" + marketTime + ")");
-        }
+        // Midday: no hard block — stricter ROC threshold (MIN_ROC_PERCENT_MIDDAY) is applied
+        // downstream instead. This replaces the blanket 12:00-13:00 veto that starved entries.
 
         if (candles.size() < Math.max(ROC_PERIOD * 2 + 1, EMA_PERIOD + 1)) {
             return noTrade("notEnoughCandles(" + candles.size() + ")");

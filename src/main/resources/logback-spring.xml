@@ -11,6 +11,11 @@
     <!-- Rolling file — DATE-BASED rotation (one file per day, clean separation) -->
     <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
         <file>logs/application/algo-trade.log</file>
+        <!-- 2026-06-25 incident fix: a mid-session restart MUST NOT lose the earlier session's log.
+             append=true keeps all runs of the same day in algo-trade.log (until the midnight roll),
+             and dropping cleanHistoryOnStart stops history being pruned on every restart (the box
+             restarted ~8× today). Retention is still bounded by maxHistory + totalSizeCap. -->
+        <append>true</append>
         <immediateFlush>true</immediateFlush>
         <encoder>
             <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] [u:%X{userId:-sys}] %-5level %logger{50} - %msg%n</pattern>
@@ -22,13 +27,15 @@
             <maxFileSize>100MB</maxFileSize>
             <maxHistory>30</maxHistory>
             <totalSizeCap>1GB</totalSizeCap>
-            <cleanHistoryOnStart>true</cleanHistoryOnStart>
         </rollingPolicy>
     </appender>
 
-    <!-- JSON structured log — for ELK/CloudWatch/Datadog ingestion -->
+    <!-- JSON structured log — DISABLED 2026-07-01 (no ELK/CloudWatch/Datadog consumer on this box; it was
+         ~100MB/day of unread JSON duplicating logs/application). Uncomment + re-add the root appender-ref
+         if a JSON log pipeline is ever set up.
     <appender name="JSON_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
         <file>logs/json/algo-trade.json</file>
+        <append>true</append>
         <encoder class="ch.qos.logback.classic.encoder.PatternLayoutEncoder">
             <pattern>{"ts":"%d{yyyy-MM-dd'T'HH:mm:ss.SSSZ}","level":"%level","userId":"%X{userId:-sys}","thread":"%thread","logger":"%logger{50}","msg":"%replace(%msg){'\"','\\\"'}"}%n</pattern>
         </encoder>
@@ -37,9 +44,9 @@
             <maxFileSize>100MB</maxFileSize>
             <maxHistory>7</maxHistory>
             <totalSizeCap>500MB</totalSizeCap>
-            <cleanHistoryOnStart>true</cleanHistoryOnStart>
         </rollingPolicy>
     </appender>
+    -->
 
     <!-- Diagnostic / audit log — date-based rotation -->
     <appender name="DIAG_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
@@ -72,6 +79,35 @@
         </rollingPolicy>
     </appender>
 
+    <!-- ASYNC wrappers (2026-06-29): decouple the trading thread from disk I/O. The FILE appender uses
+         immediateFlush=true (fsync per line) — a slow/contended disk would otherwise stall whatever thread
+         emitted the log, including the order-placement path. Async hands the write to a worker thread.
+         queueSize=2048 absorbs bursts; discardingThreshold=0 keeps ALL levels (full audit trail) until the
+         queue is genuinely full; neverBlock=true then DROPS rather than blocks — protecting live trading is
+         worth losing a few lines under extreme saturation. CONSOLE stays synchronous for live tailing. -->
+    <appender name="ASYNC_FILE" class="ch.qos.logback.classic.AsyncAppender">
+        <queueSize>2048</queueSize>
+        <discardingThreshold>0</discardingThreshold>
+        <neverBlock>true</neverBlock>
+        <appender-ref ref="FILE"/>
+    </appender>
+
+    <!-- ASYNC_JSON disabled 2026-07-01 with JSON_FILE (see above).
+    <appender name="ASYNC_JSON" class="ch.qos.logback.classic.AsyncAppender">
+        <queueSize>2048</queueSize>
+        <discardingThreshold>0</discardingThreshold>
+        <neverBlock>true</neverBlock>
+        <appender-ref ref="JSON_FILE"/>
+    </appender>
+    -->
+
+    <appender name="ASYNC_ERROR" class="ch.qos.logback.classic.AsyncAppender">
+        <queueSize>512</queueSize>
+        <discardingThreshold>0</discardingThreshold>
+        <neverBlock>true</neverBlock>
+        <appender-ref ref="ERROR_FILE"/>
+    </appender>
+
     <!-- Log levels -->
     <logger name="com.algo.trade" level="INFO"/>
     <logger name="org.springframework" level="WARN"/>
@@ -84,9 +120,11 @@
 
     <root level="INFO">
         <appender-ref ref="CONSOLE"/>
-        <appender-ref ref="FILE"/>
-        <appender-ref ref="JSON_FILE"/>
-        <appender-ref ref="ERROR_FILE"/>
+        <appender-ref ref="ASYNC_FILE"/>
+        <!-- ASYNC_JSON disabled 2026-07-01: no log aggregator (ELK/CloudWatch/Datadog) ingests it on this
+             box, so it was writing ~100MB/day of JSON that duplicates logs/application and nothing reads.
+             Re-add this ref + uncomment the JSON_FILE/ASYNC_JSON appenders if a JSON pipeline is added. -->
+        <appender-ref ref="ASYNC_ERROR"/>
     </root>
 
 </configuration>

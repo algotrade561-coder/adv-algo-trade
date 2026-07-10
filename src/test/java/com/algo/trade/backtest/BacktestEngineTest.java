@@ -73,6 +73,14 @@ class BacktestEngineTest {
         var ema = new EmaIndicator();
         GlobalConfigService gcs = org.mockito.Mockito.mock(GlobalConfigService.class);
         org.mockito.Mockito.when(gcs.getCached()).thenReturn(new GlobalConfig(properties));
+        // propertiesFromGlobalConfig() reads these off the SERVICE (not the cached entity) — unstubbed
+        // they are null and position sizing NPEs on totalCapital.multiply(maxRiskPerTradePercent).
+        org.mockito.Mockito.when(gcs.getMaxRiskPerTradePercent()).thenReturn(java.math.BigDecimal.valueOf(5));
+        org.mockito.Mockito.when(gcs.getMaxDailyLossPercent()).thenReturn(java.math.BigDecimal.valueOf(3));
+        org.mockito.Mockito.when(gcs.getMinSignalScorePercent()).thenReturn(java.math.BigDecimal.valueOf(60));
+        org.mockito.Mockito.when(gcs.getMaxTradesPerDay()).thenReturn(6);
+        org.mockito.Mockito.when(gcs.getMaxConsecutiveLosses()).thenReturn(2);
+        org.mockito.Mockito.when(gcs.getMaxOpenTrades()).thenReturn(1);
         StrategyConfigService scs = org.mockito.Mockito.mock(StrategyConfigService.class);
         org.mockito.Mockito.when(scs.getAll()).thenReturn(java.util.List.of(new StrategyConfig(StrategyType.DIRECTIONAL_BUY)));
         BacktestEngine engine = new BacktestEngine(properties, gcs, scs, strategy, new TrailingStopService(properties),

@@ -42,6 +42,14 @@ public class TradeEntity {
     private String exitReason;
     /** Strategy type that generated this trade (e.g. DIRECTIONAL_BUY, ITM_CONVICTION). */
     private String strategyType;
+    /**
+     * Tuning correlationKey of the ENTRY signal (SignalDecisionKey.from(decision)) — the same key the
+     * signal + execution tuning events were written under. Stamped at entry so an exit emitted from a
+     * context without strategy state (OrderFillWatchdog) can key the ExitEvent back to the entry, closing
+     * the eval→signal→execution→EXIT join. Null for legacy/pre-fix trades (exit then falls back to tradeId).
+     */
+    @jakarta.persistence.Column(name = "entry_correlation_key", length = 64)
+    private String entryCorrelationKey;
     /** Product type used for entry (MIS, CNC, NRML). Exit orders must use the same type. */
     @jakarta.persistence.Column(name = "product_type", length = 8)
     private String productType;
@@ -134,6 +142,20 @@ public class TradeEntity {
     public String getOptionType() { return optionType; }
     public TradeStatus getStatus() { return status; }
     public int getQuantity() { return quantity; }
+
+    /**
+     * Reduce the open quantity after a PARTIAL manual close (the reduced lots were already sold on
+     * the owner's broker account). Deliberately reduce-only — never grows a position and never
+     * flattens it to zero (a full close must go through ExecutionEngine.closeTrade so exit
+     * price/reason/P&L bookkeeping happens). All later bot exits then sell the reduced quantity,
+     * keeping the bot in sync with the broker.
+     */
+    public void reduceQuantity(int soldQty) {
+        if (soldQty <= 0 || soldQty >= this.quantity) {
+            throw new IllegalArgumentException("reduceQuantity(" + soldQty + ") invalid for open qty " + this.quantity);
+        }
+        this.quantity -= soldQty;
+    }
     public BigDecimal getEntryPrice() { return entryPrice; }
     public BigDecimal getExitPrice() { return exitPrice; }
     public Instant getEntryTime() { return entryTime; }
@@ -143,6 +165,9 @@ public class TradeEntity {
     public String getExitReason() { return exitReason; }
     public String getStrategyType() { return strategyType; }
     public void setStrategyType(String strategyType) { this.strategyType = strategyType; }
+
+    public String getEntryCorrelationKey() { return entryCorrelationKey; }
+    public void setEntryCorrelationKey(String entryCorrelationKey) { this.entryCorrelationKey = entryCorrelationKey; }
     public String getProductType() { return productType; }
     public void setProductType(String productType) { this.productType = productType; }
     public BigDecimal getPeakPrice() { return peakPrice; }

@@ -51,6 +51,10 @@ public class MeanReversionStrategy implements TimeBoundedStrategy {
     private final VwapIndicator vwapIndicator;
     private final TradingProperties properties;
 
+    /** Dynamic regime gate (2026-07-04): suppress MR entries in HIGH_VOL/EXTREME (trend regimes). */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.strategy.oimomentum.DynamicGateEngine dynamicGateEngine;
+
     @Value("${strategy.mean-reversion.deviation-percent:0.25}")
     private double deviationThresholdPercent;
 
@@ -114,6 +118,19 @@ public class MeanReversionStrategy implements TimeBoundedStrategy {
                 : maxIvRank;
         if (ivRank > effectiveMaxIv) {
             return noTrade("ivRankTooHigh(" + String.format("%.1f", ivRank) + ">" + effectiveMaxIv + ")");
+        }
+
+        // ── Gate 4: HIGH_VOL/EXTREME regime block (2026-07-04) ──────────────────────
+        // Mean reversion fails in genuine trends. When the DynamicGateEngine reports HIGH_VOL or
+        // EXTREME regime, suppressing a fade entry prevents the worst MR loss pattern (fading a real trend).
+        if (dynamicGateEngine != null && dynamicGateEngine.isActive()) {
+            IndexType idx = IndexType.fromName(underlying.name());
+            if (idx != null) {
+                String regime = dynamicGateEngine.getValues(idx).regime();
+                if ("HIGH_VOL".equals(regime) || "EXTREME".equals(regime)) {
+                    return noTrade("highVolRegime(" + regime + ")");
+                }
+            }
         }
 
         // ── Compute VWAP and deviation ──

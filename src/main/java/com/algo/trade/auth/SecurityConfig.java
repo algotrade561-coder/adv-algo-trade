@@ -253,7 +253,7 @@ public class SecurityConfig {
      * the registration scope includes "openid". Must mirror oAuth2UserService(),
      * otherwise the ROLE_* authority from app_users is never attached to the session.
      */
-    private OAuth2UserService<
+    private org.springframework.security.oauth2.client.userinfo.OAuth2UserService<
             org.springframework.security.oauth2.client.oidc.userinfo.OidcUserRequest,
             org.springframework.security.oauth2.core.oidc.user.OidcUser> oidcUserService() {
         var delegate = new org.springframework.security.oauth2.client.oidc.userinfo.OidcUserService();

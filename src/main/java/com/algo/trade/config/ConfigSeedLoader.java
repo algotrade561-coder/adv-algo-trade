@@ -84,18 +84,8 @@ public class ConfigSeedLoader {
      * Add new entries here whenever a default changes and DB rows exist that need updating.
      */
     private void patchStaleGlobalConfigValues() {
-        globalConfigRepository.findById(1L).ifPresent(cfg -> {
-            boolean patched = false;
-            // min_environment_score: old default was 55, correct value is 50
-            if (cfg.getMinEnvironmentScore() == 55) {
-                cfg.setMinEnvironmentScore(50);
-                log.info("Patched GlobalConfig.minEnvironmentScore: 55 → 50");
-                patched = true;
-            }
-            if (patched) {
-                globalConfigRepository.save(cfg);
-            }
-        });
+        // No active patches. The minEnvironmentScore field was moved to the per-user risk
+        // profile (RiskProfile bundle), so the old 55→50 patch no longer applies here.
     }
 
     // ── GlobalConfig ─────────────────────────────────────────────────────────
@@ -128,7 +118,6 @@ public class ConfigSeedLoader {
         cfg.setBearishImbalanceThreshold(decimal(map, "bearishImbalanceThreshold", "0.8"));
         cfg.setMinLiquidityVolume(longVal(map, "minLiquidityVolume", 5000));
         cfg.setMaxIvPercent(decimal(map, "maxIvPercent", "80"));
-        cfg.setMinSignalScorePercent(decimal(map, "minSignalScorePercent", "70"));
         cfg.setCeOiSupportRequired(bool(map, "ceOiSupportRequired", false));
         cfg.setPeOiSupportRequired(bool(map, "peOiSupportRequired", false));
         cfg.setCeOiDivergenceFilterEnabled(bool(map, "ceOiDivergenceFilterEnabled", true));
@@ -158,16 +147,9 @@ public class ConfigSeedLoader {
         cfg.setManageSyncedTrades(bool(map, "manageSyncedTrades", false));
         // Risk
         cfg.setTotalCapital(decimal(map, "totalCapital", "80000"));
-        cfg.setMaxRiskPerTradePercent(decimal(map, "maxRiskPerTradePercent", "20"));
-        cfg.setMaxDailyLossPercent(decimal(map, "maxDailyLossPercent", "60"));
-        cfg.setMaxTradesPerDay(integer(map, "maxTradesPerDay", 10));
-        cfg.setMaxConsecutiveLosses(integer(map, "maxConsecutiveLosses", 2));
-        cfg.setMaxOpenTrades(integer(map, "maxOpenTrades", 1));
         cfg.setCooldownMinutes(integer(map, "cooldownMinutes", 0));
         cfg.setMaxOpenPositionsPerStrategy(integer(map, "maxOpenPositionsPerStrategy", 1));
         cfg.setDailyProfitTarget(decimal(map, "dailyProfitTarget", "0"));
-        cfg.setMaxLotsPerTrade(integer(map, "maxLotsPerTrade", 1));
-        cfg.setMinEnvironmentScore(integer(map, "minEnvironmentScore", 50));
         cfg.setMlVirtualTradeThreshold(decimal(map, "mlVirtualTradeThreshold", "45"));
         // Execution tuning
         cfg.setLimitOrderCancelMinutes(integer(map, "limitOrderCancelMinutes", 1));

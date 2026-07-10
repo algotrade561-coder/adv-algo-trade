@@ -17,6 +17,8 @@ public record OrderRequest(
         Optional<BigDecimal> limitPrice,
         /** Trigger price for SL-M orders. Ignored for MARKET/LIMIT. */
         Optional<BigDecimal> triggerPrice,
+        /** Order variety — REGULAR (default) or AMO (After Market Order). */
+        OrderVariety variety,
         String tag
 ) {
     public OrderRequest {
@@ -30,14 +32,24 @@ public record OrderRequest(
         }
         limitPrice = limitPrice == null ? Optional.empty() : limitPrice;
         triggerPrice = triggerPrice == null ? Optional.empty() : triggerPrice;
+        variety = variety == null ? OrderVariety.REGULAR : variety;
         tag = tag == null ? "" : tag;
     }
 
-    /** Convenience constructor without triggerPrice (backward compatible). */
+    /** Convenience constructor without triggerPrice and variety (backward compatible). */
     public OrderRequest(String clientOrderId, String instrumentKey, OrderSide side,
                         OrderType orderType, ProductType productType, int quantity,
                         Optional<BigDecimal> limitPrice, String tag) {
         this(clientOrderId, instrumentKey, side, orderType, productType, quantity,
-                limitPrice, Optional.empty(), tag);
+                limitPrice, Optional.empty(), OrderVariety.REGULAR, tag);
+    }
+
+    /** Convenience constructor with triggerPrice but no variety (backward compatible). */
+    public OrderRequest(String clientOrderId, String instrumentKey, OrderSide side,
+                        OrderType orderType, ProductType productType, int quantity,
+                        Optional<BigDecimal> limitPrice, Optional<BigDecimal> triggerPrice,
+                        String tag) {
+        this(clientOrderId, instrumentKey, side, orderType, productType, quantity,
+                limitPrice, triggerPrice, OrderVariety.REGULAR, tag);
     }
 }

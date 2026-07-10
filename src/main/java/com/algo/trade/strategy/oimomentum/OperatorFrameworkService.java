@@ -4,6 +4,7 @@ import com.algo.trade.data.ChainSnapshot;
 import com.algo.trade.domain.IndexType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.time.*;
@@ -52,10 +53,46 @@ public class OperatorFrameworkService {
     private final ConcurrentHashMap<IndexType, Boolean> openingBaselineSet = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<IndexType, Instant> lastAnalysisTime = new ConcurrentHashMap<>();
 
+    // ── FAST-OI PATH (2026-07-01) ──────────────────────────────────────────────
+    // The operator framework was built (see class header) to beat the "3-minute rolling
+    // OI window" that missed the May-22 buildup — yet it still only re-analyses when a
+    // 5-minute ChainSnapshot lands (onChainSnapshot, throttled a further 4 min). Empirical
+    // microstructure capture (data/tuning/atm-microstructure-*.csv) shows ATM OI actually
+    // changes ~every 55s (up to 9 changes/min in bursts). So we ALSO refresh the operator
+    // signal directly from per-tick LiveInstrumentCache OI on the 1-second OI-momentum loop,
+    // against the same 09:15 baseline. detector.analyze() writes the shared latestSignals
+    // store, so every consumer (getConfidenceBonus / getOperatorSignal / evaluateCase5Override)
+    // transparently sees the fresher score with no extra wiring.
+    //   Flag-gated: oi-momentum.fast-oi.enabled (default true = LIVE) — instant revert to the
+    //   5-min-snapshot-only behaviour by setting it false. Grep "[FastOI]" on EC2 to verify.
+    private final ConcurrentHashMap<IndexType, Instant> lastFastAnalysisTime = new ConcurrentHashMap<>();
+
+    @Value("${oi-momentum.fast-oi.enabled:true}")
+    private boolean fastOiEnabled;
+
+    /** How often (seconds) the per-tick live-cache operator refresh may re-run per index. */
+    @Value("${oi-momentum.fast-oi.operator-refresh-seconds:15}")
+    private int fastOperatorRefreshSeconds;
+
+    /**
+     * Minimum operator score to CREATE an entry when OI is genuinely unavailable (CASE5_OI_UNAVAILABLE /
+     * NO_RULE). 2026-07-03: previously the ≥50 "confirm" threshold ({@code canConfirmOISignal}) was misused
+     * to create no-OI entries — a confirm bar should confirm an EXISTING OI reading, not stand in for a
+     * missing one. A no-OI entry has zero OI confirmation, so it must clear a HIGH-conviction bar. Default
+     * 70; raise toward 100 (or effectively disable) to be stricter. This is a dedicated threshold — it does
+     * NOT reuse {@code canOverrideCase5()} (65), which is shared by two other call sites.
+     */
+    @Value("${oi-momentum.operator.oi-unavailable-min-score:70}")
+    private int oiUnavailableMinScore;
+
     public OperatorFrameworkService(OperatorAccumulationDetector detector,
                                     OperatorBaselineStore baselineStore) {
         this.detector = detector;
         this.baselineStore = baselineStore;
+    }
+
+    public boolean isFastOiEnabled() {
+        return fastOiEnabled;
     }
 
     /**
@@ -136,6 +173,62 @@ public class OperatorFrameworkService {
     }
 
     /**
+     * FAST-OI PATH — refresh the operator signal from per-tick OI (LiveInstrumentCache) rather
+     * than waiting for the next 5-minute ChainSnapshot. Called from the 1-second OI-momentum
+     * loop with a strike→OI map built from the live cache (ATM±N band). Compares against the
+     * SAME 09:15 opening baseline the snapshot path uses, so scores are directly comparable —
+     * only fresher. No-op unless {@code oi-momentum.fast-oi.enabled=true} AND the opening
+     * baseline has already been registered (which happens off the first 09:15 snapshot).
+     *
+     * @param index         the index.
+     * @param liveStrikeMap strike → current per-tick OI snapshot (IV fields may be 0; analyze()
+     *                      uses OI only).
+     * @param spot          current spot.
+     * @param atmStrike     current ATM strike.
+     */
+    public void refreshFromLiveCache(IndexType index,
+                                     Map<Integer, OperatorAccumulationDetector.StrikeSnapshot> liveStrikeMap,
+                                     double spot, int atmStrike) {
+        if (!fastOiEnabled) return;
+        if (liveStrikeMap == null || liveStrikeMap.isEmpty()) return;
+        // Baseline must exist first — the fast path measures buildup vs the 09:15 opening, which
+        // is only registered off a ChainSnapshot. Before that, do nothing (snapshot path owns it).
+        if (!openingBaselineSet.getOrDefault(index, false)) return;
+
+        int throttle = Math.max(3, fastOperatorRefreshSeconds);
+        Instant last = lastFastAnalysisTime.get(index);
+        if (last != null && Instant.now().isBefore(last.plusSeconds(throttle))) return;
+
+        OperatorAccumulationDetector.OperatorSignal prev = detector.getSignal(index);
+        int prevScore = prev.getScore();
+        int prevDir = prev.getDirection();
+        Instant prevComputed = prev.getComputedAt();
+
+        OperatorAccumulationDetector.OperatorSignal signal =
+                detector.analyze(index, liveStrikeMap, spot, atmStrike);
+        lastFastAnalysisTime.put(index, Instant.now());
+
+        // Lead-time = how much staler the previous (snapshot-cycle) signal was. This is the whole
+        // point of the feature: how many seconds earlier the fast path surfaces an operator move.
+        long stalenessSec = prevComputed.getEpochSecond() > 0
+                ? Math.max(0, Instant.now().getEpochSecond() - prevComputed.getEpochSecond())
+                : -1;
+
+        boolean scoreChanged = signal.getScore() != prevScore || signal.getDirection() != prevDir;
+        boolean actionable = signal.getScore() >= 40 || prevScore >= 40;
+        if (scoreChanged || actionable) {
+            log.info("[FastOI] {} live-tick operator refresh: score {}→{} dir {}→{} | prevSignalAge={}s window={} strikes | {}",
+                    index, prevScore, signal.getScore(), prevDir, signal.getDirection(),
+                    stalenessSec < 0 ? "n/a" : stalenessSec, liveStrikeMap.size(), signal.getSummary());
+            if (signal.canOverrideCase5() && !prev.canOverrideCase5()) {
+                log.info("[FastOI] *** {} CASE5-OVERRIDE now ELIGIBLE via fast path *** dir={} score={} "
+                        + "(snapshot path would still be at {}) — early institutional footprint captured",
+                        index, signal.getDirection(), signal.getScore(), prevScore);
+            }
+        }
+    }
+
+    /**
      * Get the latest operator signal for an index.
      */
     public OperatorAccumulationDetector.OperatorSignal getOperatorSignal(IndexType index) {
@@ -163,23 +256,25 @@ public class OperatorFrameworkService {
             return null;
         }
 
-        // OI ticks stale (WebSocket zero) → operator chain data stands in
+        // OI genuinely unavailable → NO OI reading to confirm. A no-OI entry is created solely from the
+        // operator signal, so it must clear the dedicated high-conviction bar (oiUnavailableMinScore, def 70).
+        // 2026-07-03 FIX: removed the old CASE3 ≥50 "confirm" door — a confirm threshold must not CREATE an
+        // entry from a missing OI reading (it let a score-63 SENSEX 78000CE trade through into a flat-OI,
+        // light-volume tape). canOverrideCase5()'s 65 is intentionally NOT reused here (2 other call sites).
         if (case5Reason.contains("OI_UNAVAILABLE") || case5Reason.contains("NO_RULE")) {
-            if (signal.canOverrideCase5()) {  // score >= 65
-                log.info("[OperatorFW] {} CASE5_OI_UNAVAILABLE → CASE2_OPERATOR (score={})",
-                        index, signal.getScore());
+            if (signal.isFresh() && signal.getScore() >= oiUnavailableMinScore) {
+                log.info("[OperatorFW] {} CASE5_OI_UNAVAILABLE → CASE2_OPERATOR (score={} >= {})",
+                        index, signal.getScore(), oiUnavailableMinScore);
                 return "CASE2_OPERATOR[score=" + signal.getScore() + "]";
             }
-            if (signal.canConfirmOISignal()) {  // score >= 50
-                log.info("[OperatorFW] {} CASE5_OI_UNAVAILABLE → CASE3_OPERATOR (score={})",
-                        index, signal.getScore());
-                return "CASE3_OPERATOR[score=" + signal.getScore() + "]";
-            }
+            log.info("[OperatorFW] {} CASE5_OI_UNAVAILABLE BLOCKED — operator score {} < {} (no OI confirmation)",
+                    index, signal.getScore(), oiUnavailableMinScore);
+            return null;
         }
 
         // PCR vs momentum: operator conviction overrides PCR noise (PCR lags behind smart money)
         if (case5Reason.contains("PCR_VS_MOMENTUM")) {
-            if (signal.getScore() >= 75) {
+            if (signal.getScore() >= 65) {
                 log.info("[OperatorFW] {} CASE5_PCR_VS_MOMENTUM → CASE1_OPERATOR_OVERRIDE (score={})",
                         index, signal.getScore());
                 return "CASE1_OPERATOR_OVERRIDE[score=" + signal.getScore() + "]";
@@ -195,15 +290,17 @@ public class OperatorFrameworkService {
      *
      * @param index       Index.
      * @param momentumDir The momentum direction.
-     * @return Bonus points (0–20). At operator score 65 → +8; score 70 → +10 (lifts 60% base to 70%).
+     * @return Bonus points (0–25). At operator score 65 → +10; score 80 → +17; score 95 → +25.
      */
     public int getConfidenceBonus(IndexType index, int momentumDir) {
         OperatorAccumulationDetector.OperatorSignal signal = detector.getSignal(index);
         if (!signal.isFresh() || !signal.alignsWith(momentumDir)) {
             return 0;
         }
-        // Linear scale: 0 pts at score=45, 20 pts at score=95
-        int bonus = (int) Math.min(20, Math.max(0, (signal.getScore() - 45) * 0.4));
+        // Linear scale: 0 pts at score=45, 25 pts at score=95 (was capped at 20).
+        // Increased cap to ensure strong operator conviction (80+) can push borderline
+        // entries over the bias floor in flat-spot regimes (June 19 starvation).
+        int bonus = (int) Math.min(25, Math.max(0, (signal.getScore() - 45) * 0.5));
         if (bonus > 0) {
             log.debug("[OperatorFW] Confidence bonus for {} dir={}: +{}pts (score={})",
                     index, momentumDir, bonus, signal.getScore());

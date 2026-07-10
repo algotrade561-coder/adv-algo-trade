@@ -50,7 +50,19 @@ public record OiMomentumEntryDiagnostics(
         /** T3 — true when bias floor was conditionally lowered (coil break + slope agree). */
         boolean biasFloorRelaxed,
         /** T3 — actual bias floor used at this evaluation (e.g. 65 default, 55 relaxed). */
-        int biasFloorUsed
+        int biasFloorUsed,
+        /** FAST-OI (2026-07-01) — whether the fast-OI path was live at this evaluation (config flag). */
+        boolean fastOiEnabled,
+        /** FAST-OI — the OI-change window (sec) in effect: 60 when fast, ~300 (oldest-sample) legacy. */
+        int oiWindowSec,
+        /** FAST-OI — age (sec) of the operator signal at decision = its freshness/lead-time. -1 = none. */
+        long operatorSignalAgeSec,
+        /** MTF (2026-07-01) — combined day+week higher-timeframe directional lean (+1 bull / -1 bear / 0). */
+        int mtfBias,
+        /** MTF — regime at decision: TRENDING | RANGING | VOLATILE | NEUTRAL. */
+        String mtfRegime,
+        /** MTF — did the entry direction align with the HTF lean? +1 aligned, -1 counter-trend, 0 neutral. */
+        int mtfAligned
 ) {
     /**
      * Overload that keeps every legacy 32-arg call-site working. Defaults the
@@ -74,7 +86,9 @@ public record OiMomentumEntryDiagnostics(
              daysToExpiry, expiryDay, paperTrading, signalReason, oiAdvanced,
              rangePct30m, blockDetail, atmCeLast, atmPeLast, timeOfDayMode,
              matrixCase, entryPath, operatorScore, biasScore,
-             0.0, 0, 0.0, false, 0);
+             0.0, 0, 0.0, false, 0,
+             false, 0, -1L,
+             0, "NEUTRAL", 0);
     }
     static OiMomentumEntryDiagnostics forSpike(IndexType indexType, TickMomentumDetector.MomentumSignal spike,
                                                double pcr, int pcrDir, long ceOi, long peOi, boolean oiAvailable,
@@ -99,7 +113,9 @@ public record OiMomentumEntryDiagnostics(
         long bucket = spike.spotPrice() > 0
                 ? Math.round(spike.spotPrice() / indexType.strikeInterval())
                 : 0;
-        return indexType.name() + "-SPIKE-" + bucket + "-" + spike.direction();
+        // Include date for uniqueness across sessions (same strike+dir can repeat on different days)
+        String date = java.time.LocalDate.now(java.time.ZoneId.of("Asia/Kolkata")).toString();
+        return indexType.name() + "-SPIKE-" + bucket + "-" + spike.direction() + "-" + date;
     }
 
     static String parseEntryCase(String reason) {
@@ -126,7 +142,9 @@ public record OiMomentumEntryDiagnostics(
                 rangePct30m, blockDetail, atmCeLast, atmPeLast,
                 timeOfDayMode, matrixCase, entryPath, operatorScore, biasScore,
                 sustainedDriftPct, sustainedDriftWindowMin, pcrSlope5m,
-                biasFloorRelaxed, biasFloorUsed);
+                biasFloorRelaxed, biasFloorUsed,
+                fastOiEnabled, oiWindowSec, operatorSignalAgeSec,
+                mtfBias, mtfRegime, mtfAligned);
     }
 
     public OiMomentumEntryDiagnostics withSustainedDrift(double driftPct, int windowMin) {
@@ -137,7 +155,9 @@ public record OiMomentumEntryDiagnostics(
                 vix, daysToExpiry, expiryDay, paperTrading, signalReason, oiAdvanced,
                 rangePct30m, blockDetail, atmCeLast, atmPeLast,
                 timeOfDayMode, matrixCase, entryPath, operatorScore, biasScore,
-                driftPct, windowMin, pcrSlope5m, biasFloorRelaxed, biasFloorUsed);
+                driftPct, windowMin, pcrSlope5m, biasFloorRelaxed, biasFloorUsed,
+                fastOiEnabled, oiWindowSec, operatorSignalAgeSec,
+                mtfBias, mtfRegime, mtfAligned);
     }
 
     public OiMomentumEntryDiagnostics withPcrSlope(double slope) {
@@ -149,7 +169,9 @@ public record OiMomentumEntryDiagnostics(
                 rangePct30m, blockDetail, atmCeLast, atmPeLast,
                 timeOfDayMode, matrixCase, entryPath, operatorScore, biasScore,
                 sustainedDriftPct, sustainedDriftWindowMin, slope,
-                biasFloorRelaxed, biasFloorUsed);
+                biasFloorRelaxed, biasFloorUsed,
+                fastOiEnabled, oiWindowSec, operatorSignalAgeSec,
+                mtfBias, mtfRegime, mtfAligned);
     }
 
     public OiMomentumEntryDiagnostics withBiasFloor(boolean relaxed, int floorUsed) {
@@ -161,6 +183,45 @@ public record OiMomentumEntryDiagnostics(
                 rangePct30m, blockDetail, atmCeLast, atmPeLast,
                 timeOfDayMode, matrixCase, entryPath, operatorScore, biasScore,
                 sustainedDriftPct, sustainedDriftWindowMin, pcrSlope5m,
-                relaxed, floorUsed);
+                relaxed, floorUsed,
+                fastOiEnabled, oiWindowSec, operatorSignalAgeSec,
+                mtfBias, mtfRegime, mtfAligned);
+    }
+
+    /**
+     * FAST-OI (2026-07-01) — overlay the fast-OI capture context for tuning/research: whether the
+     * fast path was live, the OI-change window in effect (sec), and the operator signal's age (its
+     * freshness/lead-time). Lets the tuning loop A/B fast-OI vs legacy and correlate operator
+     * lead-time with the exit outcome (maePct/mfePct/realizedPnlPct join by correlationKey).
+     */
+    public OiMomentumEntryDiagnostics withFastOi(boolean enabled, int windowSec, long operatorAgeSec) {
+        return new OiMomentumEntryDiagnostics(
+                indexType, entryCase, momentumDir, momentumType, momentumMagnitudePct,
+                oiDir, pcrDir, pcr, ceOiChange, peOiChange, oiAvailable,
+                spot, atm, spot30mHigh, spot30mLow, breakoutDistancePct, spikeEpisodeId,
+                vix, daysToExpiry, expiryDay, paperTrading, signalReason, oiAdvanced,
+                rangePct30m, blockDetail, atmCeLast, atmPeLast,
+                timeOfDayMode, matrixCase, entryPath, operatorScore, biasScore,
+                sustainedDriftPct, sustainedDriftWindowMin, pcrSlope5m,
+                biasFloorRelaxed, biasFloorUsed,
+                enabled, windowSec, operatorAgeSec,
+                mtfBias, mtfRegime, mtfAligned);
+    }
+
+    /** MTF (2026-07-01) — overlay the multi-timeframe context for tuning/research: the day+week directional
+     *  lean, the regime, and whether this entry aligned with the HTF trend. Lets the loop validate whether
+     *  trend-aligned entries have better win% / less give-back (join to exit maePct/mfePct/realizedPnlPct). */
+    public OiMomentumEntryDiagnostics withMtf(int bias, String regime, int aligned) {
+        return new OiMomentumEntryDiagnostics(
+                indexType, entryCase, momentumDir, momentumType, momentumMagnitudePct,
+                oiDir, pcrDir, pcr, ceOiChange, peOiChange, oiAvailable,
+                spot, atm, spot30mHigh, spot30mLow, breakoutDistancePct, spikeEpisodeId,
+                vix, daysToExpiry, expiryDay, paperTrading, signalReason, oiAdvanced,
+                rangePct30m, blockDetail, atmCeLast, atmPeLast,
+                timeOfDayMode, matrixCase, entryPath, operatorScore, biasScore,
+                sustainedDriftPct, sustainedDriftWindowMin, pcrSlope5m,
+                biasFloorRelaxed, biasFloorUsed,
+                fastOiEnabled, oiWindowSec, operatorSignalAgeSec,
+                bias, regime != null ? regime : "NEUTRAL", aligned);
     }
 }

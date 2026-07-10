@@ -39,6 +39,12 @@ public class VIXRegimeFilter {
     @Value("${vix-regime.cautious-lot-multiplier:0.75}") private double cautiousLotMultiplier;
     @Value("${vix-regime.direction-lookback-minutes:15}") private int directionLookbackMinutes;
 
+    // ── Dynamic (percentile-relative) regime bands (Finding 1). Default OFF → fixed thresholds. ──
+    @Value("${vix-regime.dynamic-enabled:false}") private boolean dynamicEnabled;
+    @Value("${vix-regime.dead-pct:10.0}") private double deadPct;       // < this 52-wk pct → DEAD
+    @Value("${vix-regime.cautious-pct:30.0}") private double cautiousPct; // < this → CAUTIOUS
+    @Value("${vix-regime.extreme-pct:90.0}") private double extremePct;  // ≥ this → EXTREME
+
     public enum Regime { DEAD, CAUTIOUS, FAVORABLE, EXTREME }
 
     private record VIXSnapshot(long timestampMs, double vix) {}
@@ -62,6 +68,19 @@ public class VIXRegimeFilter {
     public Regime classifyRegime() {
         double vix = marketGuard.getCurrentVix();
         if (vix <= 0) return Regime.FAVORABLE;
+        // Dynamic: classify by where the live VIX sits in its own 52-week range (clean India-VIX
+        // series, shared with the MarketGuard gate so both rank against the same data).
+        if (dynamicEnabled) {
+            double ivp;
+            try { ivp = marketGuard.vixPercentile(); }
+            catch (Exception e) { ivp = -1; }
+            if (ivp >= 0) {   // -1 = insufficient history → fall through to fixed bands
+                if (ivp < deadPct) return Regime.DEAD;
+                if (ivp < cautiousPct) return Regime.CAUTIOUS;
+                if (ivp >= extremePct) return Regime.EXTREME;
+                return Regime.FAVORABLE;
+            }
+        }
         if (vix < deadThreshold) return Regime.DEAD;
         if (vix >= deadThreshold && vix < cautiousHigh) return Regime.CAUTIOUS;
         if (vix >= extremeThreshold) return Regime.EXTREME;

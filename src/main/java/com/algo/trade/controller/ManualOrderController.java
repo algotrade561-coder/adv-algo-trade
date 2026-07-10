@@ -159,6 +159,7 @@ public class ManualOrderController {
                     ? OrderType.LIMIT : OrderType.MARKET;
             ProductType productType = "NRML".equalsIgnoreCase(request.productType)
                     ? ProductType.NRML : ProductType.MIS;
+            OrderVariety variety = OrderVariety.fromString(request.variety);
 
             String clientOrderId = "MANUAL-" + System.currentTimeMillis();
             Optional<java.math.BigDecimal> limitPrice = orderType == OrderType.LIMIT && request.limitPrice > 0
@@ -167,7 +168,8 @@ public class ManualOrderController {
 
             OrderRequest orderRequest = new OrderRequest(
                     clientOrderId, request.instrumentKey,
-                    side, orderType, productType, quantity, limitPrice, "manual-order");
+                    side, orderType, productType, quantity, limitPrice,
+                    Optional.empty(), variety, "manual-order");
 
             OrderResponse result = brokerClient.placeOrder(orderRequest);
 
@@ -177,12 +179,13 @@ public class ManualOrderController {
             response.put("quantity", quantity);
             response.put("instrument", request.tradingSymbol);
             response.put("side", side.name());
+            response.put("variety", variety.name());
 
-            log.info("[ManualOrder] Placed for userId={}: {} {} {} x{} @ {} → {}",
+            log.info("[ManualOrder] Placed for userId={}: {} {} {} x{} @ {} variety={} → {}",
                     com.algo.trade.multiuser.UserContext.getUserId(),
                     side, request.tradingSymbol, request.index, quantity,
                     request.limitPrice > 0 ? "₹" + request.limitPrice : "MARKET",
-                    result.status());
+                    variety, result.status());
 
         } catch (Exception e) {
             response.put("success", false);
@@ -204,6 +207,7 @@ public class ManualOrderController {
         public String orderType;         // MARKET, LIMIT
         public double limitPrice;        // 0 for MARKET
         public String productType;       // MIS, NRML
+        public String variety;           // REGULAR, AMO (null defaults to REGULAR)
         public String instrumentKey;     // e.g. "NFO:NIFTY26JUN24000CE"
         public String tradingSymbol;     // e.g. "NIFTY26JUN24000CE"
     }

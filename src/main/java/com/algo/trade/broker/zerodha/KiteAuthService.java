@@ -257,13 +257,26 @@ public class KiteAuthService {
                     valueOrMissing(tokenStore.userId().orElse(credentialResolver.userId())));
             return true;
         } catch (RestClientException ex) {
-            // Only clear the GLOBAL token store when validating the primary/shared token.
-            // In multi-user mode, per-user tokens are managed by UserBrokerSessionManager
-            // and should NOT be wiped by global validation failures.
-            if (!com.algo.trade.multiuser.UserContext.isSet()
+            // P1.6 hardening (2026-06-24): only CLEAR the token on a genuine AUTH failure (401/403).
+            // The old code cleared on ANY exception — so a transient network/5xx blip would wipe a
+            // perfectly good token and compound the outage. Also surface the api_key on auth failure:
+            // "Incorrect api_key or access_token" with a token you logged in for today almost always
+            // means the configured api_key/secret don't match the Kite app your login token came from
+            // (check the primary-account api_key in DB vs KITE_API_KEY — the resolver prefers the DB one).
+            boolean authError = (ex instanceof org.springframework.web.client.HttpClientErrorException hce)
+                    && (hce.getStatusCode().value() == 401 || hce.getStatusCode().value() == 403);
+            if (!authError) {
+                log.warn("Kite access token validation failed (TRANSIENT — token NOT cleared): {}", ex.getMessage());
+                return false;
+            }
+            boolean isPrimary = !com.algo.trade.multiuser.UserContext.isSet()
                     || com.algo.trade.multiuser.UserContext.getUserId().equals(
-                            com.algo.trade.multiuser.UserContext.DEFAULT_USER_ID)) {
-                log.warn("Kite access token validation failed. Clearing persisted PRIMARY token: {}", ex.getMessage());
+                            com.algo.trade.multiuser.UserContext.DEFAULT_USER_ID);
+            if (isPrimary) {
+                log.warn("Kite access token validation failed (AUTH). apiKey={} apiSecretConfigured={} — clearing PRIMARY token. "
+                                + "If you logged in today, verify the configured api_key/secret match the app the login token came from "
+                                + "(primary-account api_key in DB vs KITE_API_KEY). Detail: {}",
+                        maskKey(credentialResolver.apiKey()), !isBlank(credentialResolver.apiSecret()), ex.getMessage());
                 tokenStore.clear();
             } else {
                 log.warn("Kite access token validation failed for userId={}: {} (per-user token NOT cleared from global store)",
@@ -271,6 +284,12 @@ public class KiteAuthService {
             }
             return false;
         }
+    }
+
+    /** Mask an api_key for safe logging — shows only a short prefix + length. */
+    private static String maskKey(String k) {
+        if (k == null || k.isBlank()) return "<blank>";
+        return k.length() <= 4 ? "****" : k.substring(0, 4) + "***(len=" + k.length() + ")";
     }
 
     public Map<String, Object> diagnostics() {

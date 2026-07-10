@@ -49,14 +49,74 @@ public class HistoricalVixController {
     private static final Logger log = LoggerFactory.getLogger(HistoricalVixController.class);
 
     private final HistoricalVixIngestService ingestService;
+    private final com.algo.trade.persistence.IVSampleRepository ivSampleRepository;
 
     /** Lazy to avoid forcing a hard dep chain — only used for the post-seed cache reload. */
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     @org.springframework.context.annotation.Lazy
     private com.algo.trade.indicator.IVRankTracker ivRankTracker;
 
-    public HistoricalVixController(HistoricalVixIngestService ingestService) {
+    public HistoricalVixController(HistoricalVixIngestService ingestService,
+                                   com.algo.trade.persistence.IVSampleRepository ivSampleRepository) {
         this.ingestService = ingestService;
+        this.ivSampleRepository = ivSampleRepository;
+    }
+
+    /**
+     * <b>Reset + reseed</b> the {@code iv_samples} history on ONE consistent measure (2026-07-06 IV-drift fix).
+     * The old series was POLLUTED — an India-VIX seed (~12–14) mixed with the pre-fix, biased bot ATM-IV
+     * (~8.7 on the trading/252 clock), which collapsed IV-rank toward 0 and mislabeled the regime as "buy
+     * premium". This purges every sample for the target indices (DB + in-memory) and re-seeds purely from
+     * India VIX, so seed and future daily samples share the same calendar/365 measure that the IV-calc fix now
+     * produces. Destructive — ADMIN/SUPERUSER only. After this, the corrected bot IV (≈ Sensibull) is what
+     * gets appended daily, so the series stays consistent.
+     *
+     * <pre>POST /admin/iv-samples/reseed-india-vix?years=5&amp;indices=NIFTY,BANKNIFTY,SENSEX</pre>
+     */
+    @PostMapping("/admin/iv-samples/reseed-india-vix")
+    @org.springframework.security.access.prepost.PreAuthorize("hasAnyRole('ADMIN','SUPERUSER')")
+    public ResponseEntity<?> reseedIndiaVix(
+            @RequestParam(name = "years", defaultValue = "5") int years,
+            @RequestParam(name = "indices", required = false) String indicesCsv) {
+        try {
+            List<IndexType> indices = parseIndices(indicesCsv);
+            List<IndexType> targets = indices.isEmpty() ? List.of(IndexType.values()) : indices;
+            // 1) Purge the polluted series (DB + in-memory) for every target index.
+            Map<String, Long> purged = new java.util.LinkedHashMap<>();
+            for (IndexType idx : targets) {
+                long deleted = ivSampleRepository.deleteByIndexType(idx.name());
+                purged.put(idx.name(), deleted);
+                if (ivRankTracker != null) ivRankTracker.clearHistory(idx);
+            }
+            log.warn("[VixIngest] RESEED purge: deleted per-index rows {} before reseeding {} years", purged, years);
+            // 2) Re-seed cleanly from India VIX on the corrected measure.
+            HistoricalVixIngestService.IngestResult result = ingestService.ingest(years, indices);
+            // 3) Reload the tracker so the fresh series is live without a restart.
+            boolean reloaded = false;
+            if (ivRankTracker != null) {
+                try { ivRankTracker.reloadFromDb(); reloaded = true; }
+                catch (Exception ex) { log.warn("[VixIngest] reload after reseed failed (non-fatal): {}", ex.getMessage()); }
+            }
+            return ResponseEntity.ok(Map.of(
+                    "status", "ok",
+                    "purgedRowsByIndex", purged,
+                    "rowsFromYahoo", result.rowsFromYahoo(),
+                    "indicesPopulated", result.indicesPopulated(),
+                    "inserted", result.inserted(),
+                    "updated", result.updated(),
+                    "firstDate", String.valueOf(result.firstDate()),
+                    "lastDate", String.valueOf(result.lastDate()),
+                    "ivRankTrackerReloaded", reloaded));
+        } catch (IllegalArgumentException ex) {
+            log.warn("[VixIngest] reseed rejected: {}", ex.getMessage());
+            return ResponseEntity.badRequest().body(Map.of("status", "error", "message", ex.getMessage()));
+        } catch (IOException ex) {
+            log.warn("[VixIngest] reseed download failed: {}", ex.getMessage());
+            return ResponseEntity.internalServerError().body(Map.of("status", "error", "message", ex.getMessage()));
+        } catch (RuntimeException ex) {
+            log.warn("[VixIngest] reseed failed: {}", ex.getMessage(), ex);
+            return ResponseEntity.internalServerError().body(Map.of("status", "error", "message", ex.getMessage()));
+        }
     }
 
     @PostMapping("/admin/iv-samples/seed-india-vix")

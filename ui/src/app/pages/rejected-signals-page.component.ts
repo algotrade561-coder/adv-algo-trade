@@ -228,7 +228,11 @@ export class RejectedSignalsPageComponent implements OnInit {
       });
   }
 
-  fmt(v: unknown): string { return v != null && v !== '' && v !== 0 ? '₹' + v : '-'; }
+  fmt(v: unknown): string {
+    if (v == null || v === '' || v === 0) return '-';
+    const n = Number(v);
+    return isNaN(n) ? '₹' + v : '₹' + n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
 }
 
 function norm(s: ApiRecord, idx: number): ApiRecord {

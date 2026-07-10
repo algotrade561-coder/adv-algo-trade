@@ -34,6 +34,9 @@ public class DailyBehaviorLogLoader {
 
     private static final Logger log = LoggerFactory.getLogger(DailyBehaviorLogLoader.class);
 
+    private static final List<String> MONTHS = List.of("march", "april", "may", "june",
+            "july", "august", "september", "october", "november", "december");
+
     @Value("${trading.behavior-log.path:./data/daily-behavior-log.yml}")
     private String logFilePath;
 
@@ -51,18 +54,38 @@ public class DailyBehaviorLogLoader {
 
         try (InputStream in = new FileInputStream(file)) {
             Yaml yaml = new Yaml();
-            Map<String, Object> root = yaml.load(in);
-            if (root == null) return;
+            Object loadedRoot = yaml.load(in);
+            Map<String, Object> root;
+            if (loadedRoot instanceof Map<?, ?> rootMap) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> rm = (Map<String, Object>) rootMap;
+                root = rm;
+            } else {
+                // Defensive (2026-06-15): a legacy text-append bug could leave the curated
+                // file with a sequence at the root — SnakeYAML then returns a List, and the
+                // old hard cast threw "ArrayList cannot be cast to Map", silently disabling
+                // all tuning rules. Now we degrade gracefully to the auto-log + defaults.
+                if (loadedRoot != null) {
+                    log.warn("[BehaviorLog] {} root is a {} not a mapping — ignoring curated sections "
+                            + "(file likely corrupted by legacy append). Auto-log + defaults still apply.",
+                            logFilePath, loadedRoot.getClass().getSimpleName());
+                }
+                root = new LinkedHashMap<>();
+            }
 
-            // Count entries across all months
+            // Append-safe auto-records live in a sibling sequence file (see DailyBehaviorRecorder),
+            // kept separate so neither file's structure is ever corrupted.
+            List<?> autoEntries = loadAutoLog();
+
+            // Count entries across all months + auto-records
             int count = 0;
-            for (String month : List.of("march", "april", "may", "june",
-                    "july", "august", "september", "october", "november", "december")) {
+            for (String month : MONTHS) {
                 Object section = root.get(month);
                 if (section instanceof List<?> list) {
                     count += list.size();
                 }
             }
+            count += autoEntries.size();
             totalEntries = count;
 
             // Load tuning rules
@@ -87,7 +110,7 @@ public class DailyBehaviorLogLoader {
 
             // Recompute pattern frequencies from actual daily entries
             // This makes the confidence scores shift as new days are added
-            recomputeFromEntries(root);
+            recomputeFromEntries(root, autoEntries);
 
             loaded = true;
             log.info("[BehaviorLog] Loaded daily behaviour log: {} entries, {} tuning rules from {}",
@@ -157,16 +180,20 @@ public class DailyBehaviorLogLoader {
      *   - "cross-index" → crossIndexAlignment
      */
     @SuppressWarnings("unchecked")
-    private void recomputeFromEntries(Map<String, Object> root) {
+    private void recomputeFromEntries(Map<String, Object> root, List<?> autoEntries) {
         int pinningCount = 0, reversalCount = 0, crashCount = 0;
         int momentumCount = 0, pcrUnwindCount = 0, optionLeadCount = 0, crossIndexCount = 0;
 
-        for (String month : List.of("march", "april", "may", "june",
-                "july", "august", "september", "october", "november", "december")) {
+        // Merge curated month sections + append-safe auto-records into one entry stream.
+        List<Object> allEntries = new ArrayList<>();
+        for (String month : MONTHS) {
             Object section = root.get(month);
-            if (!(section instanceof List<?> entries)) continue;
+            if (section instanceof List<?> entries) allEntries.addAll(entries);
+        }
+        if (autoEntries != null) allEntries.addAll(autoEntries);
 
-            for (Object entryObj : entries) {
+        {
+            for (Object entryObj : allEntries) {
                 if (!(entryObj instanceof Map<?, ?> entryRaw)) continue;
                 Map<String, Object> entry = (Map<String, Object>) entryRaw;
 
@@ -186,8 +213,7 @@ public class DailyBehaviorLogLoader {
             }
         }
 
-        // Also scan auto-recorded entries (appended without a month key, after the tuningRules section)
-        // These are raw lines — for now, rely on the month-keyed sections which include them on reload.
+        // Auto-recorded entries are now included above via the sibling autolog sequence file.
 
         // Recompute confidence: confidence = min(95, 60 + occurrences * 4)
         // More occurrences → higher confidence, capped at 95
@@ -219,6 +245,28 @@ public class DailyBehaviorLogLoader {
         int newConfidence = Math.min(95, 60 + newOccurrences * 4);
         return new TuningRule(original.name(), original.description(),
                 newOccurrences, newConfidence, original.botAction(), original.triggerCondition());
+    }
+
+    /** Sibling append-safe sequence file holding auto-recorded daily entries. */
+    private File autoLogFile() {
+        File curated = new File(logFilePath);
+        File dir = curated.getParentFile();
+        return new File(dir != null ? dir : new File("."), "daily-behavior-autolog.yml");
+    }
+
+    /** Load auto-records (a root-level YAML sequence). Returns empty list if absent/unreadable. */
+    private List<?> loadAutoLog() {
+        File auto = autoLogFile();
+        if (!auto.exists()) return List.of();
+        try (InputStream in = new FileInputStream(auto)) {
+            Object loaded = new Yaml().load(in);
+            if (loaded instanceof List<?> list) return list;
+            if (loaded instanceof Map<?, ?> single) return List.of(single); // tolerate a lone entry
+            return List.of();
+        } catch (Exception e) {
+            log.warn("[BehaviorLog] Failed to read auto-log {}: {}", auto, e.getMessage());
+            return List.of();
+        }
     }
 
     private int toInt(Object obj) {

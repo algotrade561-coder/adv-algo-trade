@@ -83,8 +83,10 @@ public class UnderlyingConfigController {
         dto.put("middayChopEnd", cfg.getMiddayChopEnd());
         // Score
         dto.put("normalizeScoreForNoVolume", cfg.isNormalizeScoreForNoVolume());
-        // Premium cap
+        // Premium band (both enforced in ExecutionEngine's entry gates; min floor blocks
+        // charge-uneconomical cheap options — Rs50/rt on a Rs16x20 SENSEX lot is 15% of notional)
         dto.put("maxEntryPremium", cfg.getMaxEntryPremium());
+        dto.put("minEntryPremium", cfg.getMinEntryPremium());
         return dto;
     }
 }

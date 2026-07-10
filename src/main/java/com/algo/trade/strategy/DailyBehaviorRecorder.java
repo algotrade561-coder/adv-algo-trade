@@ -238,17 +238,28 @@ public class DailyBehaviorRecorder implements com.algo.trade.execution.DailyRese
 
     // ── File Writing ──────────────────────────────────────────────────────
 
+    /** Sibling append-safe sequence file for auto-recorded entries (keeps the curated map file intact). */
+    private File autoLogFile() {
+        File curated = new File(logFilePath);
+        File dir = curated.getParentFile();
+        return new File(dir != null ? dir : new File("."), "daily-behavior-autolog.yml");
+    }
+
     private void appendToLog(LocalDate date, IndexType idx, DayRecord rec,
                              double changePct, String behaviour, String operatorSignals, String botAction) {
         try {
-            File file = new File(logFilePath);
-            // Ensure parent directories exist
+            // Write to a SEPARATE, append-safe sequence file — not the curated map-rooted
+            // daily-behavior-log.yml. Appending "  - { ... }" items to the map file used to
+            // corrupt its structure (root then parsed as a List → "ArrayList cannot be cast
+            // to Map" in DailyBehaviorLogLoader, silently disabling all tuning). A root-level
+            // YAML sequence file can be appended to indefinitely and always stays valid.
+            File file = autoLogFile();
             if (file.getParentFile() != null) file.getParentFile().mkdirs();
 
             try (PrintWriter pw = new PrintWriter(new FileWriter(file, true))) {
-                // Append as a YAML entry under the current month
+                // Root-level sequence item (column 0) — keeps the autolog a valid YAML list.
                 String entry = String.format(
-                        "  - { date: \"%s\", index: %s, open: %d, high: %d, low: %d, close: %d, "
+                        "- { date: \"%s\", index: %s, open: %d, high: %d, low: %d, close: %d, "
                                 + "changePct: %.2f, behaviour: \"%s\", operatorSignals: \"%s\", botAction: \"%s\" }",
                         date.format(DateTimeFormatter.ISO_LOCAL_DATE),
                         idx.name(),
@@ -258,7 +269,6 @@ public class DailyBehaviorRecorder implements com.algo.trade.execution.DailyRese
                         operatorSignals.replace("\"", "'"),
                         botAction.replace("\"", "'"));
 
-                pw.println();
                 pw.println("# Auto-recorded " + date);
                 pw.println(entry);
             }

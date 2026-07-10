@@ -55,6 +55,14 @@ public class OperatorIntentRadar {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private OperatorTacticsEngine tacticsEngine;
 
+    /** GEX — dealer hedging regime (dampening vs amplifying) */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private GammaExposureService gexService;
+
+    /** Futures basis — premium/discount expansion as directional lead */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private FuturesBasisTracker basisTracker;
+
     private final ConcurrentHashMap<IndexType, RadarState> states = new ConcurrentHashMap<>();
 
     /** Operator hourly cycle times (IST) */
@@ -73,9 +81,9 @@ public class OperatorIntentRadar {
     private static final int MIN_DISTANCE_SENSEX = 300;
 
     // ── Persistence thresholds ──
-    private static final int PERSISTENCE_LOCK_TICKS = 3;
-    private static final int PERSISTENCE_LOCK_THRESHOLD = 15;
-    private static final int DECAY_RATE_PER_TICK = 2;
+    private static final int PERSISTENCE_LOCK_TICKS = 2;    // was 3 — faster lock for strong signals
+    private static final int PERSISTENCE_LOCK_THRESHOLD = 12; // was 15 — lower bar to start persistence
+    private static final int DECAY_RATE_PER_TICK = 1;       // was 2 — slower decay, holds conviction longer
     /** Exit signal: if bias decays below this for 3 consecutive ticks → exit recommended */
     private static final int DECAY_EXIT_THRESHOLD = 10;
     private static final int DECAY_EXIT_TICKS = 3;
@@ -193,14 +201,50 @@ public class OperatorIntentRadar {
             }
         }
 
+        // Module 11: GEX dealer regime — amplifying regime boosts momentum entries
+        if (gexService != null) {
+            GammaExposureService.GexSnapshot gex = gexService.evaluate(indexType);
+            if (gex.isValid()) {
+                double spot = liveInstrumentCache.getFuturesPrice(indexType);
+                if (gex.isAmplifyingRegime(spot)) {
+                    // Dealers amplify moves → momentum entries have higher follow-through
+                    bonus += 5;
+                    signals.append(" GEX_AMP(+5)");
+                } else if (gex.isDampeningRegime(spot) && Math.abs(momentumDir) > 0) {
+                    // Dealers dampen → reduce conviction slightly (mean-reversion risk)
+                    bonus = Math.max(0, bonus - 3);
+                    signals.append(" GEX_DAMP(-3)");
+                }
+                // Flip point proximity bonus: price within 0.3% of flip → high-conviction breakout zone
+                if (gex.flipStrike() > 0 && spot > 0) {
+                    double flipDist = Math.abs(spot - gex.flipStrike()) / spot * 100;
+                    if (flipDist < 0.3) {
+                        bonus += 4;
+                        signals.append(String.format(" GEX_FLIP(+4,@%d)", gex.flipStrike()));
+                    }
+                }
+            }
+        }
+
+        // Module 12: Futures basis expansion as directional lead
+        if (basisTracker != null) {
+            FuturesBasisTracker.BasisSignal basis = basisTracker.evaluate(indexType);
+            if (basis.hasSignal() && basis.direction() == momentumDir) {
+                bonus += basis.bonus();
+                signals.append(String.format(" BASIS(+%d,%s)", basis.bonus(),
+                        basis.collapsingFromPremium() ? "UNWIND" : basis.direction() > 0 ? "BULL" : "BEAR"));
+            }
+        }
+
         // Module 6: Bias Persistence & Decay — smooths jitter, holds conviction
         bonus = applyPersistence(state, bonus, momentumDir);
         if (state.intentLocked) {
             signals.append(" LOCKED");
         }
 
-        // Cap total bonus at 30
-        bonus = Math.min(30, bonus);
+        // Cap total bonus at 50 (raised from 40 — GEX+Basis add up to 13 more points;
+        // raised from 30 originally to allow strong multi-module alignment)
+        bonus = Math.min(50, bonus);
 
         // ── Probe → Scale → Flip Workflow ──────────────────────────────────
         // Phase 1 (PROBE): bias ≥10 AND magnet + cycle both contribute
@@ -248,6 +292,27 @@ public class OperatorIntentRadar {
     public List<MagnetStrike> getActiveMagnets(IndexType indexType) {
         RadarState state = states.get(indexType);
         return state != null ? state.getActiveMagnets() : List.of();
+    }
+
+    /**
+     * Reset the bias-persistence / hysteresis lock for an index. Called by
+     * {@link OperatorAccumulationDetector} when a capitulation-flip is detected so the
+     * decaying persisted bias for the OLD direction doesn't re-damp the freshly flipped
+     * operator direction (Module 6 holds conviction for the prior side; on a genuine flip
+     * that hold is exactly what we must clear). Idempotent + null-safe: if no state exists
+     * yet there is nothing locked to clear. Only touches the persistence sub-state; magnets,
+     * max-pain and ladder state are untouched.
+     */
+    public void resetPersistenceLock(IndexType indexType) {
+        RadarState state = states.get(indexType);
+        if (state == null) return;
+        state.intentLocked = false;
+        state.intentDecayedFromLock = false;
+        state.persistTicks = 0;
+        state.persistedBias = 0;
+        state.decayExitTicks = 0;
+        state.lastPersistDir = 0; // force applyPersistence() to re-baseline on the next eval
+        log.info("[Radar][{}] persistence lock RESET (capitulation-flip) — hysteresis cleared for re-lock", indexType);
     }
 
     /** Should the exit monitor tighten stops? */
@@ -372,11 +437,36 @@ public class OperatorIntentRadar {
         int atm = indexType.roundToATM(spot);
         long[] oiChange = liveInstrumentCache.getAtmOiChange(indexType, atm, 5, 3);
         long totalChange = Math.abs(oiChange[0]) + Math.abs(oiChange[1]);
-        if (totalChange < 200_000L) return 0;
+        // Lowered from 200k → 100k: cycle windows should fire more easily because
+        // operators often start with smaller probes before building full positions.
+        if (totalChange < 100_000L) return 0;
 
         int oiDir = deriveOiDir(oiChange[0], oiChange[1]);
-        if (oiDir == momentumDir) return 5;
-        return 0;
+        if (oiDir != momentumDir) return 0;
+
+        // Base cycle bonus + escalation for heavy OI
+        int bonus = 5;
+        if (totalChange > 500_000L) bonus = 8;     // heavy OI at cycle time = strong tell
+        else if (totalChange > 200_000L) bonus = 6; // moderate buildup
+
+        // Cross-index escalation: if ≥1 other index also confirms at this cycle time,
+        // boost by additional +5 (stacks with the separate cross-index module bonus).
+        int crossConfirm = 0;
+        for (IndexType other : List.of(IndexType.NIFTY, IndexType.BANKNIFTY, IndexType.SENSEX)) {
+            if (other == indexType) continue;
+            double otherSpot = liveInstrumentCache.getFuturesPrice(other);
+            if (otherSpot <= 0) continue;
+            int otherAtm = other.roundToATM(otherSpot);
+            long[] otherOi = liveInstrumentCache.getAtmOiChange(other, otherAtm, 3, 3);
+            int otherDir = deriveOiDir(otherOi[0], otherOi[1]);
+            if (otherDir == momentumDir && (Math.abs(otherOi[0]) + Math.abs(otherOi[1])) > 50_000L) {
+                crossConfirm++;
+            }
+        }
+        if (crossConfirm >= 2) bonus += 5;  // all 3 indices at cycle time = institutional basket
+        else if (crossConfirm == 1) bonus += 3;
+
+        return bonus;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -394,10 +484,12 @@ public class OperatorIntentRadar {
             long[] otherOi = liveInstrumentCache.getAtmOiChange(other, otherAtm, 3, 3);
             int otherDir = deriveOiDir(otherOi[0], otherOi[1]);
             long total = Math.abs(otherOi[0]) + Math.abs(otherOi[1]);
-            if (otherDir == momentumDir && total > 100_000L) confirming++;
+            // Lowered from 100k to 50k: catches smaller but meaningful cross-index
+            // OI moves in low-vol regimes where absolute deltas are naturally smaller.
+            if (otherDir == momentumDir && total > 50_000L) confirming++;
         }
-        if (confirming >= 2) return 8;
-        if (confirming == 1) return 5;
+        if (confirming >= 2) return 10;  // was 8 — all indices aligned = very strong
+        if (confirming == 1) return 6;   // was 5 — one peer confirms
         return 0;
     }
 

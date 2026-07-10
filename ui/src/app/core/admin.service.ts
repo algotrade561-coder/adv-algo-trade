@@ -11,6 +11,75 @@ export interface CurrentUser {
   picture?: string;
 }
 
+export interface IpAllocation {
+  privateIp?: string;
+  publicIp?: string;
+  eniId?: string;
+  status?: 'PENDING' | 'OS_CONFIGURED' | 'ASSOCIATED' | 'ACTIVE' | 'FAILED' | 'RELEASING' | 'RELEASED' | 'NONE';
+  whitelistedWithBroker?: boolean;
+  manuallyManaged?: boolean;
+  lastError?: string;
+}
+
+export interface IpCapacity {
+  activeAllocations: number;
+  eipMax: number;
+  eipRemaining: number;
+  eniSecondaryCapacity: number;
+  eniSecondaryRemaining?: number | null;
+}
+
+export interface ProvisionIpRequest {
+  privateIp?: string;
+  publicIp?: string;
+  eniId?: string;
+  eipAllocationId?: string;
+  eipAssociationId?: string;
+  instanceId?: string;
+}
+
+// ── Phase 3: AWS / Source-IP reconciliation dashboard ──
+export type EipDisposition = 'NECESSARY' | 'REMOVABLE' | 'EXTERNAL' | 'TABLE_ONLY' | 'PROTECTED';
+
+export interface EipRow {
+  allocationId?: string | null;
+  publicIp?: string | null;
+  privateIp?: string | null;
+  associationId?: string | null;
+  eniId?: string | null;
+  instanceId?: string | null;
+  userId?: number | null;
+  email?: string | null;
+  userEnabled: boolean;
+  userDeleted: boolean;
+  status?: IpAllocation['status'] | null;
+  manuallyManaged: boolean;
+  disposition: EipDisposition;
+  note?: string;
+}
+
+export interface AwsIpCapacity {
+  eipMax: number;
+  eipUsed: number;
+  eipRemaining: number;
+  activeAllocations: number;
+  managedEips: number;
+  externalEips: number;
+}
+
+export interface ReconciliationReport {
+  generatedAt: string;
+  automationEnabled: boolean;
+  ourEni?: string | null;
+  ourInstance?: string | null;
+  mappings: EipRow[];
+  removableCount: number;
+  removableMonthlyCostUsd: number;
+  driftCount: number;
+  failedOrReleasing: number;
+  capacity: AwsIpCapacity;
+}
+
 export interface AdminUser {
   id: number;
   email: string;
@@ -20,6 +89,12 @@ export interface AdminUser {
   primaryAccount?: boolean;
   createdAt?: string;
   lastLoginAt?: string;
+  ipAllocation?: IpAllocation | null;
+  /** Instance primary IP for the primary/system account (no per-user allocation row). */
+  systemPublicIp?: string | null;
+  systemPrivateIp?: string | null;
+  /** Assigned risk profile (set by superuser; drives the user's resolved risk/sizing). */
+  riskProfile?: string;
 }
 
 export interface CreateUserRequest {
@@ -142,6 +217,39 @@ export class AdminService {
   }
   deleteUser(id: number): Observable<unknown> {
     return this.http.delete(`${this.base}/admin/app-users/${id}`);
+  }
+  /** SUPERUSER — assign a risk profile to a user (drives their resolved risk/sizing). */
+  assignUserRiskProfile(userId: number, riskProfile: string): Observable<unknown> {
+    return this.http.put(`${this.base}/trading-settings/admin/${userId}/profile`, { riskProfile });
+  }
+
+  // ── Admin: per-user source IP (Phase 1 = track-only) ──
+  provisionSourceIp(id: number, req: ProvisionIpRequest): Observable<IpAllocation> {
+    return this.http.post<IpAllocation>(`${this.base}/admin/app-users/${id}/source-ip:provision`, req);
+  }
+  releaseSourceIp(id: number): Observable<IpAllocation> {
+    return this.http.post<IpAllocation>(`${this.base}/admin/app-users/${id}/source-ip:release`, {});
+  }
+  /** Live AWS auto-allocate a fresh Elastic IP for an existing user (e.g. after release). SUPERUSER only. */
+  allocateSourceIp(id: number): Observable<IpAllocation> {
+    return this.http.post<IpAllocation>(`${this.base}/admin/app-users/${id}/source-ip:allocate`, {});
+  }
+  setSourceIpWhitelisted(id: number, whitelistedWithBroker: boolean): Observable<IpAllocation> {
+    return this.http.patch<IpAllocation>(`${this.base}/admin/app-users/${id}/source-ip`, { whitelistedWithBroker });
+  }
+  sourceIpCapacity(): Observable<IpCapacity> {
+    return this.http.get<IpCapacity>(`${this.base}/admin/app-users/source-ip/capacity`);
+  }
+
+  // ── Admin: AWS / Source-IP reconciliation dashboard (Phase 3, SUPERUSER) ──
+  awsIpReconcile(): Observable<ReconciliationReport> {
+    return this.http.get<ReconciliationReport>(`${this.base}/admin/aws-ip/reconcile`);
+  }
+  awsIpReleaseEip(allocationId: string): Observable<unknown> {
+    return this.http.post(`${this.base}/admin/aws-ip/release`, { allocationId });
+  }
+  awsIpCapacity(): Observable<AwsIpCapacity> {
+    return this.http.get<AwsIpCapacity>(`${this.base}/admin/aws-ip/capacity`);
   }
 
   // ── Self-service: broker config ──

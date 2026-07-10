@@ -60,16 +60,22 @@ public class TuningReportService {
     private final TuningReportJobRepository jobRepo;
     private final SignalTuningProperties tuningProperties;
     private final TuningAnalyzerCoordinator coordinator;
+    private final com.algo.trade.tuning.analyzer.TuningActionSynthesizer actionSynthesizer;
+    private final com.algo.trade.tuning.store.ParquetRollerService parquetRoller;
 
     @Value("${tuning.report.output-dir:reports/tuning/html}")
     private String outputDir;
 
     public TuningReportService(TuningReportJobRepository jobRepo,
                                SignalTuningProperties tuningProperties,
-                               TuningAnalyzerCoordinator coordinator) {
+                               TuningAnalyzerCoordinator coordinator,
+                               com.algo.trade.tuning.analyzer.TuningActionSynthesizer actionSynthesizer,
+                               com.algo.trade.tuning.store.ParquetRollerService parquetRoller) {
         this.jobRepo = jobRepo;
         this.tuningProperties = tuningProperties;
         this.coordinator = coordinator;
+        this.actionSynthesizer = actionSynthesizer;
+        this.parquetRoller = parquetRoller;
     }
 
     public String submit(LocalDate from, LocalDate to, Set<StrategyType> strategies,
@@ -92,6 +98,24 @@ public class TuningReportService {
         jobRepo.save(job);
         runAsync(job, strategies);
         return jobId;
+    }
+
+    /**
+     * Automated EOD tuning report (#2): the report was UI/manual-only despite the class doc claiming a
+     * schedule. Fire post-close at 15:40 IST (after ParquetRoller's 15:30 roll, while the box is still up
+     * ~until 16:05) for all strategies, forced (bypass the market-hours block + cooldown). Spring @Scheduled
+     * honors the {@code zone} (unlike the box's system cron which ignores CRON_TZ). (2026-07-02)
+     */
+    @org.springframework.scheduling.annotation.Scheduled(cron = "0 40 15 * * MON-FRI", zone = "Asia/Kolkata")
+    public void scheduledEodReport() {
+        try {
+            LocalDate today = LocalDate.now(IST);
+            String jobId = submit(today, today, java.util.EnumSet.allOf(StrategyType.class),
+                    "auto-eod", true, "scheduled EOD 15:40 IST");
+            log.info("[TuningReport] auto-EOD report submitted: jobId={} date={}", jobId, today);
+        } catch (Exception ex) {
+            log.warn("[TuningReport] auto-EOD report failed to submit (non-fatal): {}", ex.getMessage());
+        }
     }
 
     public Optional<TuningReportJobEntity> findJob(String jobId) {
@@ -118,6 +142,25 @@ public class TuningReportService {
         }
     }
 
+    /** Reads the ranked tuning actions JSON written alongside the HTML; {@code {"actions":[]}} if absent. */
+    public String readActions(String jobId) {
+        TuningReportJobEntity job = jobRepo.findById(jobId)
+                .orElseThrow(() -> new IllegalArgumentException("Unknown job: " + jobId));
+        if (job.getStatus() != TuningReportJobStatus.COMPLETE) {
+            throw new IllegalStateException("Job not complete: " + job.getStatus());
+        }
+        Path html = job.getOutputHtml() != null
+                ? Path.of(job.getOutputHtml())
+                : Path.of(outputDir, jobId + ".html");
+        Path actions = html.resolveSibling(
+                html.getFileName().toString().replaceFirst("\\.html$", "") + "-actions.json");
+        try {
+            return Files.exists(actions) ? Files.readString(actions) : "{\"actions\":[]}";
+        } catch (Exception ex) {
+            throw new IllegalStateException("Failed to read actions: " + actions, ex);
+        }
+    }
+
     /**
      * Runs the analyzer on a Spring {@code @Async} thread. The trading JVM's scheduler
      * already runs on a separate executor; this @Async puts the long-running report
@@ -134,6 +177,28 @@ public class TuningReportService {
         try {
             log.info("[TuningReport] job {} starting in-process: {} → {} for {} strategies",
                     job.getJobId(), job.getFromDate(), job.getToDate(), strategies.size());
+
+            // Roll-on-demand (§3d): archive any still-un-rolled PAST days in the requested range to Parquet
+            // before analysing, so a day stranded by a missed 15:30 roll is read via the archive. Today is
+            // left as CSV (its session isn't complete and forward checkpoints land next morning); EventScan
+            // reads CSV ∪ Parquet, so both are covered. Best-effort — never block the report on a roll.
+            try {
+                LocalDate todayIst = LocalDate.now(IST);
+                List<LocalDate> pastDates = new java.util.ArrayList<>();
+                for (LocalDate d = job.getFromDate();
+                     !d.isAfter(job.getToDate()); d = d.plusDays(1)) {
+                    if (d.isBefore(todayIst)) {
+                        pastDates.add(d);
+                    }
+                }
+                if (!pastDates.isEmpty()) {
+                    parquetRoller.rollDatesOnDemand(pastDates);
+                }
+            } catch (Exception rex) {
+                log.warn("[TuningReport] job {} roll-on-demand failed (non-fatal): {}",
+                        job.getJobId(), rex.getMessage());
+            }
+
             TuningReport report = coordinator.analyze(job.getFromDate(), job.getToDate(), strategies);
 
             Path outFile = Path.of(job.getOutputHtml() != null
@@ -141,6 +206,16 @@ public class TuningReportService {
                     : Path.of(outputDir, job.getJobId() + ".html").toString());
             Files.createDirectories(outFile.getParent());
             Files.writeString(outFile, report.renderHtml());
+
+            // P2 / §3d — emit the machine-readable actions.json next to the HTML (best-effort).
+            try {
+                Path actionsFile = outFile.resolveSibling(
+                        outFile.getFileName().toString().replaceFirst("\\.html$", "") + "-actions.json");
+                Files.writeString(actionsFile, actionSynthesizer.toJson(report));
+                log.info("[TuningReport] job {} wrote actions: {}", job.getJobId(), actionsFile);
+            } catch (Exception ax) {
+                log.warn("[TuningReport] job {} actions.json failed (non-fatal): {}", job.getJobId(), ax.getMessage());
+            }
 
             job.setStatus(TuningReportJobStatus.COMPLETE);
             job.setFinishedAt(Instant.now());

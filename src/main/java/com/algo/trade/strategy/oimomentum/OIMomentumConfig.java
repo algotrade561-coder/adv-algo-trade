@@ -42,6 +42,10 @@ public class OIMomentumConfig {
     private int maxReversalsPerDay = 3;                  // Max direction flips per index
     private int cooldownAfterSlSeconds = 90;             // Cooldown after SL hit (was 120)
     private int minimumHoldTimeSeconds = 45;             // Don't exit before 45s
+    /** OI-flip exit needs MORE patience than other exits — fade entries are counter-flow
+     *  by design, so the flip condition is true almost immediately after entry
+     *  (2026-06-12: two trades exited 47s/56s after entry via OI_FLIP_REVERSE). */
+    private int oiFlipMinHoldSeconds = 180;              // No OI_FLIP_REVERSE before 3 min
     private int consecutiveLossPause = 3;                // Pause after N consecutive losses
     /**
      * % of softTargetTradesPerDay allowed during midday window before throttling kicks in.
@@ -80,7 +84,7 @@ public class OIMomentumConfig {
      * Prevents profitable-then-reversed trades from becoming losses.
      * Set to 0 to disable. Default off — enable via YAML if desired.
      */
-    private double breakEvenTriggerPercent = 0;          // 0 = disabled; set e.g. 5.0 to enable
+    private double breakEvenTriggerPercent = 5;          // enabled at +5% (VIX-adaptive in strategy code)
     private int squareoffHour = 15;
     private int squareoffMinute = 10;
 
@@ -123,12 +127,31 @@ public class OIMomentumConfig {
      */
     private int biasDecaySeconds = 180;
     /**
+     * DATA-2 (2026-06-20): opening-window OI-availability gate. When true, the cached-OI
+     * fallback (which re-marks OI "available" from a recent directional reading) is
+     * suppressed unless the ATM band currently has a real OI baseline. This stops a fluky
+     * early reading from masquerading as confirmed OI during opening warm-up (09:15–~10:00),
+     * where data shows OI-change is only 60–95% populated. Default false = today's behavior;
+     * backtest on captured snapshots before enabling.
+     */
+    private boolean oiAvailabilityGateEnabled = false;
+    /**
+     * DATA-2 (2026-06-20): apply the SyntheticOiVelocityDetector bias bonus when its tick-resolution
+     * flow proxy (volume + premium direction) agrees with momentum. Bridges the sub-minute gap
+     * between OI updates (measured ≈1/min for liquid ATM strikes, up to ~9/min in bursts — NOT the
+     * old "3-min" figure; see SyntheticOiVelocityDetector). Requires the detector itself to be enabled
+     * ({@code oi-momentum.synthetic-oi-velocity.enabled}). Default false = no effect.
+     */
+    private boolean syntheticOiVelocityBonusEnabled = false;
+    /** Max bias points awarded by the synthetic-OI-velocity alignment bonus (scaled by confidence). */
+    private int syntheticOiVelocityBonusPoints = 10;
+    /**
      * Score points deducted when OI signal is stale (past biasDecaySeconds).
      * Reduced from 20 → 10: softer penalty preserves valid Case 1/3 setups through brief
      * OI quiet periods (midday lulls, early morning). -20 was eliminating Case 3 entirely
      * (55 − 20 = 35, always below threshold).
      */
-    private int biasDecayPenalty = 10;
+    private int biasDecayPenalty = 5; // was 10 — softer decay during OI quiet periods
 
     // ── Multi-timeframe Momentum ──────────────────────────────────────────────
     /**
@@ -143,7 +166,7 @@ public class OIMomentumConfig {
      * 30M alone: 53 trades, WR 68%, PF 1.74, net +₹21,660.
      * Default changed to false — only 30M breakouts qualify as entry signals.
      */
-    private boolean multiTimeframeEnabled = false;
+    private boolean multiTimeframeEnabled = true; // re-enabled: 15-min window catches operator bursts
     /**
      * Threshold for 5-min window breakouts (percent above/below the 5-min high/low).
      * Slightly lower than the 30M threshold to be sensitive to short bursts.
@@ -219,6 +242,31 @@ public class OIMomentumConfig {
      */
     private boolean expiryOtmCutoffEnabled = false;
     private String expiryOtmCutoffTime = "14:45";
+
+    /**
+     * §3.5 (2026-06-27): when true, the expiry late cutoff does NOT block this strategy, because
+     * OI Momentum buys ATM (not deep OTM) — the cutoff's theta-cliff target. Data showed the blanket
+     * cutoff killed the highest-movement (expiry-gamma) window (39.6% of those moments moved >15bps).
+     * Downstream charges/affordability/stop-loss filters remain the protection. Default false
+     * (preserves the blanket block) — opt-in to recover the gamma window.
+     */
+    private boolean expiryOtmCutoffAtmExempt = false;
+
+    /**
+     * Expiry-day ENTRY cutoff (IST HH:mm). On the resolved expiry day this replaces the legacy
+     * "squareoff − 5 min" entry gate so late operator moves aren't blocked. Applies ONLY to the entry
+     * gate — the square-off EXIT timing (squareoffHour/Minute) and the hard 15:20 force square-off are
+     * unaffected. Non-expiry entries keep the "squareoff − 10 min" cutoff. Runtime-toggleable.
+     */
+    private String expiryEntryCutoffTime = "15:15";
+
+    /**
+     * Late-entry time-stop (IST HH:mm). On expiry, any position whose ENTRY was taken after the strategy
+     * square-off time (15:10) — i.e. in the extended 15:10→15:15 entry window — is force-exited by this
+     * time regardless, so a late entry can't ride into the 15:20 thin-book settlement. Trades entered
+     * before the square-off time are unaffected (squared off normally at 15:10). Non-expiry unaffected.
+     */
+    private String expiryLateEntryTimeStopTime = "15:18";
 
     /**
      * Daily loss circuit-breaker: halt all entries for the rest of the day when
@@ -316,6 +364,31 @@ public class OIMomentumConfig {
     private double sustainedDriftMinPct = 0.20;
     private int sustainedDriftOpScoreMin = 50;
     private int sustainedDriftWindowMinutes = 60;
+    /**
+     * D2-vs-V3 precedence (14 Jun 2026). The legacy rule silently suppressed D2
+     * (and CASE0, OPERATOR_SQUEEZE) whenever V3 was live (v3Enabled &amp;&amp;
+     * !v3ShadowMode) via {@code !v3BindingLive}, so D2 could never bind live while
+     * V3 ran — on 2026-06-12 it fired 2,582 times but always logged
+     * D2_DRIFT_SHADOW. When this is true, D2 may bind live even with V3 active; the
+     * entry still flows through enterWithGates → the V3 pipeline for strike/lot/
+     * conviction sizing, and V3 can still veto it. Default false preserves the
+     * legacy "V3 always wins". To promote D2 to live, set BOTH
+     * sustainedDriftShadowMode=false AND this=true.
+     */
+    private boolean sustainedDriftOverridesV3 = false;
+
+    // ── Regime-hold exit profile (14 Jun 2026 — the trend-capture exit half) ──
+    //   Applies ONLY to trades whose entryReason contains "SUSTAINED_DRIFT" (D2).
+    //   On 2026-06-12 the few trend trades that ran to TRAILING_STOP made +9-10%
+    //   while OI-flip/early-trail churn cut sibling trades at ~+1%. For drift-origin
+    //   trades we therefore: suppress OI_FLIP_REVERSE, start trailing later, widen
+    //   the trail gap and disable the aggressive gap-tightening — i.e. ride the
+    //   grind instead of scalping it. Scoped + flagged so non-drift trades and the
+    //   whole strategy when disabled behave exactly as before.
+    private boolean regimeHoldEnabled = true;
+    private boolean regimeHoldSuppressOiFlip = true;
+    private double regimeHoldTrailActivationPercent = 8.0;  // was 5 — let it run before trailing arms
+    private double regimeHoldTrailGapPercent = 10.0;        // was 5 — wider retrace tolerance, no tightening
 
     // ── OPERATOR_SQUEEZE detector (2 Jun 2026 — catches the coil → shakeout →
     //     short-squeeze pattern that hit NIFTY 12:30–13:30 IST and that every
@@ -327,8 +400,8 @@ public class OIMomentumConfig {
     private double operatorSqueezeCoilVixDropMin = 0.05;
     private long operatorSqueezeCoilCeBuildMin = 5_000_000L;
     private int operatorSqueezeIgnitionWindowMin = 5;
-    private double operatorSqueezeIgnitionReturnMinPct = 0.20;
-    private long operatorSqueezeOiCollapseMinAbs = 7_000_000L;
+    private double operatorSqueezeIgnitionReturnMinPct = 0.15; // was 0.20 — catches smaller ignition bars
+    private long operatorSqueezeOiCollapseMinAbs = 5_000_000L; // was 7M — lower for BN/SENSEX
     private double operatorSqueezeIgnitionVixMin = 0.10;
     private double operatorSqueezeIvExpansionMinPct = 5.0;
     private double operatorSqueezePcrRotationMin = 0.05;
@@ -342,7 +415,7 @@ public class OIMomentumConfig {
     // E3 (2026-06-02): on expiry day, gamma exposure is roughly double the
     // non-expiry case for the same delta. Apply this lot-multiplier to the
     // entry to keep dollar-gamma constant. 0.5 = half-size.
-    private double operatorSqueezeExpiryLotMultiplier = 0.5;
+    private double operatorSqueezeExpiryLotMultiplier = 0.75; // was 0.5 — less aggressive halving
 
     // ── T2 — PCR slope additive bias bonus (2 Jun 2026 — for slow-PCR-roll days
     //         like 1 Jun where PCR went 0.95→1.27 in 60 min but the legacy
@@ -361,7 +434,7 @@ public class OIMomentumConfig {
     //         under the standard 65 floor). Only applied when BOTH conditions
     //         hold; never lowered blindly. ──
     private boolean biasFloorRelaxEnabled = true;
-    private int biasFloorDefault = 65;
+    private int biasFloorDefault = 55; // was 65 — lowered to allow more borderline setups through
     private int biasFloorRelaxed = 55;
     private double biasFloorRelaxCoilBreakRangePct = 0.15;
     private double biasFloorRelaxPcrSlopeMinAbs = 0.05;
@@ -375,6 +448,25 @@ public class OIMomentumConfig {
     // ── Theta-decay gate ──
     private boolean thetaDecayCheckEnabled = true;
     private double thetaDecayMaxCostPct = 30.0;
+
+    // ── Charges-aware entry gate v2 (cost-of-charges + resize-up). ──
+    // Toggle OFF (default) preserves the legacy behaviour: skip if premium × qty × 3% < ₹500.
+    // Toggle ON: gate on NET of real round-trip charges, and (if resizeUp) size lots up to clear
+    // the floor within the capital cap before rejecting — so good low-premium trades aren't dropped.
+    // R1 FIX (2026-06-24, data-driven): the legacy gate's flat ₹500 floor rejected 9,000+ entries/day
+    // (06-23/24) because real round-trip charges are only ~₹55 and a 1-lot NIFTY ATM nets ~₹122 on a 3%
+    // scalp — far under ₹500. Default ON to the V2 net-of-REAL-charges logic with a charges-relative
+    // floor (~2× real cost). The strategy correctly detected both 06-23/24 trend moves but took 0 fills,
+    // largely because of this gate. Validate on a paper/live session before trusting blindly.
+    private boolean chargesGateV2Enabled = true;
+    private double chargesGateTargetPct = 0.03;       // expected move used to project gross gain
+    // Dynamic: require net profit ≥ 2× round-trip charges (not a fixed ₹ amount).
+    // This automatically adapts to premium level — expensive options (higher charges)
+    // need higher gross, cheap options (lower charges) pass more easily.
+    // Set to 0 to disable the floor entirely (allow all trades regardless of charges).
+    private double chargesGateMinNetProfit = 0;        // 0 = dynamic mode (2× charges is enforced in code)
+    private double chargesGateMinNetMultiplier = 2.0;  // require net ≥ multiplier × charges
+    private boolean chargesGateResizeUp = true;       // size lots up to clear the floor within caps
 
     // ── P4 tuning instrumentation (runtime-overridable via OiMomentumRuntimeConfig) ──
     /** When true, every reject is written to oi-momentum-rejects.csv (no 5s/30s throttle). */
@@ -427,6 +519,12 @@ public class OIMomentumConfig {
     public void setExpiryOtmCutoffEnabled(boolean v) { this.expiryOtmCutoffEnabled = v; }
     public String getExpiryOtmCutoffTime() { return expiryOtmCutoffTime; }
     public void setExpiryOtmCutoffTime(String v) { this.expiryOtmCutoffTime = v; }
+    public boolean isExpiryOtmCutoffAtmExempt() { return expiryOtmCutoffAtmExempt; }
+    public void setExpiryOtmCutoffAtmExempt(boolean v) { this.expiryOtmCutoffAtmExempt = v; }
+    public String getExpiryEntryCutoffTime() { return expiryEntryCutoffTime; }
+    public void setExpiryEntryCutoffTime(String v) { this.expiryEntryCutoffTime = v; }
+    public String getExpiryLateEntryTimeStopTime() { return expiryLateEntryTimeStopTime; }
+    public void setExpiryLateEntryTimeStopTime(String v) { this.expiryLateEntryTimeStopTime = v; }
     public double getDailyLossLimitRupees() { return dailyLossLimitRupees; }
     public void setDailyLossLimitRupees(double v) { this.dailyLossLimitRupees = v; }
     public double getDailyLossMultiplierOfAvgLoser() { return dailyLossMultiplierOfAvgLoser; }
@@ -474,6 +572,16 @@ public class OIMomentumConfig {
     public void setSustainedDriftOpScoreMin(int v) { this.sustainedDriftOpScoreMin = v; }
     public int getSustainedDriftWindowMinutes() { return sustainedDriftWindowMinutes; }
     public void setSustainedDriftWindowMinutes(int v) { this.sustainedDriftWindowMinutes = v; }
+    public boolean isSustainedDriftOverridesV3() { return sustainedDriftOverridesV3; }
+    public void setSustainedDriftOverridesV3(boolean v) { this.sustainedDriftOverridesV3 = v; }
+    public boolean isRegimeHoldEnabled() { return regimeHoldEnabled; }
+    public void setRegimeHoldEnabled(boolean v) { this.regimeHoldEnabled = v; }
+    public boolean isRegimeHoldSuppressOiFlip() { return regimeHoldSuppressOiFlip; }
+    public void setRegimeHoldSuppressOiFlip(boolean v) { this.regimeHoldSuppressOiFlip = v; }
+    public double getRegimeHoldTrailActivationPercent() { return regimeHoldTrailActivationPercent; }
+    public void setRegimeHoldTrailActivationPercent(double v) { this.regimeHoldTrailActivationPercent = v; }
+    public double getRegimeHoldTrailGapPercent() { return regimeHoldTrailGapPercent; }
+    public void setRegimeHoldTrailGapPercent(double v) { this.regimeHoldTrailGapPercent = v; }
 
     // OPERATOR_SQUEEZE getters / setters
     public boolean isOperatorSqueezeEnabled() { return operatorSqueezeEnabled; }
@@ -545,6 +653,17 @@ public class OIMomentumConfig {
     public double getThetaDecayMaxCostPct() { return thetaDecayMaxCostPct; }
     public void setThetaDecayMaxCostPct(double v) { this.thetaDecayMaxCostPct = v; }
 
+    public boolean isChargesGateV2Enabled() { return chargesGateV2Enabled; }
+    public void setChargesGateV2Enabled(boolean v) { this.chargesGateV2Enabled = v; }
+    public double getChargesGateTargetPct() { return chargesGateTargetPct; }
+    public void setChargesGateTargetPct(double v) { this.chargesGateTargetPct = v; }
+    public double getChargesGateMinNetProfit() { return chargesGateMinNetProfit; }
+    public void setChargesGateMinNetProfit(double v) { this.chargesGateMinNetProfit = v; }
+    public double getChargesGateMinNetMultiplier() { return chargesGateMinNetMultiplier; }
+    public void setChargesGateMinNetMultiplier(double v) { this.chargesGateMinNetMultiplier = v; }
+    public boolean isChargesGateResizeUp() { return chargesGateResizeUp; }
+    public void setChargesGateResizeUp(boolean v) { this.chargesGateResizeUp = v; }
+
     public boolean isRecordEveryReject() { return recordEveryReject; }
     public void setRecordEveryReject(boolean v) { this.recordEveryReject = v; }
     public int getRejectSampleIntervalSeconds() { return rejectSampleIntervalSeconds; }
@@ -576,6 +695,7 @@ public class OIMomentumConfig {
     public int getConsecutiveLossPause() { return consecutiveLossPause; }
     public int getCooldownAfterSlSeconds() { return cooldownAfterSlSeconds; }
     public int getMinimumHoldTimeSeconds() { return minimumHoldTimeSeconds; }
+    public int getOiFlipMinHoldSeconds() { return oiFlipMinHoldSeconds; }
     public int getMiddayTradeReductionPercent() { return middayTradeReductionPercent; }
 
     public long getMinSqueezeOiDelta() { return minSqueezeOiDelta; }
@@ -595,6 +715,12 @@ public class OIMomentumConfig {
     public void setBiasConfirmationTicks(int v) { this.biasConfirmationTicks = v; }
     public int getBiasDecaySeconds() { return biasDecaySeconds; }
     public void setBiasDecaySeconds(int v) { this.biasDecaySeconds = v; }
+    public boolean isOiAvailabilityGateEnabled() { return oiAvailabilityGateEnabled; }
+    public void setOiAvailabilityGateEnabled(boolean v) { this.oiAvailabilityGateEnabled = v; }
+    public boolean isSyntheticOiVelocityBonusEnabled() { return syntheticOiVelocityBonusEnabled; }
+    public void setSyntheticOiVelocityBonusEnabled(boolean v) { this.syntheticOiVelocityBonusEnabled = v; }
+    public int getSyntheticOiVelocityBonusPoints() { return syntheticOiVelocityBonusPoints; }
+    public void setSyntheticOiVelocityBonusPoints(int v) { this.syntheticOiVelocityBonusPoints = v; }
     public int getBiasDecayPenalty() { return biasDecayPenalty; }
     public void setBiasDecayPenalty(int v) { this.biasDecayPenalty = v; }
 
@@ -612,6 +738,7 @@ public class OIMomentumConfig {
     public void setMaxReversalsPerDay(int v) { this.maxReversalsPerDay = v; }
     public void setCooldownAfterSlSeconds(int v) { this.cooldownAfterSlSeconds = v; }
     public void setMinimumHoldTimeSeconds(int v) { this.minimumHoldTimeSeconds = v; }
+    public void setOiFlipMinHoldSeconds(int v) { this.oiFlipMinHoldSeconds = v; }
     public void setConsecutiveLossPause(int v) { this.consecutiveLossPause = v; }
     public void setMiddayTradeReductionPercent(int v) { this.middayTradeReductionPercent = v; }
     public void setStopLossPercent(double v) { this.stopLossPercent = v; }
@@ -625,5 +752,5 @@ public class OIMomentumConfig {
     public void setMiddayStart(String v) { this.middayStart = v; }
     public void setMiddayEnd(String v) { this.middayEnd = v; }
     public void setClosingSessionStart(String v) { this.closingSessionStart = v; }
-
+    // (D2 trend-capture: sustainedDriftOverridesV3 + regime-hold knobs added 14 Jun 2026)
 }

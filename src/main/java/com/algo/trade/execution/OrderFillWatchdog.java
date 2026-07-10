@@ -65,11 +65,44 @@ public class OrderFillWatchdog {
     /** Tracks orders currently being processed to prevent duplicate handling. */
     private final java.util.Set<String> processingOrders = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
+    /** Bounded pool for parallel per-instrument fill polling. Daemon threads so they never block JVM shutdown.
+     *  Orders for the SAME instrument run on one task (sequential) to preserve the no-duplicate-trade guard;
+     *  different instruments poll the broker concurrently so one user/strike doesn't gate the rest. */
+    private final java.util.concurrent.ExecutorService orderCheckPool =
+            java.util.concurrent.Executors.newFixedThreadPool(6, r -> {
+                Thread t = new Thread(r, "fill-watchdog");
+                t.setDaemon(true);
+                return t;
+            });
+
     public OrderFillWatchdog(OrderRepository orderRepository, BrokerClient brokerClient,
                              ExecutionEngine executionEngine) {
         this.orderRepository = orderRepository;
         this.brokerClient = brokerClient;
         this.executionEngine = executionEngine;
+    }
+
+    /**
+     * Prompt immediate fill handling for one broker order id (e.g. from per-user order WebSocket COMPLETE).
+     * Runs on the watchdog pool so materialization happens within milliseconds instead of waiting for the 2s poll.
+     */
+    public void promptMaterializeByBrokerOrderId(String brokerOrderId, Long userId) {
+        if (brokerOrderId == null || brokerOrderId.isBlank()) {
+            return;
+        }
+        orderCheckPool.execute(() -> {
+            try {
+                Runnable work = () -> orderRepository.findByBrokerOrderId(brokerOrderId).ifPresent(this::checkOrder);
+                if (userId != null) {
+                    com.algo.trade.multiuser.UserContext.runAs(userId, work);
+                } else {
+                    work.run();
+                }
+            } catch (Exception ex) {
+                log.debug("OrderFillWatchdog promptMaterialize failed for brokerOrderId={}: {}",
+                        brokerOrderId, ex.getMessage());
+            }
+        });
     }
 
     @Scheduled(fixedDelay = 2000, initialDelay = 5000)
@@ -82,39 +115,61 @@ public class OrderFillWatchdog {
         try {
             List<OrderEntity> pending = orderRepository.findByStatusIn(
                     List.of(OrderStatus.OPEN, OrderStatus.NEW));
-            if (pending.isEmpty()) {
-                // Safety net: check for COMPLETE BUY orders that have no matching trade
-                reconcileOrphanedFilledOrders();
-                return;
-            }
 
             log.debug("OrderFillWatchdog checking {} pending orders", pending.size());
 
-            for (OrderEntity order : pending) {
-                try {
-                    // Multi-user: poll the broker AS THE ORDER'S OWNER. The watchdog runs on
-                    // a scheduler thread (no UserContext), so without this the status lookup
-                    // would use the primary/file token — a non-primary user's order id does
-                    // not exist in that account and their fills would NEVER be detected.
-                    Long ownerId = order.getUserId();
-                    if (ownerId != null) {
-                        com.algo.trade.multiuser.UserContext.runAs(ownerId, () -> checkOrder(order));
-                    } else {
-                        checkOrder(order); // legacy/pre-multiuser order — current behavior
+            // Group pending orders by instrument so the SAME strike is polled+materialized on ONE task
+            // (sequential) — avoids two threads racing the same user's duplicate guard. DIFFERENT instruments
+            // run on separate pool threads. Duplicate detection is per (instrument, user), not per instrument.
+            java.util.Map<String, java.util.List<OrderEntity>> byInstrument = new java.util.LinkedHashMap<>();
+            for (OrderEntity o : pending) {
+                byInstrument.computeIfAbsent(o.getInstrumentKey() == null ? "" : o.getInstrumentKey(),
+                        k -> new java.util.ArrayList<>()).add(o);
+            }
+            java.util.List<java.util.concurrent.Future<?>> futures = new java.util.ArrayList<>();
+            for (java.util.List<OrderEntity> group : byInstrument.values()) {
+                futures.add(orderCheckPool.submit(() -> {
+                    for (OrderEntity order : group) {
+                        try {
+                            // Multi-user: poll the broker AS THE ORDER'S OWNER. The watchdog runs on a pool
+                            // thread (no UserContext), so without this the status lookup would use the
+                            // primary/file token — a non-primary user's order id does not exist in that account
+                            // and their fills would NEVER be detected.
+                            Long ownerId = order.getUserId();
+                            if (ownerId != null) {
+                                com.algo.trade.multiuser.UserContext.runAs(ownerId, () -> checkOrder(order));
+                            } else {
+                                checkOrder(order); // legacy/pre-multiuser order — current behavior
+                            }
+                        } catch (org.springframework.orm.ObjectOptimisticLockingFailureException
+                                 | org.hibernate.StaleObjectStateException ex) {
+                            // 4 Jun 2026 PM: Hibernate optimistic-lock race between watchdog poll and concurrent
+                            // OrderEntity save. checkOrder is idempotent and the next poll retries — log DEBUG,
+                            // not WARN, so we don't trigger ops alerts on benign races.
+                            log.debug("OrderFillWatchdog optimistic-lock race on order {} — will retry next cycle",
+                                    order.getClientOrderId());
+                        } catch (Exception ex) {
+                            log.warn("OrderFillWatchdog failed for order {}: {}", order.getClientOrderId(), ex.getMessage());
+                        }
                     }
-                } catch (org.springframework.orm.ObjectOptimisticLockingFailureException
-                         | org.hibernate.StaleObjectStateException ex) {
-                    // 4 Jun 2026 PM: Hibernate optimistic-lock race between watchdog
-                    // poll and concurrent OrderEntity save. checkOrder is idempotent
-                    // and the next 1s poll will retry — log DEBUG, not WARN, so we
-                    // don't trigger ops alerts on benign races. Today's 09:20 orphan
-                    // recoveries fell out of THIS race, not a deeper bug.
-                    log.debug("OrderFillWatchdog optimistic-lock race on order {} — will retry next cycle",
-                            order.getClientOrderId());
-                } catch (Exception ex) {
-                    log.warn("OrderFillWatchdog failed for order {}: {}", order.getClientOrderId(), ex.getMessage());
+                }));
+            }
+            // Await all instrument groups before the orphan net + releasing checkInProgress, so the whole cycle
+            // stays atomic (the next scheduled run can't overlap a still-running poll).
+            for (java.util.concurrent.Future<?> f : futures) {
+                try {
+                    f.get();
+                } catch (Exception e) {
+                    log.debug("OrderFillWatchdog group task error: {}", e.getMessage());
                 }
             }
+
+            // P0-6 FIX: ALWAYS run the orphan safety net (previously only when there were NO pending
+            // orders). With other limit orders open all day, the net never ran, so a FILLED-but-untracked
+            // entry sat unmanaged for ~50 min through its peak. The reconcile method has a cheap early-out
+            // (no broker call unless a genuine unmaterialized filled order exists), so running it every
+            // ~2s cycle is safe and reconciles orphans within seconds.
+            reconcileOrphanedFilledOrders();
         } finally {
             checkInProgress.set(false);
         }
@@ -131,7 +186,11 @@ public class OrderFillWatchdog {
             List<OrderEntity> filledToday = orderRepository.findBySideAndUpdatedAtBetween(
                     com.algo.trade.domain.OrderSide.BUY.name(), todayStart, java.time.Instant.now());
 
-            if (filledToday.stream().noneMatch(o -> o.getStatus() == OrderStatus.COMPLETE && o.getFilledQuantity() > 0)) {
+            // Cheap early-out: only proceed (and hit the broker positions API) when there's an
+            // UNMATERIALIZED filled BUY order — i.e. a genuine orphan. Without the materialized check
+            // this fired a broker call every cycle once any BUY filled today.
+            if (filledToday.stream().noneMatch(o -> o.getStatus() == OrderStatus.COMPLETE
+                    && o.getFilledQuantity() > 0 && !o.isTradeMaterialized())) {
                 return; // nothing to reconcile
             }
 
@@ -168,19 +227,21 @@ public class OrderFillWatchdog {
                 });
                 if (!activeInstruments.contains(instrumentKey)) continue;
 
-                // Check if a trade already exists for this instrument
-                boolean tradeExists = !executionEngine.findOpenTradesByInstrument(instrumentKey).isEmpty();
+                // Per-user duplicate guard — secondary copy on the same strike must not block primary materialization.
+                var existingForUser = executionEngine.findOpenTradesByInstrumentForUser(instrumentKey, ownerKey);
+                if (!existingForUser.isEmpty()) {
+                    executionEngine.markFilledOrderMaterialized(order, existingForUser.getFirst().getTradeId());
+                    continue;
+                }
 
-                if (!tradeExists) {
-                    log.warn("OrderFillWatchdog: orphaned filled order — creating trade: clientOrderId={}, instrument={}, price={}",
-                            order.getClientOrderId(), instrumentKey, order.getAverageFillPrice());
-                    // Run as the order's owner so the recovered trade is tagged with the
-                    // right user_id + broker account (tagOwnership reads UserContext).
-                    if (ownerKey != null) {
-                        com.algo.trade.multiuser.UserContext.runAs(ownerKey, () -> executionEngine.openTradeFromFilledOrder(order));
-                    } else {
-                        executionEngine.openTradeFromFilledOrder(order);
-                    }
+                log.warn("OrderFillWatchdog: orphaned filled order — creating trade: clientOrderId={}, instrument={}, price={}",
+                        order.getClientOrderId(), instrumentKey, order.getAverageFillPrice());
+                // Run as the order's owner so the recovered trade is tagged with the
+                // right user_id + broker account (tagOwnership reads UserContext).
+                if (ownerKey != null) {
+                    com.algo.trade.multiuser.UserContext.runAs(ownerKey, () -> executionEngine.openTradeFromFilledOrder(order));
+                } else {
+                    executionEngine.openTradeFromFilledOrder(order);
                 }
             }
         } catch (Exception ex) {
@@ -221,10 +282,33 @@ public class OrderFillWatchdog {
                 } catch (Exception ex) {
                     log.warn("OrderFillWatchdog: cancel failed for {}: {}", brokerOrderId, ex.getMessage());
                 }
-                saveOrderWithRetry(order, OrderStatus.CANCELLED);
-                // Release entry gate — the order is dead, allow new entries
-                executionEngine.releaseEntryInFlightGate();
-                return;
+                // Broker cancel is async — the order may have FILLED in the race just before the cancel
+                // landed. Re-poll before writing CANCELLED, so a fill-after-cancel is materialised here via
+                // the normal path below instead of becoming a broker position that only PositionSynchronizer
+                // would adopt ~60s later (and never, after the 15:00 IST import cutoff).
+                Optional<OrderResponse> postCancel;
+                try { postCancel = brokerClient.orderStatus(brokerOrderId); }
+                catch (Exception ex) { postCancel = Optional.empty(); }
+                boolean filledDuringCancel = postCancel.isPresent()
+                        && postCancel.get().status() == OrderStatus.COMPLETE
+                        && postCancel.get().filledQuantity() > 0;
+                if (!filledDuringCancel) {
+                    saveOrderWithRetry(order, OrderStatus.CANCELLED);
+                    // Release entry gate — the order is dead, allow new entries
+                    executionEngine.releaseEntryInFlightGate();
+                    // P0-5b: a cancelled EXIT order leaves the position OPEN — release the close guard so
+                    // the strategy/monitors can place a fresh exit (otherwise the trade is wedged).
+                    if (order.getClientOrderId() != null && order.getClientOrderId().startsWith("EXIT-")) {
+                        executionEngine.releaseCloseGuard(order.getTradeId());
+                        // Don't leak the stashed exit reason for an abandoned EXIT order — the fresh exit
+                        // will re-stash its own reason via doCloseTrade. (Bounds pendingExitReasonByTradeId.)
+                        executionEngine.consumePendingExitReason(order.getTradeId());
+                    }
+                    return;
+                }
+                log.warn("OrderFillWatchdog: order {} FILLED during cancel race — materialising instead of cancelling",
+                        brokerOrderId);
+                // fall through to the fill-handling path below
             }
         }
 
@@ -258,10 +342,13 @@ public class OrderFillWatchdog {
                     return;
                 }
                 try {
-                    // Double-check: does a trade already exist for this instrument?
-                    if (!executionEngine.findOpenTradesByInstrument(order.getInstrumentKey()).isEmpty()) {
-                        log.info("OrderFillWatchdog: trade already exists for instrument {} — skipping duplicate creation",
-                                order.getInstrumentKey());
+                    // Per-user duplicate guard (multi-user signal-copy: same strike, different accounts).
+                    var existingForUser = executionEngine.findOpenTradesByInstrumentForUser(
+                            order.getInstrumentKey(), order.getUserId());
+                    if (!existingForUser.isEmpty()) {
+                        log.info("OrderFillWatchdog: open trade already exists for user {} on {} — marking order materialized (tradeId={})",
+                                order.getUserId(), order.getInstrumentKey(), existingForUser.getFirst().getTradeId());
+                        executionEngine.markFilledOrderMaterialized(order, existingForUser.getFirst().getTradeId());
                         return;
                     }
                     executionEngine.openTradeFromFilledOrder(order);
@@ -298,8 +385,30 @@ public class OrderFillWatchdog {
                 order.setUpdatedAt(latest.updatedAt());
                 saveOrderWithRetry(order, latest.status());
             }
+            // ENTRY margin rejection (async path): Zerodha accepts the order then rejects it for INSUFFICIENT
+            // FUNDS — landing here, NOT in the synchronous circuit breaker. Record it so the user's entries back
+            // off after a couple of these (stops the u:8 copy-margin storm — 71 identical rejects in 5 min today).
+            if (latest.status() == OrderStatus.REJECTED
+                    && (order.getClientOrderId() == null || !order.getClientOrderId().startsWith("EXIT-"))
+                    && com.algo.trade.execution.ExecutionEngine.isMarginError(latest.rejectionReason().orElse(""))) {
+                executionEngine.recordEntryMarginRejection(order.getUserId(), order.getInstrumentKey(),
+                        latest.rejectionReason().orElse("margin"));
+            }
             // Release entry gate — the order is dead, allow new entries
             executionEngine.releaseEntryInFlightGate();
+            // P0-5b: a terminal UNFILLED EXIT order leaves the position OPEN — release the close
+            // guard so a fresh exit can be attempted (a partial fill above is materialized instead).
+            if (order.getClientOrderId() != null && order.getClientOrderId().startsWith("EXIT-")
+                    && latest.filledQuantity() == 0) {
+                // §B1: if the broker rejected the EXIT for MARGIN, mark it blocked so the strategy backs off
+                // instead of re-placing the exit every tick (the expiry-day naked-short-margin storm).
+                if (latest.status() == OrderStatus.REJECTED
+                        && com.algo.trade.execution.ExecutionEngine.isMarginError(latest.rejectionReason().orElse(""))) {
+                    executionEngine.markExitMarginBlocked(order.getTradeId(), order.getInstrumentKey(),
+                            latest.rejectionReason().orElse("margin"));
+                }
+                executionEngine.releaseCloseGuard(order.getTradeId());
+            }
         }
     }
 
@@ -347,11 +456,11 @@ public class OrderFillWatchdog {
         BigDecimal exitPrice = exitOrder.getAverageFillPrice() != null
                 ? exitOrder.getAverageFillPrice() : BigDecimal.ZERO;
 
-        // Find the open trade for this instrument
-        var openTrades = executionEngine.findOpenTradesByInstrument(instrumentKey);
+        // Find the open trade for this instrument AND this order's owner (multi-user).
+        var openTrades = executionEngine.findOpenTradesByInstrumentForUser(instrumentKey, exitOrder.getUserId());
         if (openTrades.isEmpty()) {
-            log.warn("OrderFillWatchdog: exit order filled but no open trade found for instrument {}",
-                    instrumentKey);
+            log.warn("OrderFillWatchdog: exit order filled but no open trade found for user {} on instrument {}",
+                    exitOrder.getUserId(), instrumentKey);
             return;
         }
 
@@ -380,13 +489,19 @@ public class OrderFillWatchdog {
                         .multiply(BigDecimal.valueOf(trade.getQuantity()))
                 : exitPrice.subtract(trade.getEntryPrice())
                         .multiply(BigDecimal.valueOf(trade.getQuantity()));
-        trade.close(exitPrice, exitOrder.getUpdatedAt(), realizedPnl, "Watchdog: exit order filled");
+        // Recover the CAUSAL exit reason (STOP_LOSS/TARGET/TRAILING_STOP/…) that the exit monitor set when it
+        // placed this now-filled exit order — otherwise the tuning ExitEvent (the only exit source the
+        // exit-attribution / research read) is labelled generically and give-back-by-reason is impossible.
+        String realReason = executionEngine.consumePendingExitReason(trade.getTradeId());
+        String closeReason = (realReason != null && !realReason.isBlank()) ? realReason : "Watchdog: exit order filled";
+        trade.close(exitPrice, exitOrder.getUpdatedAt(), realizedPnl, closeReason);
         executionEngine.saveTradeEntity(trade);
 
-        log.info("OrderFillWatchdog: closed trade from exit fill — tradeId={}, instrument={}, exitPrice={}, short={}, pnl={}",
-                trade.getTradeId(), instrumentKey, exitPrice, shortEntry, realizedPnl);
+        log.info("OrderFillWatchdog: closed trade from exit fill — tradeId={}, instrument={}, exitPrice={}, short={}, pnl={}, reason={}",
+                trade.getTradeId(), instrumentKey, exitPrice, shortEntry, realizedPnl, closeReason);
 
-        emitExitEventToTuning(trade, exitPrice, "WATCHDOG_FILLED_EXIT");
+        emitExitEventToTuning(trade, exitPrice,
+                (realReason != null && !realReason.isBlank()) ? realReason : "WATCHDOG_FILLED_EXIT");
 
         // EXIT copy: this path closes the trade DIRECTLY (bypassing ExecutionEngine.doCloseTrade),
         // so the multi-user exit fan-out must be invoked here too — otherwise a primary exit
@@ -417,7 +532,12 @@ public class OrderFillWatchdog {
                             ? maeMfeTracker.onExit(trade.getTradeId()).orElse(null)
                             : null;
             com.algo.trade.tuning.ExitEvent exitEvent = null;
-            String correlationKey = trade.getTradeId();
+            // Key the exit back to the ENTRY signal (stamped on the trade at entry) so the exit row joins the
+            // signal/execution rows. Previously this used trade.getTradeId() (a TRD-<uuid>), which never matches
+            // the signal's SignalDecisionKey hash — so 0 of N exits joined. Fall back to tradeId only for
+            // legacy/pre-fix trades that carry no entry key.
+            String correlationKey = (trade.getEntryCorrelationKey() != null && !trade.getEntryCorrelationKey().isBlank())
+                    ? trade.getEntryCorrelationKey() : trade.getTradeId();
             com.algo.trade.domain.IndexType ix =
                     com.algo.trade.domain.IndexType.fromName(trade.getUnderlying());
             if ("OI_SHIFT_TRAP".equals(strategyType) && oiShiftTrapCaptureAdapter != null) {
@@ -428,6 +548,45 @@ public class OrderFillWatchdog {
             } else if ("OI_MOMENTUM".equals(strategyType) && oiMomentumCaptureAdapter != null) {
                 exitEvent = oiMomentumCaptureAdapter.buildExitEvent(
                         ix, trade, snapshot, correlationKey, exitPrice, reason, false);
+            } else {
+                // GENERIC single-leg pipeline strategies (directional_buy, momentum, scalping, reversal_buy,
+                // volatility_breakout, gap_and_go, …) had NO ExitEvent emitter at all — ExecutionTuningRecorder
+                // .recordExit and TuningCaptureBridge.recordExit are both unwired — so exit-attribution and
+                // MAE/MFE were blank for them, even though the tracker snapshot was fetched (and discarded)
+                // above. Build the event here with the real MAE/MFE + the entry correlationKey (joins
+                // signal↔exit). (2026-07-02 — tuning-audit #33 + exit-join for pipeline strategies)
+                com.algo.trade.strategy.StrategyType st;
+                try {
+                    st = com.algo.trade.strategy.StrategyType.valueOf(strategyType);
+                } catch (IllegalArgumentException iae) {
+                    st = null;
+                }
+                if (st != null) {
+                    java.math.BigDecimal entryPx = trade.getEntryPrice() != null
+                            ? trade.getEntryPrice() : java.math.BigDecimal.ZERO;
+                    double realizedPct = (entryPx.signum() > 0 && exitPrice != null)
+                            ? exitPrice.subtract(entryPx).doubleValue() / entryPx.doubleValue() * 100.0 : 0.0;
+                    long holdSec = trade.getEntryTime() != null
+                            ? Math.max(0, java.time.Duration.between(trade.getEntryTime(),
+                                trade.getExitTime() != null ? trade.getExitTime() : java.time.Instant.now())
+                                .getSeconds()) : 0L;
+                    double maePct = snapshot != null ? snapshot.maePct() : 0.0;
+                    double mfePct = snapshot != null ? snapshot.mfePct() : 0.0;
+                    long tMae = snapshot != null ? snapshot.timeToMaeSec() : 0L;
+                    long tMfe = snapshot != null ? snapshot.timeToMfeSec() : 0L;
+                    boolean reversal = reason != null
+                            && (reason.toUpperCase().contains("REVERS") || reason.toUpperCase().contains("FLIP"));
+                    java.util.Map<String, Object> attrs = new java.util.LinkedHashMap<>();
+                    attrs.put("exitOrigin", "watchdog_filled");
+                    attrs.put("userId", trade.getUserId());
+                    attrs.put("tradeId", trade.getTradeId());
+                    exitEvent = new com.algo.trade.tuning.ExitEvent(
+                            java.time.Instant.now(), java.time.Instant.now(), st, ix,
+                            correlationKey, trade.getTradeId(),
+                            reason != null ? reason : "UNKNOWN",
+                            entryPx, exitPrice != null ? exitPrice : entryPx,
+                            realizedPct, holdSec, maePct, mfePct, tMae, tMfe, reversal, attrs);
+                }
             }
             if (exitEvent != null) {
                 tuningEventRecorder.record(exitEvent);

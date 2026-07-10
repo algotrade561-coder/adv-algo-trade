@@ -8,8 +8,8 @@ import org.springframework.stereotype.Component;
 /**
  * Lot Size Validator — ensures order quantities are valid multiples of the exchange lot size.
  *
- * NSE lot sizes (as of Jan 2026):
- *   NIFTY: 75, BANKNIFTY: 30, FINNIFTY: 40, MIDCPNIFTY: 50, SENSEX: 20
+ * Lot sizes are sourced from {@link IndexType} (the single source of truth, updated per the
+ * NSE circular effective Jan 2026: NIFTY=65, BANKNIFTY=30, FINNIFTY=60, MIDCPNIFTY=120, SENSEX=20).
  *
  * Auto-adjusts quantity to the nearest valid lot multiple (rounds down).
  */
@@ -46,26 +46,26 @@ public class LotSizeValidator {
     }
 
     /**
-     * Get lot size for a given index.
+     * Get lot size for a given index — delegates to {@link IndexType} (single source of truth).
      */
     public int getLotSize(IndexType indexType) {
-        return switch (indexType) {
-            case NIFTY -> 75;
-            case BANKNIFTY -> 30;
-            case FINNIFTY -> 40;
-            case MIDCPNIFTY -> 50;
-            case SENSEX -> 20;
-        };
+        return indexType.lotSize();
+    }
+
+    /** Lot size for a trading symbol / instrument key (prefix match); 0 = unknown. */
+    public int lotSizeFor(String tradingSymbol) {
+        return resolveLotSize(tradingSymbol);
     }
 
     private int resolveLotSize(String tradingSymbol) {
         if (tradingSymbol == null) return 0;
         String upper = tradingSymbol.toUpperCase();
-        if (upper.startsWith("BANKNIFTY")) return 30;
-        if (upper.startsWith("NIFTY")) return 75;
-        if (upper.startsWith("FINNIFTY")) return 40;
-        if (upper.startsWith("MIDCPNIFTY")) return 50;
-        if (upper.startsWith("SENSEX")) return 20;
+        // Order matters: most specific prefixes first (BANKNIFTY/MIDCPNIFTY/FINNIFTY before NIFTY).
+        if (upper.startsWith("BANKNIFTY")) return IndexType.BANKNIFTY.lotSize();
+        if (upper.startsWith("MIDCPNIFTY")) return IndexType.MIDCPNIFTY.lotSize();
+        if (upper.startsWith("FINNIFTY")) return IndexType.FINNIFTY.lotSize();
+        if (upper.startsWith("NIFTY")) return IndexType.NIFTY.lotSize();
+        if (upper.startsWith("SENSEX")) return IndexType.SENSEX.lotSize();
         return 0;
     }
 }

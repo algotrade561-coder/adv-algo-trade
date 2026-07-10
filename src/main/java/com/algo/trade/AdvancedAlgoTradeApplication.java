@@ -24,7 +24,8 @@ import java.util.TimeZone;
         com.algo.trade.strategy.oishifttrap.OiShiftTrapConfig.class,
         com.algo.trade.tuning.capture.CaptureToggleProperties.class,
         com.algo.trade.tuning.store.TuningEventStoreProperties.class,
-        com.algo.trade.tuning.store.ParquetRollerProperties.class})
+        com.algo.trade.tuning.store.ParquetRollerProperties.class,
+        com.algo.trade.marketdata.MicrostructureParquetRollerProperties.class})
 @EnableScheduling
 public class AdvancedAlgoTradeApplication {
 

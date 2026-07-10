@@ -65,9 +65,13 @@ public class OiRestFallbackService {
 
     private volatile boolean restFallbackActive = false;
     private volatile int restCallCount = 0;
+    private volatile int consecutiveSkips = 0;
     private volatile long lastRestCallMs = 0;
     private volatile String lastBatchSummary = "";
     private volatile Instant lastBatchAt = null;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.monitoring.ErrorEventService errorEventService;
 
     public OiRestFallbackService(KiteWebSocketClient wsClient,
                                   LiveInstrumentCache liveInstrumentCache,
@@ -136,10 +140,23 @@ public class OiRestFallbackService {
 
         Set<String> keys = collectInstrumentKeys(wsStale, stale);
         if (keys.isEmpty()) {
-            log.debug("[OiRestFallback] No instrument keys resolved — skipping this cycle");
+            // Log at WARN level (not debug) if this persists — helps diagnose session-start gaps.
+            // After 5 consecutive skips (2.5 min), escalate to error so it surfaces in alerts.
+            consecutiveSkips++;
+            if (consecutiveSkips >= 5) {
+                log.error("[OiRestFallback] SKIPPED {} consecutive cycles — instrument keys still unavailable. "
+                        + "Check if LiveInstrumentCache is populated and expiry calendar is correct.", consecutiveSkips);
+                if (errorEventService != null) {
+                    errorEventService.high("OiRestFallback",
+                            "SKIPPED " + consecutiveSkips + " cycles — no instrument keys (session-start gap?)");
+                }
+            } else {
+                log.warn("[OiRestFallback] No instrument keys resolved — skipping cycle #{}", consecutiveSkips);
+            }
             eventLog.log("SKIPPED", wsStale, stale.size(), 0, 0, 0, restCallCount, "no instrument keys");
             return;
         }
+        consecutiveSkips = 0; // reset on successful key resolution
 
         try {
             lastRestCallMs = System.currentTimeMillis();
@@ -229,7 +246,15 @@ public class OiRestFallbackService {
                 try {
                     IndexType indexType = IndexType.fromName(underlyingName);
                     double spot = liveInstrumentCache.getFuturesPrice(indexType);
-                    if (spot <= 0) continue;
+                    // Fallback: if no live spot (WS dead at session start), use any cached
+                    // option's strike near the middle of the chain as ATM approximation.
+                    // This breaks the deadlock where WS is stale → no spot → no keys → SKIPPED.
+                    if (spot <= 0) {
+                        spot = estimateAtmFromCachedChain(indexType);
+                        if (spot <= 0) continue;
+                        log.debug("[OiRestFallback] Using estimated ATM {} from cached chain for {} (no live spot)",
+                                spot, indexType);
+                    }
 
                     int atm = indexType.roundToATM(spot);
                     int interval = indexType.strikeInterval();
@@ -253,6 +278,23 @@ public class OiRestFallbackService {
         return staleInstruments.stream()
                 .map(o -> o.getExchange() + ":" + o.getTradingSymbol())
                 .collect(Collectors.toCollection(LinkedHashSet::new));
+    }
+
+    /**
+     * Estimate ATM from the cached instrument chain when no live spot is available.
+     * Uses the median strike of all cached options for this index as a proxy.
+     * Returns 0 if no instruments are cached.
+     */
+    private double estimateAtmFromCachedChain(IndexType indexType) {
+        var options = liveInstrumentCache.allOptions();
+        if (options == null || options.isEmpty()) return 0;
+        var strikes = options.stream()
+                .filter(o -> o.getIndexType() == indexType && "CE".equals(o.getOptionType()))
+                .mapToInt(o -> o.getStrikePrice())
+                .sorted()
+                .toArray();
+        if (strikes.length == 0) return 0;
+        return strikes[strikes.length / 2]; // median strike ≈ ATM
     }
 
     private String extractTradingSymbol(String instrumentKey) {
@@ -309,5 +351,15 @@ public class OiRestFallbackService {
         Instant lastTick = wsClient.getLastTickTime();
         if (lastTick == null) return -1;
         return Duration.between(lastTick, Instant.now()).toSeconds();
+    }
+
+    /**
+     * Seconds since the last SUCCESSFUL REST quote batch (-1 if none yet). Used by the freshness
+     * guard (P1.1) to decide whether REST is keeping data fresh while the WebSocket is stale —
+     * a WS zombie should NOT block entries if REST is flowing.
+     */
+    public long getRestAgeSec() {
+        if (lastBatchAt == null) return -1;
+        return Duration.between(lastBatchAt, Instant.now()).toSeconds();
     }
 }

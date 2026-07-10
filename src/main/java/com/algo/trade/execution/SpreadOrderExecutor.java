@@ -53,6 +53,19 @@ public class SpreadOrderExecutor {
         });
     }
 
+    @jakarta.annotation.PreDestroy
+    void shutdown() {
+        buyLegExecutor.shutdown();
+        try {
+            if (!buyLegExecutor.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                buyLegExecutor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            buyLegExecutor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+    }
+
     public SpreadExecutionResult execute(List<SpreadLeg> legs, String groupId, String strategyName,
                                          int maxLots, int lotSize, boolean paperTrading) {
         log.info("[SpreadExecutor] Starting: group={}, strategy={}, legs={}", groupId, strategyName, legs.size());
@@ -271,8 +284,26 @@ public class SpreadOrderExecutor {
             try {
                 results.add(futures.get(i).get(timeoutMs, TimeUnit.MILLISECONDS));
             } catch (TimeoutException ex) {
-                futures.get(i).cancel(true);
-                results.add(new LegResult(legOrder.get(i), false, "Parallel BUY timeout", Optional.empty(), 0));
+                // Grace re-check: the leg may be about to confirm. Give it a short bounded window before
+                // abandoning, so a just-filled leg is CAPTURED as success and therefore gets unwound
+                // (rather than orphaned as a live broker order that unwindFilledLegs would skip).
+                LegResult late = null;
+                try { late = futures.get(i).get(2000, TimeUnit.MILLISECONDS); }
+                catch (Exception ignored) { /* still not done — abandon below */ }
+                if (late != null) {
+                    results.add(late);
+                } else {
+                    futures.get(i).cancel(true);
+                    results.add(new LegResult(legOrder.get(i), false, "Parallel BUY timeout", Optional.empty(), 0));
+                    // We cannot safely auto-reverse a timed-out leg (it may NOT have filled → naked short).
+                    // Its broker order may still be live/fill later, so flag the specific leg for manual
+                    // reconciliation. (Spreads are disabled by default; harden this before enabling.)
+                    SpreadLeg tl = legOrder.get(i);
+                    telegramAlertService.systemAlert(String.format(
+                            "⚠️ SPREAD LEG TIMEOUT — possible live broker order not auto-unwound%n"
+                            + "Group: %s%nLeg: %s %s x%d%nVERIFY/CANCEL AT BROKER",
+                            groupId, tl.instrumentKey(), tl.side(), tl.quantity()));
+                }
             } catch (Exception ex) {
                 results.add(new LegResult(legOrder.get(i), false, ex.getMessage(), Optional.empty(), 0));
             }

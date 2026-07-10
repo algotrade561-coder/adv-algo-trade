@@ -49,6 +49,9 @@ public class MonitoringController {
     private final com.algo.trade.monitoring.HedgeCostTracker hedgeCostTracker;
     private final com.algo.trade.reporting.DailyBlockerSummaryService dailyBlockerSummaryService;
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.broker.BrokerMarginClient brokerMarginClient;
+
     public MonitoringController(ReportingService reportingService,
                                  DailyReportBundleService dailyReportBundleService,
                                  MarketGuard marketGuard,
@@ -102,10 +105,30 @@ public class MonitoringController {
         double pcr = pcrCalculator.getPcr();
         if (pcr <= 0) pcr = marketGuard.getCurrentPcr(); // fall back to last known value
 
-        // IV Rank from tracker
+        // IV Rank from tracker (kept for back-compat / other consumers)
         double ivRankNifty = 0;
         try {
             ivRankNifty = ivRankTracker.getIVRank(IndexType.NIFTY);
+        } catch (Exception ignored) {}
+
+        // IV Percentile — India-VIX percentile against the clean India-VIX series (MarketGuard.vixPercentile).
+        // 2026-06-27: do NOT fall back to ivRankTracker.getIVPercentile here — that is per-index ATM-IV
+        // percentile, a DIFFERENT quantity. Substituting it mislabels ATM IV as the India-VIX number and
+        // is why the dashboard diverged from Zerodha. When the clean series is unavailable, report null.
+        Double ivPercentileNifty = null;
+        try {
+            double p = marketGuard.vixPercentile();
+            if (p >= 0) ivPercentileNifty = p;
+        } catch (Exception ignored) {}
+
+        // ATM-IV percentile (NIFTY) — the cheapness of the WEEKLY ATM options the bot actually trades,
+        // distinct from the India-VIX percentile above (~30-day market vol). Backed by the clean
+        // Black-76 ATM-IV history; null until >=20 samples so we never show a misleading neutral 50.
+        Double atmIvPercentileNifty = null;
+        try {
+            if (ivRankTracker.hasSufficientHistory(IndexType.NIFTY)) {
+                atmIvPercentileNifty = ivRankTracker.getIVPercentile(IndexType.NIFTY);
+            }
         } catch (Exception ignored) {}
 
         Map<String, Object> result = new LinkedHashMap<>();
@@ -115,6 +138,8 @@ public class MonitoringController {
         result.put("banknifty", banknifty);
         result.put("sensex", sensex);
         result.put("ivRank", ivRankNifty);
+        result.put("ivPercentile", ivPercentileNifty);
+        result.put("atmIvPercentile", atmIvPercentileNifty);
         result.put("vixStatus", vixStatus(vix));
         result.put("pcrBias", pcrBias(pcr));
         result.put("circuitBreakerTriggered", marketGuard.isCircuitBreakerTriggered());
@@ -126,6 +151,11 @@ public class MonitoringController {
         // pre-event). The eventDay / preEventDay booleans above stay exposed
         // for the UI to render an advisory chip if desired.
         result.put("longPremiumBlockReason", marketGuard.longPremiumBlockReason(true));
+        // Short-premium (selling) guard status — exposed so the dashboard can show
+        // that sellers may still be tradeable even when long-premium is blocked
+        // (e.g. VIX below the long-premium floor but within the short-premium band).
+        result.put("safeForShortPremium", marketGuard.isSafeForShortPremium());
+        result.put("shortPremiumBlockReason", marketGuard.shortPremiumBlockReason());
         result.put("brentCrude", brentCrudeService.getLastPriceUSD());
         result.put("brentCrudeAvailable", brentCrudeService.isAvailable());
         result.put("hedgeCost", hedgeCostSummary());
@@ -200,6 +230,34 @@ public class MonitoringController {
         log.info("PnL endpoint completed: realized={}, unrealized={}, total={}",
                 pnl.realizedPnl(), pnl.unrealizedPnl(), pnl.totalPnl());
         return pnl;
+    }
+
+    /** Broker account funds — available cash, utilised, net available for trading. */
+    @GetMapping("/funds")
+    public java.util.Map<String, Object> funds() {
+        java.util.Map<String, Object> result = new java.util.LinkedHashMap<>();
+        if (brokerMarginClient == null) {
+            result.put("available", false);
+            result.put("reason", "Margin client not configured");
+            return result;
+        }
+        try {
+            var marginsOpt = brokerMarginClient.equityMargins();
+            if (marginsOpt.isPresent()) {
+                var m = marginsOpt.get();
+                result.put("available", true);
+                result.put("availableCash", m.availableCash());
+                result.put("utilisedDebits", m.utilisedDebits());
+                result.put("netAvailable", m.netAvailable());
+            } else {
+                result.put("available", false);
+                result.put("reason", "Broker not authenticated or margin fetch failed");
+            }
+        } catch (Exception e) {
+            result.put("available", false);
+            result.put("reason", e.getMessage());
+        }
+        return result;
     }
 
     @GetMapping("/signals/latest")
@@ -391,8 +449,8 @@ public class MonitoringController {
         LocalDate date = (dateStr == null || dateStr.isBlank())
                 ? LocalDate.now(ZoneId.of("Asia/Kolkata"))
                 : LocalDate.parse(dateStr);
-        Instant from = date.atStartOfDay(ZoneId.of("Asia/Kolkata")).toInstant();
-        Instant to = date.plusDays(1).atStartOfDay(ZoneId.of("Asia/Kolkata")).toInstant();
+        java.time.Instant from = date.atStartOfDay(ZoneId.of("Asia/Kolkata")).toInstant();
+        java.time.Instant to = date.plusDays(1).atStartOfDay(ZoneId.of("Asia/Kolkata")).toInstant();
         String csv = reportingService.rejectedSignalsCsv(from, to);
         String filename = "rejected-signals-" + date + ".csv";
         return ResponseEntity.ok()

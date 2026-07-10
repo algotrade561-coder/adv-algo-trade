@@ -10,6 +10,7 @@ import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedDeque;
 
 /**
  * Tracks IV history to compute IV Rank and IV Percentile.
@@ -68,13 +69,28 @@ public class IVRankTracker {
         for (IndexType idx : IndexType.values()) {
             var samples = ivSampleRepository.findByIndexTypeOrderBySampleDateAsc(idx.name());
             if (!samples.isEmpty()) {
-                Deque<IVSample> deque = new ArrayDeque<>();
+                Deque<IVSample> deque = new ConcurrentLinkedDeque<>();
                 for (var s : samples) {
                     deque.addLast(new IVSample(s.getSampleDate(), s.getIv()));
                 }
                 history.put(idx, deque);
                 log.info("[IVRank] Loaded {} historical samples for {} from DB", samples.size(), idx);
             }
+        }
+    }
+
+    /**
+     * Clear the in-memory IV history for one index (or all if null). Used by the reset+reseed step
+     * (2026-07-06 IV-drift fix) so a purged index does not keep serving stale samples until restart —
+     * {@link #reloadFromDb()} only REPLACES indices that still have DB rows, so a pure purge needs this.
+     */
+    public synchronized void clearHistory(IndexType indexType) {
+        if (indexType == null) {
+            history.clear();
+            log.warn("[IVRank] In-memory IV history cleared for ALL indices");
+        } else {
+            history.remove(indexType);
+            log.warn("[IVRank] In-memory IV history cleared for {}", indexType);
         }
     }
 
@@ -92,7 +108,7 @@ public class IVRankTracker {
      */
     public void recordIV(IndexType indexType, double iv) {
         if (iv <= 0) return;
-        Deque<IVSample> deque = history.computeIfAbsent(indexType, k -> new ArrayDeque<>());
+        Deque<IVSample> deque = history.computeIfAbsent(indexType, k -> new ConcurrentLinkedDeque<>());
         LocalDate today = LocalDate.now();
         IVSample last = deque.peekLast();
         if (last != null && today.equals(last.date())) {
@@ -164,6 +180,36 @@ public class IVRankTracker {
         return getSampleCount(indexType) >= 20;
     }
 
+    /**
+     * Percentile rank (0–100) of an arbitrary value — e.g. the live VIX — against the trailing
+     * {@code window} sessions of stored India-VIX history. This is the 52-week "IV percentile"
+     * the dynamic {@code MarketGuard} keys on: % of recent sessions whose VIX was below
+     * {@code value}. Unlike {@link #getIVPercentile}, it ranks a caller-supplied live value
+     * rather than the last persisted daily sample.
+     *
+     * <p>Returns {@code -1} when there is insufficient clean history (&lt; 20 valid samples) or
+     * {@code value <= 0}, so callers can fall back to fixed thresholds rather than trust a
+     * percentile computed from too little data.</p>
+     *
+     * @param window number of most-recent sessions to rank against (clamped to available count)
+     */
+    public double percentileOf(IndexType indexType, double value, int window) {
+        if (value <= 0) return -1;
+        List<IVSample> all = getSamples(indexType);
+        if (all == null || all.size() < 20) return -1;
+        int from = Math.max(0, all.size() - Math.max(1, window));
+        List<IVSample> win = all.subList(from, all.size());
+        long valid = win.stream().filter(s -> s != null && s.iv() > 0).count();
+        if (valid < 20) return -1;
+        long below = win.stream().filter(s -> s != null && s.iv() > 0 && s.iv() < value).count();
+        return ((double) below / valid) * 100.0;
+    }
+
+    /** Convenience: 52-week (252-session) percentile of {@code value} for {@code indexType}. */
+    public double percentileOf(IndexType indexType, double value) {
+        return percentileOf(indexType, value, 252);
+    }
+
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.algo.trade.monitoring.SchedulerRegistry schedulerRegistry;
 
@@ -215,7 +261,19 @@ public class IVRankTracker {
 
     private List<IVSample> getSamples(IndexType indexType) {
         Deque<IVSample> deque = history.get(indexType);
-        return deque == null ? List.of() : List.copyOf(deque);
+        if (deque == null) return List.of();
+        // Weakly-consistent snapshot. recordIV() mutates this deque on the WebSocket tick
+        // thread while scan threads read it here. The old `List.copyOf(deque)` called
+        // deque.toArray() internally, which under concurrent modification could return an
+        // array with trailing null slots — and List.copyOf/List.of reject nulls, throwing
+        // NPE that aborted the whole scan (2026-06-15 incident). The deque is now a
+        // ConcurrentLinkedDeque (safe, never-null iteration); we still defensively skip any
+        // nulls so a transient bad element can never crash a scan again.
+        List<IVSample> out = new ArrayList<>(deque.size() + 8);
+        for (IVSample s : deque) {
+            if (s != null) out.add(s);
+        }
+        return out;
     }
     private record IVSample(LocalDate date, double iv) {}
 }

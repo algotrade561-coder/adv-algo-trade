@@ -55,6 +55,43 @@ class RiskEngineTest {
     }
 
     @Test
+    void capsRealLotsNotFoldedBlocks() {
+        // P0-1: maxLotsPerTrade must bound REAL lots. With contractLot=65 and desiredLots=5,
+        // the result must be exactly 5 lots = 325 units — NOT maxLots×desiredLots×contractLot (=1625).
+        when(globalConfigService.getMaxLotsPerTrade()).thenReturn(5);
+        PositionSizingResult result = riskEngine.calculateQuantity(
+                BigDecimal.valueOf(10), 65, 5, BigDecimal.valueOf(12));
+
+        assertThat(result.allowed()).isTrue();
+        assertThat(result.quantity()).isEqualTo(325);
+        assertThat(result.quantity() % 65).isZero();
+    }
+
+    @Test
+    void respectsDesiredLotsConviction() {
+        // desiredLots (strategy conviction) caps below both risk budget and maxLotsPerTrade.
+        when(globalConfigService.getMaxLotsPerTrade()).thenReturn(10);
+        PositionSizingResult result = riskEngine.calculateQuantity(
+                BigDecimal.valueOf(10), 65, 2, BigDecimal.valueOf(12));
+
+        assertThat(result.allowed()).isTrue();
+        assertThat(result.quantity()).isEqualTo(130); // 2 lots × 65
+    }
+
+    @Test
+    void enforcesNotionalCeiling() {
+        // P0-1 defense-in-depth: a single trade's notional cannot exceed 50% of capital.
+        when(globalConfigService.getMaxLotsPerTrade()).thenReturn(0); // no lot cap
+        when(globalConfigService.getMaxRiskPerTradePercent()).thenReturn(BigDecimal.valueOf(50));
+        PositionSizingResult result = riskEngine.calculateQuantity(
+                BigDecimal.valueOf(300), 65, 0, BigDecimal.valueOf(12));
+
+        assertThat(result.allowed()).isTrue();
+        assertThat(result.estimatedCost().doubleValue()).isLessThanOrEqualTo(150_000.0);
+        assertThat(result.quantity() % 65).isZero();
+    }
+
+    @Test
     void rejectsWhenMaxOpenTradesLimitIsReached() {
         RiskCheckResult result = riskEngine.evaluateEntry(buyDecision(), 1, 0, BigDecimal.ZERO, 0, false);
 

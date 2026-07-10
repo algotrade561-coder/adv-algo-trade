@@ -4,16 +4,18 @@ import { catchError, forkJoin, interval, of, Subscription, timer } from 'rxjs';
 import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 import { MatTabsModule } from '@angular/material/tabs';
+import { MatDialog, MatDialogModule } from '@angular/material/dialog';
 import { ApiService, StrategyDto } from '../core/api.service';
 import { AdminService, AdminUser } from '../core/admin.service';
 import { ApiRecord, JvmHealth, PnlSnapshot, RuntimeStatus, TradingStatus } from '../core/models';
+import { ClosePositionDialogComponent, ClosePositionDialogResult } from './close-position-dialog.component';
 
 type ScorecardRow = { strategyType: string; totalEntries: number; filled: number; rejected: number; fillRate: number; avgIvRank: number; avgSpread: number; ivRankSource: string };
 
 @Component({
   selector: 'app-monitoring-page',
   standalone: true,
-  imports: [DecimalPipe, MatButtonModule, MatIconModule, MatTabsModule],
+  imports: [DecimalPipe, MatButtonModule, MatIconModule, MatTabsModule, MatDialogModule],
   template: `
     <section class="page">
 
@@ -24,10 +26,10 @@ type ScorecardRow = { strategyType: string; totalEntries: number; filled: number
           <p class="page-subtitle">Live and paper trading overview — positions, orders, trades, and signals.</p>
         </div>
         <span class="spacer"></span>
-        @if (admin.isAdmin()) {
+        @if (monitorUsers.length > 1) {
           <select class="user-filter" [value]="viewUserId ?? ''" (change)="onViewUserChange($event)"
-                  title="View data for a specific user (admin / superuser)">
-            <option value="">All users</option>
+                  title="View data for a specific user">
+            <!-- All users can view others' positions; only superusers can close them. -->
             @for (u of monitorUsers; track u.id) {
               <option [value]="u.id">{{ u.email }}</option>
             }
@@ -70,11 +72,6 @@ type ScorecardRow = { strategyType: string; totalEntries: number; filled: number
               <span class="metric-sub">Realized ₹{{ livePnl | number:'1.2-2' }} · Unrealized ₹{{ liveUnrealized | number:'1.2-2' }}</span>
             </div>
             <div class="metric-card live-card">
-              <span class="metric-label">Est. Charges</span>
-              <span class="metric-val neg">₹{{ liveCharges | number:'1.2-2' }}</span>
-              <span class="metric-sub">Net P&amp;L: <span [class.pos]="liveNetPnl >= 0" [class.neg]="liveNetPnl < 0">₹{{ liveNetPnl | number:'1.2-2' }}</span></span>
-            </div>
-            <div class="metric-card live-card">
               <span class="metric-label">Open Positions</span>
               <span class="metric-val">{{ tradingStatus?.openTrades ?? positions.length }}</span>
               <span class="metric-sub">Live open trades</span>
@@ -96,11 +93,6 @@ type ScorecardRow = { strategyType: string; totalEntries: number; filled: number
                 ₹{{ paperPnl | number:'1.2-2' }}
               </span>
               <span class="metric-sub">Closed paper trades</span>
-            </div>
-            <div class="metric-card paper-card">
-              <span class="metric-label">Est. Charges</span>
-              <span class="metric-val neg">₹{{ paperCharges | number:'1.2-2' }}</span>
-              <span class="metric-sub">Net P&amp;L: <span [class.pos]="paperNetPnl >= 0" [class.neg]="paperNetPnl < 0">₹{{ paperNetPnl | number:'1.2-2' }}</span></span>
             </div>
             <div class="metric-card paper-card">
               <span class="metric-label">Open Positions</span>
@@ -213,10 +205,11 @@ type ScorecardRow = { strategyType: string; totalEntries: number; filled: number
               @if (positions.length === 0) {
                 <div class="empty-state"><mat-icon>inbox</mat-icon><span>No open live positions</span></div>
               } @else {
+                @if (closeMsg) { <div class="su-msg" [class.su-err]="closeErr">{{ closeMsg }}</div> }
                 <div class="table-wrap">
                   <table class="mon-table">
                     <thead><tr>
-                      <th>Instrument</th><th>Status</th><th>Qty</th><th>Avg ₹</th><th>Last ₹</th><th>Day P&L</th><th>Strength</th><th>Rec.</th>
+                      <th>Instrument</th><th>Status</th><th>Qty</th><th>Avg ₹</th><th>Last ₹</th><th>Day P&L</th><th>Strength</th><th>Rec.</th><th></th>
                     </tr></thead>
                     <tbody>
                       @for (r of positions; track r['instrumentKey']) {
@@ -242,6 +235,16 @@ type ScorecardRow = { strategyType: string; totalEntries: number; filled: number
                           </td>
                           <td>
                             <span [class]="'rec-badge rec-' + getRecClass(r)">{{ getRecommendation(r) }}</span>
+                          </td>
+                          <td>
+                            @if (num(r['quantity']) > 0 && canClosePositions()) {
+                              <button mat-stroked-button color="warn" class="close-btn"
+                                      [disabled]="closingKey === r['instrumentKey']"
+                                      (click)="confirmClosePosition(r)">
+                                <mat-icon>close</mat-icon>
+                                {{ closingKey === r['instrumentKey'] ? 'Closing…' : 'Close' }}
+                              </button>
+                            }
                           </td>
                         </tr>
                       }
@@ -337,10 +340,12 @@ type ScorecardRow = { strategyType: string; totalEntries: number; filled: number
                   <table class="mon-table">
                     <thead><tr>
                       <th>Entry</th><th>Exit</th><th>Strategy</th><th>Underlying</th><th>Type</th>
-                      <th>Instrument</th><th>Entry ₹</th><th>Exit ₹</th><th>Qty</th><th>P&L</th><th>Status</th>
+                      <th>Instrument</th><th>Entry ₹</th><th>Exit ₹</th><th>Qty</th>
+                      <th class="sortable" (click)="sortTrades('realizedPnl')">P&amp;L {{ tradeSortIcon('realizedPnl') }}</th>
+                      <th class="sortable" (click)="sortTrades('status')">Status {{ tradeSortIcon('status') }}</th>
                     </tr></thead>
                     <tbody>
-                      @for (r of liveTrades; track r['tradeId']) {
+                      @for (r of sortedLiveTrades; track r['tradeId']) {
                         <tr>
                           <td class="mono time-cell">{{ fmtTime(r['entryTime']) }}</td>
                           <td class="mono time-cell">{{ r['exitTime'] ? fmtTime(r['exitTime']) : '-' }}</td>
@@ -606,10 +611,18 @@ type ScorecardRow = { strategyType: string; totalEntries: number; filled: number
     .empty-state mat-icon { font-size: 36px; width: 36px; height: 36px; opacity: .4; }
     .empty-hint { font-size: 12px; color: var(--muted); opacity: .7; text-align: center; max-width: 360px; }
 
+    /* Close-position button + status message */
+    .close-btn { font-size: 11px; line-height: 1; min-height: 28px; white-space: nowrap; }
+    .close-btn mat-icon { font-size: 15px; width: 15px; height: 15px; }
+    .su-msg { margin: 0 4px 8px; font-size: 12px; color: var(--ok, #45d18c); }
+    .su-msg.su-err { color: var(--danger, #e5484d); }
+
     /* Table */
     .table-wrap { overflow-x: auto; max-height: 520px; overflow-y: auto; padding: 0 4px 4px; }
     .mon-table { width: 100%; border-collapse: collapse; font-size: 12px; }
     .mon-table th { position: sticky; top: 0; z-index: 1; padding: 10px 12px; background: var(--panel); text-align: left; font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); border-bottom: 1px solid var(--line); white-space: nowrap; }
+    .mon-table th.sortable { cursor: pointer; user-select: none; }
+    .mon-table th.sortable:hover { color: #fff; }
     .mon-table td { padding: 9px 12px; border-bottom: 1px solid rgba(255,255,255,.04); color: var(--ink); vertical-align: middle; }
     .mon-table tbody tr:hover { background: rgba(255,255,255,.03); }
     .mon-table tbody tr:last-child td { border-bottom: none; }
@@ -767,15 +780,11 @@ export class MonitoringPageComponent implements OnInit, OnDestroy {
     return h > 0 ? `${h}h ${m}m` : `${m}m`;
   }
 
-  get refreshedLabel(): string   { return this.lastRefreshed ? this.lastRefreshed.toLocaleTimeString() : ''; }
+  get refreshedLabel(): string   { return this.lastRefreshed ? this.lastRefreshed.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' }) : ''; }
   get livePnl(): number          { return Number(this.pnl?.realizedPnl ?? 0); }
   get liveUnrealized(): number   { return Number(this.pnl?.unrealizedPnl ?? 0); }
   get liveTotal(): number        { return Number(this.pnl?.totalPnl ?? 0); }
   get paperPnl(): number         { return Number((this.tradingStatus as any)?.paperPnl ?? 0); }
-  get liveCharges(): number      { return Number((this.tradingStatus as any)?.liveEstimatedCharges ?? 0); }
-  get paperCharges(): number     { return Number((this.tradingStatus as any)?.paperEstimatedCharges ?? 0); }
-  get liveNetPnl(): number       { return Number((this.tradingStatus as any)?.liveNetPnl ?? this.liveTotal); }
-  get paperNetPnl(): number      { return Number((this.tradingStatus as any)?.paperNetPnl ?? this.paperPnl); }
   get effectiveLossLimit(): number { return this.dailyLossLimit + (this.runtime?.dailyLossExtension ?? 0); }
   get lossUsedPercent(): number {
     if (this.effectiveLossLimit <= 0) return 0;
@@ -784,7 +793,32 @@ export class MonitoringPageComponent implements OnInit, OnDestroy {
 
   get liveTrades(): ApiRecord[] {
     return this.trades.filter(t => !String(t['tradeId'] ?? '').startsWith('PAPER-'))
-      .filter(t => this.isToday(String(t['entryTime'] ?? '')) || String(t['status'] ?? '').toUpperCase() === 'OPEN');
+      .filter(t => this.isToday(String(t['entryTime'] ?? '')) || String(t['status'] ?? '').toUpperCase() === 'OPEN')
+      .sort((a, b) => new Date(String(b['entryTime'] ?? 0)).getTime() - new Date(String(a['entryTime'] ?? 0)).getTime());
+  }
+
+  tradeSortCol = '';
+  tradeSortAsc = true;
+
+  get sortedLiveTrades(): ApiRecord[] {
+    const trades = this.liveTrades;
+    if (!this.tradeSortCol) return trades;
+    const col = this.tradeSortCol;
+    const dir = this.tradeSortAsc ? 1 : -1;
+    return [...trades].sort((a, b) => {
+      const va = Number(a[col] ?? 0), vb = Number(b[col] ?? 0);
+      return (isNaN(va) || isNaN(vb)) ? String(a[col] ?? '').localeCompare(String(b[col] ?? '')) * dir : (va - vb) * dir;
+    });
+  }
+
+  sortTrades(col: string): void {
+    if (this.tradeSortCol === col) { this.tradeSortAsc = !this.tradeSortAsc; }
+    else { this.tradeSortCol = col; this.tradeSortAsc = col === 'realizedPnl' ? true : true; }
+  }
+
+  tradeSortIcon(col: string): string {
+    if (this.tradeSortCol !== col) return '';
+    return this.tradeSortAsc ? '▲' : '▼';
   }
   get paperTrades(): ApiRecord[] {
     return this.trades.filter(t => String(t['tradeId'] ?? '').startsWith('PAPER-'))
@@ -795,31 +829,65 @@ export class MonitoringPageComponent implements OnInit, OnDestroy {
   }
   get liveOrders(): ApiRecord[] {
     return this.orders.filter(o => !String(o['clientOrderId'] ?? '').startsWith('PAPER-'))
-      .filter(o => this.isToday(String(o['orderPlacedAt'] ?? o['updatedAt'] ?? '')));
+      .filter(o => this.isToday(String(o['orderPlacedAt'] ?? o['updatedAt'] ?? '')))
+      .sort((a, b) => new Date(String(b['updatedAt'] ?? b['orderPlacedAt'] ?? 0)).getTime() - new Date(String(a['updatedAt'] ?? a['orderPlacedAt'] ?? 0)).getTime());
   }
 
   /** Superuser-only per-user view filter. null = all users. */
   viewUserId: number | null = null;
   monitorUsers: AdminUser[] = [];
 
+  /** Close-position UI state (own positions for any user; another user's for superuser via dropdown). */
+  closingKey: string | null = null;
+  closeMsg = '';
+  closeErr = false;
+  closeDialogOpen = false;
+
   constructor(private readonly api: ApiService,
               public readonly admin: AdminService,
-              private readonly cd: ChangeDetectorRef) {}
+              private readonly cd: ChangeDetectorRef,
+              private readonly dialog: MatDialog) {}
 
   onViewUserChange(event: Event): void {
     const val = (event.target as HTMLSelectElement).value;
     this.viewUserId = val ? Number(val) : null;
-    this.load();
+    // Clear per-user data IMMEDIATELY: stale rows of the previous user must never sit under the
+    // new selection while the fetch is in flight (wrong-owner close risk).
+    this.positions = [];
+    this.orders = [];
+    this.trades = [];
+    this.closeMsg = '';
+    this.closeErr = false;
+    this.cd.detectChanges();
+    this.loadUserData();
   }
 
   ngOnInit(): void {
+    // ALWAYS per-user: default the view to the viewer's OWN account (no "all users" aggregate).
+    this.viewUserId = this.admin.currentUser()?.userId ?? null;
     this.load();
     this.loadJvm();
     // Superuser: load the user list for the per-user view dropdown.
     // Non-admins get a 403 → silently ignored, dropdown never shows.
     this.admin.listUsers()
-      .pipe(catchError(() => of([] as AdminUser[])))
-      .subscribe(users => { this.monitorUsers = users; this.cd.detectChanges(); });
+      .pipe(catchError(() => {
+        // Non-admin fallback: use the lightweight user list endpoint
+        return this.api.userList().pipe(catchError(() => of([] as any[])));
+      }))
+      .subscribe(users => {
+        this.monitorUsers = users as AdminUser[];
+        // If still empty, add self
+        if (this.monitorUsers.length === 0) {
+          const me = this.admin.currentUser();
+          if (me) this.monitorUsers = [{ id: me.userId, email: me.email } as AdminUser];
+        }
+        // If currentUser wasn't ready at init, default to the viewer's own id (fallback: first user).
+        if (this.viewUserId == null) {
+          this.viewUserId = this.admin.currentUser()?.userId ?? (users.length ? users[0].id : null);
+          if (this.viewUserId != null) { this.load(); }
+        }
+        this.cd.detectChanges();
+      });
     // Retry positions once after 4s — broker client may not be ready on cold start
     timer(4000).subscribe(() => {
       if (this.positions.length === 0) { this.loadPositions(); }
@@ -843,13 +911,57 @@ export class MonitoringPageComponent implements OnInit, OnDestroy {
       .subscribe(j => { if (j) { this.jvm = j; this.cd.detectChanges(); } });
   }
 
+  /**
+   * Can the current viewer close positions? True if:
+   * - Viewing their OWN positions (viewUserId == their own userId), OR
+   * - They are a superuser/admin (can close anyone's)
+   */
+  canClosePositions(): boolean {
+    const myId = this.admin.currentUser()?.userId ?? null;
+    return this.admin.isAdmin() || this.viewUserId === myId || this.viewUserId == null;
+  }
+
+  /**
+   * Open the close-position modal. The dialog fetches the TARGET user's live position from the
+   * server (close-preview) — it never trusts this table row, which can be stale or mid-user-switch.
+   * A superuser viewing another user (via the dropdown) closes THAT user's position; the exit order
+   * is always placed on the owning user's broker account (backend routes by privilege-checked owner).
+   * Quantity is editable in the dialog for partial closes.
+   */
+  confirmClosePosition(row: ApiRecord): void {
+    const inst = String(row['instrumentKey'] ?? '');
+    if (!inst || this.closingKey || this.closeDialogOpen) return;
+    const email = this.viewUserId
+      ? this.monitorUsers.find(u => u.id === this.viewUserId)?.email
+      : this.admin.currentUser()?.email;
+    this.closeDialogOpen = true; // pause poll writes while the operator is deciding
+    const ref = this.dialog.open<ClosePositionDialogComponent, unknown, ClosePositionDialogResult>(
+      ClosePositionDialogComponent, {
+        width: '480px',
+        disableClose: true,
+        data: { instrumentKey: inst, userId: this.viewUserId, userEmail: email }
+      });
+    ref.afterClosed().subscribe(result => {
+      this.closeDialogOpen = false;
+      if (result) {
+        this.closeErr = !result.ok;
+        this.closeMsg = result.message;
+        this.refreshPnlAndPositions();
+      }
+      this.cd.detectChanges();
+    });
+  }
+
   /** Fast P&L + positions refresh (every 5s) — keeps unrealized P&L current without full reload */
   private refreshPnlAndPositions(): void {
+    if (this.closeDialogOpen) return; // don't repaint under the close modal
+    const forUser = this.viewUserId; // RACE GUARD: discard the response if the dropdown moved on
     forkJoin({
-      pnl: this.api.pnl(this.viewUserId).pipe(catchError(() => of(null))),
-      positions: this.api.positions(this.viewUserId).pipe(catchError(() => of([] as ApiRecord[]))),
-      status: this.api.tradingStatus().pipe(catchError(() => of(null)))
+      pnl: this.api.pnl(forUser).pipe(catchError(() => of(null))),
+      positions: this.api.positions(forUser).pipe(catchError(() => of([] as ApiRecord[]))),
+      status: this.api.tradingStatus(forUser).pipe(catchError(() => of(null)))
     }).subscribe(({ pnl, positions, status }) => {
+      if (forUser !== this.viewUserId) return; // stale response for a previously selected user
       if (pnl) this.pnl = pnl as PnlSnapshot;
       if (positions.length > 0 || this.positions.length > 0) this.positions = positions;
       if (status) this.tradingStatus = status as TradingStatus;
@@ -859,9 +971,13 @@ export class MonitoringPageComponent implements OnInit, OnDestroy {
   }
 
   private loadPositions(): void {
-    this.api.positions(this.viewUserId)
+    const forUser = this.viewUserId; // RACE GUARD
+    this.api.positions(forUser)
       .pipe(catchError(() => of([] as ApiRecord[])))
-      .subscribe(p => { this.positions = p; this.startHealthPolling(); this.cd.detectChanges(); });
+      .subscribe(p => {
+        if (forUser !== this.viewUserId) return;
+        this.positions = p; this.startHealthPolling(); this.cd.detectChanges();
+      });
   }
 
   private startHealthPolling(): void {
@@ -913,17 +1029,19 @@ export class MonitoringPageComponent implements OnInit, OnDestroy {
   }
 
   load(): void {
+    const forUser = this.viewUserId; // RACE GUARD: discard if the dropdown moved on mid-flight
     forkJoin({
       config:     this.api.config().pipe(catchError(() => of(null))),
-      positions:  this.api.positions(this.viewUserId).pipe(catchError(() => of([] as ApiRecord[]))),
-      orders:     this.api.orders(this.viewUserId).pipe(catchError(() => of([] as ApiRecord[]))),
-      trades:     this.api.trades(this.viewUserId).pipe(catchError(() => of([] as ApiRecord[]))),
-      pnl:        this.api.pnl(this.viewUserId).pipe(catchError(() => of(null))),
+      positions:  this.api.positions(forUser).pipe(catchError(() => of([] as ApiRecord[]))),
+      orders:     this.api.orders(forUser).pipe(catchError(() => of([] as ApiRecord[]))),
+      trades:     this.api.trades(forUser).pipe(catchError(() => of([] as ApiRecord[]))),
+      pnl:        this.api.pnl(forUser).pipe(catchError(() => of(null))),
       signals:    this.api.recentSignals().pipe(catchError(() => of([] as ApiRecord[]))),
-      status:     this.api.tradingStatus().pipe(catchError(() => of(null))),
+      status:     this.api.tradingStatus(forUser).pipe(catchError(() => of(null))),
       strategies: this.api.getStrategies().pipe(catchError(() => of([] as StrategyDto[]))),
       scorecard:  this.api.strategyScorecard(this.scorecardPeriod).pipe(catchError(() => of([] as ScorecardRow[])))
     }).subscribe(r => {
+      if (forUser !== this.viewUserId) return; // stale response for a previously selected user
       this.runtime        = r.config?.runtime as unknown as RuntimeStatus;
       this.positions      = r.positions;
       this.orders         = r.orders;
@@ -939,6 +1057,33 @@ export class MonitoringPageComponent implements OnInit, OnDestroy {
       const capital = Number(params.find(p => p.path === 'trading.risk.total-capital')?.value ?? 0);
       const pct     = Number(params.find(p => p.path === 'trading.risk.max-daily-loss-percent')?.value ?? 0);
       this.dailyLossLimit = capital * pct / 100;
+
+      const realized = Number(r.pnl?.realizedPnl ?? 0);
+      this.dailyLossUsed = realized < 0 ? Math.abs(realized) : 0;
+
+      this.lastRefreshed = new Date();
+      this.startHealthPolling();
+      this.cd.detectChanges();
+    });
+  }
+
+  /** Lightweight user-scoped refresh — only fetches data that changes per user (positions, orders, trades, pnl).
+   *  Skips global data (config, signals, strategies, scorecard) that doesn't change on user switch. */
+  private loadUserData(): void {
+    const forUser = this.viewUserId; // RACE GUARD: discard if the dropdown moved on mid-flight
+    forkJoin({
+      positions:  this.api.positions(forUser).pipe(catchError(() => of([] as ApiRecord[]))),
+      orders:     this.api.orders(forUser).pipe(catchError(() => of([] as ApiRecord[]))),
+      trades:     this.api.trades(forUser).pipe(catchError(() => of([] as ApiRecord[]))),
+      pnl:        this.api.pnl(forUser).pipe(catchError(() => of(null))),
+      status:     this.api.tradingStatus(forUser).pipe(catchError(() => of(null)))
+    }).subscribe(r => {
+      if (forUser !== this.viewUserId) return; // stale response for a previously selected user
+      this.positions      = r.positions;
+      this.orders         = r.orders;
+      this.trades         = r.trades;
+      this.pnl            = r.pnl ?? undefined;
+      this.tradingStatus  = r.status ?? undefined;
 
       const realized = Number(r.pnl?.realizedPnl ?? 0);
       this.dailyLossUsed = realized < 0 ? Math.abs(realized) : 0;
@@ -965,7 +1110,7 @@ export class MonitoringPageComponent implements OnInit, OnDestroy {
     if (!v) return '-';
     try {
       const d = new Date(String(v));
-      return d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+      return d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false, timeZone: 'Asia/Kolkata' });
     } catch { return String(v); }
   }
 

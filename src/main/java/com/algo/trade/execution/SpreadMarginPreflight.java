@@ -36,6 +36,16 @@ public class SpreadMarginPreflight {
     private final TradingProperties tradingProperties;
     private final AdaptivePositionSizer adaptivePositionSizer;
 
+    /** Resolver-backed config — getters resolve the CURRENT UserContext user's effective (risk-profile) values. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.config.GlobalConfigService globalConfigService;
+
+    /** Opt-in: bound spread capital-at-risk to the user's profile risk budget (capital × risk%), for risk-%
+     *  parity with single-leg. Default OFF so it's enabled deliberately (it can legitimately reject spreads
+     *  whose margin exceeds a conservative profile's per-trade budget). */
+    @org.springframework.beans.factory.annotation.Value("${spread.risk-profile-sizing.enabled:true}")
+    private boolean riskProfileSizingEnabled;
+
     public SpreadMarginPreflight(BrokerMarginClient marginClient,
                                  MarketDataService marketDataService,
                                  SpreadTradingProperties spreadProperties,
@@ -95,6 +105,25 @@ public class SpreadMarginPreflight {
         BigDecimal available = marginsOpt.get().netAvailable();
         if (available.signum() <= 0) {
             available = marginsOpt.get().availableCash();
+        }
+
+        // Risk-% parity (opt-in): bound the at-risk capital to the user's profile risk budget so multi-leg
+        // honours the same risk-% as single-leg. Computed EXACTLY as RiskEngine (totalCapital ×
+        // maxRiskPerTradePercent) for unit-consistency. Broker margin ≈ max-loss for defined-risk spreads, so
+        // capping affordability at the risk budget is a conservative, correct risk-% bound. Resolver-backed →
+        // the current user's assigned profile.
+        if (riskProfileSizingEnabled && globalConfigService != null) {
+            try {
+                BigDecimal riskBudget = globalConfigService.getTotalCapital()
+                        .multiply(globalConfigService.getMaxRiskPerTradePercent(), MC);
+                if (riskBudget.signum() > 0 && riskBudget.compareTo(available) < 0) {
+                    log.info("[SpreadMargin] risk-% cap: available {} → {} (profile risk budget)",
+                            available, riskBudget);
+                    available = riskBudget;
+                }
+            } catch (Exception e) {
+                log.debug("[SpreadMargin] risk-% cap skipped (non-fatal): {}", e.getMessage());
+            }
         }
 
         Map<String, Quote> quotes = marketDataService.quotes(

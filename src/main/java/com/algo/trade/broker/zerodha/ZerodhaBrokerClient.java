@@ -108,9 +108,11 @@ public class ZerodhaBrokerClient implements BrokerClient {
 
     @Override
     public BrokerSession session() {
-        boolean authenticated = hasText(properties.broker().apiKey()) && tokenStore.authenticated();
+        // DB-first: api_key from the primary account (env only as fallback), consistent with auth headers.
+        String apiKey = tokenStore.primaryApiKey().orElse(properties.broker().apiKey());
+        boolean authenticated = hasText(apiKey) && tokenStore.authenticated();
         log.debug("Zerodha session requested: apiKeyConfigured={}, authenticated={}, userIdPresent={}",
-                hasText(properties.broker().apiKey()), authenticated,
+                hasText(apiKey), authenticated,
                 tokenStore.userId().orElse(properties.broker().userId()) != null);
         return new BrokerSession(BrokerName.ZERODHA, tokenStore.userId().orElse(properties.broker().userId()),
                 authenticated, tokenStore.updatedAt().orElse(null), null);
@@ -203,9 +205,11 @@ public class ZerodhaBrokerClient implements BrokerClient {
 
     @Override
     public OrderResponse placeOrder(OrderRequest request) {
-        log.info("Zerodha order requested: clientOrderId={}, instrument={}, side={}, orderType={}, product={}, quantity={}, liveTradingEnabled={}",
+        com.algo.trade.domain.OrderVariety variety = request.variety() != null
+                ? request.variety() : com.algo.trade.domain.OrderVariety.REGULAR;
+        log.info("Zerodha order requested: clientOrderId={}, instrument={}, side={}, orderType={}, product={}, quantity={}, variety={}, liveTradingEnabled={}",
                 request.clientOrderId(), request.instrumentKey(), request.side(), request.orderType(),
-                request.productType(), request.quantity(), properties.liveTradingEnabled());
+                request.productType(), request.quantity(), variety, properties.liveTradingEnabled());
         if (!properties.liveTradingEnabled()) {
             log.warn("Zerodha order rejected locally: live trading is disabled");
             return new OrderResponse(request.clientOrderId(), Optional.empty(), request.instrumentKey(), request.side(),
@@ -233,9 +237,12 @@ public class ZerodhaBrokerClient implements BrokerClient {
         if (tag != null && tag.length() > 20) tag = tag.substring(0, 20);
         body.add("tag", tag != null ? tag : "");
 
+        // Use the variety to determine the Zerodha API endpoint (regular vs AMO)
+        final String orderEndpoint = variety.apiPath();
+
         try {
             String responseBody = retryWithBackoff("placeOrder", () -> restClient.post()
-                    .uri("/orders/regular")
+                    .uri(orderEndpoint)
                     .headers(this::applyAuthHeaders)
                     .contentType(MediaType.APPLICATION_FORM_URLENCODED)
                     .body(body)
@@ -244,15 +251,56 @@ public class ZerodhaBrokerClient implements BrokerClient {
             JsonNode data = objectMapper.readTree(responseBody).path("data");
             Optional<String> orderId = Optional.ofNullable(data.path("order_id").textValue());
 
-            log.info("Zerodha order submitted: clientOrderId={}, brokerOrderId={}",
-                    request.clientOrderId(), orderId.orElse(""));
+            log.info("Zerodha order submitted: clientOrderId={}, brokerOrderId={}, variety={}",
+                    request.clientOrderId(), orderId.orElse(""), variety);
             return new OrderResponse(request.clientOrderId(), orderId, request.instrumentKey(), request.side(),
                     OrderStatus.OPEN, request.quantity(), 0, Optional.empty(), Optional.empty(), Instant.now());
         } catch (Exception ex) {
-            log.warn("Zerodha order failed: clientOrderId={}, instrument={}, message={}",
-                    request.clientOrderId(), request.instrumentKey(), ex.getMessage());
-            throw new BrokerException("Failed to place Zerodha order", ex);
+            // Surface the actual Zerodha rejection reason (not just wrapper text)
+            String reason = extractBrokerErrorMessage(ex);
+            log.warn("Zerodha order failed: clientOrderId={}, instrument={}, variety={}, reason={}",
+                    request.clientOrderId(), request.instrumentKey(), variety, reason);
+            throw new BrokerException(reason, ex);
         }
+    }
+
+    /** Extract the actual Zerodha error message from the exception chain (HTTP response body). */
+    private String extractBrokerErrorMessage(Exception ex) {
+        String msg = ex.getMessage();
+        if (msg == null) return "Failed to place Zerodha order";
+        // Zerodha returns JSON like {"status":"error","message":"...","error_type":"..."}
+        // RestClientException often wraps this in the message string
+        try {
+            // Try to parse if the message contains JSON
+            int jsonStart = msg.indexOf('{');
+            if (jsonStart >= 0) {
+                String jsonPart = msg.substring(jsonStart);
+                JsonNode errorNode = objectMapper.readTree(jsonPart);
+                String brokerMsg = errorNode.path("message").asText(null);
+                if (brokerMsg != null && !brokerMsg.isBlank()) {
+                    return brokerMsg;
+                }
+            }
+        } catch (Exception ignored) { /* fall through to raw message */ }
+        // Check the cause chain
+        Throwable cause = ex.getCause();
+        while (cause != null) {
+            String causeMsg = cause.getMessage();
+            if (causeMsg != null && causeMsg.contains("message")) {
+                try {
+                    int idx = causeMsg.indexOf('{');
+                    if (idx >= 0) {
+                        JsonNode node = objectMapper.readTree(causeMsg.substring(idx));
+                        String m = node.path("message").asText(null);
+                        if (m != null && !m.isBlank()) return m;
+                    }
+                } catch (Exception ignored) {}
+            }
+            cause = cause.getCause();
+        }
+        // Fallback — return a cleaned-up version of the raw message
+        if (msg.length() > 200) msg = msg.substring(0, 200);
+        return "Zerodha order rejected: " + msg;
     }
 
     @Override
@@ -324,10 +372,14 @@ public class ZerodhaBrokerClient implements BrokerClient {
     }
 
     private void applyAuthHeaders(HttpHeaders headers) {
-        // Multi-user: try per-user session first, fall back to global token
+        // Multi-user: try per-user session first, fall back to global token.
+        // hasAuth (valid token), NOT isReady (token + tradingEnabled): tradingEnabled gates NEW
+        // entries upstream (MultiUserStrategyLoop / SignalCopyService / UserAwareExecutionService);
+        // requiring it here made position READS and manual EXITS throw for a trading-disabled user —
+        // the one moment the operator most needs to view/flatten that user's book.
         if (userSessionManager != null && com.algo.trade.multiuser.UserContext.isSet()) {
             var session = userSessionManager.getCurrentSession();
-            if (session.isReady()) {
+            if (session.hasAuth()) {
                 headers.set("X-Kite-Version", "3");
                 headers.set(HttpHeaders.AUTHORIZATION, session.getAuthHeader());
                 return;
@@ -343,18 +395,23 @@ public class ZerodhaBrokerClient implements BrokerClient {
                         + "(Refusing to fall back to the primary account's credentials.)");
             }
         }
-        // Fallback: global/default token (single-user mode or default user)
-        requireAuth();
-        log.debug("Applying Zerodha auth headers (global token)");
+        // Fallback: global/default token (single-user mode or default user).
+        // FIX (2026-06-24): pair the api_key with the PRIMARY account (DB), not the env KITE_API_KEY.
+        // The shared token resolves from the primary account; pairing it with a blank/stale env api_key
+        // produced "Incorrect api_key or access_token" 403s across the whole sys/market-data path
+        // (historical candles, scans, validation) all session — while per-user orders worked fine.
+        String sharedApiKey = tokenStore.primaryApiKey().orElse(properties.broker().apiKey());
+        requireAuth(sharedApiKey);
+        log.debug("Applying Zerodha auth headers (global token, apiKey from primary account)");
         headers.set("X-Kite-Version", "3");
         headers.set(HttpHeaders.AUTHORIZATION,
-                "token " + properties.broker().apiKey() + ":" + tokenStore.accessToken().orElseThrow());
+                "token " + sharedApiKey + ":" + tokenStore.accessToken().orElseThrow());
     }
 
-    private void requireAuth() {
-        if (!hasText(properties.broker().apiKey()) || tokenStore.accessToken().isEmpty()) {
+    private void requireAuth(String apiKey) {
+        if (!hasText(apiKey) || tokenStore.accessToken().isEmpty()) {
             log.warn("Zerodha auth missing: apiKeyConfigured={}, accessTokenPresent={}",
-                    hasText(properties.broker().apiKey()), tokenStore.accessToken().isPresent());
+                    hasText(apiKey), tokenStore.accessToken().isPresent());
             throw new BrokerException("Zerodha api-key and access-token are required for live broker calls. "
                     + "Set KITE_ACCESS_TOKEN or call /auth/kite/session and complete the Kite login callback first.");
         }

@@ -3,6 +3,7 @@ package com.algo.trade.tuning.analyzer.plugins;
 import com.algo.trade.strategy.StrategyType;
 import com.algo.trade.tuning.TuningEventType;
 import com.algo.trade.tuning.analyzer.AnalyzerSection;
+import com.algo.trade.tuning.analyzer.EventScan;
 import com.algo.trade.tuning.analyzer.TuningAnalyzerPlugin;
 import com.algo.trade.tuning.analyzer.TuningEventQuery;
 import com.algo.trade.tuning.store.TuningQueryException;
@@ -54,7 +55,10 @@ public class OiMomentumAnalyzerPlugin implements TuningAnalyzerPlugin {
         }
         List<AnalyzerSection> sections = new ArrayList<>();
         sections.add(matrixCaseBiasHeatmap(query));
-        sections.add(v3VsLegacyConcordance(query));
+        // V3-vs-legacy concordance intentionally omitted: V3DecisionRecorder + LegacyDetectionRecorder
+        // were retired in Phase 6, so this section could only ever render the "unavailable" placeholder,
+        // which reads like a data gap in the report. The renderer (renderConcordance / v3VsLegacyConcordance)
+        // is kept below so the section can be re-wired here if those recorders are ever restored.
         return sections;
     }
 
@@ -62,32 +66,27 @@ public class OiMomentumAnalyzerPlugin implements TuningAnalyzerPlugin {
 
     public AnalyzerSection matrixCaseBiasHeatmap(TuningEventQuery query) {
         try {
-            List<Path> signalFiles = query.store().listEventFiles(
-                    StrategyType.OI_MOMENTUM, TuningEventType.SIGNAL,
-                    query.fromDate(), query.toDate());
-            List<Path> exitFiles = query.store().listEventFiles(
-                    StrategyType.OI_MOMENTUM, TuningEventType.EXIT,
-                    query.fromDate(), query.toDate());
-            if (signalFiles.isEmpty()) {
+            // Read CSV ∪ Parquet via EventScan — for an older date range the CSVs were rolled to Parquet, so a
+            // CSV-only read wrongly showed "No signal data" while the data was in the archive.
+            if (!EventScan.hasData(query, StrategyType.OI_MOMENTUM, TuningEventType.SIGNAL)) {
                 return AnalyzerSection.htmlOnly("Matrix-case × bias-score heatmap",
                         "<p><em>No OI Momentum signal data in the selected window.</em></p>");
             }
 
             // DuckDB query: join signal + exit by correlationKey, extract attrs from JSON,
             // group by (matrixCase, biasBand).
-            String signalGlob = globOf(signalFiles);
-            String exitJoin = exitFiles.isEmpty()
+            String signalSrc = EventScan.source(query, StrategyType.OI_MOMENTUM, TuningEventType.SIGNAL);
+            String exitJoin = !EventScan.hasData(query, StrategyType.OI_MOMENTUM, TuningEventType.EXIT)
                     ? "(SELECT NULL AS correlationKey, 0.0 AS realizedPnlPct WHERE 1=0)"
-                    : "(SELECT correlationKey, realizedPnlPct FROM read_csv_auto(['"
-                        + String.join("','", exitFiles.stream().map(Path::toString).toList())
-                        + "'], header=true))";
+                    : "(SELECT correlationKey, realizedPnlPct FROM "
+                        + EventScan.source(query, StrategyType.OI_MOMENTUM, TuningEventType.EXIT) + ")";
 
             String sql = ""
                     + "WITH signals AS ("
                     + "  SELECT correlationKey, "
                     + "    json_extract_string(attr_extra, '$.matrixCase') AS matrixCase, "
                     + "    TRY_CAST(json_extract_string(attr_extra, '$.biasScore') AS DOUBLE) AS biasScore "
-                    + "  FROM read_csv_auto([" + signalGlob + "], header=true)"
+                    + "  FROM " + signalSrc
                     + "), joined AS ("
                     + "  SELECT s.matrixCase, s.biasScore, e.realizedPnlPct"
                     + "  FROM signals s LEFT JOIN " + exitJoin + " e USING (correlationKey)"

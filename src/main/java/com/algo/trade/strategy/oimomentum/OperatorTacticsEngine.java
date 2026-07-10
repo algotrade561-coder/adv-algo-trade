@@ -193,7 +193,7 @@ public class OperatorTacticsEngine {
         // Rotation pattern: OI is hot in another index with same direction
         // → operators will rotate here next
         state.rotationPhase = "CATCHING_UP_FROM_" + hottest.name();
-        return 5;
+        return 8; // was 5 — rotation with direction match is a strong operator tell
     }
 
     // ═══════════════════════════════════════════════════════════════════════════
@@ -215,7 +215,7 @@ public class OperatorTacticsEngine {
         long totalChange = Math.abs(oiChange[0]) + Math.abs(oiChange[1]);
 
         // OI spike during event window = operators positioning for the announcement
-        if (totalChange < 300_000L) return 0;
+        if (totalChange < 200_000L) return 0; // was 300k — catches smaller event footprints
 
         int oiDir = deriveOiDir(oiChange[0], oiChange[1]);
         if (oiDir == momentumDir) {
@@ -315,7 +315,7 @@ public class OperatorTacticsEngine {
         if (trapDetected) {
             log.debug("[Tactics][{}] TRAP detected: far OTM OI at {} with opposing ATM build",
                     indexType, state.trapStrike);
-            return 8; // Penalty — reduce confidence when trap pattern exists
+            return 5; // was 8 — softer penalty, trap is a warning not a veto
         }
         return 0;
     }
@@ -327,19 +327,6 @@ public class OperatorTacticsEngine {
     private int evaluateBasket(IndexType indexType, int momentumDir) {
         // Only applies to NIFTY and SENSEX (constituent-driven indices)
         if (indexType != IndexType.NIFTY && indexType != IndexType.SENSEX) return 0;
-
-        // Check if heavyweight stocks are moving in the momentum direction
-        // This confirms that operators are moving actual stocks, not just manipulating OI
-        int confirming = 0;
-        int opposing = 0;
-
-        for (Map.Entry<String, Double> entry : NIFTY_HEAVYWEIGHTS.entrySet()) {
-            String stockKey = entry.getKey();
-            // Try to get the stock's price movement from LiveInstrumentCache
-            // (if stock futures are subscribed, their price will be in futures cache)
-            // For now, use a simplified check based on index movement correlation
-            // In production, this would query individual stock prices
-        }
 
         // Simplified basket check: if the index's OI is building strongly and
         // the ATM option spread is tightening (market makers hedging), it confirms
@@ -366,10 +353,21 @@ public class OperatorTacticsEngine {
         boolean heavyOi = opt.getOpenInterest() > 500_000L;
         boolean highBidQty = opt.getBestBidQty() > opt.getBestAskQty() * 1.3;
 
+        int bonus = 0;
         if (tightSpread && heavyOi && highBidQty) {
-            return 4; // Basket confirmation: MM hedging confirms stock moves
+            bonus = 5; // was 4 — MM hedging confirms stock moves
+        } else if (tightSpread && heavyOi) {
+            bonus = 3; // partial: tight + heavy but bid/ask neutral
         }
-        return 0;
+
+        // Expiry-day override: double basket bonus when heavyweights align with pinning
+        boolean expiryDay = java.time.LocalTime.now(java.time.ZoneId.of("Asia/Kolkata"))
+                .isAfter(java.time.LocalTime.of(14, 0));
+        if (expiryDay && bonus > 0) {
+            bonus *= 2; // expiry afternoon: operators move basket aggressively for pinning
+        }
+
+        return bonus;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════

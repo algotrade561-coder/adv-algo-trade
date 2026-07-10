@@ -119,9 +119,15 @@ public class ReversalRiskTracker {
         push(maxPainHistory.get(ix), now, maxPain);
 
         // R2: IV skew = peIV(ATM-1) - ceIV(ATM+1)
+        // Guard: skip skew when either IV is 0 or implausible (< 3% or > 60%) — these
+        // are unconverged values from the GreeksCalculator and would produce garbage skew.
         ChainSnapshot.StrikeData peBelow = rows.get(atm - strikeStep);
         ChainSnapshot.StrikeData ceAbove = rows.get(atm + strikeStep);
-        double skew = (peBelow == null ? 0 : peBelow.peIV()) - (ceAbove == null ? 0 : ceAbove.ceIV());
+        double peIvBelow = peBelow != null ? peBelow.peIV() : 0;
+        double ceIvAbove = ceAbove != null ? ceAbove.ceIV() : 0;
+        double skew = (peIvBelow > 3.0 && peIvBelow < 60.0 && ceIvAbove > 3.0 && ceIvAbove < 60.0)
+                ? peIvBelow - ceIvAbove
+                : 0.0; // unavailable — don't produce garbage skew
         push(skewHistory.get(ix), now, skew);
 
         // R3: wall positions
@@ -217,7 +223,8 @@ public class ReversalRiskTracker {
         }
     }
 
-    /** Best-effort CSV append. Creates per-day directory and writes header if first row. */
+    /** Best-effort CSV append. Creates per-day directory and writes header if first row.
+     *  Uses SYNC to prevent truncation from JVM crashes or interrupted writes. */
     private static synchronized void appendCsv(String filename, String header, String row) {
         try {
             LocalDate today = LocalDate.now(IST);
@@ -229,7 +236,7 @@ public class ReversalRiskTracker {
             if (newFile) sb.append(header).append('\n');
             sb.append(row).append('\n');
             Files.writeString(file, sb.toString(),
-                    StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+                    StandardOpenOption.CREATE, StandardOpenOption.APPEND, StandardOpenOption.SYNC);
         } catch (IOException ex) {
             log.debug("[ReversalRisk] CSV append failed for {}: {}", filename, ex.getMessage());
         }

@@ -248,7 +248,9 @@ public class AlgoTradeExecution {
         if (tf != Timeframe.ONE_MINUTE && tf != Timeframe.FIVE_MINUTE && tf != Timeframe.FIFTEEN_MINUTE) return;
         if (tradingStateService.killSwitchEnabled()) return;
         if (tradingStateService.haltMode() == com.algo.trade.risk.HaltMode.HARD) return;
-        if (!tradingStateService.running()) return;
+        // Capture-when-stopped: when enabled, keep scanning so every strategy still evaluates + records
+        // tuning data while stopped. Order placement is hard-gated separately at each execution dispatch.
+        if (!tradingStateService.scanForCaptureAllowed()) return;
 
         // Debounce: skip if same timeframe scanned within 500ms
         Instant lastScan = lastScanByTimeframe.get(tf);
@@ -290,7 +292,7 @@ public class AlgoTradeExecution {
     )
     public void scan() {
         if (schedulerRegistry != null && !schedulerRegistry.isEnabled("algoScan")) return;
-        if (!tradingStateService.running()) {
+        if (!tradingStateService.scanForCaptureAllowed()) {
             log.debug("Algo scan skipped: trading state is stopped");
             return;
         }
@@ -367,10 +369,24 @@ public class AlgoTradeExecution {
             return;
         }
 
-        // Market guard safety: circuit breaker, event day, VIX
-        String blockReason = marketGuard.longPremiumBlockReason(true);
-        if (blockReason != null) {
-            log.info("Algo scan skipped: MarketGuard blocked — {}", blockReason);
+        // Market guard safety — SCAN-WIDE checks only.
+        // Only abort the entire scan for conditions that apply to EVERY strategy
+        // regardless of premium direction:
+        //   (a) VIX feed unavailable (vix <= 0) — no VIX-based guard can be evaluated
+        //       safely, so fail closed and block all entries; and
+        //   (b) circuit breaker — index moved too much today.
+        // The premium-direction-specific VIX-band checks (long-premium floor vs
+        // short-premium band) are applied PER STRATEGY inside the loop below, so that
+        // e.g. short-premium sellers can still run when VIX is within their valid
+        // band but below the long-premium floor. Previously this gate used the
+        // long-premium block reason to skip the whole scan, which silently starved
+        // every other strategy whenever VIX sat below the long-premium floor.
+        if (marketGuard.getCurrentVix() <= 0) {
+            log.info("Algo scan skipped: MarketGuard blocked — VIX feed unavailable");
+            return;
+        }
+        if (marketGuard.isCircuitBreakerTriggered()) {
+            log.info("Algo scan skipped: MarketGuard blocked — circuit breaker triggered");
             return;
         }
 
@@ -455,6 +471,25 @@ public class AlgoTradeExecution {
                 }
                 // DIRECTIONAL_BUY only runs on 1-min trigger
                 if (type == StrategyType.DIRECTIONAL_BUY && triggerTimeframe != Timeframe.ONE_MINUTE) {
+                    continue;
+                }
+
+                // ── Gate 2b: Per-strategy MarketGuard (premium-direction aware) ──
+                // Apply the VIX-band guard that matches THIS strategy's premium
+                // direction instead of a single scan-wide long-premium gate. Sellers
+                // use the short-premium band (block when VIX too high or too low to
+                // sell); buyers use the long-premium floor. Long-vol straddles/
+                // strangles bypass the event-day block (event days are their highest-
+                // conviction entry). Blocking here skips only THIS strategy and lets
+                // the others continue, mirroring the per-strategy guard already used
+                // inside AbstractSpreadStrategy.
+                boolean mgAllowEventDay = (type == StrategyType.LONG_STRADDLE
+                        || type == StrategyType.LONG_STRANGLE);
+                String mgBlockReason = type.isSellingStrategy()
+                        ? marketGuard.shortPremiumBlockReason()
+                        : marketGuard.longPremiumBlockReason(mgAllowEventDay);
+                if (mgBlockReason != null) {
+                    log.info("{} skipped for {}: MarketGuard blocked — {}", type, underlying, mgBlockReason);
                     continue;
                 }
 
@@ -742,6 +777,21 @@ public class AlgoTradeExecution {
                 return 0;
             }
 
+            // Capture-only chokepoint for BOTH paper and live spreads: when trading is stopped
+            // (capture-when-stopped mode) the spread was evaluated + captured but must NOT open. Must run
+            // BEFORE the paper branch (paper spreads also bypass ExecutionEngine's !running() gate) and must
+            // fail the PENDING PositionGroup so the spread entry gate is RELEASED — otherwise it stays held
+            // and blocks future spread entries on this underlying for the rest of the capture session.
+            if (!tradingStateService.running()) {
+                spreadStrat.failPositionGroup(groupId, "CAPTURE_ONLY: trading stopped");
+                spreadEntity.setExecutionStage("CAPTURE_ONLY");
+                spreadEntity.setExecutionReason("Spread evaluated + captured but NOT opened (trading stopped)");
+                decisionRepository.save(spreadEntity);
+                log.info("[CaptureOnly] Spread NOT opened (trading stopped) — group failed + gate released: type={} groupId={}",
+                        type, groupId);
+                return 0;
+            }
+
             if (config.isPaperTrading()) {
                 spreadStrat.activatePositionGroup(groupId, activePos.legs(), activePos.entryPrices());
                 spreadEntity.setExecutionStage("PAPER_FILLED");
@@ -752,9 +802,19 @@ public class AlgoTradeExecution {
             }
 
             int configuredLots = Math.max(1, config.getLots());
+            // Respect the per-user RISK PROFILE on multi-leg/spread entries too (single-leg already does via
+            // RiskEngine; spreads bypass RiskEngine and size by margin preflight, so apply the profile cap here).
+            // globalConfigService is resolver-backed → returns the current UserContext user's profile maxLots.
+            int profileMaxLots = globalConfigService.getMaxLotsPerTrade();
+            if (profileMaxLots > 0 && configuredLots > profileMaxLots) {
+                log.info("Spread lots capped by risk profile: {} → {} (type={})", configuredLots, profileMaxLots, type);
+                configuredLots = profileMaxLots;
+            }
             int lotSize = activePos.legs().isEmpty()
                     ? 1
                     : activePos.legs().getFirst().quantity() / configuredLots;
+            // (capture-only stop is handled by the unified guard above, before the paper branch — it also
+            //  releases the entry gate via failPositionGroup, so by here trading is running.)
             SpreadOrderExecutor.SpreadExecutionResult execResult = spreadOrderExecutor.execute(
                     activePos.legs(), groupId, type.name(), configuredLots, lotSize, false);
 
@@ -1031,6 +1091,13 @@ public class AlgoTradeExecution {
                 .limit(remainingEntries)
                 .toList();
         for (EntryCandidate candidate : selectedCandidates) {
+            // Capture-only guard: the decision was already evaluated + captured above; suppress placement
+            // while trading is stopped (ExecutionEngine also rejects, but this avoids the rejection noise).
+            if (!tradingStateService.running()) {
+                log.info("[CaptureOnly] Entry NOT placed (trading stopped) — decision captured: {} {}",
+                        candidate.decision().signalType(), candidate.instrument().instrumentKey());
+                continue;
+            }
             if (dbConfig.isPaperTrading()) {
                 executionEngine.executePaperEntry(candidate.decision(), candidate.quote().lastPrice(),
                         candidate.instrument().lotSize(), dbConfig);

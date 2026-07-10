@@ -223,6 +223,17 @@ public class OperatorSqueezeDetector {
         int bullish = ignitionReturnPct > 0 ? +1 : -1;
         long oiCollapseAbs = bullish > 0 ? ceDrop5m : peDrop5m;
 
+        // ── Expiry-day override: halve thresholds post-2PM for gamma squeeze detection ──
+        // Operators squeeze hardest in the last 90 min of expiry; lower bars catch these.
+        boolean expiryAfternoon = java.time.LocalTime.now(java.time.ZoneId.of("Asia/Kolkata"))
+                .isAfter(java.time.LocalTime.of(14, 0));
+        double ignitionThreshold = config.getOperatorSqueezeIgnitionReturnMinPct();
+        long oiCollapseThreshold = config.getOperatorSqueezeOiCollapseMinAbs();
+        if (expiryAfternoon) {
+            ignitionThreshold *= 0.5;    // halve: 0.15% → 0.075%
+            oiCollapseThreshold /= 2;    // halve: 5M → 2.5M
+        }
+
         // ── Gate evaluation — short-circuit with descriptive blocker ────────
         // A8 (2026-06-02): the 3 coil-precondition gates are optional behind
         // operatorSqueezeRequireCoil. Validation against today's 12:35 ignition
@@ -250,15 +261,15 @@ public class OperatorSqueezeDetector {
                     ignitionReturnPct, oiCollapseAbs, vixDeltaIgnition, ivExpansionPct,
                     pcrRotation, coilRangePct, coilVixDelta, coilCeBuild);
         }
-        if (Math.abs(ignitionReturnPct) < config.getOperatorSqueezeIgnitionReturnMinPct()) {
+        if (Math.abs(ignitionReturnPct) < ignitionThreshold) {
             return Decision.skip(
                     String.format("ignition_return_%.3f_below_%.3f",
                             Math.abs(ignitionReturnPct),
-                            config.getOperatorSqueezeIgnitionReturnMinPct()),
+                            ignitionThreshold),
                     ignitionReturnPct, oiCollapseAbs, vixDeltaIgnition, ivExpansionPct,
                     pcrRotation, coilRangePct, coilVixDelta, coilCeBuild);
         }
-        long requiredOiDropAbs = config.getOperatorSqueezeOiCollapseMinAbs();
+        long requiredOiDropAbs = oiCollapseThreshold;
         if (-oiCollapseAbs < requiredOiDropAbs) {
             return Decision.skip(
                     String.format("oi_collapse_%+,d_below_%,d_(side=%s)",

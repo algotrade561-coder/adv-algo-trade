@@ -1,4 +1,4 @@
-import { HttpClient, HttpHeaders } from '@angular/common/http';
+import { HttpClient, HttpHeaders, HttpParams } from '@angular/common/http';
 import { Injectable } from '@angular/core';
 import { Observable } from 'rxjs';
 import {
@@ -92,6 +92,87 @@ export interface UnderlyingConfigDto {
   middayChopEnd: string | null;
   normalizeScoreForNoVolume: boolean;
   maxEntryPremium: number;
+  /** Floor: blocks cheap options where flat charges dominate the notional. 0 = no floor. */
+  minEntryPremium: number;
+}
+
+export interface EffectiveTradingConfigDto {
+  userId: number;
+  riskProfile: string;
+  totalCapital: number;
+  maxRiskPerTradePercent: number;
+  maxDailyLossPercent: number;
+  dailyProfitTarget: number;
+  maxTradesPerDay: number;
+  maxConsecutiveLosses: number;
+  maxOpenTrades: number;
+  maxLotsPerTrade: number;
+  maxOpenPositionsPerStrategy: number;
+  cooldownMinutes: number;
+  directionFlipCooldownMinutes: number;
+  maxEntriesPerScan: number;
+  maxEntriesPerScanPerUnderlying: number;
+  minSignalScorePercent: number;
+  minEnvironmentScore: number;
+  sessionPreset: string;
+  entryStartTime: string;
+  entryCutoffTime: string;
+  forcedExitTime: string;
+  failSafeSquareoffTime: string;
+  manageSyncedTrades: boolean;
+  autoExits: boolean;
+  autoVixGate: boolean;
+  autoIvCap: boolean;
+  provenance: Record<string, string>;
+}
+
+export interface UserTradingSettingsRawDto {
+  userId: number;
+  riskProfile: string;
+  totalCapital: number | null;
+  dailyLossPercent: number | null;
+  dailyProfitTarget: number | null;
+  sessionPreset: string;
+  entryStartTime: string | null;
+  entryCutoffTime: string | null;
+  forcedExitTime: string | null;
+  failSafeSquareoffTime: string | null;
+  manageSyncedTrades: boolean | null;
+  autoExits: boolean;
+  autoVixGate: boolean;
+  autoIvCap: boolean;
+  advancedOverrides: string | null;
+}
+
+export interface TradingSettingsResponse {
+  resolved: EffectiveTradingConfigDto;
+  raw: UserTradingSettingsRawDto | null;
+}
+
+export interface RiskProfileDto {
+  name: string;
+  maxRiskPerTradePercent: number;
+  maxDailyLossPercent: number;
+  maxTradesPerDay: number;
+  maxConsecutiveLosses: number;
+  maxOpenTrades: number;
+  maxLotsPerTrade: number;
+  maxOpenPositionsPerStrategy: number;
+  minSignalScorePercent: number;
+  minEnvironmentScore: number;
+  cooldownMinutes: number;
+  directionFlipCooldownMinutes: number;
+  maxEntriesPerScan: number;
+  maxEntriesPerScanPerUnderlying: number;
+  // Exit-style
+  stopLossPercent: number;
+  targetPercent: number;
+  trailingStopActivationPercent: number;
+  trailingGapPercent: number;
+  maxHoldMinutes: number;
+  partialProfitBookingEnabled: boolean;
+  vwapExitEnabled: boolean;
+  ivCollapseMaxProfitPercent: number;
 }
 
 export interface GlobalConfigDto {
@@ -109,8 +190,11 @@ export interface GlobalConfigDto {
   bearishImbalanceThreshold: number;
   minLiquidityVolume: number;
   maxIvPercent: number;
-  minSignalScorePercent: number;
-  minEnvironmentScore: number;
+  // MarketGuard VIX thresholds (runtime-editable)
+  vixMinForLongPremium: number;
+  vixMinForShortPremium: number;
+  vixMaxForShortPremium: number;
+  // (Signal-score / Env-score are RISK-PROFILE caps now — not on global config.)
   ceOiSupportRequired: boolean;
   peOiSupportRequired: boolean;
   ceOiDivergenceFilterEnabled: boolean;
@@ -138,18 +222,16 @@ export interface GlobalConfigDto {
   vwapExitEnabled: boolean;
   globalExitOverride: boolean;
   manageSyncedTrades: boolean;
-  // Risk
+  // Risk (per-trade/daily-loss/trades-day/consec/open caps are RISK-PROFILE values now — not here)
   totalCapital: number;
-  maxRiskPerTradePercent: number;
-  maxDailyLossPercent: number;
-  maxTradesPerDay: number;
-  maxConsecutiveLosses: number;
-  maxOpenTrades: number;
   cooldownMinutes: number;
   directionFlipCooldownMinutes: number;
   maxOpenPositionsPerStrategy: number;
   dailyProfitTarget: number;
-  maxLotsPerTrade: number;
+  /** V5 episode-suspension threshold: null = default (3), 0 = disabled. Deep tier always exempt. */
+  memorySuspensionAfterLosses: number | null;
+  /** V5 avalanche master switch: null/true = enabled, false = no NEW avalanche entries (open positions keep their exits). */
+  avalancheTradingEnabled: boolean | null;
   mlVirtualTradeThreshold: number;
   // Execution tuning
   limitOrderCancelMinutes: number;
@@ -197,6 +279,11 @@ export interface OiMomentumRuntimeConfigDto {
   // Theta-decay gate
   thetaDecayCheckEnabled: boolean;
   thetaDecayMaxCostPct: number;
+  // Charges-aware gate v2 (cost-of-charges + resize-up)
+  chargesGateV2Enabled: boolean;
+  chargesGateTargetPct: number;
+  chargesGateMinNetProfit: number;
+  chargesGateResizeUp: boolean;
   // D2 SUSTAINED_DRIFT (trend capture). overridesV3=true + shadowMode=false → D2 live alongside V3.
   sustainedDriftEnabled: boolean;
   sustainedDriftShadowMode: boolean;
@@ -262,11 +349,16 @@ export class ApiService {
   constructor(private readonly http: HttpClient) {}
 
   health(): Observable<HealthResponse> { return this.http.get<HealthResponse>(`${this.base}/health`); }
+  /** Lightweight user list (id + email) — accessible to any authenticated user. */
+  userList(): Observable<Array<{id: number; email: string}>> { return this.http.get<Array<{id: number; email: string}>>(`${this.base}/auth/users/list`); }
   brokerHealth(): Observable<HealthResponse> { return this.http.get<HealthResponse>(`${this.base}/health/broker`); }
   databaseHealth(): Observable<HealthResponse> { return this.http.get<HealthResponse>(`${this.base}/health/database`); }
   jvmHealth(): Observable<JvmHealth> { return this.http.get<JvmHealth>(`${this.base}/health/jvm`); }
   config(): Observable<ConfigResponse> { return this.http.get<ConfigResponse>(`${this.base}/config`); }
-  tradingStatus(): Observable<TradingStatus> { return this.http.get<TradingStatus>(`${this.base}/trading/status`); }
+  tradingStatus(userId?: number | null): Observable<TradingStatus> {
+    const params = userId ? `?userId=${userId}` : '';
+    return this.http.get<TradingStatus>(`${this.base}/trading/status${params}`);
+  }
   start(): Observable<RuntimeStatus> { return this.http.post<RuntimeStatus>(`${this.base}/start`, {}); }
   stop(): Observable<RuntimeStatus> { return this.http.post<RuntimeStatus>(`${this.base}/stop`, {}); }
   setKillSwitch(enabled: boolean): Observable<RuntimeStatus> { return this.http.post<RuntimeStatus>(`${this.base}/kill-switch`, { enabled }); }
@@ -279,7 +371,7 @@ export class ApiService {
   extendDailyLimit(): Observable<RuntimeStatus> { return this.http.post<RuntimeStatus>(`${this.base}/daily/extend-limit`, {}); }
   reconnectWebSocket(): Observable<RuntimeStatus> { return this.http.post<RuntimeStatus>(`${this.base}/websocket/reconnect`, {}); }
   disconnectWebSocket(): Observable<RuntimeStatus> { return this.http.post<RuntimeStatus>(`${this.base}/websocket/disconnect`, {}); }
-  placeOrder(order: { instrumentKey: string; side: string; orderType: string; productType: string; quantity: number; limitPrice?: number; tag?: string }): Observable<ApiRecord> {
+  placeOrder(order: { instrumentKey: string; side: string; orderType: string; productType: string; quantity: number; limitPrice?: number; variety?: string; tag?: string }): Observable<ApiRecord> {
     return this.http.post<ApiRecord>(`${this.base}/orders/place`, order);
   }
   /** Manual order strike picker: spot + ATM ± 3 strikes for all indices. */
@@ -289,7 +381,7 @@ export class ApiService {
     return this.http.get<Record<string, { latest: number; series: { time: string; pcr: number }[] }>>(`${this.base}/api/pcr/intraday`);
   }
   /** Place a prepopulated manual order (lots-based, via ManualOrderController). */
-  placeManualOrder(body: { index: string; side: string; optionType: string; strike: number; lots: number; orderType: string; limitPrice: number; productType: string; instrumentKey: string; tradingSymbol: string }): Observable<ApiRecord> {
+  placeManualOrder(body: { index: string; side: string; optionType: string; strike: number; lots: number; orderType: string; limitPrice: number; productType: string; variety?: string; instrumentKey: string; tradingSymbol: string }): Observable<ApiRecord> {
     return this.http.post<ApiRecord>(`${this.base}/api/manual-order/place`, body);
   }
   setMode(mode: TradingMode): Observable<RuntimeStatus> { return this.http.post<RuntimeStatus>(`${this.base}/mode`, { mode }); }
@@ -305,9 +397,33 @@ export class ApiService {
   private userParam(userId?: number | null): string { return userId != null ? `?userId=${userId}` : ''; }
   positions(userId?: number | null): Observable<ApiRecord[]> { return this.http.get<ApiRecord[]>(`${this.base}/positions${this.userParam(userId)}`); }
   positionHealth(): Observable<ApiRecord[]> { return this.http.get<ApiRecord[]>(`${this.base}/positions/health`); }
+  // Market-Memory V5 (docs/MARKET-MEMORY-V5-DESIGN.md §16) — read-only insight endpoints
+  memoryState(index: string): Observable<ApiRecord> { return this.http.get<ApiRecord>(`${this.base}/market-memory/state?index=${index}`); }
+  memorySummary(index: string): Observable<ApiRecord> { return this.http.get<ApiRecord>(`${this.base}/market-memory/summary?index=${index}`); }
+  memoryAvalanches(limit = 100): Observable<ApiRecord[]> { return this.http.get<ApiRecord[]>(`${this.base}/market-memory/avalanches?limit=${limit}`); }
+  memoryDecisions(category?: string, limit = 150): Observable<ApiRecord[]> {
+    return this.http.get<ApiRecord[]>(`${this.base}/market-memory/decisions?limit=${limit}${category ? `&category=${category}` : ''}`);
+  }
+  memoryEpisodes(): Observable<ApiRecord[]> { return this.http.get<ApiRecord[]>(`${this.base}/market-memory/episodes`); }
+  memoryMountain(index: string): Observable<ApiRecord[]> { return this.http.get<ApiRecord[]>(`${this.base}/market-memory/mountain?index=${index}`); }
   orders(userId?: number | null): Observable<ApiRecord[]> { return this.http.get<ApiRecord[]>(`${this.base}/orders${this.userParam(userId)}`); }
   trades(userId?: number | null): Observable<ApiRecord[]> { return this.http.get<ApiRecord[]>(`${this.base}/trades${this.userParam(userId)}`); }
   pnl(userId?: number | null): Observable<PnlSnapshot> { return this.http.get<PnlSnapshot>(`${this.base}/pnl${this.userParam(userId)}`); }
+  funds(): Observable<{ available: boolean; availableCash?: number; utilisedDebits?: number; netAvailable?: number; reason?: string }> { return this.http.get<any>(`${this.base}/funds`); }
+  // Close an open position. Own position for any user; another user's (by userId) for SUPERUSER/ADMIN.
+  // The exit order is always placed on the owning user's broker account (backend routes by trade owner).
+  // quantity omitted/null = full close (legacy behavior); a value = partial close (validated server-side).
+  closePosition(instrumentKey: string, userId?: number | null, quantity?: number | null): Observable<ApiRecord> {
+    return this.http.post<ApiRecord>(`${this.base}/positions/close`,
+      { instrumentKey, userId: userId ?? null, quantity: quantity ?? null });
+  }
+  // Authoritative "what would be closed" for the close modal — the TARGET user's live position,
+  // fetched fresh from the server (never trust a rendered table row).
+  closePreview(instrumentKey: string, userId?: number | null): Observable<ApiRecord> {
+    return this.http.get<ApiRecord>(
+      `${this.base}/positions/close-preview?instrumentKey=${encodeURIComponent(instrumentKey)}`
+      + (userId != null ? `&userId=${userId}` : ''));
+  }
   market(): Observable<MarketSnapshot> { return this.http.get<MarketSnapshot>(`${this.base}/market`); }
   oilPrice(): Observable<OilPriceSnapshot> { return this.http.get<OilPriceSnapshot>(`${this.base}/api/oil-price/snapshot`); }
   performance(): Observable<any> { return this.http.get<any>(`${this.base}/performance`); }
@@ -431,6 +547,21 @@ export class ApiService {
   updateGlobalConfig(config: GlobalConfigDto): Observable<GlobalConfigDto> { return this.http.put<GlobalConfigDto>(`${this.base}/global-config`, config); }
   resetGlobalConfig(): Observable<GlobalConfigDto> { return this.http.post<GlobalConfigDto>(`${this.base}/global-config/reset`, {}); }
 
+  // ── Per-user trading settings (redesigned settings page) ────────────────
+  getTradingSettings(): Observable<TradingSettingsResponse> { return this.http.get<TradingSettingsResponse>(`${this.base}/trading-settings/me`); }
+  updateTradingSettings(body: Record<string, unknown>): Observable<TradingSettingsResponse> { return this.http.put<TradingSettingsResponse>(`${this.base}/trading-settings/me`, body); }
+  previewTradingSettings(profile?: string, capital?: number, dailyLoss?: number): Observable<EffectiveTradingConfigDto> {
+    let q = new HttpParams();
+    if (profile != null) q = q.set('profile', profile);
+    if (capital != null) q = q.set('capital', String(capital));
+    if (dailyLoss != null) q = q.set('dailyLoss', String(dailyLoss));
+    return this.http.get<EffectiveTradingConfigDto>(`${this.base}/trading-settings/preview`, { params: q });
+  }
+  getRiskProfiles(): Observable<RiskProfileDto[]> { return this.http.get<RiskProfileDto[]>(`${this.base}/trading-settings/profiles`); }
+  updateRiskProfile(name: string, body: Record<string, unknown>): Observable<RiskProfileDto> { return this.http.put<RiskProfileDto>(`${this.base}/trading-settings/profiles/${name}`, body); }
+  reseedRiskProfiles(): Observable<unknown> { return this.http.post(`${this.base}/trading-settings/profiles/reseed`, {}); }
+  assignUserRiskProfile(userId: number, riskProfile: string): Observable<unknown> { return this.http.put(`${this.base}/trading-settings/admin/${userId}/profile`, { riskProfile }); }
+
   // ── OI Momentum V3 runtime (operator, no restart) ───────────────────────
   getOiMomentumSettings(): Observable<OiMomentumRuntimeConfigDto> {
     return this.http.get<OiMomentumRuntimeConfigDto>(`${this.base}/oi-momentum/settings`);
@@ -471,8 +602,27 @@ export class ApiService {
   getTuningReportHtml(jobId: string): Observable<string> {
     return this.http.get(`${this.base}/reports/tuning/jobs/${jobId}/html`, { responseType: 'text' });
   }
+  /** Ranked tuning actions (actions.json) for a completed report job. */
+  getTuningReportActions(jobId: string): Observable<string> {
+    return this.http.get(`${this.base}/reports/tuning/jobs/${jobId}/actions`, { responseType: 'text' });
+  }
   getTuningStrategyToday(name: string): Observable<Record<string, unknown>> {
     return this.http.get<Record<string, unknown>>(`${this.base}/reports/tuning/strategy/${name}/today`);
+  }
+
+  // ── Edge Research (separate from tuning report) ──
+  listResearchJobs(limit = 30): Observable<Record<string, unknown>[]> {
+    return this.http.get<Record<string, unknown>[]>(`${this.base}/reports/research/jobs?limit=${limit}`);
+  }
+  getResearchHtml(date: string): Observable<string> {
+    return this.http.get(`${this.base}/reports/research/jobs/${date}/html`, { responseType: 'text' });
+  }
+  getResearchSummary(date: string): Observable<string> {
+    return this.http.get(`${this.base}/reports/research/jobs/${date}/summary`, { responseType: 'text' });
+  }
+  runResearch(date?: string): Observable<{ date: string; status: string }> {
+    const q = date ? `?date=${date}` : '';
+    return this.http.post<{ date: string; status: string }>(`${this.base}/reports/research/run${q}`, {});
   }
   exploreTuningBuckets(strategy: string, from: string, to: string): Observable<Record<string, unknown>> {
     return this.http.get<Record<string, unknown>>(
@@ -480,6 +630,31 @@ export class ApiService {
   }
   getTuningHealth(): Observable<Record<string, any>> {
     return this.http.get<Record<string, any>>(`${this.base}/tuning/health`);
+  }
+
+  // ── Microstructure explorer (read-only) ──────────────────────────────
+  microDays(): Observable<string[]> {
+    return this.http.get<string[]>(`${this.base}/microstructure/days`);
+  }
+  microStrikes(index: string, date: string): Observable<number[]> {
+    return this.http.get<number[]>(
+      `${this.base}/microstructure/strikes?index=${encodeURIComponent(index)}&date=${date}`);
+  }
+  microStrikeTimeline(index: string, date: string, strike: number, bucketSec = 60): Observable<any[]> {
+    return this.http.get<any[]>(
+      `${this.base}/microstructure/strike-timeline?index=${encodeURIComponent(index)}&date=${date}&strike=${strike}&bucketSec=${bucketSec}`);
+  }
+  microLiquidity(index: string, date: string, strike: number, optionType: string, bucketSec = 60): Observable<any[]> {
+    return this.http.get<any[]>(
+      `${this.base}/microstructure/liquidity?index=${encodeURIComponent(index)}&date=${date}&strike=${strike}&optionType=${optionType}&bucketSec=${bucketSec}`);
+  }
+  microOiCadence(index: string, date: string): Observable<Record<string, any>> {
+    return this.http.get<Record<string, any>>(
+      `${this.base}/microstructure/oi-cadence?index=${encodeURIComponent(index)}&date=${date}`);
+  }
+  microShadowSignals(index: string, date: string): Observable<any[]> {
+    return this.http.get<any[]>(
+      `${this.base}/microstructure/shadow-signals?index=${encodeURIComponent(index)}&date=${date}`);
   }
 
   // ── Auth ─────────────────────────────────────────────────────────────

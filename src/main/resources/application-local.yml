@@ -16,3 +16,11 @@ spring:
 logging:
   level:
     com.algo.trade: DEBUG
+
+# ──────────────────────────────────────────────────────────────────────────
+# Per-user source-IP automation — DISABLED for local dev.
+# No AWS calls, no OS `ip addr` changes; provision/release are track-only no-ops.
+# ──────────────────────────────────────────────────────────────────────────
+ip-automation:
+  enabled: false
+  auto-provision-on-create: false

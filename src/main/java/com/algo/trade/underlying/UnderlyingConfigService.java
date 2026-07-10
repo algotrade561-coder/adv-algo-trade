@@ -128,6 +128,14 @@ public class UnderlyingConfigService {
     }
 
     /**
+     * Get min entry premium for this underlying. Returns 0 if no floor.
+     */
+    public BigDecimal getMinEntryPremium(UnderlyingSymbol underlying) {
+        BigDecimal floor = getOrDefault(underlying).getMinEntryPremium();
+        return floor != null ? floor : BigDecimal.ZERO;
+    }
+
+    /**
      * Get effective breakout buffer for this underlying.
      * Returns the underlying-specific override if set (> 0), otherwise the global default.
      */
@@ -196,6 +204,8 @@ public class UnderlyingConfigService {
         existing.setNormalizeScoreForNoVolume(incoming.isNormalizeScoreForNoVolume());
         existing.setMaxEntryPremium(incoming.getMaxEntryPremium() != null
                 ? incoming.getMaxEntryPremium() : BigDecimal.ZERO);
+        existing.setMinEntryPremium(incoming.getMinEntryPremium() != null
+                ? incoming.getMinEntryPremium() : BigDecimal.ZERO);
 
         UnderlyingConfig saved = repository.save(existing);
         cache.put(underlying, saved);

@@ -22,5 +22,7 @@ public interface OrderRepository extends JpaRepository<OrderEntity, String> {
 
     List<OrderEntity> findByUserIdAndUpdatedAtBetween(Long userId, Instant from, Instant to);
 
+    List<OrderEntity> findByUpdatedAtBetween(Instant from, Instant to);
+
     java.util.Optional<OrderEntity> findByBrokerOrderId(String brokerOrderId);
 }

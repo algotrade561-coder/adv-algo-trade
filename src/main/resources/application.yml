@@ -5,6 +5,10 @@
 trading:
   # ── Mode ────────────────────────────────────────────────────────────────
   mode: LIVE                    # PAPER | BACKTEST | LIVE
+  # When true, a normal STOP keeps every strategy scanning + recording tuning data — only order
+  # placement is suppressed (all execution dispatch is hard-gated). For a data-collection week with
+  # orders paused but full capture flowing. Kill switch / HARD halt still stop everything. Default false.
+  capture-when-stopped: true
   market-data-mode: ZERODHA     # MOCK | ZERODHA
   execution-mode: ZERODHA       # PAPER | ZERODHA
   live-trading-enabled: true    # Must be true for real Zerodha orders
@@ -48,12 +52,15 @@ trading:
       SENSEX: "BSE:SENSEX"
       FINNIFTY: "NSE:NIFTY FIN SERVICE"
       MIDCPNIFTY: "NSE:NIFTY MID SELECT"
+    # Pure numeric instrument tokens — the resolver returns an all-digit key directly as the token.
+    # The old "EXCHANGE:token" form (e.g. NSE:256265) is NOT a tradingsymbol key, so instrumentCache
+    # .findByKey() failed and logged "Underlying historical key could not be resolved" every day.
     spot-historical-keys:
-      NIFTY: "NSE:256265"
-      BANKNIFTY: "NSE:260105"
-      SENSEX: "BSE:265"
-      FINNIFTY: "NSE:257801"
-      MIDCPNIFTY: "NSE:288009"
+      NIFTY: "256265"
+      BANKNIFTY: "260105"
+      SENSEX: "265"
+      FINNIFTY: "257801"
+      MIDCPNIFTY: "288009"
   # ── WebSocket Option Subscription ──────────────────────────────────────
   # Underlyings whose option chains are always subscribed for WS tick data,
   # independently of the global scan underlyings (enabledUnderlyings in DB).
@@ -91,6 +98,21 @@ trading:
     stale-market-data-threshold: 30s
     broker-retry-count: 2
     broker-retry-backoff: 500ms
+
+  # ── Rolling win-rate auto-pause ─────────────────────────────────────────
+  # Pauses NEW entries for a user once their recent win rate drops below a threshold. All defaults below
+  # reproduce the historical hardcoded behaviour (enabled, 5-trade window, 25% threshold, per-user blended,
+  # NO scratch dead-band) — leave them and behaviour is UNCHANGED. Tune to relax/tighten.
+  winrate-pause:
+    enabled: true                 # master on/off for the auto-pause gate
+    min-trades: 5                 # min trades in the window before the gate can pause
+    threshold-percent: 25.0       # pause when win rate < this percent
+    per-strategy: false           # true → compute win rate per (user, strategy) so one strategy's streak
+                                  #        does not pause unrelated strategies (default: per-user blended)
+    scratch-abs: 0                # ₹ dead-band: |P&L| ≤ this counts as neither win nor loss. 0 = OFF.
+                                  #   e.g. 50 → a ~flat sub-minute stop-out no longer drags the win rate.
+    scratch-percent: 0            # % of entry notional dead-band (OR-combined with scratch-abs). 0 = OFF.
+                                  #   e.g. 0.25 → treat a close within 0.25% of notional as a scratch.
 
   # ── Telegram Alerts ─────────────────────────────────────────────────────
   telegram:
@@ -154,6 +176,14 @@ trading:
     refresh-instruments-on-start: true
     auto-start-scanner-after-login: true  # Auto-start scanner + WebSocket after Kite auth
 
+  # ── Manual-exit escalation (2026-07-03) ───────────────────────────────────
+  # When a bot protective exit is blocked by a PENDING MANUAL sell at the broker, throttle the stand-down
+  # log+alert (was ~46 warns/alerts on one stuck trade on 06-30), and ESCALATE to a loud alert once the
+  # manual order has blocked the stop for escalate-after-seconds AND the position is underwater past its SL.
+  manual-exit:
+    alert-throttle-seconds: 120
+    escalate-after-seconds: 300         # 0 disables escalation (alert-only, no order cancellation)
+
   # ── Multi-user ────────────────────────────────────────────────────────────
   multiuser:
     enabled: true
@@ -163,6 +193,39 @@ trading:
       # secondary users unless this is explicitly true. (Bug fixed 2026-06-12: a
       # paper OI_MOMENTUM signal placed a real SENSEX order on the secondary account.)
       copy-paper-signals: false
+    # Per-user order-update WebSocket (2026-06-29): each NON-primary trading user gets a lightweight Kite WS
+    # connection (their own api_key + token, bound to their whitelisted source IP) that listens ONLY for
+    # order_update frames and triggers an immediate per-user position reconcile on a COMPLETE fill — so a
+    # secondary user's fills are detected instantly (like the primary's WS does), instead of waiting up to
+    # ~2s for the OrderFillWatchdog poll. Uses the secondary's own api_key WS quota (separate from the
+    # primary feed). Safety valve: set false (e.g. in config/application-live.yml) to disable WITHOUT a redeploy.
+    per-user-order-ws:
+      enabled: true
+    # Robust fan-out hardening (2026-07-02) — scale-safety for the signal-copy fan-out. When enabled:
+    #   (1) the fan-out pool drops-with-ALERT under saturation instead of CallerRunsPolicy running a broker
+    #       order inline on the strategy/tick thread (which would stall market data for every user);
+    #   (2) each broker call is time-bounded on an isolated pool so a hung Zerodha call can't pin capacity;
+    #   (3) a durable reconciler force-closes any copy left OPEN after its primary went flat — survives a
+    #       JVM restart, unlike the fire-and-forget deferred close timers.
+    # At 2 users the load-shedding is dormant-in-practice; the RECONCILER is the active win (restart safety-
+    # net for the fill→record-lag / restart-stranding that stranded a secondary on 2026-06-29). Safety valve:
+    # set false in config/application-live.yml to disable WITHOUT a redeploy.
+    fanout:
+      robust:
+        enabled: true
+      broker-call-timeout-ms: 10000   # entry/exit both place-and-return (~<2s); trips only on a hung REST call
+      reconcile-window-min: 15        # reconciler only re-touches primaries closed within this look-back
+      reconcile-interval-ms: 20000
+      # Per-user circuit breaker: after N consecutive ENTRY failures (bad token / reject / not-auth), skip that
+      # user's entries for the cooldown with ONE alert (not a per-signal storm). EXITS are never skipped.
+      breaker:
+        consecutive-failures: 3
+        cooldown-min: 5
+      # Exit-side per-trade backoff: after N un-closable rejections (margin/AMO/market-closed) for a copy,
+      # pause THAT trade's copy-exit retries for the cooldown instead of hammering the broker every cycle.
+      exit-backoff:
+        consecutive-rejects: 3
+        cooldown-min: 3
 
   # ── Backtest ────────────────────────────────────────────────────────────
   backtest:
@@ -174,6 +237,13 @@ trading:
     mock-instrument-key: NFO:NIFTY-MOCK-ATM-CE
     mock-candle-count: 180
     lot-size: 65
+
+# ── Per-User Trading Settings ─────────────────────────────────────────────
+# When enabled, the TradingConfigResolver merges per-user overrides and risk
+# profiles with the global baseline. When false, all users share global config.
+config:
+  per-user-settings:
+    enabled: true
 
 # ══════════════════════════════════════════════════════════════════════════
 # Spring Boot
@@ -227,17 +297,360 @@ regime-filter:
   enabled: true
   check-interval-seconds: 30
 
+# ── Per-user trading settings (Settings redesign, 2026-06-25) ─────────────
+# NOTE: the `config.per-user-settings.enabled` master switch is defined ONCE near the top of this
+# file (search "config:" above). A second top-level `config:` block here was a DUPLICATE KEY that
+# Spring's YAML loader rejects ("found duplicate key config") — it broke contextLoads. Removed.
+# When true, RiskEngine / MarketGuard / exit monitors resolve capital, risk, daily-loss, lot caps,
+# score thresholds, cooldowns and session times per user (user override → risk profile → global
+# baseline). Behavior-neutral by default; set false for a one-switch rollback to pure global config.
+
 # ── Market Guard ──────────────────────────────────────────────────────────
 market-guard:
   vix-max-for-short-premium: 21.0
   vix-min-for-short-premium: 12.0
-  vix-min-for-long-premium: 14.0
+  # Absolute backstop — only fires when dynamic percentile gate has insufficient history.
+  # Lowered from 14.0 to 11.0: VIX 11 = truly dead market (sub-10th percentile historically).
+  # VIX 12-14 is normal in low-vol regimes and should NOT block long premium entries.
+  vix-min-for-long-premium: 11.0
   circuit-breaker-percent: 2.5
+  # ── Dynamic (percentile-relative) VIX gate — Finding 1. Enabled: allows long premium when
+  # live VIX is below the 50th percentile of its 52-week range (i.e., IV is cheap = good for
+  # buying optionality). Falls back to fixed threshold if < 20 sessions of history.
+  vix-dynamic:
+    enabled: true
+    # TEMP (2026-06-20): raised 50.0 → 100.0 to DISABLE the long-premium VIX block for live
+    # observation (let entries/scans through regardless of IV percentile). 100 = never blocks
+    # since percentile maxes at 100. RESTORE to 50.0 to re-enable the "IV expensive" gate.
+    # Circuit-breaker, event-day and data-freshness guards remain active.
+    long-max-ivp: 80.0         # long premium allowed only when live VIX < this 52-wk percentile
+    short-min-ivp: 20.0         # short premium needs VIX ≥ this percentile (rich IV to sell)
+    short-max-ivp: 90.0         # ...and < this (above = crisis-rich, too dangerous to sell)
+    absolute-vix-ceiling: 35.0  # hard backstop: never sell premium above this VIX regardless of pct
+
+  # ── Data-freshness entry gate — Finding 3. Blocks NEW entries when tick feed is stale.
+  freshness:
+    enabled: true
+    max-tick-age-sec: 45        # WS tick older than this = WS stale
+    rest-max-age-sec: 90        # P1.1: if WS stale but REST batch younger than this, allow DEGRADED entries; block only when BOTH stale
   # Event entries: "yyyy-MM-dd" (date-only) or "yyyy-MM-dd@HH:mm/window-minutes".
   # Date-only entries default to 10:00 IST + 30min post-event window.
   # The post-event window drives EVENT_PASSED exits for LONG_STRADDLE / LONG_STRANGLE.
   event-dates: "2026-06-05@10:00/30,2026-08-05@10:00/30,2026-10-07@10:00/30,2026-12-04@10:00/30"
   event-window-minutes: 0
+  # When true (2026-06-27), the long-premium event block is scoped to the event window
+  # [eventTime − preMin, eventTime + postMin] instead of the whole session — an RBI 10:00 event only
+  # blocks ~09:45–10:30, not all day. Set false to restore the legacy all-day block.
+  event-window-scoped: true
+
+# ── DB retention (controls H2 .mv.db growth) ──────────────────────────────
+# Daily pre-market purge (09:05 IST Mon-Fri) of high-volume telemetry tables.
+# SAFE: live calcs read only "today"/top-N decisions; GREEKS_SAMPLES is write-only AND
+# already captured (richer) in the tuning chain snapshots. IV_SAMPLES is NEVER purged here
+# (feeds the VIX percentile gate + IV Rank); TRADE/ORDER/configs are never purged.
+# Deletes free space for reuse but don't shrink the file — run a one-time SHUTDOWN COMPACT
+# (app stopped) to reclaim the current size. Set dry-run: true to preview without deleting.
+db-retention:
+  enabled: true
+  dry-run: false
+  strategy-decision-days: 7    # ~19k rows/day — the main growth driver
+  greeks-days: 7               # redundant with tuning chain snapshots
+  exit-eval-days: 30           # post-mortem audit only
+  error-event-days: 30         # admin UI error log
+
+# ── VIX regime bands (VIXRegimeFilter) — Finding 1. Dynamic mode: classifies by 52-week
+# VIX percentile instead of fixed absolute bands. Lot multipliers unchanged.
+vix-regime:
+  dynamic-enabled: true
+  dead-pct: 10.0          # < this 52-wk percentile → DEAD regime
+  cautious-pct: 30.0      # < this → CAUTIOUS
+  extreme-pct: 90.0       # ≥ this → EXTREME
+
+# ── Exit tuning — Finding 4. Tiered trailing tightens the trail gap as the peak grows so large
+# ── Tiered trailing stop (Finding 4): tighten the trail gap as the peak grows, so large
+# winners give back less. Enabled: gap tightens at +8% and +15% peak profit.
+exit:
+  tiered-trailing:
+    enabled: true
+    tier1-peak: 8.0       # once peak ≥ +8%, cap the trail gap at tier1-gap
+    tier1-gap: 3.0
+    tier2-peak: 15.0      # once peak ≥ +15%, cap the trail gap at tier2-gap
+    tier2-gap: 2.0
+  # ── PRIMARY OI Momentum exit-parity (gaps fixed 2026-06-25) ──────────────
+  # The OI Momentum strategy's own 1-sec loop (managePosition) manages PRIMARY-user
+  # trades and previously bypassed the central monitor's data-analysis exits. These
+  # three flags wire those features onto the primary path. ALL default OFF — deploy
+  # is a no-op until each is validated in shadow/paper on real-vol days, then flipped.
+  # Tier thresholds are SHARED with exit.tiered-trailing.* above (single source of truth).
+  oi:
+    tiered-trailing-enabled: false      # Fix 1: tighten trail gap at tier1/tier2 peaks (R6)
+    progressive-booking-enabled: false  # Fix 2: partial profit-booking ladder (DynamicExitManager)
+    liquidity-gate-enabled: false       # Fix 3: Tier-1 liquidity emergency (bid/ask blowout, vol collapse)
+    # Fast adverse-gap reaction (2026-06-28): velocity-based exit between flash-crash (−40%) and the
+    # level SL — catches a violent move against the position in ~seconds. SHADOW-FIRST: with
+    # gap-reaction-enabled=false it only LOGS would-exits (no behaviour change); calibrate the
+    # thresholds from a week of shadow logs, then flip enabled=true. See
+    # docs/SPIKE-FOOTPRINT-ANALYSIS-2026-06-28.md (spikes erupt in ~5s, driven by the underlying).
+    gap-reaction-enabled: true          # 2026-06-28: LIVE (was shadow) - velocity-based fast exit active
+    gap-reaction-shadow: false          # no-op while enabled=true (LIVE/enforce); false = config reads truthfully
+    gap-reaction-window-sec: 5          # lookback window for the violent move
+    gap-reaction-premium-drop-pct: 8.0  # option premium fall over the window to arm
+    gap-reaction-spot-confirm: true     # require the UNDERLYING to also move against the position
+    gap-reaction-spot-move-pct: 0.12    # adverse spot move % over the window
+    # Theta-decay-aware scalp time cap (2026-07-03): a mostly-EXTRINSIC option (ATM/OTM, high time-value
+    # fraction) bleeds theta fast, so book a profitable-but-stalling scalp on a shorter cap than the flat
+    # 15-min one. Keys off time-value fraction (extrinsic/premium), NOT raw premium ₹ — deep-ITM options
+    # (low extrinsic fraction) keep the normal cap. Only ever exits a PROFITABLE scalp sooner; never touches
+    # SL/trailing/trend-rides. Applies only in scalp mode (choppy regime, trendScore < 60).
+    theta-decay-exit-enabled: true      # book theta-heavy profitable scalps on the shorter cap
+    theta-decay-extrinsic-fraction: 0.6 # extrinsic/premium ≥ this ⇒ theta-heavy ⇒ shorter cap
+    theta-decay-max-hold-min: 8         # shorter hold cap (min) for a theta-heavy profitable scalp
+
+# ── Order routing (SmartOrderRouter entry + ExecutionEngine exit) ──────────
+# Orders are marketable LIMITs (fill like MARKET but cap slippage). 1% was too tight on fast/thin expiry-day
+# options — entries got chased/cancelled-unfilled and an SL stuck in a no-bid hole filled ~2min late at -28%
+# vs the -12% stop (2026-06-29). Widened so orders actually fill while still capping slippage.
+smart-order:
+  market-protection-percent: 4.0   # ENTRY: BUY at ask+4% / SELL at bid-4% (fills now, slippage capped at 4%)
+  exit-protection-percent: 8.0     # EXIT/SL: wider so stops ALWAYS fill on a fast drop (capped at 8%)
+
+# ── Same-instrument re-entry ──
+# After exiting a strike, how long before the bot can re-enter the SAME instrument key.
+# 0 = no cooldown (allow immediate re-entry at new ATM if signal is fresh).
+# This does NOT affect different strikes — only exact same instrument key duplication.
+# NOTE: dotted-key form (not a bare `trading:` map) — a second top-level `trading:` block collides with the
+# one at the top of this file and snakeyaml rejects the whole file ("found duplicate key trading"). Spring's
+# relaxed binding flattens this to the same property either way.
+# 60s (was 0, 2026-06-30): 0 let OI momentum re-enter the SAME strike within seconds of exiting it — 28 entries
+# in 35 min, buy/sell the same spot back-to-back (each cycle paying brokerage+STT+slippage), and a transient
+# 3-lot overlap when a new entry fired before the prior exit settled. 60s cooldown breaks the back-to-back churn.
+trading.same-instrument-reentry-cooldown-seconds: 60
+# Price-based re-entry: only re-buy a strike if premium is at least 10% BELOW the last entry price.
+# Prevents the "sold at 157, rebought at 156" churn. 10% = meaningful dip worth averaging into.
+trading.reentry-require-lower-price: true
+trading.reentry-lower-price-buffer-pct: 10.0
+trading.reentry-price-rule-window-seconds: 1800
+# SOLID anti-churn: after ANY exit on an underlying, block re-entering the SAME direction (PE-after-PE /
+# CE-after-CE) on it for this many seconds — even on a DIFFERENT strike. Catches the strike-rotation churn
+# the per-instrument cooldown above misses (06-30: exit 23950PE → buy 23900PE 4s later). Opposite-side
+# reversals are still allowed. Code default is 90 if this key is removed, so it can't be silently disabled.
+trading.same-underlying-reentry-cooldown-seconds: 90
+
+# Conviction override for the same-underlying cooldown: a GENUINELY strong signal shouldn't be missed just
+# because of the blunt 90s anti-churn window. When enabled, a fresh, direction-aligned operator signal with
+# score >= min bypasses ONLY this cooldown (the "no averaging up" price rule + same-instrument cooldown still
+# apply). DEFAULT OFF — turn on deliberately after eyeballing a day of profit-target data. Every bypass logs
+# REENTRY_CONVICTION_OVERRIDE so the tuning loop can A/B whether these re-entries actually made money.
+trading.reentry-conviction-override.enabled: false
+trading.reentry-conviction-override.min-operator-score: 95
+# Also require the day/week structure (MTF) to agree with the direction — a bypass then needs BOTH the fresh
+# operator flow AND the higher-timeframe lean confirming. Falls back to operator-only if MTF is unavailable.
+trading.reentry-conviction-override.require-mtf-aligned: true
+
+# ── Conviction-Trend Override (CTO, 2026-07-03) ────────────────────────────
+# The anti-churn/price blocks are right for a FLAT market but wrongly block pyramiding into a GENUINE move
+# (13:03 NIFTY 24350PE bought @96.4 ran +18% on +31M volume — the bot's adds were blocked). CTO bypasses
+# ALL churn/price blocks (price rule + cooldowns) when the TAPE confirms a real move on that exact strike:
+# a same-strike volume surge (>= min-vol-ratio, on non-thin volume) AND a directional premium thrust
+# (>= min-thrust-pct). SCORE-INDEPENDENT on purpose — opScore was 69-80 and the operator even pointed the
+# wrong way, so score gates would miss it. Applies to ALL OI-momentum entries (CE/PE, both users). Never
+# bypasses risk gates (daily-loss / max-open / kill-switch). Pyramids only into an in-profit position; capped
+# at max-adds/instrument/day. shadow=false ENFORCES (bypass live); true = log-only. Flip shadow=true to revert.
+trading.conviction-trend-override.enabled: true
+trading.conviction-trend-override.shadow: false
+trading.conviction-trend-override.min-vol-ratio: 1.5
+trading.conviction-trend-override.min-thrust-pct: 2.0
+trading.conviction-trend-override.min-volume: 500
+# max-adds 1→4 (2026-07-05): cap-1 locked out the 07-03 24300PE afternoon runner (67→112) after the morning
+# fills. Loser-cutting is delegated to the live gates (depth-confirm + spoof-veto + fast exit + SL/daily-loss)
+# — the cap should not be the thing that drops real winners. Also yields REAL fill data on adds 2-4 for the
+# 07-11 validation week (instead of counterfactuals). Revisit with the blocked-entry opportunity-cost study.
+trading.conviction-trend-override.max-adds: 4
+# ── CTO conviction-scale (2026-07-07) ──────────────────────────────────────
+# The strict depth-only microstructure gate (depth-confirm + spoof-veto) blocked EVERY CTO add across the
+# 3-day study ("no real buying") — even on genuine trends, so the bot never scaled a confirmed move. This
+# adds an ALTERNATIVE confirmation used ONLY when the strict gate does NOT confirm: allow the add IFF a real
+# trend confirms it — a fresh operator signal ALIGNED with the add side at score >= require-op-score-min AND
+# OI velocity (OI rise% over the divergence window) >= require-oivel-min AND (when require-price-continuation)
+# premium still thrusting up. A chop tape (neutral/opposed operator, flat OI) fails a leg → no bypass, so it
+# can't pyramid into a fake. EVERY existing CTO guard stays: same-strike volume surge + premium thrust, the
+# in-profit pyramidOk (never averages down), max-adds cap, and the upstream risk gates (daily-loss/max-open/
+# margin/kill-switch). KILL-SWITCH: set enabled:false → today's exact (depth-only, blocked) behaviour.
+trading.conviction-trend-override.cto-scale:
+  enabled: true                    # KILL-SWITCH for CTO conviction-scale (false → today's depth-only gate)
+  require-op-score-min: 65         # fresh, aligned operator score bar for the conviction path
+  require-oivel-min: 5.0           # OI rise% over the divergence window (real buildup, not a flat/chop tape)
+  require-price-continuation: true # also require premium still thrusting up (price continuing in favour)
+
+# ── Dynamic Entry Premium (ATM-anchored max-premium cap) ─────────────────────────────────────────
+# The per-underlying `maxEntryPremium` (Index-Config, e.g. NIFTY 300) is a FIXED rupee cap that can't
+# track the contract lifecycle (early-week ATM alone costs ~250-320, so a tight fixed cap blocks
+# legitimate ATM/ITM entries). When enabled, the cap is instead anchored to the LIVE ATM straddle:
+# cap = atm-multiplier x (ATM_CE + ATM_PE)/2, scaling with DTE/IV automatically. NOTE (07-09 tape): the
+# deep-ITM 400-900 class is NOT junk — it held that day's biggest winners; see atm-multiplier comment
+# and the expiry-no-tighten guard below. Enforced at BOTH the scan pre-filter (ScanContextBuilder) and
+# the execution gate (ExecutionEngine.premiumRangeGuard). SAFETY: default OFF → configured fixed cap is
+# used verbatim; only REPLACES an existing cap (maxEntryPremium>0), never invents one; falls back to the
+# fixed cap when the live ATM quote is missing (pre-open / illiquid); floored at minEntryPremium so the
+# [min, cap] band can never invert. Implemented in strategy/filter/DynamicEntryPremiumService.java.
+dynamic-entry-premium:
+  enabled: true                 # ENABLED 2026-07-10 (user go) with the recalibrated posture below.
+                                # KILL-SWITCH — false reverts to the fixed maxEntryPremium behaviour.
+                                # Live effect vs the user's fixed caps (NIFTY 300 / SENSEX 500): the cap
+                                # LOOSENS toward the tape-validated deep-ITM winner class (3.5x ATM,
+                                # bounded 250..1200); it can also tighten on very quiet ATMs (floor 250).
+  atm-multiplier: 3.5           # RECALIBRATED on the 07-09 broker book: 1.4 would have blocked ~₹12k of
+                                # that day's winners (23900CE @217 +1710 missed by ₹4 at cap 213; 76900CE
+                                # @484 +2851 at cap 224; the whole ₹400-900 deep-ITM winner class sat at
+                                # 2.8-3.3x ATM). 3.5 admits that class with headroom. Replay-validate on
+                                # multi-day tape before flipping enabled=true.
+  min-cap: 250                  # hard ₹ floor — a decayed/bad ATM read can never strangle the band
+  max-cap: 1200                 # hard ₹ ceiling — guards a bad ATM read (07-09 max winner entry was 1067)
+  expiry-no-tighten: true       # on the EXPIRING index's expiry day the dynamic cap may only LOOSEN vs the
+                                # configured cap, never tighten — the current-expiry ATM theta-decays toward
+                                # 0 into the close, which would strangle exactly the 15:00 collapse harvest
+                                # (07-09 replay: +5,750 on nine 15:00-hour entries at ₹200-400 premiums)
+
+# ── Conviction Override Engine (docs/CONVICTION-OVERRIDE-ENGINE.md) ───────────────────────────────
+# The PRIMARY microstructure override for OI-momentum ENTRY and EXIT, built on Tamil's DepthSnapshot
+# (5-level book imbalance + spoof suspicion) + OrderFlowReconstructor (Lee-Ready signed flow + absorption).
+# ENTRY: the CTO override only fires when the surge is backed by real bid-heavy + net-buy flow on the
+# option's own book (depth-confirm) AND is not spoofed/absorbed (spoof-veto). EXIT: a held position is
+# closed immediately when the carrying liquidity is spoofed/pulled or the up-move is being absorbed —
+# ahead of OI_WRITER_STOP, to catch the round-trip. LIVE + bounded (only tightens entry / exits earlier)
+# + fully tunable here without redeploy.
+conviction-override:
+  enabled: true
+  underlyings: NIFTY,BANKNIFTY,SENSEX
+  imbalance-min: 0.25            # tuned 07-04 from 07-03 data (p75≈0.36 NIFTY/0.27 SENSEX): genuinely bid-heavy
+  spoof-score-threshold: 0.6     # "suspicious level" gate (large qty ÷ few orders) — NOT yet data-tuned; tune from the depth capture
+  spoof-collapse-pct: 0.6        # temporal confirm: fraction of a suspicious level that must VANISH untraded to count as a spoof
+  freshness-ms: 3000             # a microstructure snapshot older than this yields no confirm/veto
+  # Per-index absorption "large flow" bar (OrderFlowReconstructor's hardcoded >=1000 is ~15-20x too
+  # sensitive for NIFTY). Tuned 2026-07-04 from the full microstructure history (06-20..07-03), per-day
+  # ΔV p90 — see tools/microstructure-tuning/reports/. NIFTY non-expiry median ≈ 13.8k (0DTE spikes to
+  # ~160k, ~12x — a fixed bar deliberately errs aggressive on expiry, the safe side). SENSEX median ≈ 1.5k.
+  # BANKNIFTY median ≈ 0.8k (not currently traded, but the default must not be NIFTY-scale).
+  absorb-min-signed-vol-nifty: 15000
+  absorb-min-signed-vol-banknifty: 1000
+  absorb-min-signed-vol-sensex: 1500
+  entry:
+    depth-confirm: true          # CTO entry requires real bid-heavy + net-buy flow on the option's own book
+    spoof-veto: true             # CTO entry blocked when the surge is spoofed / being absorbed
+  exit:
+    fast-reversal: true          # OI-momentum in-strategy per-tick reversal exit (fast path for managed positions)
+    global-enabled: true         # GLOBAL: close ANY strategy's long position on a conviction reversal — runs on a 500ms sweep in LivePositionExitMonitor (fast, cache-priced), not candle cadence
+    min-hold-sec: 3              # don't fire on the entry tick itself
+
+# ── Market-Memory V5 (docs/MARKET-MEMORY-V5-DESIGN.md, 2026-07-08) — ALL LIVE, bounded ─────────────
+# Per-strike baseline memory (everything z-scored vs the strike's OWN day), 6 market states with
+# magnitude tiers, intraday episode memory with suspension. Validated on the 07-06/07/08 full tick
+# replay: +₹105,238/3d at 1-lot economics (V5Memory.java harness = the standing out-of-sample test).
+market-memory:
+  enabled: true
+  avalanche-z-min: -3.0          # normalized avalanche trigger (z of dOI5m vs the strike's own day)
+  avalanche-doi5m-min-pct: -3.0  # absolute co-requirement with the z trigger
+  state-oi-weak-pct: 0.5         # weak-tier OI move (state boundaries; weak NEVER consumes budgets)
+  state-oi-strong-pct: 2.0
+  state-price-pct: 3.0
+  battle-absorb-count-5m: 3      # >=3 absorption events in 5m = BATTLE (violence imminent, both ways)
+  warmup-sec: 1500               # 25 min before a strike's baselines are trusted
+  suspension-after-losses: 3     # episode memory: 3 closed losers today (per index+side) suspend the pattern
+  decisions-csv-dir: data/tuning # §17: daily market-memory-decisions-<date>.csv (retention cron manages lifecycle)
+  warmstart-max-age-days: 6      # §14.5 seed window: 6d covers a Monday-holiday long weekend (was 4d)
+
+oi-momentum.avalanche:           # MEMORY_AVALANCHE entry branch (V5 §3) — the validated squeeze-harvester
+  enabled: true
+  max-per-day: 5                 # routine budget PER INSTRUMENT (strike+side — validated §3.1 rule E /
+                                 # V5Memory replay semantics); DEEP (dOI5m<=-8%) events are NOT rationed
+  cooldown-sec: 60               # 120->60 (2026-07-08): the 120s blackout ate the steepest re-entry leg (24500 PE 44->80 in the cooldown); 60s = +Rs21k/3d with the range day UNCHANGED; 30s churns the range day (worse) so 60 is the floor. 2026-07-09: PER INSTRUMENT, armed at EXIT (replay semantics)
+  adaptive-exits-enabled: true   # review-3 #3: replay vol-unit exit ladder (AV_SL/WPRESS/SCALP/TRAIL/MAXHOLD/EOD)
+                                 # runs BEFORE the legacy fixed-% exits on MEMORY_AVALANCHE trades; legacy stays as backstop
+  stack-enabled: true            # review-3 #1: simultaneous avalanches on DIFFERENT strikes stack extra 1-lot
+                                 # positions beside the primary (the replay's main P&L source)
+  max-concurrent-per-index: 3    # hard ceiling incl. the primary; global maxOpenTrades + §LOT-CAP still bound totals
+  max-dp5m-pct: 75               # C1 (07-09, replay-validated): entry only while dP5m <= 75% — buy the TURN,
+                                 # not the spike (+170..227% verticals). Sweep: 25 cost -34% of replay (REJECTED),
+                                 # 75 costs -2.3%. Applies to ALL tiers incl. deep.
+  expiry-max-dp5m-pct: 25        # C1b: EXPIRING index only — replay silent (zero expiry days); 07-09 evidence
+                                 # unanimous (every expiring-index entry above +15% dP5m lost)
+  wide-trail-mult: 4.0           # two-phase AV_TRAIL (07-09 give-back study): gap 1.2vu while small, widen to
+                                 # THIS*vu once peak>=3vu ("earned room"). Replay 137k->173k (+26%); 07-09 live
+                                 # population -790->+1333 keeping the give-back rescue. Plateau ~5-6 but win%
+                                 # decays via round-trips there. 0 = old single-phase 1.2vu.
+  exempt-day-cap: true           # 07-09 afternoon forensic: the dynamic day-cap (69/54, bias-churn throttle,
+                                 # NEVER in any validated replay run) silently ate the whole 14:30+ SENSEX
+                                 # collapse harvest while live DEEP dP5m<2% signals sat in the engine. Avalanche
+                                 # gets an avalanche-ONLY pass-through of day-cap+midday gates (its own budget/
+                                 # cooldown/suspension/C1 stack governs); bias/fade/case0 stay capped.
+  strike-span: 10                # scan ATM ± span strikes (both CE and PE; bounded by the WS ATM-window
+                                 # subscription, same universe the replay validated); deepest dOI5m wins.
+                                 # Entries trade THE signal strike (forcedEntryStrike bypasses the V3
+                                 # picker + ITM/ATM clamp). Premium bounds = the EXISTING per-underlying
+                                 # Index-Config min/max entry premium (UI-edited, enforced in the entry
+                                 # gates). Lots = sizer single-lot + the per-user risk-profile ceiling —
+                                 # NO avalanche-specific premium/lot knobs (reuse existing config).
+
+# V5 exit changes (V5 §4). WRITER_STOP/FLIP_REVERSE are OFF as live exits — 3-day evidence: 29 exits,
+# 0% win, −₹9.1k, and price REBOUNDED >=2% within 5 min after most (they sell local bottoms). Their
+# conditions still evaluate + log "[ExitArbiter] ... SUPPRESSED" lines (removal audit for the 07-11
+# scoring). Coverage stays: SL, WPRESS_ACCEL, COE reversal, trailing, scalp, max-hold, EOD.
+oi-momentum.exit.writer-stop-live: false
+oi-momentum.exit.flip-reverse-live: false
+oi-momentum.exit.wpress-accel-enabled: true     # in-loss + writers pressing (zOI>=+2, price < -1 volUnit) → exit now
+oi-momentum.exit.wpress-min-held-sec: 30
+oi-momentum.exit.ride-avalanche-scalp-defer: true  # don't scalp while the strike is in AVALANCHE/SHORT_COVER_RUN
+
+entry-pipeline.veto-rail:        # V5 §5 — state-aware entry vetoes; one [EntryPipeline] log line per candidate
+  enabled: true
+  spike-top-pct: 6.0             # premium already >+6% above its 15-min low → blocked (both 07-08 SL losers)
+  blow-off-vol-rate: 6.0         # volume >=6x trend = worst continuation bucket (15.7%)
+  heavy-offer-imb: -0.40         # only the EXTREME offer-heavy book (mid-range imb carries no signal)
+
+# ── V3 conviction → lot-size calibration (2026-07-02) ─────────────────────
+# Maps the V3 ConvictionSizer's conviction (gates×pattern×time×vol, ~0.2–1.1 in practice) onto the lot range
+# [1 .. maxLotsPerTrade]. At/below conviction-min → 1 lot (weak signal); at/above conviction-strong → the FULL
+# maxLotsPerTrade ceiling (strong signal); linear between. Fixes the old bug where dividing by 1.5 made the
+# ceiling unreachable. maxLotsPerTrade itself is the per-user risk profile (edited in the UI) — untouched here.
+trading.v3.sizing.conviction-min: 0.50
+trading.v3.sizing.conviction-strong: 0.90
+
+# ── Multi-Timeframe Context (2026-07-01) ──────────────────────────────────
+# Gives the intraday OI-momentum loop day/week/month awareness it previously lacked (it only saw
+# <=60min of price). Intraday is live + primary; higher-timeframe is hourly candles aggregated to
+# daily bars, refreshed hourly. SOFT + config-gated: nudges the bias score and keeps aligned winners
+# running — never forces a trade/exit. Fully captured into tuning (attr_extra schema v3) so the
+# alignment edge is validated on real outcomes after ~a week. See docs/MULTI-TIMEFRAME-CONTEXT-2026-07-01.md
+mtf:
+  enabled: true                          # master switch for the service; false = always NEUTRAL/unavailable
+  short-trend-threshold-pct: 0.30        # % move over 3 daily closes to call short trend "trending"
+  week-trend-threshold-pct: 0.80         # 5 daily closes
+  month-trend-threshold-pct: 2.0         # 20 daily closes
+  level-proximity-pct: 0.25              # spot within 0.25% of a recent daily hi/lo = NEAR that level
+  oi-momentum:
+    enabled: true                        # apply MTF in OI-momentum (bias bonus + ride); false keeps capture only
+    align-bonus: 6                       # +bias when entry direction agrees with day+week lean
+    counter-trend-penalty: 8             # -bias when entry fights the day+week lean (> bonus by design)
+    ride-when-aligned: true              # hold (don't scalp) an aligned winner in a TRENDING regime
+
+# ── Market data ───────────────────────────────────────────────────────────
+# Dispatch CandleClosedEvent (which drives the heavy candle-close algo scan + exit monitors) OFF the
+# WebSocket tick thread on a dedicated single-thread executor. Fixes the 2026-07-01 root cause where the
+# 15-min scan ran inline on the tick thread, starved tick processing for ~30s, and tripped a spurious
+# zombie force-reconnect at every candle boundary. Set false to restore old inline behaviour (no redeploy).
+marketdata.candle-event-async: true
+
+# ── Cross-index shadow (research → shadow, NO orders) ─────────────────────
+# Live paper-trades the strongest research-watchlist edge (NIFTY leads SENSEX momentum, trend regime).
+# Order-free, isolated (Spring scheduler thread, cached reads only), logs virtual SENSEX trades to
+# data/tuning/crossindex-shadow-<date>.csv for the offline study to score. Set enabled=false to stop.
+crossindex-shadow:
+  enabled: true
+  momentum-lookback-min: 15     # NIFTY spot-momentum lookback (matches the 15-min edge-study signal)
+  regime-range-pct: 0.20        # trailing ~30-min NIFTY range > this % = trend (only fires in trend)
+  horizon-min: 30               # hold the virtual SENSEX trade this long, then mark-to-market the exit
+  cooldown-min: 15              # min gap between virtual entries (avoid overlapping duplicates)
+  eval-ms: 60000                # evaluate every 60s
 
 # ── Algo Flow Orchestrator — pre-trade filter pipeline ────────────────────
 algo-flow:
@@ -372,22 +785,292 @@ oi-rest-fallback:
 
 # ── OI Momentum Strategy ──────────────────────────────────────────────────
 # Java defaults are the single source of truth. Override here for live session tuning.
-# Targeting 20+ quality trades/day across NIFTY + BANKNIFTY + SENSEX.
+# Targeting 30–50 quality trades/day across NIFTY + BANKNIFTY + SENSEX (expiry-day focus).
 oi-momentum:
   enabled: true
   paper-trading: false
 
-  # ── Entry sensitivity ────────────────────────────────────────────────────
-  momentum-threshold-percent: 0.06       # was 0.08 — catch smaller clean moves
-  bias-confidence-threshold: 40          # 5pt more room for operator-confirmed entries
-  bias-confirmation-ticks: 2             # re-entry boost reduces to 1 automatically
+  # ── Entry sensitivity (relaxed for high-frequency expiry execution) ──────
+  momentum-threshold-percent: 0.04       # was 0.06 — catch even smaller clean moves
+  spike-threshold-percent: 0.35          # was 0.40 — lower spike bar for more ignition triggers
+  bias-confidence-threshold: 45          # raised from 35 — filter weak signals, require real confirmation
+  bias-confirmation-ticks: 1             # was 2 — instant entry on confirmation (no delay)
+  bias-floor-default: 50                 # raised from 45 — require meaningful operator confirmation
+  bias-floor-relaxed: 45                 # raised from 40 — relaxation still requires decent signal
 
-  # ── Throughput ────────────────────────────────────────────────────────────
-  soft-target-trades-per-day: 20
-  max-trades-per-day: 25
-  midday-trade-reduction-percent: 70     # allow more midday entries (12:00–13:00)
-  cooldown-after-sl-seconds: 60
-  consecutive-loss-pause: 4
+  # ── FAST-OI (2026-07-01): fresher OI than the legacy ~5-min oldest-sample reach-back ──────
+  # Empirical (data/tuning/atm-microstructure-2026-06-24.csv, 355MB): band-aggregate OI blackout
+  # by trailing window = 84%@10s, 60%@30s, 29%@60s, 28%@180s → coverage KNEE at 60s (= the ~57s
+  # exchange OI-refresh heartbeat). 10s is blind 84% of the session; >60s is pure lag. See §8.4.1
+  # of docs/OI-MOMENTUM-COMPLETE-FLOW.md. Set enabled=false for byte-identical legacy behaviour.
+  fast-oi:
+    enabled: true                        # master switch; false = legacy oldest-sample ~5-min window + 500k floor
+    oi-window-seconds: 60                # TRUE trailing OI-change window (empirical knee; ring buffer resolves ~60s)
+    oi-significance-floor: 200000        # band |Δ| significance floor; 0.4× the legacy 500k (60s |Δ| ≈ 0.4× ~5-min)
+    operator-band-strikes: 8             # ATM±N band for the live operator strike map (detector scans ATM±6)
+    operator-refresh-seconds: 15         # min seconds between live-cache operator-signal refreshes per index
+
+  # ── Throughput (30-50 trades/day target) ─────────────────────────────────
+  soft-target-trades-per-day: 40
+  max-trades-per-day: 50
+  max-reversals-per-day: 5               # was 3 — allow more direction flips on expiry
+  midday-trade-reduction-percent: 80     # was 70 — minimal midday throttle
+  cooldown-after-sl-seconds: 45          # was 60 — faster recovery
+  consecutive-loss-pause: 5              # was 4 — slightly more tolerance before pause
+  # 2026-07-02: minimum-hold-time-seconds gates the ENTIRE exit stack (target/trailing/scalp/quick-
+  # profit), not just OI-flip. At 300s it blocked all take-profit exits on the primary account for
+  # 5 minutes while LivePositionExitMonitor (used for signal-copied secondary-user trades) only
+  # waits 60s — so primary and secondary users' identical positions exited on different timelines,
+  # forcing manual closes on the primary side to avoid giving back profit. Restored to a short grace
+  # period matching the secondary path; OI-flip's own 5-minute protection is unaffected below.
+  minimum-hold-time-seconds: 60          # short grace period before SL/target/trailing/scalp can fire (was 300, briefly)
+  oi-flip-min-hold-seconds: 300          # OI-flip reversal ONLY — no flip-exit before 5 min (unaffected by the above)
+
+  # ── Entry window (wider for more opportunities) ──────────────────────────
+  entry-window-start: "09:20"            # was 09:25 — catch opening ignitions earlier
+  entry-window-end: "15:15"              # 2026-07-07 item 2c: 15:10 → 15:15 (per-path expiry entry cutoff binds the actual gate)
+
+  # ── Exit parameters (quick profit booking) ───────────────────────────────
+  stop-loss-percent: 10                  # was 12 — tighter SL for more attempts with less risk
+  trailing-activation-percent: 4         # was 5 — lock profits earlier
+  trailing-gap-percent: 3                # was 5 — tighter trail for quick booking
+  break-even-trigger-percent: 4          # was 5 — protect earlier
+
+  # ── CASE 0 (OI-led — relaxed for more ignition detections) ──────────────
+  case0-op-score-threshold: 65           # was 80 — lower bar catches more operator signals
+  case0-coil-max-pct: 0.15              # was 0.10 — wider coil range accepted
+  case0-pcr-slope-min-abs: 0.015         # was 0.02 — catches gentler PCR shifts
+
+  # ── Operator squeeze (relaxed ignition bar) ─────────────────────────────
+  operator-squeeze-ignition-return-min-pct: 0.10  # was 0.15 — smaller ignition bars qualify
+
+  # ── Range-edge fade (relaxed for more triggers) ─────────────────────────
+  range-edge-fade-range-max-pct: 0.40    # was 0.30 — wider range accepted
+  range-edge-fade-oi-build-min: 2000     # was 3000 — less OI needed
+
+  # ── Sustained drift (more sensitive) ────────────────────────────────────
+  sustained-drift-min-pct: 0.15          # was 0.20 — smaller drift qualifies
+  sustained-drift-op-score-min: 40       # was 50 — lower operator score needed
+
+  # ── DATA-2: opening-window OI-availability gate (2026-06-20) ──────────────
+  # When true, the cached-OI fallback is suppressed during opening warm-up unless the
+  # ATM band has a real OI baseline (prevents a fluky early reading from masquerading as
+  # confirmed OI when data shows OI-change is only 60–95% populated before ~10:00).
+  # Enabled: relaxes entry requirements when OI availability is low at session open.
+  oi-availability-gate-enabled: true
+
+  # ── Operator-framework overrides (2026-07-03) ─────────────────────────────
+  # When OI is genuinely UNAVAILABLE (CASE5_OI_UNAVAILABLE/NO_RULE) the entry is created purely from the
+  # operator signal — there is no OI to confirm. So it must clear a HIGH-conviction bar, not the old ≥50
+  # "confirm" threshold that let a score-63 no-OI SENSEX 78000CE trade through. Raise toward 100 to be
+  # stricter (effectively disabling no-OI entries).
+  operator:
+    oi-unavailable-min-score: 70
+    # ── Capitulation-flip (2026-07-07, item 1 — the #1 expiry fix) ──────────────────────────────
+    # Signal-driven direction flip: when the DOMINANT cumulative side unwinds fast AND the opposing side
+    # builds AND spot moves against the old direction, held for confirm-ticks windows, emit the flipped
+    # direction (and clear the radar persistence lock). NO clock condition. Triple-AND + confirm-ticks are
+    # the anti-noise guard. enabled=false → inert (cumulative bias unchanged; trend days byte-identical).
+    capitulation-flip:
+      enabled: true
+      recent-window-sec: 120       # trailing window over which unwind/build/price-move are measured
+      unwind-min-pct: 30           # dominant side must have unwound >= this % of its band OI over the window
+      opposing-build-min: 750000   # opposing side must have built >= this many contracts over the window
+      confirm-ticks: 2             # triple-AND must hold this many consecutive windows before flipping
+      min-price-move-pct: 0.12     # spot must have moved >= this % AGAINST the old direction
+
+  # ── Operator-move mode (2026-07-07, item 4) — signal-driven master, NO time window ─────────────
+  # Master kill-switch for the operator-move relaxations. When ON, isOperatorMoveActive (high conviction
+  # OR capitulation-flip) gates the OTM-cutoff bypass (2a), the chop chase-off bypass (2b) and the ITM
+  # strike (3). Set enabled=false to disable all three at once (each also has its own sub-flag).
+  operator-move-mode:
+    enabled: true
+
+  # ── V3 strike selection — ITM-on-conviction (2026-07-07, item 3) ───────────────────────────────
+  # On high conviction (op-score + oiVel), the V3 multi-strike picker also considers an ITM strike; G4
+  # liquidity still filters it (illiquid ITM loses on score → falls back to ATM). Normal selection is
+  # provably unchanged when conviction isn't met. high-conviction predicate = opScore>=itm-op-score-min
+  # AND oiVel>=itm-oivel-min (the passed-gates alternative is captured for measurement only).
+  v3:
+    strike:
+      itm-on-conviction-enabled: true
+      itm-depth: 1
+      itm-op-score-min: 70
+      itm-oivel-min: 3.0
+      itm-passed-gates-min: 3
+
+  # ── Expiry entry cutoff + late-entry time-stop (2026-07-07, item 2c) ───────────────────────────
+  # expiry-entry-cutoff-time replaces the legacy "squareoff − 5 min" ENTRY gate on expiry (exit timing +
+  # the hard 15:20 force square-off are untouched). Any expiry entry taken after the 15:10 square-off time
+  # is force-exited by expiry-late-entry-time-stop-time so it can't ride into the 15:20 thin-book settle.
+  expiry-entry-cutoff-time: "15:15"
+  expiry-late-entry-time-stop-time: "15:18"
+
+  # ── Pre-market bias scanner (Gift Nifty + US futures + crude) ──────────────
+  # Fetches global cues at 9:10 AM via Yahoo Finance and injects directional
+  # bias into the opening drive scoring (9:15–9:45). Neutral after 9:45.
+  pre-market-bias:
+    enabled: true
+    gift-nifty-symbol: "^NSEI"   # Yahoo symbol (NSEI as proxy for Gift Nifty)
+
+  # ── Dynamic Gate Engine — volatility-conditioned threshold adjustment (LIVE) ────
+  # When enabled, per-index regime values recompute every 30 min (Mon–Fri 09:15–15:30 only)
+  # and are applied LIVE: the entry bias-floor is nudged by regime (NORMAL = no change; LOW_VOL
+  # tightens; HIGH_VOL/EXTREME loosen) and lot size is scaled by the conviction multiplier (0.5–1.5).
+  # Hard clamps + per-param rate limiting + staleness fallback to NEUTRAL prevent runaway. Exit SL/
+  # target/trailing remain static for now (dynamic exits require trade-stamping work — see design doc).
+  dynamic-gates:
+    enabled: true
+
+  # ── Outcome-feedback engine (live recalibration) ──────────────────────────
+  # Adjusts entry gates based on realized trade expectancy (R-multiples). Guarded by minimum
+  # sample size (30 trades / 5 days per regime), hard clamps, rate limits (±5%/week), and
+  # auto-revert if expectancy drops after 5 days. Applied in AGGRESSIVE profile, neutral for BALANCED.
+  outcome-feedback:
+    enabled: true
+
+  # ── Operator Reversal Detector (direction-flip ignition footprints) ────────
+  # Watches for OI shift + PCR slope flip + premium velocity acceleration + volume spike
+  # within a 10-min window. When ≥3/5 footprints confirm and oppose current position,
+  # fires a reversal signal (bias boost +20, instant entry, reduced debounce).
+  reversal-detector:
+    enabled: true
+    min-footprints: 3             # minimum footprints to confirm (out of 5)
+    cooldown-seconds: 120         # minimum gap between reversal signals
+
+  # ── Synthetic OI velocity bias bonus (2026-06-20) ─────────────────────────
+  # Apply the SyntheticOiVelocityDetector bonus when its tick-resolution flow proxy agrees
+  # with momentum. Bridges the 1-3 min NSE OI print gap with volume-inferred direction.
+  synthetic-oi-velocity-bonus-enabled: false
+  synthetic-oi-velocity-bonus-points: 10
+  # The detector itself (scheduled sampler; reads cumulative volume between OI prints).
+  synthetic-oi-velocity:
+    enabled: true                  # master switch for sampling
+    underlyings: NIFTY,BANKNIFTY,SENSEX
+    window-sec: 90                 # rolling flow window
+    strikes-around: 3              # ATM ± N strikes
+    min-interval-volume: 0         # min band volume in window before a signal fires
+    min-confidence: 55             # min dominant-side share (0..100) to report a direction
+    sample-interval-ms: 2000
+
+  # ── OI-velocity early detector (Workstream D) — SHADOW ONLY ───────────────
+  # Records virtual ignition signals to data/tuning/early-detection-shadow-<date>.csv and the
+  # Microstructure page. shadow-only=true is a hard guard AND the detector has no order path —
+  # it can never place a live order. Enabled now to accumulate evaluation data during the
+  # measurement week. Zero impact on live entries.
+  early-detection:
+    enabled: true
+    shadow-only: true              # SHADOW — there is no live order path in this detector (records virtual
+                                   # signals to the shadow CSV for evaluation). false only logged a misleading
+                                   # "misconfiguration" WARN ~559x/day without ever placing an order.
+    oi-velocity-window-sec: 120    # spans ~2 OI updates (79% of changes land within 120s)
+    oi-velocity-threshold-pct: 0.5 # sweet-spot band: 0.5–2.0% (backtest: 56% win)
+    coil-max-range-pct: 0.30       # relaxed from 0.10 — wider coil accepted
+    imbalance-threshold: 0.55      # relaxed from 0.60
+    # Calibration retune 2026-06-27 (corrected from microstructure tick data): the detector fired
+    # ZERO times across the measurement week (earlyDir always 0 in the shadow CSV). EMPIRICAL CAUSE:
+    # the 5% velocity threshold was unreachable — real OI changes ~every 60s (median) with a median
+    # magnitude of only ~0.33% per change, so a one-sided build almost never sums to 5% over a short
+    # window (this is the dominant blocker, NOT a slow OI refresh — OI updates 41%/79%/97% of the time
+    # within 60s/120s/210s; the 5-min chain-snapshot is just the coarse floor). Fix: drop the
+    # threshold, soften the coil floor, and use a window that spans ~2 OI updates for a stable
+    # velocity read while staying responsive enough for EARLY detection.
+
+# ── Source-quality lot sizing (§3.7) ──────────────────────────────────────
+# Down/up-weights lots by a signal source's recent realized P&L%, since ~half of entries came from
+# the weakest source (oi_momentum, near-zero MFE) while the best sources fired rarely. DEFAULT OFF and
+# a no-op until min-samples accumulate — enable only after backtesting against recorded outcomes.
+trading.source-sizing:
+  enabled: true                  # 2026-06-28: ENABLED — backtest confirms oi_momentum entries lack edge
+                                 # (breakouts fade), so down-weighting a net-losing source reduces risk.
+                                 # Conservative: only halves lots when a source's recent avg P&L% < 0.
+  min-samples: 20
+  window: 50
+  min-multiplier: 0.5
+  max-multiplier: 1.5
+
+# ── Option greeks / IV model ──────────────────────────────────────────────
+# Index option IV/greeks use the Black-76 model on the FORWARD price (put-call parity at ATM),
+# matching how NSE/Sensibull compute IV ("Black-76 … using futures prices directly"). The prior
+# code used SPOT with dividend-yield 0, which mis-stated the forward and skewed IV/greeks
+# (2026-06-27 fix). Set false to fall back to the spot-carry forward (reproduces the legacy numbers).
+greeks:
+  use-synthetic-forward: true
+  # ── IV convention (2026-07-06 IV-drift fix) ─────────────────────────────
+  # Live-confirmed on the 2026-07-06 chain snapshots: the bot understated IV on SHORT-dated options purely
+  # because it used a TRADING-day/252 clock while Sensibull/NSE/India-VIX use a CALENDAR-day/365 clock
+  # (NIFTY 1-DTE 8.95%→12.83% ≈ Sensibull 12.84%; SENSEX 3-DTE 9.55%→12.30% ≈ 12.32%; BANKNIFTY 22-DTE
+  # already matched). The price source (LTP vs MID) was negligible (≤0.03 vol pt at ATM). Defaults below are
+  # the CORRECTED, Sensibull-matching values. NOTE: flipping these changes LIVE IV/greeks and every new
+  # IV-rank sample — deploy deliberately, and reseed the IV history afterwards (see IVRankTracker reseed).
+  time-convention: CALENDAR_365   # CALENDAR_365 (Sensibull/VIX, default) | TRADING_252 (legacy 252 clock)
+  iv-price-source: MID            # MID (bid/ask midpoint, default) | LTP (last-traded, legacy)
+  iv-mid-max-spread-pct: 50       # trust the mid only if the book spread ≤ this % of mid; else fall back to LTP
+
+# ── Momentum-gate v2 (§3.3) — KEPT OFF: backtest did NOT support it ───────
+# A 2026-06-28 backtest over the recorded per-minute spot series (1,403 breakout events, 3 wk) found
+# raw 30-min breakouts have NO continuation edge intraday (NIFTY 48.6% / SENSEX 51.5% / BANKNIFTY
+# 42.2% win; avg forward directional move ≈ 0). The range-relative + drift-confirm gate made it WORSE
+# (win 41% vs 47.6%, avg −0.020% vs −0.008%) — it selected a worse subset. So these stay OFF. The
+# entry edge must come from OI/operator confirmation, not the price gate — see the design doc §3.3.
+oi-momentum.momentum-gate:
+  range-relative-enabled: false
+  drift-confirm-enabled: false
+
+# ── Firm profit-target book (2026-07-01, research-driven) ─────────────────
+# The exit-rule study (tools/edge-study/exit_study.py, 28 snapshot days) found booking a winner at a
+# fixed target beats trailing it — every TRAIL variant had the worst median net + highest give-back
+# (13-14%), TARGET was best. The live book loses via give-back (55% win yet net<0). This caps a RIDING
+# winner at a firm target instead of handing it back (scalpMode still books earlier at 3-8%). Captured
+# as the PROFIT_TARGET exit reason so the tuning exit-attribution can A/B it. Set enabled=false to revert.
+oi-momentum.profit-target:
+  enabled: true
+  pct: 15.0
+
+# ── Chop-regime conditional OI-momentum (2026-07-06) — docs/CHOP-REGIME-FADE-FIX.md ───────
+# Leading regime classifier: chopRegime = (0 < VIX < vix-max) AND (0 < range30m < range30m-max).
+# When chopRegime is FALSE (trend/expansion tape, or VIX/range unavailable) every path below is inert
+# and trend-day behaviour is byte-identical. Each piece is independently flag-gated & killable.
+oi-momentum.chop-regime:
+  enabled: true            # master switch for the classifier (false → all chop paths inert)
+  vix-max: 13.0            # chop requires India VIX strictly below this
+  range30m-max: 0.40       # chop requires 30-min range (% of spot) strictly below this
+  suppress-chase: true     # in chop, suppress EARLY_OI_VELOCITY + SUSTAINED_DRIFT entries
+  # Conviction BYPASS (2026-07-07, item 2b): on a strong operator move, do NOT suppress the chase — that's
+  # exactly the move to ride. Signal-driven (op-score + oiVel), NO clock. Off / not-met → chase-off unchanged.
+  chase-bypass-on-conviction: true
+  chase-bypass-oivel-min: 3.0
+  chase-bypass-op-score-min: 65
+# Early-dip exit grace on OI_WRITER_STOP (chop only). Defers the ADDITIONAL writer-stop for a fresh
+# entry unless the loss breaches the hard floor. Never weakens the hard SL / flash-crash / daily-loss /
+# kill-switch (all still fire). Gated to chopRegime so trend days are unaffected.
+oi-momentum.exit-grace:
+  enabled: true
+  window-sec: 240          # grace window after entry
+  hard-floor-pct: 8.0      # still stop immediately if down >= this, even inside the window
+# ── Ride confirmed winners (2026-07-07) — let a CONFIRMED WINNER run, never a loser ────────────────
+# Defers the two "cut the winner early" fast exits (OI_WRITER_STOP + OI_FLIP_REVERSE) ONLY while the trade
+# is comfortably IN PROFIT (>= min-profit-pct) AND the operator direction STILL confirms this side — the
+# trade then rides on the trailing-stop + hard-SL instead of being knocked out on a micro-pullback OI dip.
+# NOT regime/clock-gated (works on trend/grind days too, unlike exit-grace). CANNOT engage at/near a loss
+# (min-profit-pct > 0) or on a flipped direction. Loss side is untouched: hard SL, flash-crash, COE reversal
+# exit, trailing-stop, daily-loss/consecutive-loss caps, kill-switch and 15:20 square-off all still fire.
+# KILL-SWITCH: set enabled:false → byte-identical to today's exit behaviour.
+oi-momentum.ride-winners:
+  enabled: true                    # KILL-SWITCH for ride-winners (false → today's exact exit behaviour)
+  min-profit-pct: 3.0              # only ride once unrealized profit >= this (>0 → never engages on a loss)
+  require-direction-confirm: true  # require operator to still confirm the held side before deferring the cut
+  op-score-min: 65                 # operator conviction bar (fresh + aligned + score >= this) for the confirm
+# Fade mode LIVE in chop (INDEPENDENTLY killable — set enabled:false to kill fade alone). Lets
+# RANGE_EDGE_FADE place live orders past the legacy 10-min dedupe, drift-aligned side only, tight
+# target/stop bracket, capped per day. All risk gates stay intact — fade operates within them.
+oi-momentum.fade-mode:
+  enabled: true            # KILL-SWITCH for fade-mode (false → legacy 10-min-dedupe fade behaviour)
+  target-pct: 8.0          # tight profit target for chop fades
+  stop-pct: 5.0            # tight stop for chop fades
+  max-fades-per-day: 6     # per-index daily cap on chop fades
+  min-gap-sec: 120         # min seconds between chop fades (replaces 10-min dedupe in chop)
+  drift-deadband-pct: 0.12 # |60m drift| below this = neutral (fade either edge); above = drift-aligned only
 
 # ── Premium Velocity Tracker (Gamma-Regime Detection) ─────────────────────
 # Tracks ATM CE/PE premium % change per rolling window. When premium velocity
@@ -395,9 +1078,80 @@ oi-momentum:
 # as an alternate momentum signal — catching expiry-day moves where spot barely
 # moves but options swing 15-20%.
 oi-momentum.premium-velocity:
-  signal-threshold-pct: 3.0        # min premium % change to consider a signal
-  gamma-amplification-min: 5.0     # premium/spot velocity ratio to detect gamma regime
+  signal-threshold-pct: 2.0        # min premium % change (lowered from 3.0 to catch subtler moves)
+  gamma-amplification-min: 3.0     # premium/spot velocity ratio (lowered from 5.0 — 3× is enough to confirm option leads)
   window-seconds: 60               # rolling window for velocity calculation
+
+# ── High-frequency ATM microstructure capture (research) ──────────────────
+# AtmMicrostructureRecorder taps the WS option-tick path and writes a throttled
+# (<=1 row/token/sec) per-strike CSV to data/tuning/atm-microstructure-<date>.csv.
+# Extended to all three traded indices (2026-06-20). NOTE: capture volume scales
+# ~linearly with indices — 3 indices ≈ 3× the rows/disk vs NIFTY-only.
+atm-microstructure:
+  enabled: true
+  # 2026-07-03: added SENSEX so the per-strike OI+premium substrate exists for the OI-divergence
+  # entry/exit study (was NIFTY-only). SENSEX ~doubles rows/disk; roller retention still applies.
+  underlyings: NIFTY,SENSEX
+  roller:
+    enabled: true
+    csv-dir: data/tuning
+    csv-prefix: atm-microstructure-
+    archive-base-dir: data/tuning/microstructure-archive
+    delete-csv-after-roll: true
+    retention-days: 180            # ~6 months
+
+# ── OI prediction shadow (head-to-head, research) ─────────────────────────
+# Scores SyntheticOiVelocityDetector (volume) vs OiVelocityEarlyDetector (OI-sampled-fast)
+# against the next real OI print. Writes data/tuning/oi-prediction-shadow-<date>.csv.
+# For a fair comparison BOTH detectors must also be enabled (synthetic-oi-velocity.enabled
+# and oi-momentum.early-detection.enabled). Default false = no effect.
+oi-prediction-shadow:
+  enabled: true                    # research CSV only — head-to-head synthetic vs early detector; no order impact
+  underlyings: NIFTY,BANKNIFTY,SENSEX
+  strikes-around: 3
+  sample-interval-ms: 5000
+
+# ── OI–price divergence (OI↑ + own-premium↓ = writers) — OiDivergenceMonitor ──────────────
+# On the specific held/candidate strike: rising OI while its own premium falls = writers stacking
+# in = bearish for a long holder (CE or PE, symmetric). Two uses, ONE indicator:
+#   EXIT  — protective stop OI_WRITER_STOP, earlier than −SL, once armed + confirmed.
+#   ENTRY — capture-only for now: records whether we bought into a writer wall (first-sight).
+# SHADOW-FIRST: shadow=true logs/records every would-fire to data/tuning/oi-divergence-shadow-<date>.csv
+# but changes NO trading decision. Flip shadow=false to enforce the exit (auto-appears in the
+# exit-attribution tuning report, grouped by OI_WRITER_STOP). Thresholds seeded from the 2026-07-03
+# NIFTY losers; retune from the shadow CSV + SENSEX/NIFTY microstructure before enforcing.
+oi-divergence:
+  enabled: true
+  shadow: false                    # true = measure only (no exit); false = enforce OI_WRITER_STOP
+  window-sec: 60                   # OI/premium look-back (≈ exchange OI-refresh cadence)
+  oi-rise-pct: 0.8                 # min held-strike OI rise (%/window) to count as writer buildup
+  confirm-ticks: 3                 # consecutive confirmed ticks before exit fires (anti-whipsaw)
+  arm-sec: 60                      # min hold before the exit can fire
+  band-strikes: 2                  # sample ATM±N each tick so candidate/held strikes have history
+  # Entry-side tape confirmation (A3): for OI-UNAVAILABLE entries, require a same-strike volume surge +
+  # directional price thrust. shadow=false → ENFORCE: block a no-OI entry that is liquid enough to judge
+  # yet shows no confirmation (aborts before the order). Cold-buffer / illiquid strikes are never blocked
+  # (A1's oi-unavailable-min-score stays the control). Flip shadow=true to revert to capture-only.
+  entry-confirm:
+    enabled: true
+    shadow: false
+
+  # ── Peak-profit-giveback confirmation (additive; independent shadow/enable flags) ──────────
+  # Answers a DIFFERENT question than OI_WRITER_STOP above: "we PEAKED and pulled back — is the
+  # pullback confirmed by real unwinding + volume in THIS strike, or is it noise?" Fires only on a
+  # still-profitable trade; requires BOTH the OI/premium divergence (reused from above) AND a
+  # same-strike volume surge before treating the pullback as confirmed. Unconfirmed pullbacks are
+  # left entirely to the existing trailing-stop/profit-lock ratchet — this never tightens/loosens
+  # that path, it only adds an earlier, faster confirmed-exit for genuine reversals off a real peak.
+  # Shadow rows: data/tuning/oi-peak-giveback-shadow-<date>.csv. Retune from that CSV before enforcing.
+  giveback:
+    enabled: true
+    shadow: false                    # true = measure only (no exit); false = enforce PEAK_GIVEBACK
+    min-peak-pct: 4.0                 # peak profit must reach at least this % before the check arms
+    trigger-pct: 1.5                  # pullback (percentage points off peak) before confirmation is checked
+    volume-surge-multiplier: 1.5      # recent 30s volume delta ÷ prior 30s delta must be ≥ this
+    min-volume: 500                   # prior-window volume floor; below this, treat as illiquid (never fires)
+    confirm-ticks: 2                  # consecutive OI+volume-confirmed ticks before exit fires
 
 # ── Mean Reversion Strategy ───────────────────────────────────────────────
 # Midday session only (11:00–13:30). Buys when price stretches from VWAP
@@ -413,13 +1167,14 @@ strategy:
 
   # ── Exit (backtest-optimised: Trail5/5 + SL12 outperforms Trail8/8 + SL15) ─
   # 47-trade sensitivity sweep on NIFTY: net P&L +₹3,575 vs -₹5,281 baseline.
-  # Trail activation at 5% captures profit 3pp sooner; SL at 12% cuts cleaner.
+  # Trail activation at 5% captures profit; gap starts at 3% (not 5% — avoids
+  # immediate stop at entry price). Tiered trailing tightens further at higher peaks.
   stop-loss-percent: 12                  # was 15 — tighter cut, no win-rate hit
-  trailing-activation-percent: 5        # was 8  — start trailing 3pp sooner
-  trailing-gap-percent: 5               # was 8  — tighter trail from peak
+  trailing-activation-percent: 5        # start trailing once peak reaches +5%
+  trailing-gap-percent: 3               # trail 3% below peak (was 5 — too tight at activation)
   # Break-even stop: once peak ≥ N%, floor SL to 0% (entry price).
-  # Modest P&L benefit (+₹145) but strong W/L improvement (0.69→0.90).
-  break-even-trigger-percent: 6         # GO-LIVE: profit ratchet active at +6%
+  # Lowered from 6→4: protects +4-6% winners that currently round-trip to losses (Finding 4).
+  break-even-trigger-percent: 4         # GO-LIVE: profit ratchet active at +4%
 
   # ── Operator / advanced signals ──────────────────────────────────────────
   operator-bonus-enabled: true
@@ -430,7 +1185,8 @@ strategy:
   # Multi-timeframe: backtest shows 5M adds 0 trades (subsumed by 15M cascade).
   # 15M adds 9 trades but all net-negative: WR 57%, AvgW ₹860 vs AvgL ₹1,598 = -₹2,710.
   # 30M alone: WR 68%, net +₹21,660, PF 1.74. Disabling sub-30M windows.
-  multi-timeframe-enabled: false         # was true — 5M/15M hurt quality, 30M dominates
+  # Re-enabled: 15M window catches operator bursts. 5M still disabled (see shortTimeframeThresholdPct).
+  multi-timeframe-enabled: true
 
   # ── Re-entry boost ────────────────────────────────────────────────────────
   re-entry-boost-enabled: true
@@ -457,8 +1213,8 @@ strategy:
   legacy-time-of-day-mode-enabled: true    # P0-2: filter afternoon/last-hour entries (replay 48%→58% win)
   case0-enabled: true                      # P0-1: OI-led entry (no breakout required)
   case0-shadow-mode: false                 # LIVE: CASE 0 binds entries (not log-only)
-  case0-op-score-threshold: 80             # strict (replay 91% 30m win); loose=70
-  case0-coil-max-pct: 0.10                 # strict; loose=0.15
+  case0-op-score-threshold: 70             # relaxed from 80 → catch scores 70-79 that logs show are valid
+  case0-coil-max-pct: 0.15                 # relaxed from 0.10 → allow slightly wider ranges (logs show 0.11-0.15)
   case0-pcr-slope-min-abs: 0.02            # PCR direction-of-tilt requirement
   case4-watchlist-bonus-enabled: true      # P1-3: +5 bias on next OI-aligned signal
   # R3 — Adaptive CASE 0 for low-VIX (29 May 2026 — replay 82% 60m win, ~4/day)
@@ -566,6 +1322,14 @@ tuning:
     output-dir: reports/tuning/html
   capture:
     poll-interval-sec: 30
+  forward:
+    # Forward-checkpoint sweep (ForwardCheckpointService) — measures what the market did AFTER each
+    # signal AND a deterministic sample of rejects, for EVERY strategy (loops all StrategyTypes). Powers
+    # the per-strategy "blocker opportunity-cost" + "missed-opportunity" report sections and the
+    # cross-strategy scorecard. checkpoint-rejects-enabled turns on the reject arm (the "did this gate
+    # throw away winners?" data); reject-sample-rate=50 keeps ~1-in-50 rejects to bound cost.
+    checkpoint-rejects-enabled: true
+    reject-sample-rate: 50
   # Auto-bootstrap of historical India VIX into the iv_samples table.
   # On startup, HistoricalVixIngestService.autoSeedIfEmpty() checks the row
   # count: if zero, it fetches `years` of India VIX from Yahoo Finance in a
@@ -574,6 +1338,11 @@ tuning:
   iv-sample-bootstrap:
     enabled: true
     years: 5
+  iv-sample:
+    # §3.7: delete the contaminated per-index VIX-proxy seed rows before this date on startup, so
+    # IVRankTracker rebuilds from real Black-76 ATM IV. INDIA_VIX is never touched; idempotent.
+    # 2026-06-28: ENABLED at the Black-76 fix date — pure data hygiene, no live-order impact.
+    purge-proxy-seed-before: "2026-06-28"
   store:
     # DuckDB native (off-heap) memory cap. NOT JVM heap — DuckDB runs in native C++,
     # so this doesn't pressure the trading JVM's GC. 512MB gives headroom for in-process

@@ -59,14 +59,15 @@ class OiMomentumAnalyzerPluginTest {
     }
 
     @Test
-    void returnsTwoSections_whenOiMomentumInScope() {
+    void returnsOneSection_whenOiMomentumInScope() {
         TuningEventQuery query = sampleQuery();
 
         List<AnalyzerSection> sections = plugin.customSections(query);
 
-        assertThat(sections).hasSize(2);
+        // V3-vs-legacy concordance section was retired in Phase 6 (its recorders were
+        // removed), so customSections() now returns only the matrix-case heatmap.
+        assertThat(sections).hasSize(1);
         assertThat(sections.get(0).title()).isEqualTo("Matrix-case × bias-score heatmap");
-        assertThat(sections.get(1).title()).isEqualTo("V3-vs-legacy concordance");
     }
 
     @Test

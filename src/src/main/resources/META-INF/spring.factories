@@ -1,2 +1,0 @@
-org.springframework.boot.env.EnvironmentPostProcessor=\
-com.algo.trade.auth.SecretsEnvironmentPostProcessor

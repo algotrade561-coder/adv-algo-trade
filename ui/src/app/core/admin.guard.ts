@@ -18,3 +18,19 @@ export const adminGuard: CanActivateFn = () => {
   router.navigate(['/dashboard']);
   return false;
 };
+
+/**
+ * Route guard for SUPERUSER-only pages (e.g. /admin/aws-ip).
+ * Redirects everyone else to the dashboard.
+ */
+export const superUserGuard: CanActivateFn = () => {
+  const admin = inject(AdminService);
+  const router = inject(Router);
+
+  if (admin.isSuperUser()) {
+    return true;
+  }
+
+  router.navigate(['/dashboard']);
+  return false;
+};

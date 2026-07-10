@@ -204,6 +204,13 @@ public class OiMomentumRuntimeConfig {
     @ColumnDefault("60")
     private int sustainedDriftWindowMinutes = 60;
 
+    // D2-vs-V3 precedence (14 Jun 2026). Default false = legacy "V3 wins" (D2 stays
+    // shadow while V3 is live). Set true (with shadowMode=false) to promote D2 live
+    // alongside V3. Persisted so go-live survives restarts; UI/API-settable.
+    @Column(name = "sustained_drift_overrides_v3", nullable = false)
+    @ColumnDefault("false")
+    private boolean sustainedDriftOverridesV3 = false;
+
     // ── T2 PCR slope additive bonus (2 Jun 2026). ──
     @Column(name = "pcr_slope_bias_bonus_enabled", nullable = false)
     @ColumnDefault("true")
@@ -263,6 +270,28 @@ public class OiMomentumRuntimeConfig {
     @Column(name = "theta_decay_max_cost_pct", nullable = false)
     @ColumnDefault("30.0")
     private double thetaDecayMaxCostPct = 30.0;
+
+    // ── Charges-aware entry gate v2 (cost-of-charges + resize-up) ──
+    // Toggle OFF (default) keeps the legacy "skip if premium×qty×3% < ₹500" behaviour.
+    /** Enable the v2 net-of-charges gate with lot resize-up. Default false = legacy filter. */
+    @Column(name = "charges_gate_v2_enabled", nullable = false)
+    @ColumnDefault("false")
+    private boolean chargesGateV2Enabled = false;
+
+    /** Expected move % used to project gross gain in the v2 gate. Default 0.03 (3%). */
+    @Column(name = "charges_gate_target_pct", nullable = false)
+    @ColumnDefault("0.03")
+    private double chargesGateTargetPct = 0.03;
+
+    /** Minimum net (gross − real round-trip charges) required to take a trade. Default ₹500. */
+    @Column(name = "charges_gate_min_net_profit", nullable = false)
+    @ColumnDefault("500.0")
+    private double chargesGateMinNetProfit = 500.0;
+
+    /** Size lots up (within the capital cap) to clear the net floor before rejecting. Default true. */
+    @Column(name = "charges_gate_resize_up", nullable = false)
+    @ColumnDefault("true")
+    private boolean chargesGateResizeUp = true;
 
     /** When this row was last modified (audit). */
     @Column(name = "updated_at", nullable = false)
@@ -387,6 +416,15 @@ public class OiMomentumRuntimeConfig {
     public double getThetaDecayMaxCostPct() { return thetaDecayMaxCostPct; }
     public void setThetaDecayMaxCostPct(double v) { this.thetaDecayMaxCostPct = v; }
 
+    public boolean isChargesGateV2Enabled() { return chargesGateV2Enabled; }
+    public void setChargesGateV2Enabled(boolean v) { this.chargesGateV2Enabled = v; }
+    public double getChargesGateTargetPct() { return chargesGateTargetPct; }
+    public void setChargesGateTargetPct(double v) { this.chargesGateTargetPct = v; }
+    public double getChargesGateMinNetProfit() { return chargesGateMinNetProfit; }
+    public void setChargesGateMinNetProfit(double v) { this.chargesGateMinNetProfit = v; }
+    public boolean isChargesGateResizeUp() { return chargesGateResizeUp; }
+    public void setChargesGateResizeUp(boolean v) { this.chargesGateResizeUp = v; }
+
     // ── D2 SUSTAINED_DRIFT (2 Jun 2026) ──
     public boolean isSustainedDriftEnabled() { return sustainedDriftEnabled; }
     public void setSustainedDriftEnabled(boolean v) { this.sustainedDriftEnabled = v; }
@@ -398,6 +436,8 @@ public class OiMomentumRuntimeConfig {
     public void setSustainedDriftOpScoreMin(int v) { this.sustainedDriftOpScoreMin = v; }
     public int getSustainedDriftWindowMinutes() { return sustainedDriftWindowMinutes; }
     public void setSustainedDriftWindowMinutes(int v) { this.sustainedDriftWindowMinutes = v; }
+    public boolean isSustainedDriftOverridesV3() { return sustainedDriftOverridesV3; }
+    public void setSustainedDriftOverridesV3(boolean v) { this.sustainedDriftOverridesV3 = v; }
 
     // ── T2 PCR slope bias bonus ──
     public boolean isPcrSlopeBiasBonusEnabled() { return pcrSlopeBiasBonusEnabled; }

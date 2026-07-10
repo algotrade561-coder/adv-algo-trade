@@ -49,7 +49,7 @@ public class AuthUserController {
             // ACTUAL logged-in user, not whoever last logged in globally.
             String email = null, displayName = null, picture = null;
             Object principal = auth.getPrincipal();
-            if (principal instanceof OAuth2User o) {
+            if (principal instanceof org.springframework.security.oauth2.core.user.OAuth2User o) {
                 email       = o.getAttribute("email");
                 displayName = o.getAttribute("name");
                 picture     = o.getAttribute("picture");
@@ -77,5 +77,14 @@ public class AuthUserController {
                 "error", "Access denied",
                 "message", "You are not authorized to access this application. Contact the administrator."
         ));
+    }
+
+    /** Returns basic user info (id + email) for all users — available to any authenticated user.
+     *  Used by the monitoring page dropdown to let non-admins view other users' positions. */
+    @GetMapping("/users/list")
+    public java.util.List<Map<String, Object>> userListForMonitoring() {
+        return userRepository.findAll().stream()
+                .map(u -> Map.<String, Object>of("id", u.getId(), "email", u.getEmail()))
+                .toList();
     }
 }

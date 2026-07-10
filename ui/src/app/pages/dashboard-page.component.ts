@@ -138,15 +138,28 @@ interface TuningHealth {
 
           <div class="mcard index-card">
             <div class="mc-top">
-              <span class="mc-label">IV Rank</span>
-              <span class="mc-badge" [class.badge-ok]="(market?.ivRank ?? 50) < 30"
-                [class.badge-warn]="(market?.ivRank ?? 50) >= 30 && (market?.ivRank ?? 50) < 60"
-                [class.badge-bad]="(market?.ivRank ?? 50) >= 60">
-                {{ (market?.ivRank ?? 50) < 30 ? 'LOW' : (market?.ivRank ?? 50) < 60 ? 'MID' : 'HIGH' }}
+              <span class="mc-label">IV Percentile</span>
+              <span class="mc-badge" [class.badge-ok]="(market?.ivPercentile ?? 50) < 30"
+                [class.badge-warn]="(market?.ivPercentile ?? 50) >= 30 && (market?.ivPercentile ?? 50) < 60"
+                [class.badge-bad]="(market?.ivPercentile ?? 50) >= 60">
+                {{ (market?.ivPercentile ?? 50) < 30 ? 'LOW' : (market?.ivPercentile ?? 50) < 60 ? 'MID' : 'HIGH' }}
               </span>
             </div>
-            <div class="mc-value">{{ market?.ivRank ? (market!.ivRank | number:'1.1-1') + '%' : '—' }}</div>
-            <div class="mc-desc">NIFTY IV percentile rank</div>
+            <div class="mc-value">{{ market?.ivPercentile != null ? (market!.ivPercentile | number:'1.1-1') + '%' : '—' }}</div>
+            <div class="mc-desc">NIFTY India-VIX 52-wk percentile (regime)</div>
+          </div>
+
+          <div class="mcard index-card">
+            <div class="mc-top">
+              <span class="mc-label">ATM-IV Percentile</span>
+              <span class="mc-badge" [class.badge-ok]="(market?.atmIvPercentile ?? 50) < 30"
+                [class.badge-warn]="(market?.atmIvPercentile ?? 50) >= 30 && (market?.atmIvPercentile ?? 50) < 60"
+                [class.badge-bad]="(market?.atmIvPercentile ?? 50) >= 60">
+                {{ (market?.atmIvPercentile ?? 50) < 30 ? 'CHEAP' : (market?.atmIvPercentile ?? 50) < 60 ? 'MID' : 'RICH' }}
+              </span>
+            </div>
+            <div class="mc-value">{{ market?.atmIvPercentile != null ? (market!.atmIvPercentile | number:'1.1-1') + '%' : '—' }}</div>
+            <div class="mc-desc">NIFTY weekly ATM-IV percentile (option cheapness)</div>
           </div>
 
           <div class="mcard"
@@ -257,6 +270,31 @@ interface TuningHealth {
             </div>
           </div>
 
+          <div class="mcard"
+            [class.mc-ok]="market?.safeForShortPremium === true"
+            [class.mc-bad]="market?.safeForShortPremium === false"
+            [class.mc-muted]="!market">
+            <div class="mc-top">
+              <span class="mc-label">Short Premium</span>
+              <span class="mc-badge"
+                [class.badge-ok]="market?.safeForShortPremium === true"
+                [class.badge-bad]="market?.safeForShortPremium === false"
+                [class.badge-muted]="!market">
+                {{ market ? (market.safeForShortPremium ? 'SAFE' : 'BLOCKED') : '—' }}
+              </span>
+            </div>
+            <div class="mc-value">
+              <mat-icon style="font-size:28px;width:28px;height:28px;vertical-align:middle">
+                {{ !market ? 'help_outline' : market.safeForShortPremium ? 'check_circle' : 'cancel' }}
+              </mat-icon>
+            </div>
+            <div class="mc-desc">
+              @if (market?.safeForShortPremium) { MarketGuard conditions passed }
+              @else if (market?.shortPremiumBlockReason) { {{ market!.shortPremiumBlockReason }} }
+              @else { Waiting for market data }
+            </div>
+          </div>
+
         </div>
 
         <!-- ── Intraday PCR daily chart (per index, 09:00–15:30) ─────── -->
@@ -278,6 +316,7 @@ interface TuningHealth {
                 WR: {{ tradingStatus.rollingWinRate | number:'1.0-0' }}% &nbsp;|&nbsp;
                 P&amp;L: <span [class.pos]="tradingStatus.dailyPnl >= 0" [class.neg]="tradingStatus.dailyPnl < 0">₹{{ tradingStatus.dailyPnl | number:'1.0-0' }}</span>
                 / ₹{{ tradingStatus.effectiveDailyLossLimit | number:'1.0-0' }} limit
+                @if (brokerFunds) { &nbsp;|&nbsp; Funds: <span class="pos">₹{{ brokerFunds | number:'1.0-0' }}</span> }
                 @if (tradingStatus.globalExitOverride) { &nbsp;|&nbsp; <span class="warn">EXIT OVERRIDE</span> }
               </span>
             </div>
@@ -533,6 +572,7 @@ interface TuningHealth {
 export class DashboardPageComponent implements OnInit, OnDestroy {
   runtime?: RuntimeStatus;
   pnl?: PnlSnapshot;
+  brokerFunds: number | null = null;
   market?: MarketSnapshot;
   tradingStatus?: TradingStatus;
   perf?: any;
@@ -550,15 +590,15 @@ export class DashboardPageComponent implements OnInit, OnDestroy {
   get lastScanTime(): string {
     const s = this.tradingStatus?.lastScanAt;
     if (!s) return '—';
-    try { return new Date(s).toLocaleTimeString(); } catch { return '—'; }
+    try { return new Date(s).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' }); } catch { return '—'; }
   }
 
   constructor(private readonly api: ApiService, private readonly cd: ChangeDetectorRef) {}
 
   ngOnInit(): void {
     setTimeout(() => this.load(), 0);
-    // Market data (Nifty, BankNifty, VIX, PCR, trading status) — 1 s for live index refresh
-    this.marketPollSub = interval(1000).subscribe(() => this.refreshMarket());
+    // Market data (Nifty, BankNifty, VIX, PCR, trading status) — 5s is responsive enough for index refresh
+    this.marketPollSub = interval(5000).subscribe(() => this.refreshMarket());
     // Signals and P&L change on candle close (every 1–15 min) — 3 s is plenty
     this.signalPollSub = interval(3000).subscribe(() => this.refreshSignal());
     // Tuning health is server-side aggregated; 30 s poll is plenty (forward sweep fires every 5 min, roller once a day)
@@ -584,7 +624,7 @@ export class DashboardPageComponent implements OnInit, OnDestroy {
         this.runtime = rt;
         this.loading = false;
         this.inFlight = false;
-        this.lastUpdatedAt = new Date().toLocaleTimeString();
+        this.lastUpdatedAt = new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' });
         this.cd.detectChanges();
         this.loadExtra();
       },
@@ -603,7 +643,7 @@ export class DashboardPageComponent implements OnInit, OnDestroy {
       if (perf) this.perf = perf;
       if (status) this.tradingStatus = status;
       if (oil) this.oilPrice = oil;
-      this.lastUpdatedAt = new Date().toLocaleTimeString();
+      this.lastUpdatedAt = new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' });
       this.cd.detectChanges();
     });
   }
@@ -624,12 +664,14 @@ export class DashboardPageComponent implements OnInit, OnDestroy {
       pnl:    this.api.pnl().pipe(catchError(() => of(null as PnlSnapshot | null))),
       sig:    this.api.latestSignal().pipe(catchError(() => of(null as StrategyDecision | null))),
       market: this.api.market().pipe(catchError(() => of(null as MarketSnapshot | null))),
-      ts:     this.api.tradingStatus().pipe(catchError(() => of(null as TradingStatus | null)))
-    }).subscribe(({ pnl, sig, market, ts }) => {
+      ts:     this.api.tradingStatus().pipe(catchError(() => of(null as TradingStatus | null))),
+      funds:  this.api.funds().pipe(catchError(() => of(null as any)))
+    }).subscribe(({ pnl, sig, market, ts, funds }) => {
       if (pnl)    this.pnl    = pnl;
       if (market) this.market = market;
       if (ts)     this.tradingStatus = ts;
       this.latestSignal = sig;
+      if (funds?.available && funds.netAvailable != null) this.brokerFunds = funds.netAvailable;
       this.cd.detectChanges();
     });
   }
@@ -638,7 +680,7 @@ export class DashboardPageComponent implements OnInit, OnDestroy {
 
   formatTimeOnly(iso?: string | null): string {
     if (!iso) return '—';
-    try { return new Date(iso).toLocaleTimeString(); } catch { return iso; }
+    try { return new Date(iso).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' }); } catch { return iso; }
   }
 
   formatBytes(n?: number | null): string {

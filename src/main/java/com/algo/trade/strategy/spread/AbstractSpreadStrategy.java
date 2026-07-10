@@ -121,6 +121,9 @@ public abstract class AbstractSpreadStrategy {
     private ExitEvaluationRegistry exitEvaluationRegistry;
 
     @Autowired(required = false)
+    private com.algo.trade.tuning.adapter.TuningCaptureBridge tuningCaptureBridge;
+
+    @Autowired(required = false)
     private SpreadExitShadowRecorder spreadExitShadowRecorder;
 
     @Autowired(required = false)
@@ -308,6 +311,7 @@ public abstract class AbstractSpreadStrategy {
             if (lastEntryRejectReason.get() == null) {
                 lastEntryRejectReason.set("shouldEnter=false");
             }
+            if (spreadEntryGate != null) spreadEntryGate.release(ctx.underlying());
             return Optional.empty();
         }
 
@@ -316,6 +320,7 @@ public abstract class AbstractSpreadStrategy {
         if (legs == null || legs.isEmpty()) {
             log.debug("{} constructLegs returned empty — skipping", strategyType().displayName());
             lastEntryRejectReason.set("constructLegsEmpty");
+            if (spreadEntryGate != null) spreadEntryGate.release(ctx.underlying());
             return Optional.empty();
         }
 
@@ -326,6 +331,7 @@ public abstract class AbstractSpreadStrategy {
             log.warn("{} could not fetch quotes for all legs ({}/{})", strategyType().displayName(),
                     quotes.size(), legs.size());
             lastEntryRejectReason.set("missingQuotes(" + quotes.size() + "/" + legs.size() + ")");
+            if (spreadEntryGate != null) spreadEntryGate.release(ctx.underlying());
             return Optional.empty();
         }
 
@@ -336,6 +342,7 @@ public abstract class AbstractSpreadStrategy {
             if (q == null) {
                 log.warn("{} missing quote for leg {}", strategyType().displayName(), leg.instrumentKey());
                 lastEntryRejectReason.set("missingQuote(" + leg.instrumentKey() + ")");
+                if (spreadEntryGate != null) spreadEntryGate.release(ctx.underlying());
                 return Optional.empty();
             }
             entryPrices.put(leg.instrumentKey(), q.lastPrice());
@@ -382,6 +389,9 @@ public abstract class AbstractSpreadStrategy {
                 && netDebit.compareTo(config.getMinCombinedPremium()) < 0) {
             log.debug("{} net debit {} below minimum premium {} — skipping",
                     strategyType().displayName(), netDebit, config.getMinCombinedPremium());
+            lastEntryRejectReason.set("belowMinCombinedPremium(net=" + netDebit
+                    + ",min=" + config.getMinCombinedPremium() + ")");
+            if (spreadEntryGate != null) spreadEntryGate.release(ctx.underlying());
             return Optional.empty();
         }
 
@@ -934,7 +944,11 @@ public abstract class AbstractSpreadStrategy {
         BigDecimal entryNetDebit = netDebit(group.legs(), group.entryPrices());
         BigDecimal exitNetDebit = netDebit(group.legs(), exitPrices);
 
-        BigDecimal pnl = entryNetDebit.subtract(exitNetDebit, MC);
+        // SIGN FIX (2026-07-02): P&L = exit value − entry value (netDebit is BUY−SELL, so a rising MTM value
+        // is profit for the held structure — correct for both debit and credit spreads). Matches this class's
+        // own exit-decision convention (currentNet−entryNet). The old (entry−exit) inverted every spread's
+        // realized P&L (winners logged/saved as losses) in the live+paper books and the PositionGroup entity.
+        BigDecimal pnl = exitNetDebit.subtract(entryNetDebit, MC);
         String pnlLabel = pnl.signum() >= 0 ? "PROFIT" : "LOSS";
         log.info("{} P&L [{}] group={} strategy={} underlying={} pnl={} (entryDebit={} exitDebit={})",
                 modeLabel, pnlLabel, group.groupId(), group.strategyType().displayName(),
@@ -949,6 +963,18 @@ public abstract class AbstractSpreadStrategy {
 
         if (hedgeCostTracker != null) {
             hedgeCostTracker.recordExit(group, pnl);
+        }
+        // Tuning capture: emit a proper spread ExitEvent so the unified report's exit-attribution
+        // populates for spread strategies. Snapshot is null (spread MAE/MFE tracking is unwired) so
+        // MAE/MFE come through as 0 — best-effort; exit reason + realized % are the key fields. The
+        // bridge self-guards (only fires for strategies with a registered capture adapter), so this is
+        // a no-op for spread strategies that aren't in the capture set — no double-write risk.
+        if (tuningCaptureBridge != null) {
+            try {
+                tuningCaptureBridge.recordSpreadExit(group, null, exitPrices, exitReason);
+            } catch (Exception ex) {
+                log.warn("Spread exit tuning capture failed (non-fatal): {}", ex.getMessage());
+            }
         }
         if (spreadExitPolicy != null) {
             spreadExitPolicy.clearPartialLayers(group.groupId());

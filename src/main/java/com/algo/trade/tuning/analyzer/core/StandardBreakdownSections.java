@@ -3,6 +3,7 @@ package com.algo.trade.tuning.analyzer.core;
 import com.algo.trade.strategy.StrategyType;
 import com.algo.trade.tuning.TuningEventType;
 import com.algo.trade.tuning.analyzer.AnalyzerSection;
+import com.algo.trade.tuning.analyzer.EventScan;
 import com.algo.trade.tuning.analyzer.TuningEventQuery;
 import com.algo.trade.tuning.store.TuningQueryException;
 import java.nio.file.Path;
@@ -130,25 +131,29 @@ public final class StandardBreakdownSections {
 
     private static AnalyzerSection querySection(TuningEventQuery query, StrategyType strategy,
                                                   String title, String sql, List<Path> files) {
-        if (files.isEmpty()) {
+        // Read CSV ∪ Parquet via EventScan (the `files` arg is legacy/ignored) — for an older date range the
+        // CSVs were rolled+deleted, so a CSV-only read returned "No data" even though the Parquet archive has it.
+        TuningEventType type = switch (title) {
+            case "Signals" -> TuningEventType.SIGNAL;
+            case "Exits" -> TuningEventType.EXIT;
+            case "Execution fill ratio" -> TuningEventType.EXECUTION;
+            default -> TuningEventType.EVALUATION;
+        };
+        if (!EventScan.hasData(query, strategy, type)) {
             return AnalyzerSection.htmlOnly(title,
                     "<p><em>No data for " + strategy.displayName() + " in this window.</em></p>");
         }
         try {
-            String glob = globOf(files);
+            String src = EventScan.source(query, strategy, type);
             String wrapped = switch (title) {
-                case "Signals" -> ""
-                        + "WITH sigs AS (SELECT * FROM read_csv_auto([" + glob + "], header=true)) "
-                        + sql;
+                case "Signals" -> "WITH sigs AS (SELECT * FROM " + src + ") " + sql;
                 case "Exits" -> ""
-                        + "WITH exits AS (SELECT * FROM read_csv_auto([" + glob + "], header=true)) "
+                        // DATA-1 (2026-06-19): collapse per-tick exit rows to ONE terminal row per position.
+                        + "WITH exits AS (SELECT * FROM " + src + " "
+                        + "QUALIFY ROW_NUMBER() OVER (PARTITION BY correlationKey ORDER BY eventTime DESC) = 1) "
                         + sql;
-                case "Execution fill ratio" -> ""
-                        + "WITH execs AS (SELECT * FROM read_csv_auto([" + glob + "], header=true)) "
-                        + sql;
-                default -> ""
-                        + "WITH evals AS (SELECT * FROM read_csv_auto([" + glob + "], header=true)) "
-                        + sql;
+                case "Execution fill ratio" -> "WITH execs AS (SELECT * FROM " + src + ") " + sql;
+                default -> "WITH evals AS (SELECT * FROM " + src + ") " + sql;
             };
             List<Map<String, Object>> rows = query.store().query(wrapped);
             return AnalyzerSection.htmlOnly(title, tableHtml(rows));

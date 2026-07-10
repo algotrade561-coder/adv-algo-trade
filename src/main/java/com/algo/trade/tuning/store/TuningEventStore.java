@@ -124,6 +124,39 @@ public class TuningEventStore {
         return out;
     }
 
+    /**
+     * Lists the rolled Parquet archive files for {@code strategy}/{@code type} over {@code [from, to]}.
+     * Hive layout: {@code <events>/../archive/strategy=<name>/event=<type>/year=/month=/day=/data.parquet}.
+     * Un-rolled (recent) days have no Parquet yet and are returned by {@link #listEventFiles} as CSV instead;
+     * a date that already rolled has its CSV deleted and is found here. Together they cover any date range.
+     */
+    public List<Path> listArchiveFiles(StrategyType strategy, TuningEventType type,
+                                       LocalDate from, LocalDate to) {
+        Objects.requireNonNull(strategy, "strategy");
+        Objects.requireNonNull(type, "type");
+        if (from == null || to == null || from.isAfter(to)) {
+            return new ArrayList<>();
+        }
+        Path archiveBase = (baseDir.getParent() != null)
+                ? baseDir.getParent().resolve("archive")
+                : baseDir.resolveSibling("archive");
+        Path sePath = archiveBase
+                .resolve("strategy=" + strategy.name().toLowerCase(Locale.ROOT))
+                .resolve("event=" + type.fileBaseName());
+        List<Path> out = new ArrayList<>();
+        for (LocalDate d = from; !d.isAfter(to); d = d.plusDays(1)) {
+            Path file = sePath
+                    .resolve("year=" + d.getYear())
+                    .resolve(String.format(Locale.ROOT, "month=%02d", d.getMonthValue()))
+                    .resolve(String.format(Locale.ROOT, "day=%02d", d.getDayOfMonth()))
+                    .resolve("data.parquet");
+            if (Files.exists(file)) {
+                out.add(file);
+            }
+        }
+        return out;
+    }
+
     // ── Query API ─────────────────────────────────────────────────────────
 
     /**

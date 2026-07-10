@@ -22,6 +22,10 @@ import java.util.Set;
 @Component
 public class ConvictionSizer {
 
+    /** §3.7: optional source-quality lot multiplier. Null-safe; no-op (1.0) unless enabled + warmed. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.risk.SourcePerformanceTracker sourcePerformanceTracker;
+
     /**
      * Internal raw-conviction ceiling — before the hard lot cap is applied. Values
      * above this still resolve to {@code maxLotsPerTrade}. The intent is to give
@@ -29,6 +33,17 @@ public class ConvictionSizer {
      * absolute lot count is bounded by {@code maxLotsPerTrade} from GlobalConfig.
      */
     public static final double MAX_MULTIPLIER = 1.5;
+
+    /** Signal-strength → lots calibration (2026-07-02). Conviction at/below {@code convMin} sizes at the
+     *  BASELINE; conviction at/above {@code convStrong} sizes at the FULL {@code maxLotsPerTrade} ceiling;
+     *  linear in between. Replaces the old {@code conviction / MAX_MULTIPLIER} normalization — because real
+     *  conviction is a product of sub-1.0 factors and tops out ~1.1, dividing by 1.5 made the ceiling
+     *  UNREACHABLE (even a perfect signal only reached ~73% of the headroom). Tunable live via application.yml. */
+    @org.springframework.beans.factory.annotation.Value("${trading.v3.sizing.conviction-min:0.50}")
+    private double convMin;
+
+    @org.springframework.beans.factory.annotation.Value("${trading.v3.sizing.conviction-strong:0.90}")
+    private double convStrong;
 
     /** Result of a sizing decision — carries the breakdown for end-of-day validation. */
     public record SizingResult(
@@ -122,15 +137,25 @@ public class ConvictionSizer {
         int safeMax = Math.max(1, maxLotsPerTrade);
         int safeBase = Math.max(1, Math.min(baseLotCount, safeMax));
         int headroom = safeMax - safeBase;
-        int scaled = safeBase + (int) Math.round(headroom * (convictionCapped / MAX_MULTIPLIER));
+        // Signal-strength scaling: 0 at convMin (weak → baseline), 1 at convStrong (strong → FULL ceiling),
+        // linear between. This lets a genuinely strong signal actually reach maxLotsPerTrade.
+        double lo = convMin, hi = (convStrong > convMin ? convStrong : convMin + 0.01);
+        double strength = (convictionCapped - lo) / (hi - lo);
+        if (strength < 0) strength = 0;
+        else if (strength > 1) strength = 1;
+        int scaled = safeBase + (int) Math.round(headroom * strength);
+        // §3.7: down/up-weight by this source's recent realized quality (1.0 no-op unless enabled).
+        double srcMult = sourcePerformanceTracker != null
+                ? sourcePerformanceTracker.lotMultiplier("oi_momentum") : 1.0;
+        if (srcMult != 1.0) scaled = (int) Math.round(scaled * srcMult);
         int lots = Math.max(1, Math.min(safeMax, scaled));
         // If gates failed entirely, lots = 0 → no entry
         if (gatesScore == 0 || patternScore == 0 || timeMult == 0) lots = 0;
 
         String breakdown = String.format(
-                "gates=%.2f × pattern=%.2f × time=%.2f × vol=%.2f = %.2f (capped %.2f) → %d lots (base=%d, max=%d)",
+                "gates=%.2f × pattern=%.2f × time=%.2f × vol=%.2f = %.2f (capped %.2f, strength %.2f in [%.2f..%.2f]) → %d lots (base=%d, max=%d)",
                 gatesScore, patternScore, timeMult, volMult,
-                convictionRaw, convictionCapped, lots, safeBase, safeMax);
+                convictionRaw, convictionCapped, strength, convMin, convStrong, lots, safeBase, safeMax);
 
         return new SizingResult(lots, convictionRaw, convictionCapped,
                 gatesScore, patternScore, timeMult, volMult, breakdown);

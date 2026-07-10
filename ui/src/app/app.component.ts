@@ -567,14 +567,16 @@ export class AppComponent implements OnInit, OnDestroy {
     { label: 'Execution', path: 'execution', icon: 'play_circle' },
     { label: 'Strategies', path: 'strategies', icon: 'auto_awesome' },
     { label: 'Index Config', path: 'index-config', icon: 'category' },
+    { label: 'OI Momentum', path: 'oi-momentum-config', icon: 'bolt' },
     { label: 'Monitoring', path: 'monitoring', icon: 'monitoring' },
+    { label: 'Market Memory', path: 'market-memory', icon: 'psychology' },
     { label: 'Reports', path: 'reports', icon: 'description' },
-    { label: 'Tuning Capture', path: 'tuning-capture', icon: 'science' },
     { label: 'Diagnostics', path: 'diagnostics', icon: 'monitor_heart' },
     { label: 'Kite Auth', path: 'auth', icon: 'lock_open' },
     { label: 'My Trading', path: 'my-trading', icon: 'person_pin' },
     { label: 'My Broker', path: 'my-broker', icon: 'account_balance_wallet' },
     { label: 'Users', path: 'admin/users', icon: 'group', requiresRole: ['ADMIN', 'SUPERUSER'] },
+    { label: 'AWS / Source IPs', path: 'admin/aws-ip', icon: 'cloud', requiresRole: ['SUPERUSER'] },
     { label: 'Settings', path: 'settings', icon: 'tune' }
   ];
 

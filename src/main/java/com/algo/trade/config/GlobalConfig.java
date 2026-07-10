@@ -44,12 +44,12 @@ public class GlobalConfig {
     private boolean trendFilterEnabled = true;
 
     @Column(precision = 19, scale = 4)
-    private BigDecimal volumeSpikeMultiplier = BigDecimal.valueOf(1.15);
+    private BigDecimal volumeSpikeMultiplier = BigDecimal.valueOf(1.5);
 
     @Column(precision = 19, scale = 4)
     private BigDecimal breakoutBufferPercent = new BigDecimal("0.05");
 
-    private int breakoutLookback = 15;
+    private int breakoutLookback = 10;
     private int volumeLookback = 5;
 
     @Column(precision = 19, scale = 4)
@@ -63,12 +63,18 @@ public class GlobalConfig {
     @Column(precision = 19, scale = 4)
     private BigDecimal maxIvPercent = BigDecimal.valueOf(80);
 
-    @Column(precision = 19, scale = 4)
-    private BigDecimal minSignalScorePercent = BigDecimal.valueOf(65);
+    // ── MarketGuard VIX thresholds (runtime-editable; consumed by MarketGuard) ──
+    // NOTE: no DB-level DEFAULT in columnDefinition — H2 2.x rejects "ALTER COLUMN ... SET DATA
+    // TYPE ... DEFAULT" on ddl-auto=update. App-level defaults (the Java field initializers below)
+    // + ConfigSeedLoader populate the single config row instead.
+    @Column(columnDefinition = "DECIMAL(19,4)")
+    private BigDecimal vixMinForLongPremium = BigDecimal.valueOf(11.0);
 
-    /** Minimum environment score (0-100) for the regime+session entry gate. Default 55. */
-    @Column(columnDefinition = "INT DEFAULT 55")
-    private Integer minEnvironmentScore = 50;
+    @Column(columnDefinition = "DECIMAL(19,4)")
+    private BigDecimal vixMinForShortPremium = BigDecimal.valueOf(12.0);
+
+    @Column(columnDefinition = "DECIMAL(19,4)")
+    private BigDecimal vixMaxForShortPremium = BigDecimal.valueOf(21.0);
 
     private boolean ceOiSupportRequired = false;
     private boolean peOiSupportRequired = false;
@@ -78,18 +84,18 @@ public class GlobalConfig {
     @Column(precision = 19, scale = 4)
     private BigDecimal oiDivergenceMultiplier = BigDecimal.valueOf(2.0);
 
-    private long oiDivergenceMinChange = 100_000;
+    private long oiDivergenceMinChange = 50_000;
     private int ceBreakoutConfirmationCandles = 1;
     private int peBreakoutConfirmationCandles = 2;
 
     @Column(columnDefinition = "VARCHAR(5)")
-    private String entryStartTime = "09:25";
+    private String entryStartTime = "09:20";
 
     @Column(columnDefinition = "VARCHAR(5)")
     private String entryCutoffTime = "15:10";
 
     private boolean allowFirstMinutesEntry = false;
-    private int noEntryFirstMinutes = 10;
+    private int noEntryFirstMinutes = 5;
     private boolean rsiFilterEnabled = false;
     private int rsiPeriod = 14;
 
@@ -102,16 +108,16 @@ public class GlobalConfig {
     // ── Exit Fields ───────────────────────────────────────────
 
     @Column(precision = 19, scale = 4)
-    private BigDecimal stopLossPercent = BigDecimal.valueOf(12);
+    private BigDecimal stopLossPercent = BigDecimal.valueOf(10);
 
     @Column(precision = 19, scale = 4)
     private BigDecimal targetPercent = BigDecimal.valueOf(24);
 
     @Column(precision = 19, scale = 4)
-    private BigDecimal trailingStopActivationPercent = BigDecimal.valueOf(10);
+    private BigDecimal trailingStopActivationPercent = BigDecimal.valueOf(5);
 
     @Column(precision = 19, scale = 4)
-    private BigDecimal trailingGapPercent = BigDecimal.valueOf(5);
+    private BigDecimal trailingGapPercent = BigDecimal.valueOf(3);
 
     @Column(columnDefinition = "VARCHAR(5)")
     private String forcedExitTime = "15:15";
@@ -136,7 +142,7 @@ public class GlobalConfig {
      * want the algo's exit monitors to also enforce SL/target/squareoff on manual trades —
      * useful for crash-recovery scenarios where the system re-discovers its own positions.
      */
-    @Column(columnDefinition = "BOOLEAN DEFAULT FALSE")
+    @Column(columnDefinition = "BOOLEAN")
     private boolean manageSyncedTrades = false;
 
     // ── Risk Fields ───────────────────────────────────────────
@@ -144,31 +150,30 @@ public class GlobalConfig {
     @Column(precision = 19, scale = 4)
     private BigDecimal totalCapital = BigDecimal.valueOf(60_000);
 
-    @Column(precision = 19, scale = 4)
-    private BigDecimal maxRiskPerTradePercent = BigDecimal.valueOf(5);
-
-    @Column(precision = 19, scale = 4)
-    private BigDecimal maxDailyLossPercent = BigDecimal.valueOf(5);
-
-    private int maxTradesPerDay = 4;
-    private int maxConsecutiveLosses = 2;
-    private int maxOpenTrades = 1;
-
     private int cooldownMinutes = 0;
 
     /** Direction flip cooldown: minutes to block CE↔PE flip on same underlying. 0 = disabled. Default 60. */
-    @Column(columnDefinition = "INT DEFAULT 60")
+    @Column(columnDefinition = "INT")
     private int directionFlipCooldownMinutes = 60;
 
     /** Max open positions per strategy type across all indices. Default 1 = same strategy can only be active on one index at a time. */
-    @Column(columnDefinition = "INT DEFAULT 1")
+    @Column(columnDefinition = "INT")
     private Integer maxOpenPositionsPerStrategy = 1;
 
     @Column(precision = 19, scale = 4)
     private BigDecimal dailyProfitTarget = BigDecimal.ZERO;
 
-    /** Maximum lots per single trade — safety cap against stale premium quotes. Default 10. */
-    private int maxLotsPerTrade = 10;
+    /** V5 episode-memory suspension: closed AVALANCHE losers (per index+side, per day) that suspend
+     *  the pattern for the rest of the day. NULL = yml default (3); 0 = suspension DISABLED.
+     *  Deep-tier events always bypass suspension regardless. UI-editable, hot (no restart). */
+    @Column(columnDefinition = "INT")
+    private Integer memorySuspensionAfterLosses = null;
+
+    /** V5 avalanche trading master switch. NULL/TRUE = enabled; FALSE = no NEW avalanche entries or
+     *  stacks (detectAvalanche returns nothing). OPEN avalanche positions keep their adaptive-ladder
+     *  exits — flipping this never orphans a live trade. UI-editable, hot (no restart). */
+    @Column(columnDefinition = "BOOLEAN")
+    private Boolean avalancheTradingEnabled = null;
 
     /** ML virtual trade threshold — independent of minSignalScorePercent.
      *  When ML scores above this and the system says SKIP, a virtual trade is opened. Default 45. */
@@ -179,7 +184,7 @@ public class GlobalConfig {
      * Tracks which data migrations have been applied to this row.
      * 0 = seeded from YAML defaults; incremented by each LiveConfigMigration version.
      */
-    @Column(columnDefinition = "INTEGER DEFAULT 0")
+    @Column(columnDefinition = "INTEGER")
     private int configVersion = 0;
 
     // ── Execution Tuning Fields ───────────────────────────────
@@ -234,7 +239,6 @@ public class GlobalConfig {
         this.bearishImbalanceThreshold = props.entry().bearishImbalanceThreshold();
         this.minLiquidityVolume = props.entry().minLiquidityVolume();
         this.maxIvPercent = props.entry().maxIvPercent();
-        this.minSignalScorePercent = props.entry().minSignalScorePercent();
         this.ceOiSupportRequired = props.entry().ceOiSupportRequired();
         this.peOiSupportRequired = props.entry().peOiSupportRequired();
         this.ceOiDivergenceFilterEnabled = props.entry().ceOiDivergenceFilterEnabled();
@@ -261,11 +265,6 @@ public class GlobalConfig {
         this.maxHoldMinutes = props.exit().maxHoldMinutes();
         // Risk fields
         this.totalCapital = props.risk().totalCapital();
-        this.maxRiskPerTradePercent = props.risk().maxRiskPerTradePercent();
-        this.maxDailyLossPercent = props.risk().maxDailyLossPercent();
-        this.maxTradesPerDay = props.risk().maxTradesPerDay();
-        this.maxConsecutiveLosses = props.risk().maxConsecutiveLosses();
-        this.maxOpenTrades = props.risk().maxOpenTrades();
         this.cooldownMinutes = props.risk().cooldownMinutes();
         this.dailyProfitTarget = props.risk().dailyProfitTarget();
     }
@@ -351,11 +350,12 @@ public class GlobalConfig {
     public BigDecimal getMaxIvPercent() { return maxIvPercent; }
     public void setMaxIvPercent(BigDecimal maxIvPercent) { this.maxIvPercent = maxIvPercent; }
 
-    public BigDecimal getMinSignalScorePercent() { return minSignalScorePercent; }
-    public void setMinSignalScorePercent(BigDecimal minSignalScorePercent) { this.minSignalScorePercent = minSignalScorePercent; }
-
-    public int getMinEnvironmentScore() { return minEnvironmentScore != null ? minEnvironmentScore : 50; }
-    public void setMinEnvironmentScore(Integer minEnvironmentScore) { this.minEnvironmentScore = minEnvironmentScore; }
+    public BigDecimal getVixMinForLongPremium() { return vixMinForLongPremium != null ? vixMinForLongPremium : BigDecimal.valueOf(11.0); }
+    public void setVixMinForLongPremium(BigDecimal v) { this.vixMinForLongPremium = v; }
+    public BigDecimal getVixMinForShortPremium() { return vixMinForShortPremium != null ? vixMinForShortPremium : BigDecimal.valueOf(12.0); }
+    public void setVixMinForShortPremium(BigDecimal v) { this.vixMinForShortPremium = v; }
+    public BigDecimal getVixMaxForShortPremium() { return vixMaxForShortPremium != null ? vixMaxForShortPremium : BigDecimal.valueOf(21.0); }
+    public void setVixMaxForShortPremium(BigDecimal v) { this.vixMaxForShortPremium = v; }
 
     public boolean isCeOiSupportRequired() { return ceOiSupportRequired; }
     public void setCeOiSupportRequired(boolean ceOiSupportRequired) { this.ceOiSupportRequired = ceOiSupportRequired; }
@@ -450,23 +450,6 @@ public class GlobalConfig {
     public BigDecimal getTotalCapital() { return totalCapital; }
     public void setTotalCapital(BigDecimal totalCapital) { this.totalCapital = totalCapital; }
 
-    public BigDecimal getMaxRiskPerTradePercent() { return maxRiskPerTradePercent; }
-    public void setMaxRiskPerTradePercent(BigDecimal maxRiskPerTradePercent) { this.maxRiskPerTradePercent = maxRiskPerTradePercent; }
-
-    public BigDecimal getMaxDailyLossPercent() { return maxDailyLossPercent; }
-    public void setMaxDailyLossPercent(BigDecimal maxDailyLossPercent) { this.maxDailyLossPercent = maxDailyLossPercent; }
-
-    public int getMaxTradesPerDay() { return maxTradesPerDay; }
-    public void setMaxTradesPerDay(int maxTradesPerDay) { this.maxTradesPerDay = maxTradesPerDay; }
-
-
-    public int getMaxConsecutiveLosses() { return maxConsecutiveLosses; }
-    public void setMaxConsecutiveLosses(int maxConsecutiveLosses) { this.maxConsecutiveLosses = maxConsecutiveLosses; }
-
-    public int getMaxOpenTrades() { return maxOpenTrades; }
-    public void setMaxOpenTrades(int maxOpenTrades) { this.maxOpenTrades = maxOpenTrades; }
-
-
     public int getCooldownMinutes() { return cooldownMinutes; }
     public void setCooldownMinutes(int cooldownMinutes) { this.cooldownMinutes = cooldownMinutes; }
 
@@ -479,9 +462,10 @@ public class GlobalConfig {
     public BigDecimal getDailyProfitTarget() { return dailyProfitTarget; }
     public void setDailyProfitTarget(BigDecimal dailyProfitTarget) { this.dailyProfitTarget = dailyProfitTarget; }
 
-    public int getMaxLotsPerTrade() { return maxLotsPerTrade; }
-    public void setMaxLotsPerTrade(int maxLotsPerTrade) { this.maxLotsPerTrade = maxLotsPerTrade; }
-
+    public Integer getMemorySuspensionAfterLosses() { return memorySuspensionAfterLosses; }
+    public void setMemorySuspensionAfterLosses(Integer v) { this.memorySuspensionAfterLosses = v; }
+    public Boolean getAvalancheTradingEnabled() { return avalancheTradingEnabled; }
+    public void setAvalancheTradingEnabled(Boolean v) { this.avalancheTradingEnabled = v; }
 
     public BigDecimal getMlVirtualTradeThreshold() { return mlVirtualTradeThreshold; }
     public void setMlVirtualTradeThreshold(BigDecimal mlVirtualTradeThreshold) { this.mlVirtualTradeThreshold = mlVirtualTradeThreshold; }

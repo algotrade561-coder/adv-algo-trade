@@ -262,9 +262,13 @@ public class RuleBasedOptionsStrategy {
         int operatorBonus = resolveOperatorConfidenceBonus(request);
         if (operatorBonus > 0) {
             confidenceScore = confidenceScore.add(BigDecimal.valueOf(operatorBonus));
-            if (confidenceScore.compareTo(BigDecimal.valueOf(100)) > 0) {
-                confidenceScore = BigDecimal.valueOf(100);
-            }
+        }
+        // DATA-5a (2026-06-19): clamp to the documented 0–100 ceiling unconditionally.
+        // Previously the cap was applied only when operatorBonus>0, so a base score could be
+        // logged above 100 (score-components showed 102). This does not change any entry gate
+        // (comparison is score >= minSignalScorePercent, and 100 >= 70 just as 102 >= 70).
+        if (confidenceScore.compareTo(BigDecimal.valueOf(100)) > 0) {
+            confidenceScore = BigDecimal.valueOf(100);
         }
         int operatorScoreForLog = operatorBonus > 0 ? resolveOperatorScore(request) : -1;
 
@@ -293,6 +297,40 @@ public class RuleBasedOptionsStrategy {
                 "Signal score failed: " + confidenceScore + "%");
         boolean resistanceHeadroomPassed = resistanceHeadroomPassed(request.optionType(), underlyingPrice, chain);
         addReason(reasons, resistanceHeadroomPassed, "Resistance headroom passed", "Resistance headroom failed");
+
+        // ── Score-component capture (#2/#4 of 2026-06-12 tuning-data additions) ──
+        // One CSV row per evaluation: numeric score + every filter outcome + the OI
+        // chain-flow evaluation. Makes threshold sweeps ("what enters at minScore=65?")
+        // and short-covering analysis offline queries instead of log digs.
+        try {
+            java.time.ZoneId ist = java.time.ZoneId.of("Asia/Kolkata");
+            java.nio.file.Path dir = java.nio.file.Path.of("data", "tuning");
+            java.nio.file.Files.createDirectories(dir);
+            java.nio.file.Path f = dir.resolve("score-components-" + java.time.LocalDate.now(ist) + ".csv");
+            boolean newFile = !java.nio.file.Files.exists(f);
+            try (java.io.FileWriter w = new java.io.FileWriter(f.toFile(), true)) {
+                // DATA-4 (2026-06-20): added `index` column. Previously rows for NIFTY/
+                // BANKNIFTY/SENSEX were interleaved with no way to disambiguate except by
+                // guessing from `spot` — fragile and easy to mis-bucket. Explicit index
+                // makes per-underlying threshold sweeps unambiguous.
+                if (newFile) w.write("time,index,optionType,score,vwap,breakout,breakoutConfirm,volumeSpike,oi,"
+                        + "priceOiBuildUp,chainBuildUp,imbalanceSupports,divergenceRejected,"
+                        + "iv,liquidity,timeWindow,rsi,resistance,operatorBonus,spot\n");
+                w.write(String.format("%s,%s,%s,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%.2f%n",
+                        java.time.LocalTime.now(ist).toString().substring(0, 8),
+                        request.underlying(),
+                        request.optionType(), confidenceScore,
+                        vwapPassed ? 1 : 0, breakoutPassed ? 1 : 0, breakoutConfirmed ? 1 : 0,
+                        volumeSpike ? 1 : 0, oiPassed ? 1 : 0,
+                        oiEvaluation.priceOiBuildUp() ? 1 : 0, oiEvaluation.chainBuildUp() ? 1 : 0,
+                        oiEvaluation.imbalanceSupports() ? 1 : 0, oiEvaluation.divergenceRejected() ? 1 : 0,
+                        ivPassed ? 1 : 0, liquidityPassed ? 1 : 0, timePassed ? 1 : 0, rsiPassed ? 1 : 0,
+                        resistanceHeadroomPassed ? 1 : 0, operatorBonus,
+                        underlyingPrice != null ? underlyingPrice.doubleValue() : 0.0));
+            }
+        } catch (Exception csvEx) {
+            log.debug("Score-component CSV write failed: {}", csvEx.getMessage());
+        }
         boolean sideFilterPassed = sideFilterPassed(request.optionType(), vwapPassed, breakoutPassed, breakoutConfirmed,
                 volumeSpike, oiPassed, oiEvaluation.divergenceRejected(), resistanceHeadroomPassed);
         addReason(reasons, sideFilterPassed, "Side-specific entry filter passed",
@@ -608,20 +646,22 @@ public class RuleBasedOptionsStrategy {
         int score = 0;
         int maxScore = 100;
         score += vwapPassed ? 15 : 0;
-        score += breakoutPassed ? 25 : 0;
+        score += breakoutPassed ? 20 : 0;    // reduced from 25 — breakout is too dominant
         if (normalizeForNoVolume && !volumeSpike) {
-            // Volume spike uses OI proxy but still failed — exclude from denominator
-            maxScore -= 20;
+            maxScore -= 15;
         } else {
-            score += volumeSpike ? 20 : 0;
+            score += volumeSpike ? 15 : 0;   // reduced from 20; compensated by OI increase
         }
-        // Graduated OI scoring: 9 + 8 + 8 = 25 max
-        score += priceOiBuildUp ? 9 : 0;
-        score += chainBuildUp ? 8 : 0;
-        score += imbalanceSupports ? 8 : 0;
+        // Graduated OI scoring: 12 + 10 + 10 = 32 max (increased from 25 — OI is the
+        // strongest directional signal, should carry more weight than breakout)
+        score += priceOiBuildUp ? 12 : 0;
+        score += chainBuildUp ? 10 : 0;
+        score += imbalanceSupports ? 10 : 0;
         score += liquidityPassed ? 10 : 0;
         score += ivPassed ? 5 : 0;
-        score += cfgRsiFilterEnabled() && rsiPassed ? 10 : 0;
+        score += cfgRsiFilterEnabled() && rsiPassed ? 8 : 0;   // reduced from 10
+        // Bonus: volume spike + OI alignment = strong conviction boost (+5)
+        if (volumeSpike && oiPassed) score += 5;
 
         // Normalize to 100 scale if volume weight was excluded
         if (normalizeForNoVolume && maxScore < 100 && maxScore > 0) {

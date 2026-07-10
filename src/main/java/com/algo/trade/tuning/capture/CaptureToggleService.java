@@ -263,14 +263,18 @@ public class CaptureToggleService {
         Map<StrategyType, CaptureSettings> updated = new EnumMap<>(cache.get());
         updated.put(strategy, snapshot);
         cache.set(updated);
-        log.info("[CaptureToggleService] seeded default OFF row for {}", strategy);
+        // #167: capture is opt-OUT — the entity defaults are all-ON, so a freshly-seeded strategy IS
+        // capturing. The old "seeded default OFF" message was the opposite of reality and misled anyone
+        // auditing "is capture on for X?" from the logs.
+        log.info("[CaptureToggleService] seeded default capture config (ON) for {} — captureEnabled={}, window={}s",
+                strategy, snapshot.captureEnabled(), saved.getEpisodeWindowSec());
         return snapshot;
     }
 
     private TuningCaptureConfigEntity newRowFor(StrategyType strategy, int episodeWindowSec) {
         TuningCaptureConfigEntity row = new TuningCaptureConfigEntity();
         row.setStrategy(strategy);
-        // All other fields use entity defaults: captureEnabled=false, per-type=true, window=60.
+        // Entity defaults are ON: captureEnabled=true, per-type=true, window=60 (capture is opt-OUT).
         if (episodeWindowSec > 0) {
             row.setEpisodeWindowSec(episodeWindowSec);
         }

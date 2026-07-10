@@ -56,6 +56,22 @@ public class LivePositionExitMonitor {
 
     private static final Logger log = LoggerFactory.getLogger(LivePositionExitMonitor.class);
     private static final MathContext MC = MathContext.DECIMAL64;
+    /** Hard ceiling on the single-leg exit stop-loss %, matching DynamicGateEngine.MAX_SL. The global
+     *  stopLossPercent (12, not a per-user-profile field) would otherwise let exits fire above this. */
+    private static final double MAX_EXIT_SL_PCT = 10.0;
+    /** Fresh-trade grace: defer profit-taking/trailing/theta tiers for this long after entry (protective
+     *  tiers — liquidity, squareoff, stop-loss — still fire during grace). Applied inside evaluateInternal. */
+    private static final long ENTRY_GRACE_SECONDS = 60;
+
+    /** Conviction Override Engine — GLOBAL microstructure reversal exit for any non-strategy-managed
+     *  position (all strategies except spreads and strategy-managed OI-momentum, which are skipped above).
+     *  Optional bean; live + config-gated. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.marketdata.ConvictionOverrideEngine convictionOverrideEngine;
+    @org.springframework.beans.factory.annotation.Value("${conviction-override.exit.global-enabled:true}")
+    private boolean coeExitGlobalEnabled;
+    @org.springframework.beans.factory.annotation.Value("${conviction-override.exit.min-hold-sec:3}")
+    private long coeExitMinHoldSec;
 
     private final TradeRepository tradeRepository;
     private final ExecutionEngine executionEngine;
@@ -70,6 +86,14 @@ public class LivePositionExitMonitor {
     private final GlobalConfigService globalConfigService;
     private final TradingStateService tradingStateService;
     private final VwapIndicator vwapIndicator;
+
+    /** ORPHAN SAFETY (2026-07-01): to decide whether a primary OI_MOMENTUM trade is actually being managed
+     *  by the OI-momentum loop (adopted into an IndexState) vs orphaned/unmanaged. @Lazy + optional to avoid
+     *  any construction-order cycle. When the strategy is NOT tracking a primary OI_MOMENTUM trade, this
+     *  monitor manages it as the safety net instead of skipping it. */
+    @org.springframework.context.annotation.Lazy
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.strategy.oimomentum.OIMomentumStrategy oiMomentumStrategy;
     private final com.algo.trade.monitoring.ErrorEventService errorEventService;
     private final com.algo.trade.monitoring.SchedulerRegistry schedulerRegistry;
     private final com.algo.trade.ml.MlExitShadowRecorder mlExitShadowRecorder;
@@ -106,6 +130,32 @@ public class LivePositionExitMonitor {
     private final Map<String, Set<String>> firedLayers = new ConcurrentHashMap<>();
     // per-trade mutex — serializes concurrent evaluations when multiple CandleClosedEvents fire simultaneously
     private final Map<String, Object> evaluationLocks = new ConcurrentHashMap<>();
+
+    // ── Tiered trailing (Finding 4): tighten the trail gap as the peak grows, so large winners
+    // give back less. Default OFF → flat gap unchanged. Only ever tightens (never loosens). ──
+    @org.springframework.beans.factory.annotation.Value("${exit.tiered-trailing.enabled:false}")
+    private boolean tieredTrailingEnabled;
+    @org.springframework.beans.factory.annotation.Value("${exit.tiered-trailing.tier1-peak:8.0}")
+    private double tieredTier1Peak;
+    @org.springframework.beans.factory.annotation.Value("${exit.tiered-trailing.tier1-gap:3.0}")
+    private double tieredTier1Gap;
+    @org.springframework.beans.factory.annotation.Value("${exit.tiered-trailing.tier2-peak:15.0}")
+    private double tieredTier2Peak;
+    @org.springframework.beans.factory.annotation.Value("${exit.tiered-trailing.tier2-gap:2.0}")
+    private double tieredTier2Gap;
+
+    /**
+     * Tiered trail gap (Finding 4). Returns the configured flat gap unless tiered trailing is on,
+     * in which case the gap is tightened in steps as {@code peakPct} grows. Never returns a gap
+     * wider than the base, so enabling it can only protect more profit, never less.
+     */
+    private double tieredTrailGap(double baseGap, double peakPct) {
+        if (!tieredTrailingEnabled) return baseGap;
+        double gap = baseGap;
+        if (peakPct >= tieredTier1Peak) gap = Math.min(gap, tieredTier1Gap);
+        if (peakPct >= tieredTier2Peak) gap = Math.min(gap, tieredTier2Gap);
+        return gap;
+    }
 
     public LivePositionExitMonitor(TradeRepository tradeRepository,
                                     ExecutionEngine executionEngine,
@@ -161,6 +211,10 @@ public class LivePositionExitMonitor {
         if (openTrades.isEmpty()) return;
         for (TradeEntity trade : openTrades) {
             if (!globalConfigService.isManageSyncedTrades() && trade.getTradeId().startsWith("SYNC-")) continue;
+            // NOTE: the fresh-trade grace period is now applied INSIDE evaluateInternal — AFTER the
+            // protective tiers (liquidity / squareoff / stop-loss) — so a crash still stops out in the
+            // first 60s. It must NOT short-circuit the whole evaluation here (that blocked STOP_LOSS and
+            // let fresh entries run to ~-20% before the first post-grace tick). (2026-07-02)
             try {
                 // Multi-user: evaluate each trade in its owner's context for correct broker routing
                 Long ownerId = trade.getUserId();
@@ -202,6 +256,8 @@ public class LivePositionExitMonitor {
         log.debug("[ExitMonitor-Backup] Evaluating {} open trades via scheduled backup", openTrades.size());
         for (TradeEntity trade : openTrades) {
             if (!globalConfigService.isManageSyncedTrades() && trade.getTradeId().startsWith("SYNC-")) continue;
+            // Fresh-trade grace is applied inside evaluateInternal (after the protective tiers), not here —
+            // see onCandleClose note. Blanket-skipping fresh trades here would also block their stop-loss.
             try {
                 // Multi-user: evaluate each trade in the context of its owner so that
                 // exit orders are placed against the correct user's broker session.
@@ -214,6 +270,90 @@ public class LivePositionExitMonitor {
             } catch (Exception e) {
                 log.error("[ExitMonitor-Backup] Error evaluating trade {}: {}", trade.getTradeId(), e.getMessage());
                 errorEventService.critical("ExitMonitor-Backup", "Error evaluating trade " + trade.getTradeId() + ": " + e.getMessage(), e);
+            }
+        }
+    }
+
+    /**
+     * FAST global exit sweep (every 500ms) — runs ONLY the Conviction Override reversal check, not the
+     * full candle-cadence exit pipeline. This is what makes the microstructure reversal exit fast: it
+     * fires within ~½s of the spoof/absorption reversal instead of waiting for the next candle close
+     * (~1 min). Cheap — the option LTP/quote comes from the WebSocket cache, no broker REST call. All
+     * other exit tiers (SL / trailing / squareoff / theta) stay on their proven candle cadence.
+     */
+    @org.springframework.scheduling.annotation.Scheduled(fixedDelay = 500, initialDelay = 20_000)
+    public void fastConvictionExitSweep() {
+        if (!coeExitGlobalEnabled || convictionOverrideEngine == null || !convictionOverrideEngine.isEnabled()) return;
+        if (!MarketSessionHelper.isRegularSessionNow() || !tradingStateService.isExitAllowed()) return;
+        List<TradeEntity> openTrades = tradeRepository.findByStatus(TradeStatus.OPEN);
+        if (openTrades.isEmpty()) return;
+        for (TradeEntity trade : openTrades) {
+            if (trade.getTradeId() == null) continue;
+            if (!globalConfigService.isManageSyncedTrades() && trade.getTradeId().startsWith("SYNC-")) continue;
+            try {
+                Long ownerId = trade.getUserId();
+                if (ownerId != null) {
+                    com.algo.trade.multiuser.UserContext.runAs(ownerId, () -> tryConvictionExit(trade));
+                } else {
+                    tryConvictionExit(trade);
+                }
+            } catch (Exception e) {
+                log.debug("[COE] fast sweep error for {}: {}", trade.getTradeId(), e.toString());
+            }
+        }
+    }
+
+    /**
+     * The GLOBAL Conviction Override reversal exit for one trade. Uses the SAME per-trade lock + fresh
+     * re-fetch as evaluate() (so it can't race a candle-close evaluation of the same trade), and applies
+     * the same skips as evaluateInternal: spreads (managed by SpreadPositionExitMonitor) and
+     * strategy-managed OI-momentum (handled by the OI-momentum per-tick loop) are excluded, and only
+     * LONG option buys are eligible (the reversal signal is long-oriented). Never throws.
+     */
+    private void tryConvictionExit(TradeEntity trade) {
+        Object lock = evaluationLocks.computeIfAbsent(trade.getTradeId(), id -> new Object());
+        synchronized (lock) {
+            try {
+                TradeEntity t = tradeRepository.findById(trade.getTradeId()).orElse(null);
+                if (t == null || t.getStatus() != TradeStatus.OPEN) return;
+                if (t.getEntryTime() == null
+                        || java.time.Duration.between(t.getEntryTime(), java.time.Instant.now()).getSeconds() < coeExitMinHoldSec) return;
+                if (PositionPnlCalculator.isShortEntry(t)) return; // long-only (signal is long-oriented)
+
+                // OI_SHIFT_TRAP: the trap thesis needs 5-15 minutes to develop (writer-squeeze is slow).
+                // COE spoof/absorption signals are calibrated for momentum entries (3s reaction) and
+                // frequently misfire on trap strikes where heavy OI churn is the EXPECTED environment.
+                // Grace: defer COE exit for trap trades until held ≥ 5 minutes (300s). The trap's own
+                // exit logic (ShiftTrapOiUnwindExitDetector) remains the authority for early trap exits.
+                if ("OI_SHIFT_TRAP".equals(t.getStrategyType()) && t.getEntryTime() != null
+                        && java.time.Duration.between(t.getEntryTime(), java.time.Instant.now()).getSeconds() < 300) {
+                    return;
+                }
+
+                StrategyConfig cfg = resolveConfig(t);
+                if (cfg.getStrategyType().isSpreadStrategy()) return; // spreads managed by SpreadPositionExitMonitor
+                if (cfg.getStrategyType() == StrategyType.OI_MOMENTUM
+                        && (t.getUserId() == null || t.getUserId().equals(com.algo.trade.multiuser.UserContext.DEFAULT_USER_ID))
+                        && oiMomentumStrategy != null
+                        && oiMomentumStrategy.activeManagedTradeIds().contains(t.getTradeId())) return; // managed by OI-momentum loop
+
+                IndexType indexType = IndexType.fromName(t.getUnderlying());
+                if (indexType == null) return;
+                com.algo.trade.domain.OptionInstrument coeOpt = liveInstrumentCache.getBySymbol(
+                        t.getInstrumentKey().contains(":") ? t.getInstrumentKey().split(":", 2)[1] : t.getInstrumentKey())
+                        .orElse(null);
+                if (coeOpt == null || coeOpt.getLastPrice() <= 0) return;
+                if (!convictionOverrideEngine.isReversing(indexType, coeOpt.getStrikePrice(), coeOpt.getOptionType())) return;
+
+                BigDecimal price = BigDecimal.valueOf(coeOpt.getLastPrice());
+                log.warn("[COE] CONVICTION_EXIT_OVERRIDE (global,fast) — microstructure reversal on {} {}{} strategy={} tradeId={} — closing @{}",
+                        indexType, coeOpt.getStrikePrice(), coeOpt.getOptionType(), t.getStrategyType(), t.getTradeId(), price);
+                telegramAlertService.systemAlert(String.format(
+                        "⚡ Conviction Exit Override: %s | %s | ₹%.2f (spoof/absorption reversal)",
+                        t.getInstrumentKey(), t.getStrategyType(), price.doubleValue()));
+                close(t, price, "CONVICTION_EXIT_OVERRIDE");
+            } catch (Exception e) {
+                log.debug("[COE] tryConvictionExit skipped for {}: {}", trade.getTradeId(), e.toString());
             }
         }
     }
@@ -265,16 +405,26 @@ public class LivePositionExitMonitor {
             return;
         }
 
-        // OI_MOMENTUM trades are managed by OIMomentumStrategy's 1-sec loop — but ONLY
-        // the PRIMARY's trade (state.activeTradeId). Copied trades owned by secondary
-        // users have no strategy-loop manager, so this monitor MUST manage them
-        // (SL/target/trailing/squareoff) as the safety net behind the exit-copy fan-out.
+        // OI_MOMENTUM trades are managed by OIMomentumStrategy's 1-sec loop — but ONLY the PRIMARY's trade
+        // AND ONLY when the loop is actually tracking it (adopted into an IndexState). Copied trades owned by
+        // secondary users have no strategy-loop manager, so this monitor MUST manage them. ORPHAN SAFETY
+        // (2026-07-01): a primary OI_MOMENTUM trade the strategy is NOT tracking (orphan / un-adopted) was
+        // previously skipped here too → managed by NOBODY (no trailing/SL). Now: skip only if the strategy
+        // is truly managing it; otherwise fall through and protect it as the safety net.
         if (cfg.getStrategyType() == StrategyType.OI_MOMENTUM
                 && (trade.getUserId() == null
                     || trade.getUserId().equals(com.algo.trade.multiuser.UserContext.DEFAULT_USER_ID))) {
-            log.debug("[ExitMonitor] Skipping primary OI_MOMENTUM trade {} — managed by OIMomentumStrategy",
-                    trade.getTradeId());
-            return;
+            boolean managedByStrategy = oiMomentumStrategy != null
+                    && trade.getTradeId() != null
+                    && oiMomentumStrategy.activeManagedTradeIds().contains(trade.getTradeId());
+            if (managedByStrategy) {
+                log.debug("[ExitMonitor] Skipping primary OI_MOMENTUM trade {} — managed by OIMomentumStrategy",
+                        trade.getTradeId());
+                return;
+            }
+            log.warn("[ExitMonitor] Managing UN-ADOPTED primary OI_MOMENTUM trade {} as safety net "
+                    + "(strategy not tracking it — would otherwise have no SL/trailing)", trade.getTradeId());
+            // fall through → apply SL/target/trailing here
         }
 
         BigDecimal entryPrice = trade.getEntryPrice();
@@ -328,14 +478,17 @@ public class LivePositionExitMonitor {
         // never by a strategy's hold-time window. Other exit layers (liquidity, SL,
         // target, trailing, squareoff) still apply.
         boolean isSyncTrade = trade.getTradeId() != null && trade.getTradeId().startsWith("SYNC-");
-        if (!isSyncTrade && config.getMaxHoldMinutes() > 0 && trade.getEntryTime() != null) {
+        // Max-hold from the user's RESOLVED PROFILE (per-user), not per-strategy config. Runs under the
+        // trade owner's UserContext, so getMaxHoldMinutes() resolves the owner's profile. (2026-06-25)
+        int profileMaxHold = globalConfigService.getMaxHoldMinutes();
+        if (!isSyncTrade && profileMaxHold > 0 && trade.getEntryTime() != null) {
             long holdMinutes = java.time.Duration.between(trade.getEntryTime(), java.time.Instant.now()).toMinutes();
-            if (holdMinutes >= config.getMaxHoldMinutes()) {
+            if (holdMinutes >= profileMaxHold) {
                 BigDecimal exitPrice = resolveExitPrice(trade);
                 double holdProfitPct = PositionPnlCalculator.profitPercent(entryPrice, exitPrice,
                         PositionPnlCalculator.isShortEntry(trade));
                 log.info("[ExitMonitor] MAX HOLD TIME reached: tradeId={} instrument={} hold={}min max={}min profit={}%",
-                        trade.getTradeId(), trade.getInstrumentKey(), holdMinutes, config.getMaxHoldMinutes(),
+                        trade.getTradeId(), trade.getInstrumentKey(), holdMinutes, profileMaxHold,
                         String.format("%.1f", holdProfitPct));
                 telegramAlertService.systemAlert(String.format(
                         "⏱️ Max Hold Time: %s | Hold %dmin (max %d) | P&L %.1f%%",
@@ -379,9 +532,18 @@ public class LivePositionExitMonitor {
 
         IndexType indexType = IndexType.fromName(trade.getUnderlying());
 
+        // (The GLOBAL Conviction Override reversal exit runs on a dedicated 500ms sweep — see
+        //  tryConvictionExit() / fastConvictionExitSweep() — so it fires within ~½s, not at candle cadence.)
+
         // ── Expiry operator trap: OI unwind collapse or squareoff deadline → exit NOW ──
         // ExpiryOperatorTrapDetector flags >30% OI drops at key strikes (operator trap)
         // and the 15:20 squareoff deadline on expiry days.
+        // (2026-07-09: a 180s "entered-during-collapse" grace was added here mid-day and REVERTED the
+        // same day — forward-path check on the 10:43 cluster showed the trap exits were SAVES, not
+        // churn: all four sold CEs collapsed 31-67% within 30 min. On expiry day an index-wide OI
+        // collapse is unwind-into-expiry, not a squeeze; the trap keeps FULL authority. The entry-side
+        // conflict is fixed where it belongs: detectAvalanche suppresses NEW entries while the trap is
+        // latched — see OIMomentumStrategy.)
         if (expiryTrapDetector != null && expiryTrapDetector.shouldForceExit(indexType)) {
             boolean collapse = expiryTrapDetector.assess(indexType).oiUnwindCollapse();
             String reason = collapse ? "EXPIRY_TRAP_OI_COLLAPSE" : "EXPIRY_TRAP_SQUAREOFF";
@@ -469,23 +631,21 @@ public class LivePositionExitMonitor {
         TrailingMode trailingMode = TrailingMode.fromString(tradingProperties.exit().trailingModeSetting());
         boolean useAtrExits = underlyingAtr > 0 && entryPrice.doubleValue() > 0;
 
-        double configSlPct = trade.getAppliedStopLossPercent() != null
-                ? trade.getAppliedStopLossPercent().doubleValue()
-                : config.getStopLossPercent().doubleValue();
-        double configTargetPct = trade.getAppliedTargetPercent() != null
-                ? trade.getAppliedTargetPercent().doubleValue()
-                : config.getTargetPercent().doubleValue();
-        double configTrailAct = config.getTrailingStopActivationPercent().doubleValue();
-        double configTrailGap = config.getTrailingGapPercent().doubleValue();
-        if (trade.getAppliedTrailingStopActivationPercent() != null) {
-            configTrailAct = trade.getAppliedTrailingStopActivationPercent().doubleValue();
-        }
-        if (trade.getAppliedTrailingGapPercent() != null) {
-            configTrailGap = trade.getAppliedTrailingGapPercent().doubleValue();
-        }
+        // Exit baseline comes from the user's RESOLVED RISK PROFILE — NOT per-strategy config and NOT
+        // the values frozen on the trade at entry. (2026-06-25: per-strategy exit config retired; the
+        // superuser-defined, per-user profile is the single source of exit SL/target/trail. This runs
+        // inside UserContext.runAs(ownerId), so getStopLossPercent() etc. resolve the owner's profile.)
+        // ATR HYBRID may still TIGHTEN these (a safety floor); the profile trail is preferred over ATR.
+        // Cap the exit stop at 10% — the DynamicGateEngine MAX_SL intent. The global stopLossPercent
+        // (12) is NOT a per-user-profile field, so it bypassed that cap and let OI_MOMENTUM exits fire
+        // at 12% (overshooting to ~-15% on fast moves). Clamp so no single-leg exit stop exceeds 10%.
+        // (Manual SYNC- trades are already skipped earlier in this method.)
+        double configSlPct = Math.min(globalConfigService.getStopLossPercent().doubleValue(), MAX_EXIT_SL_PCT);
+        double configTargetPct = globalConfigService.getTargetPercent().doubleValue();
+        double configTrailAct = globalConfigService.getTrailingStopActivationPercent().doubleValue();
+        double configTrailGap = globalConfigService.getTrailingGapPercent().doubleValue();
 
-        boolean preferConfigTrail = trade.getAppliedTrailingStopActivationPercent() != null
-                || trade.getAppliedTrailingGapPercent() != null;
+        boolean preferConfigTrail = true; // trail comes from the profile, not ATR
 
         ExitParamResolver.ResolvedExits resolved = exitParamResolver.resolveSingleLeg(
                 exitMode, configSlPct, configTargetPct, configTrailAct, configTrailGap,
@@ -508,6 +668,37 @@ public class LivePositionExitMonitor {
                     "\uD83D\uDD34 SL Hit: %s | Entry \u20B9%.2f \u2192 \u20B9%.2f | P&L %.1f%%",
                     trade.getInstrumentKey(), entryPrice.doubleValue(), currentPrice.doubleValue(), profitPct));
             close(trade, currentPrice, "STOP_LOSS");
+            return;
+        }
+
+        // ── UNIFIED EXIT (2026-07-09, user directive) ─────────────────────────
+        // ALL users follow the SAME OI-momentum exit. The primary account is only where the market
+        // analysis runs — it is NOT special. So a secondary user's OI_MOMENTUM copy must NOT run this
+        // monitor's SEPARATE discretionary rulebook (theta / target / trailing / ATR-trail / IV-collapse
+        // / progressive-book / STALL_EXIT / gamma-spike / momentum-breakout / VWAP-reversal / OI-unwind)
+        // — those diverge from the primary's OI-momentum strategy exit (the 24050 PE STALL_EXIT that
+        // closed u:8 at −185 while u:1 rode on). The primary's strategy is the SINGLE exit brain and its
+        // every exit fans out to all users via COPY_EXIT (doCloseTrade → fireExitAlignedNow). Above this
+        // line the monitor already ran the HARD safety nets (liquidity, max-hold, squareoff, expiry
+        // danger/afternoon, STOP_LOSS) — those stay as catastrophe protection for an orphaned copy or a
+        // mirror that failed to fire. Everything discretionary below defers to the mirror.
+        if (cfg.getStrategyType() == StrategyType.OI_MOMENTUM
+                && trade.getUserId() != null
+                && !trade.getUserId().equals(com.algo.trade.multiuser.UserContext.DEFAULT_USER_ID)) {
+            log.debug("[ExitMonitor] UNIFIED-EXIT: secondary OI_MOMENTUM copy {} — discretionary exits "
+                    + "deferred to the primary's strategy (mirrored via COPY_EXIT); safety nets only",
+                    trade.getTradeId());
+            return;
+        }
+
+        // ── Fresh-trade grace ─────────────────────────────────────────────────
+        // The protective tiers above (liquidity emergency, squareoff, expiry-trap, STOP_LOSS) have all had
+        // their chance. Defer the profit-taking / theta / trailing tiers below for the first
+        // ENTRY_GRACE_SECONDS so a just-imported (PositionSynchronizer) or just-filled copied trade isn't
+        // churned on transient data. Because this sits AFTER stop-loss, a real crash still stops out in the
+        // first minute — the old blanket 60s skip blocked STOP_LOSS and let fresh entries run to ~-20%. (2026-07-02)
+        if (trade.getEntryTime() != null
+                && java.time.Duration.between(trade.getEntryTime(), java.time.Instant.now()).getSeconds() < ENTRY_GRACE_SECONDS) {
             return;
         }
 
@@ -563,7 +754,14 @@ public class LivePositionExitMonitor {
         // ── 3. Trailing stop (single path: PRICE-level or ATR-percent, not both) ──
         if (trailingMode == TrailingMode.PRICE) {
             BigDecimal trailActivation = BigDecimal.valueOf(resolved.trailActivationPercent());
-            BigDecimal trailGap = BigDecimal.valueOf(resolved.trailGapPercent());
+            // Finding 4: tighten the gap as the peak grows (flat gap when the flag is off).
+            double effGap = tieredTrailGap(resolved.trailGapPercent(), peakPct);
+            BigDecimal trailGap = BigDecimal.valueOf(effGap);
+            if (tieredTrailingEnabled && effGap < resolved.trailGapPercent()) {
+                log.debug("[ExitMonitor] tiered trail: tradeId={} peak={}% gap {}→{}",
+                        trade.getTradeId(), String.format("%.1f", peakPct),
+                        resolved.trailGapPercent(), effGap);
+            }
 
             if (!trailingStops.containsKey(trade.getTradeId()) && trade.getTrailingStopPrice() != null) {
                 trailingStops.put(trade.getTradeId(), trade.getTrailingStopPrice());
@@ -626,7 +824,10 @@ public class LivePositionExitMonitor {
         }
 
         // ── 5. Progressive profit booking ──────────────────────────────────────
-        if (useAtrExits && profitPct > 0) {
+        // Now honored from the user's RESOLVED PROFILE flag (partialProfitBookingEnabled). BALANCED is
+        // seeded ON so this stays behavior-neutral (the monitor previously always booked when ATR was
+        // available); superuser can disable it per profile. (2026-06-25)
+        if (useAtrExits && profitPct > 0 && globalConfigService.isPartialProfitBookingEnabled()) {
             Set<String> fired = firedLayers.computeIfAbsent(trade.getTradeId(),
                     id -> loadFiredLayers(trade));
             Optional<com.algo.trade.strategy.DynamicExitManager.ExitLayer> layer =

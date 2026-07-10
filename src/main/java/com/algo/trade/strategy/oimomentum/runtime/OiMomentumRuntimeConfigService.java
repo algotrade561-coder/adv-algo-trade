@@ -84,6 +84,10 @@ public class OiMomentumRuntimeConfigService {
             seed.setConsecutiveLossHaltCount(oiMomentumConfig.getConsecutiveLossHaltCount());
             seed.setBreakEvenTriggerPercent(oiMomentumConfig.getBreakEvenTriggerPercent());
             seed.setMaxTradesPerDay(oiMomentumConfig.getMaxTradesPerDay());
+            seed.setChargesGateV2Enabled(oiMomentumConfig.isChargesGateV2Enabled());
+            seed.setChargesGateTargetPct(oiMomentumConfig.getChargesGateTargetPct());
+            seed.setChargesGateMinNetProfit(oiMomentumConfig.getChargesGateMinNetProfit());
+            seed.setChargesGateResizeUp(oiMomentumConfig.isChargesGateResizeUp());
             seed.setRecordEveryReject(oiMomentumConfig.isRecordEveryReject());
             seed.setRejectSampleIntervalSeconds(oiMomentumConfig.getRejectSampleIntervalSeconds());
             seed.setMatrixRejectSampleIntervalSeconds(oiMomentumConfig.getMatrixRejectSampleIntervalSeconds());
@@ -281,6 +285,70 @@ public class OiMomentumRuntimeConfigService {
             row.setThetaDecayMaxCostPct(update.thetaDecayMaxCostPct);
             changes.append("thetaDecayMaxCostPct=").append(update.thetaDecayMaxCostPct).append(" ");
         }
+        // ── Charges-aware gate v2 ──
+        if (update.chargesGateV2Enabled != null
+                && update.chargesGateV2Enabled != row.isChargesGateV2Enabled()) {
+            row.setChargesGateV2Enabled(update.chargesGateV2Enabled);
+            changes.append("chargesGateV2Enabled=").append(update.chargesGateV2Enabled).append(" ");
+        }
+        if (update.chargesGateTargetPct != null) {
+            if (update.chargesGateTargetPct <= 0 || update.chargesGateTargetPct > 1.0) {
+                throw new IllegalArgumentException("chargesGateTargetPct must be in (0,1.0]");
+            }
+            row.setChargesGateTargetPct(update.chargesGateTargetPct);
+            changes.append("chargesGateTargetPct=").append(update.chargesGateTargetPct).append(" ");
+        }
+        if (update.chargesGateMinNetProfit != null) {
+            if (update.chargesGateMinNetProfit < 0) {
+                throw new IllegalArgumentException("chargesGateMinNetProfit must be >= 0");
+            }
+            row.setChargesGateMinNetProfit(update.chargesGateMinNetProfit);
+            changes.append("chargesGateMinNetProfit=").append(update.chargesGateMinNetProfit).append(" ");
+        }
+        if (update.chargesGateResizeUp != null
+                && update.chargesGateResizeUp != row.isChargesGateResizeUp()) {
+            row.setChargesGateResizeUp(update.chargesGateResizeUp);
+            changes.append("chargesGateResizeUp=").append(update.chargesGateResizeUp).append(" ");
+        }
+        // ── D2 SUSTAINED_DRIFT (these DTO fields existed but were never applied;
+        //    wired 14 Jun 2026 so the trend-capture go-live is UI/API-controllable
+        //    and persists in the DB row across restarts). ──
+        if (update.sustainedDriftEnabled != null
+                && update.sustainedDriftEnabled != row.isSustainedDriftEnabled()) {
+            row.setSustainedDriftEnabled(update.sustainedDriftEnabled);
+            changes.append("sustainedDriftEnabled=").append(update.sustainedDriftEnabled).append(" ");
+        }
+        if (update.sustainedDriftShadowMode != null
+                && update.sustainedDriftShadowMode != row.isSustainedDriftShadowMode()) {
+            row.setSustainedDriftShadowMode(update.sustainedDriftShadowMode);
+            changes.append("sustainedDriftShadowMode=").append(update.sustainedDriftShadowMode).append(" ");
+        }
+        if (update.sustainedDriftOverridesV3 != null
+                && update.sustainedDriftOverridesV3 != row.isSustainedDriftOverridesV3()) {
+            row.setSustainedDriftOverridesV3(update.sustainedDriftOverridesV3);
+            changes.append("sustainedDriftOverridesV3=").append(update.sustainedDriftOverridesV3).append(" ");
+        }
+        if (update.sustainedDriftMinPct != null) {
+            if (update.sustainedDriftMinPct <= 0 || update.sustainedDriftMinPct > 5.0) {
+                throw new IllegalArgumentException("sustainedDriftMinPct must be in (0,5.0]");
+            }
+            row.setSustainedDriftMinPct(update.sustainedDriftMinPct);
+            changes.append("sustainedDriftMinPct=").append(update.sustainedDriftMinPct).append(" ");
+        }
+        if (update.sustainedDriftOpScoreMin != null) {
+            if (update.sustainedDriftOpScoreMin < 0 || update.sustainedDriftOpScoreMin > 100) {
+                throw new IllegalArgumentException("sustainedDriftOpScoreMin must be in [0,100]");
+            }
+            row.setSustainedDriftOpScoreMin(update.sustainedDriftOpScoreMin);
+            changes.append("sustainedDriftOpScoreMin=").append(update.sustainedDriftOpScoreMin).append(" ");
+        }
+        if (update.sustainedDriftWindowMinutes != null) {
+            if (update.sustainedDriftWindowMinutes < 5 || update.sustainedDriftWindowMinutes > 240) {
+                throw new IllegalArgumentException("sustainedDriftWindowMinutes must be in [5,240]");
+            }
+            row.setSustainedDriftWindowMinutes(update.sustainedDriftWindowMinutes);
+            changes.append("sustainedDriftWindowMinutes=").append(update.sustainedDriftWindowMinutes).append(" ");
+        }
         if (update.recordEveryReject != null && update.recordEveryReject != row.isRecordEveryReject()) {
             row.setRecordEveryReject(update.recordEveryReject);
             changes.append("recordEveryReject=").append(update.recordEveryReject).append(" ");
@@ -371,12 +439,18 @@ public class OiMomentumRuntimeConfigService {
         // Theta-decay gate
         oiMomentumConfig.setThetaDecayCheckEnabled(src.isThetaDecayCheckEnabled());
         oiMomentumConfig.setThetaDecayMaxCostPct(src.getThetaDecayMaxCostPct());
+        // Charges-aware gate v2
+        oiMomentumConfig.setChargesGateV2Enabled(src.isChargesGateV2Enabled());
+        oiMomentumConfig.setChargesGateTargetPct(src.getChargesGateTargetPct());
+        oiMomentumConfig.setChargesGateMinNetProfit(src.getChargesGateMinNetProfit());
+        oiMomentumConfig.setChargesGateResizeUp(src.isChargesGateResizeUp());
         // D2 SUSTAINED_DRIFT (2 Jun 2026)
         oiMomentumConfig.setSustainedDriftEnabled(src.isSustainedDriftEnabled());
         oiMomentumConfig.setSustainedDriftShadowMode(src.isSustainedDriftShadowMode());
         oiMomentumConfig.setSustainedDriftMinPct(src.getSustainedDriftMinPct());
         oiMomentumConfig.setSustainedDriftOpScoreMin(src.getSustainedDriftOpScoreMin());
         oiMomentumConfig.setSustainedDriftWindowMinutes(src.getSustainedDriftWindowMinutes());
+        oiMomentumConfig.setSustainedDriftOverridesV3(src.isSustainedDriftOverridesV3());
         // T2 PCR slope bias bonus
         oiMomentumConfig.setPcrSlopeBiasBonusEnabled(src.isPcrSlopeBiasBonusEnabled());
         oiMomentumConfig.setPcrSlopeBiasMinAbs(src.getPcrSlopeBiasMinAbs());
@@ -447,11 +521,16 @@ public class OiMomentumRuntimeConfigService {
         public Integer rangeEdgeFadeOiBuildMin;
         public Boolean thetaDecayCheckEnabled;
         public Double  thetaDecayMaxCostPct;
+        public Boolean chargesGateV2Enabled;
+        public Double  chargesGateTargetPct;
+        public Double  chargesGateMinNetProfit;
+        public Boolean chargesGateResizeUp;
         public Boolean sustainedDriftEnabled;
         public Boolean sustainedDriftShadowMode;
         public Double  sustainedDriftMinPct;
         public Integer sustainedDriftOpScoreMin;
         public Integer sustainedDriftWindowMinutes;
+        public Boolean sustainedDriftOverridesV3;
         public Boolean pcrSlopeBiasBonusEnabled;
         public Double  pcrSlopeBiasMinAbs;
         public Integer pcrSlopeBiasBonusPoints;

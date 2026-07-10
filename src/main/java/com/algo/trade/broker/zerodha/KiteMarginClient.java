@@ -120,13 +120,17 @@ public class KiteMarginClient implements BrokerMarginClient {
         if (!authenticated()) {
             throw new BrokerException("Kite auth required for margin API");
         }
+        // FIX (2026-06-24): pair api_key with the PRIMARY account (DB), not env KITE_API_KEY — same
+        // root cause as the broker client's 403 storm (creds live in DB; env can be blank/stale).
+        String apiKey = tokenStore.primaryApiKey().orElse(properties.broker().apiKey());
         headers.set("X-Kite-Version", "3");
         headers.set(HttpHeaders.AUTHORIZATION,
-                "token " + properties.broker().apiKey() + ":" + tokenStore.accessToken().orElseThrow());
+                "token " + apiKey + ":" + tokenStore.accessToken().orElseThrow());
     }
 
     private boolean authenticated() {
-        return properties.broker().apiKey() != null && !properties.broker().apiKey().isBlank()
+        String apiKey = tokenStore.primaryApiKey().orElse(properties.broker().apiKey());
+        return apiKey != null && !apiKey.isBlank()
                 && tokenStore.accessToken().isPresent();
     }
 

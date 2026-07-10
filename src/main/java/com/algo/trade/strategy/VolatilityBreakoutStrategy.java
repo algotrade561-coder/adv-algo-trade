@@ -31,6 +31,16 @@ public class VolatilityBreakoutStrategy {
     private static final ZoneId IST = ZoneId.of("Asia/Kolkata");
     private static final double MIN_POC_DISTANCE_PCT = 0.3;
 
+    /**
+     * Signal cooldown per underlying (2026-06-12 fix): the squeeze-breakout condition
+     * stays true on every scan tick while the 15-min candles are unchanged, so the
+     * strategy emitted the SAME signal ~every 2 seconds (24 duplicate decisions in
+     * 50s observed). One squeeze release = one signal; re-arm after cooldown.
+     */
+    private static final long SIGNAL_COOLDOWN_MINUTES = 15;
+    private final java.util.Map<UnderlyingSymbol, java.time.Instant> lastSignalAt =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
     private final GlobalConfigService globalConfigService;
     private final TickVolumeProfileService tickVolumeProfileService;
 
@@ -129,6 +139,14 @@ public class VolatilityBreakoutStrategy {
                         String.format("%.0f", vp.val()), String.format("%.2f", distPct), !vp.inValueArea(latestClose));
             }
         }
+
+        // Cooldown: emit at most one signal per underlying per SIGNAL_COOLDOWN_MINUTES.
+        java.time.Instant last = lastSignalAt.get(underlying);
+        if (last != null && java.time.Duration.between(last, java.time.Instant.now()).toMinutes() < SIGNAL_COOLDOWN_MINUTES) {
+            return new StrategyDiagnostics.WithSignal(Optional.empty(),
+                    new StrategyDiagnostics("signalCooldown", null, null, null, null, upper, lower, bandwidth, true));
+        }
+        lastSignalAt.put(underlying, java.time.Instant.now());
 
         log.info("[VolBreakout] Confirmed breakout: {} bandwidth={}% ivRank={} close={}",
                 direction, String.format("%.2f", bandwidth), String.format("%.0f", ivRank), latestClose);

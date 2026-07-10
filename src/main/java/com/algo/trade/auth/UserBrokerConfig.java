@@ -65,7 +65,11 @@ public class UserBrokerConfig {
     /** Per-user max open positions */
     private int maxOpenPositions = 3;
 
-    /** Per-user max lots per trade */
+    /**
+     * Legacy broker-row field — lot sizing uses the user's assigned risk profile
+     * ({@link com.algo.trade.config.usersettings.RiskProfile}) via {@code TradingConfigResolver},
+     * not this column. Kept for API/DB compatibility; do not use for entry lot caps.
+     */
     private int maxLotsPerTrade = 2;
 
     /** Per-user Telegram config */
@@ -75,6 +79,14 @@ public class UserBrokerConfig {
 
     @Column(length = 64)
     private String telegramChatId;
+
+    /**
+     * When the one-time Kite setup instructions (redirect URL + public IP to whitelist) were
+     * sent to the user over Telegram. Set the first time the user links Telegram; used as an
+     * idempotency guard so the instructions are sent exactly once. Null = not yet sent.
+     */
+    @Column(name = "kite_setup_sent_at")
+    private Instant kiteSetupSentAt;
 
     /** Per-user webhook URL (Discord/Slack) */
     @Convert(converter = EncryptedStringConverter.class)
@@ -141,6 +153,8 @@ public class UserBrokerConfig {
     public void setTelegramBotToken(String telegramBotToken) { this.telegramBotToken = telegramBotToken; }
     public String getTelegramChatId() { return telegramChatId; }
     public void setTelegramChatId(String telegramChatId) { this.telegramChatId = telegramChatId; }
+    public Instant getKiteSetupSentAt() { return kiteSetupSentAt; }
+    public void setKiteSetupSentAt(Instant kiteSetupSentAt) { this.kiteSetupSentAt = kiteSetupSentAt; }
     public String getWebhookUrl() { return webhookUrl; }
     public void setWebhookUrl(String webhookUrl) { this.webhookUrl = webhookUrl; }
     public boolean isPrimaryAccount() { return primaryAccount; }

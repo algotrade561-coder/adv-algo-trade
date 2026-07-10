@@ -137,6 +137,22 @@ public class KiteAccessTokenStore {
         return Optional.empty();
     }
 
+    /**
+     * api_key of the PRIMARY account (DB) for the SHARED/default REST + WS path, so the api_key is
+     * paired with the same primary account that {@link #accessToken()} resolves the shared token from.
+     * Falls back to the configured env/yaml key. FIX (2026-06-24): the shared {@code sys} path
+     * (historical candles, validation, WS) was pairing the ENV {@code KITE_API_KEY} with the primary's
+     * token; when the real api_key lives only in the DB (env blank/stale), Zerodha returned
+     * "Incorrect api_key or access_token" 403s ALL session — while per-user order paths worked.
+     */
+    public Optional<String> primaryApiKey() {
+        if (primaryAccountSelector != null) {
+            Optional<String> k = primaryAccountSelector.apiKey();
+            if (k.isPresent() && k.get() != null && !k.get().isBlank()) return k;
+        }
+        return Optional.ofNullable(blankToNull(properties.broker().apiKey()));
+    }
+
     public Optional<String> publicToken() {
         return Optional.ofNullable(publicToken.get());
     }

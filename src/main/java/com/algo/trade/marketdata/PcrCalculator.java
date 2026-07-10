@@ -58,6 +58,10 @@ public class PcrCalculator implements com.algo.trade.execution.DailyResettable {
     @org.springframework.beans.factory.annotation.Autowired
     private com.algo.trade.monitoring.SchedulerRegistry schedulerRegistry;
 
+    /** DB persistence for PCR samples — survives deploys/restarts. Optional so tests still pass without DB. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.persistence.PcrSampleRepository pcrSampleRepository;
+
     public PcrCalculator(LiveInstrumentCache liveInstrumentCache,
                          BrokerClient brokerClient,
                          MarketGuard marketGuard,
@@ -101,6 +105,32 @@ public class PcrCalculator implements com.algo.trade.execution.DailyResettable {
     @jakarta.annotation.PostConstruct
     void registerScheduler() {
         if (schedulerRegistry != null) schedulerRegistry.register("pcrCalculator", "Full-chain PCR per index (2min)", 120_000, this::compute);
+        // Hydrate in-memory series from today's DB rows so a deploy/restart doesn't lose the morning data.
+        hydrateFromDb();
+    }
+
+    /** Load today's PCR samples from the DB into the in-memory intradaySeries map. Safe to call multiple times. */
+    private void hydrateFromDb() {
+        if (pcrSampleRepository == null) return;
+        try {
+            java.time.Instant todayStart = java.time.LocalDate.now(IST).atStartOfDay(IST).toInstant();
+            for (IndexType idx : TRACKED_INDICES) {
+                var rows = pcrSampleRepository.findByIndexTypeAndCapturedAtAfterOrderByCapturedAtAsc(
+                        idx.name(), todayStart);
+                if (rows.isEmpty()) continue;
+                CopyOnWriteArrayList<PcrPoint> series = intradaySeries.computeIfAbsent(idx, k -> new CopyOnWriteArrayList<>());
+                for (var row : rows) {
+                    java.time.LocalTime lt = java.time.LocalTime.ofInstant(row.getCapturedAt(), IST);
+                    String timeStr = String.format("%02d:%02d", lt.getHour(), lt.getMinute());
+                    series.add(new PcrPoint(timeStr, round3(row.getPcr())));
+                }
+                // Set latest from the last DB row so the chart legend shows a value immediately
+                latestPcrByIndex.put(idx, rows.get(rows.size() - 1).getPcr());
+                log.info("[PcrCalculator] Hydrated {} intraday PCR samples from DB for {}", rows.size(), idx);
+            }
+        } catch (Exception e) {
+            log.warn("[PcrCalculator] DB hydration failed (non-fatal, will accumulate fresh): {}", e.getMessage());
+        }
     }
 
     @Scheduled(fixedDelay = 120_000, initialDelay = 30_000)
@@ -135,17 +165,38 @@ public class PcrCalculator implements com.algo.trade.execution.DailyResettable {
         if (now.isBefore(LocalTime.of(9, 0)) || now.isAfter(LocalTime.of(15, 30))) return;
         intradaySeries.computeIfAbsent(indexType, k -> new CopyOnWriteArrayList<>())
                 .add(new PcrPoint(String.format("%02d:%02d", now.getHour(), now.getMinute()), round3(pcr)));
+        // Persist to DB so a deploy/restart doesn't lose the chart history.
+        if (pcrSampleRepository != null) {
+            try {
+                pcrSampleRepository.save(new com.algo.trade.persistence.PcrSampleEntity(
+                        indexType.name(), java.time.Instant.now(), pcr));
+            } catch (Exception e) {
+                log.debug("[PcrCalculator] DB persist failed (non-fatal): {}", e.getMessage());
+            }
+        }
     }
 
     private static double round3(double v) {
         return Math.round(v * 1000.0) / 1000.0;
     }
 
-    /** Clears today's series + latest values at midnight (DailyResetService). */
+    /** Clears today's series + latest values at midnight (DailyResetService). Also removes yesterday's DB rows. */
     @Override
+    @org.springframework.transaction.annotation.Transactional
     public void resetDaily() {
         intradaySeries.clear();
         latestPcrByIndex.clear();
+        // Clean up old DB rows (retain nothing before today's midnight) — keeps the table bounded.
+        if (pcrSampleRepository != null) {
+            try {
+                java.time.Instant todayStart = java.time.LocalDate.now(IST).atStartOfDay(IST).toInstant();
+                for (IndexType idx : TRACKED_INDICES) {
+                    pcrSampleRepository.deleteByIndexTypeAndCapturedAtBefore(idx.name(), todayStart);
+                }
+            } catch (Exception e) {
+                log.warn("[PcrCalculator] DB cleanup failed (non-fatal): {}", e.getMessage());
+            }
+        }
         log.info("[PcrCalculator] Daily intraday PCR series reset.");
     }
 

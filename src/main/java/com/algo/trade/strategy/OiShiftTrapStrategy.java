@@ -120,6 +120,14 @@ public class OiShiftTrapStrategy {
     @Autowired(required = false)
     private com.algo.trade.strategy.oishifttrap.ReversalRiskTracker reversalRiskTracker;
 
+    /** GEX awareness (2026-07-04): trapped strikes near a GEX wall have higher squeeze probability. */
+    @Autowired(required = false)
+    private com.algo.trade.strategy.oimomentum.GammaExposureService gammaExposureService;
+
+    /** Dynamic regime gate (2026-07-04): suppress entries in LOW_VOL (no catalyst to push into trap). */
+    @Autowired(required = false)
+    private com.algo.trade.strategy.oimomentum.DynamicGateEngine dynamicGateEngine;
+
     /** Score threshold above which the imbalance-only path is vetoed. Configurable per-deploy. */
     private static final int REVERSAL_RISK_VETO_THRESHOLD = 50;
 
@@ -174,6 +182,21 @@ public class OiShiftTrapStrategy {
         if (enhancementsOn()) {
             if (convergenceTracker != null) convergenceTracker.recordSpot(underlying, spotPrice);
             if (oiAbsorptionDetector != null) oiAbsorptionDetector.recordSnapshot(underlying, snapshot);
+        }
+
+        // ── LOW_VOL regime suppression (2026-07-04) ──────────────────────────────────────
+        // In a tight/choppy range (LOW_VOL), there's no catalyst to push price into the trap strike.
+        // Trap squeezes require directional momentum, which LOW_VOL by definition lacks.
+        if (dynamicGateEngine != null && dynamicGateEngine.isActive()) {
+            IndexType indexType = IndexType.fromName(underlying.name());
+            if (indexType != null) {
+                String regime = dynamicGateEngine.getValues(indexType).regime();
+                if ("LOW_VOL".equals(regime)) {
+                    log.debug("[OiShiftTrap] Skipped: LOW_VOL regime — no catalyst for trap squeeze on {}", underlying);
+                    return new TrapEvaluation(Optional.empty(),
+                            OiShiftTrapDiagnostics.blocked(underlying.name(), "REGIME_BLOCK", "low_vol_suppressed", spotPrice));
+                }
+            }
         }
 
         // Phase 4: compute DTE + relative volume once per evaluation. Must precede every
@@ -495,7 +518,8 @@ public class OiShiftTrapStrategy {
         }
         int rawScore = calculateScore(imbalance, ceOi, ceOiChange, proximity, trendDirection);
         int huntBonus = liquidityHuntBonus(candles, level.strike(), spotPrice);
-        int score = Math.min(90, rawScore + huntBonus);
+        int gexBonus = gexWallBonus(underlying, level.strike());
+        int score = Math.min(100, rawScore + huntBonus + gexBonus);
         if (score < effectiveMinConfidenceScore()) {
             // 2026-06-01 — log near-miss for live tuning visibility
             if (score >= effectiveMinConfidenceScore() - 10) {
@@ -520,10 +544,11 @@ public class OiShiftTrapStrategy {
                 level.strike(), ceOi, ceOiChange, imbalance));
         reasons.add(String.format("Spot=%s proximity=%.2f%% trend=%s — call writers exposed",
                 spotPrice, proximity, trendDirection > 0 ? "BULLISH" : "FLAT"));
+        if (gexBonus > 0) reasons.add(String.format("GEX wall bonus +%d", gexBonus));
 
-        log.info("[OiShiftTrap] CE signal: strike={} OI={} change=+{} imbalance={}x score={} proximity={}%",
+        log.info("[OiShiftTrap] CE signal: strike={} OI={} change=+{} imbalance={}x score={} proximity={}% gex=+{}",
                 level.strike(), ceOi, ceOiChange, String.format("%.1f", imbalance), score,
-                String.format("%.2f", proximity));
+                String.format("%.2f", proximity), gexBonus);
         log.info("[OiShiftTrap] CE score breakdown: {}",
                 scoreBreakdown(imbalance, ceOi, ceOiChange, proximity, trendDirection, huntBonus));
 
@@ -553,7 +578,8 @@ public class OiShiftTrapStrategy {
         }
         int rawScore = calculateScore(imbalance, peOi, peOiChange, proximity, Math.abs(trendDirection));
         int huntBonus = liquidityHuntBonus(candles, level.strike(), spotPrice);
-        int score = Math.min(90, rawScore + huntBonus);
+        int gexBonus = gexWallBonus(underlying, level.strike());
+        int score = Math.min(100, rawScore + huntBonus + gexBonus);
         if (score < effectiveMinConfidenceScore()) {
             // 2026-06-01 — log near-miss for live tuning visibility
             if (score >= effectiveMinConfidenceScore() - 10) {
@@ -1035,7 +1061,33 @@ public class OiShiftTrapStrategy {
         if (oiChange > 50_000) score += 5;
         if (proximity < 0.15) score += 10;
         if (trendStrength > 0) score += 5;
-        return Math.min(90, score);
+        return Math.min(100, score); // raised cap from 90 → 100 to accommodate GEX bonus
+    }
+
+    /** GEX wall proximity bonus: trapped strike near a GEX wall has higher squeeze probability
+     *  because dealer hedging flows amplify the squeeze when price breaches the wall. */
+    private int gexWallBonus(UnderlyingSymbol underlying, BigDecimal trapStrike) {
+        if (gammaExposureService == null || trapStrike == null || trapStrike.signum() <= 0) return 0;
+        try {
+            IndexType idx = IndexType.fromName(underlying.name());
+            if (idx == null) return 0;
+            var gex = gammaExposureService.evaluate(idx);
+            if (!gex.isValid()) return 0;
+            int strike = trapStrike.intValue();
+            int interval = idx.strikeInterval();
+            // Bonus if trap strike is within 1 strike-interval of a GEX wall
+            if ((gex.wallAbove() > 0 && Math.abs(strike - gex.wallAbove()) <= interval)
+                    || (gex.wallBelow() > 0 && Math.abs(strike - gex.wallBelow()) <= interval)) {
+                return 10;
+            }
+            // Smaller bonus if near the GEX flip point (high-conviction breakout zone)
+            if (gex.flipStrike() > 0 && Math.abs(strike - gex.flipStrike()) <= interval * 2) {
+                return 5;
+            }
+        } catch (Exception e) {
+            log.debug("[OiShiftTrap] GEX bonus skipped: {}", e.getMessage());
+        }
+        return 0;
     }
 
     /**

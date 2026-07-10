@@ -28,6 +28,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
@@ -55,6 +56,11 @@ public class TradingControlController {
     /** Optional — for per-user circuit breaker reset on manual orders. */
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private com.algo.trade.broker.zerodha.ZerodhaBrokerClient zerodhaBrokerClient;
+
+    /** Optional — P0-7: resolve the SOFT halt banner PER-USER so one user's daily-loss halt does not
+     *  show (or appear active) for other users. HARD halt stays global (system-wide). */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.algo.trade.multiuser.UserTradingStateManager userTradingStateManager;
 
     public TradingControlController(
             TradingProperties tradingProperties,
@@ -103,20 +109,39 @@ public class TradingControlController {
      * Empty blockingReasons = all clear.
      */
     @GetMapping("/trading/status")
-    public Map<String, Object> tradingStatus() {
-        var pnl = reportingService.pnl();
-        var allOpenTrades = tradeRepository.findByStatus(TradeStatus.OPEN);
-        int openLiveTrades = (int) allOpenTrades.stream().filter(t -> !t.isPaperTrade()).count();
+    public Map<String, Object> tradingStatus(@RequestParam(value = "userId", required = false) Long userId) {
+        // Scope to the requested user (or current logged-in user if not specified).
+        // Multi-user: each user sees their own P&L/trades; superuser can view others via ?userId=
+        Long currentUserId = userId != null ? userId : com.algo.trade.multiuser.UserContext.getUserId();
+        var pnl = reportingService.pnl(currentUserId);
+        var allOpenTrades = tradeRepository.findByStatus(TradeStatus.OPEN).stream()
+                .filter(t -> isOwnedByCurrentUser(t, currentUserId))
+                .toList();
+        // Exclude MANUAL/broker-synced (SYNC-) positions from the algo open count + block-reason panel — a
+        // manual trade must not count toward the algo "max open trades" gate (matches the entry gate's filter).
+        int openLiveTrades = (int) allOpenTrades.stream().filter(t -> !t.isPaperTrade())
+                .filter(t -> globalConfigService.isManageSyncedTrades() || !t.getTradeId().startsWith("SYNC-"))
+                .count();
         int openPaperTrades = (int) allOpenTrades.stream().filter(t -> t.isPaperTrade()).count();
-        // Include pending orders in the open count
-        int pendingOrders = orderRepository.findByStatusIn(
-                java.util.List.of(com.algo.trade.domain.OrderStatus.OPEN, com.algo.trade.domain.OrderStatus.NEW)).size();
+        // Include pending orders in the open count (user-scoped)
+        int pendingOrders = (int) orderRepository.findByStatusIn(
+                java.util.List.of(com.algo.trade.domain.OrderStatus.OPEN, com.algo.trade.domain.OrderStatus.NEW))
+                .stream().filter(o -> isOrderOwnedByCurrentUser(o, currentUserId)).count();
 
         java.time.Instant todayStart = java.time.LocalDate.now(tradingProperties.timezone())
                 .atStartOfDay(tradingProperties.timezone()).toInstant();
         java.time.Instant todayEnd = java.time.LocalDate.now(tradingProperties.timezone())
                 .plusDays(1).atStartOfDay(tradingProperties.timezone()).toInstant();
-        var todayTrades = tradeRepository.findByEntryTimeBetween(todayStart, todayEnd);
+        var todayTrades = tradeRepository.findByEntryTimeBetween(todayStart, todayEnd).stream()
+                .filter(t -> isOwnedByCurrentUser(t, currentUserId))
+                // Exclude MANUAL/broker-synced (SYNC-) trades from the ALGO metrics (trades/day, consec losses,
+                // win-rate) and the block panel — they must not count toward the algo "max trades per day" gate
+                // (the entry gate's tradesToday()/consecutiveLosses() already exclude them). Manual P&L still
+                // shows via the broker-authoritative pnl(). Honors the manage-synced override.
+                .filter(t -> t.isPaperTrade()
+                        || globalConfigService.isManageSyncedTrades()
+                        || t.getTradeId() == null || !t.getTradeId().startsWith("SYNC-"))
+                .toList();
 
         int liveTradesToday = (int) todayTrades.stream()
                 .filter(t -> !t.isPaperTrade())
@@ -136,10 +161,21 @@ public class TradingControlController {
             if (t.getRealizedPnl() != null && t.getRealizedPnl().signum() < 0) consecutiveLosses++;
             else break;
         }
+        // Real today win-rate from actual closed ALGO trades. The in-memory tradingStateService.rollingWinRate()
+        // resets to 0 on every restart and returns 100% when empty — it falsely showed 100%. (Still based on
+        // the bot's per-trade P&L, which is approximate; the TOTAL P&L is broker-authoritative.)
+        int winsTodayLive = (int) closedTodayLive.stream()
+                .filter(t -> t.getRealizedPnl() != null && t.getRealizedPnl().signum() > 0).count();
+        double liveWinRate = closedTodayLive.isEmpty() ? 0.0
+                : (double) winsTodayLive / closedTodayLive.size() * 100.0;
 
+        // Daily-loss gate must use the BOT-ONLY P&L (SYNC-/manual excluded), matching the real entry gate in
+        // ExecutionEngine.dailyPnl(). pnl.realizedPnl() is the broker-authoritative WHOLE-ACCOUNT day P&L and
+        // includes manual Kite orders — using it here falsely tripped "Max daily loss reached" off manual losses.
+        BigDecimal botDailyPnl = executionEngine.dailyPnl();
         java.util.List<String> blockingReasons = new java.util.ArrayList<>(
                 tradingStateService.entryBlockReasons(
-                        pnl.realizedPnl(), openLiveTrades + pendingOrders, liveTradesToday, consecutiveLosses,
+                        botDailyPnl, openLiveTrades + pendingOrders, liveTradesToday, consecutiveLosses,
                         webSocketClient.isConnected(),
                         globalConfigService.getMaxOpenTrades(),
                         globalConfigService.getMaxTradesPerDay(),
@@ -154,9 +190,15 @@ public class TradingControlController {
         String marketBlock = marketGuard.longPremiumBlockReason(true);
         if (marketBlock != null) blockingReasons.add(marketBlock);
 
+        // Config-level kill switch (trading.safety.kill-switch-enabled) halts the gate even when the RUNTIME
+        // switch is off — surface it so the dashboard truthfully shows the bot is halted (not "Entries Allowed").
+        if (tradingProperties.safety() != null && tradingProperties.safety().killSwitchEnabled()) {
+            blockingReasons.add("Kill switch enabled (config) — trading halted");
+        }
+
         // Layer 6 — Rolling win-rate auto-pause
-        double rollingWinRate = tradingStateService.rollingWinRate();
-        int rollingTotal = liveTradesToday; // approximate — uses today's trade count
+        double rollingWinRate = liveWinRate;            // real today win-rate (not the in-memory reset bug)
+        int rollingTotal = closedTodayLive.size();      // today's closed algo trades
         if (rollingTotal >= 5 && rollingWinRate < 25.0) {
             blockingReasons.add(String.format("Rolling win rate too low (%.0f%% on %d trades) — auto-paused",
                     rollingWinRate, rollingTotal));
@@ -337,6 +379,28 @@ public class TradingControlController {
         return status();
     }
 
+    // ── Rolling win-rate auto-pause reset ─────────────────────────────────────
+
+    /**
+     * Clear the rolling win-rate counters so a win-rate auto-pause can be lifted from the UI without a restart
+     * or waiting for the midnight reset. Mirrors {@code /halt/resume} (ADMIN/SUPERUSER only). Pass ?userId= to
+     * reset a specific user (admin action); omit it to reset the calling user's own counters.
+     *
+     * UI note: wire a "Reset win-rate pause" button on the trading-control panel to
+     *   POST /advalgotrade/winrate-pause/reset            (self)  or
+     *   POST /advalgotrade/winrate-pause/reset?userId=1   (a specific user).
+     */
+    @PostMapping("/winrate-pause/reset")
+    @PreAuthorize("hasAnyRole('ADMIN', 'SUPERUSER')")
+    public Map<String, Object> resetWinRatePause(@RequestParam(value = "userId", required = false) Long userId) {
+        Long target = userId != null ? userId : com.algo.trade.multiuser.UserContext.getUserId();
+        tradingStateService.resetRollingWinRate(target);
+        telegramAlertService.tradingStateChanged("Rolling win-rate counter reset for userId=" + target, status());
+        Map<String, Object> resp = new LinkedHashMap<>(status());
+        resp.put("message", "Rolling win-rate counter reset for userId=" + target);
+        return resp;
+    }
+
     // ── Daily approval gate ───────────────────────────────────────────────────
 
     @PostMapping("/daily/approve")
@@ -486,6 +550,8 @@ public class TradingControlController {
                     com.algo.trade.domain.ProductType.valueOf(request.productType()),
                     request.quantity(),
                     request.limitPrice() != null ? java.util.Optional.of(request.limitPrice()) : java.util.Optional.empty(),
+                    java.util.Optional.empty(),
+                    com.algo.trade.domain.OrderVariety.fromString(request.variety()),
                     effectiveTag
             );
             var response = brokerClient.placeOrder(orderRequest);
@@ -515,11 +581,29 @@ public class TradingControlController {
 
     // ── Status ────────────────────────────────────────────────────────────────
 
+    /** P0-7: the halt that applies to the CURRENT user. HARD halt is global (system-wide); a secondary
+     *  user's SOFT halt is their own; the primary/default user uses the global TradingStateService. */
+    private com.algo.trade.risk.HaltMode effectiveHaltModeForCurrentUser() {
+        com.algo.trade.risk.HaltMode global = tradingStateService.haltMode();
+        if (global == com.algo.trade.risk.HaltMode.HARD) return global;
+        try {
+            Long uid = com.algo.trade.multiuser.UserContext.getUserId();
+            if (userTradingStateManager != null && uid != null
+                    && !uid.equals(com.algo.trade.multiuser.UserContext.DEFAULT_USER_ID)) {
+                com.algo.trade.risk.HaltMode h = userTradingStateManager.getState(uid).getHaltMode();
+                return h != null ? h : com.algo.trade.risk.HaltMode.NONE;
+            }
+        } catch (Exception ex) {
+            log.debug("[P0-7] per-user halt resolution failed in status(), using global: {}", ex.getMessage());
+        }
+        return global;
+    }
+
     private Map<String, Object> status() {
         Map<String, Object> map = new LinkedHashMap<>();
         map.put("running", tradingStateService.running());
         map.put("killSwitch", tradingStateService.killSwitchEnabled());
-        map.put("haltMode", tradingStateService.haltMode());
+        map.put("haltMode", effectiveHaltModeForCurrentUser());
         map.put("dailyApproved", tradingStateService.isDailyApproved());
         map.put("extensionsUsedToday", tradingStateService.extensionsUsedToday());
         map.put("dailyLossExtension", tradingStateService.dailyLossExtension());
@@ -545,7 +629,7 @@ public class TradingControlController {
     public record HaltRequest(String reason) {}
     public record ManualOrderRequest(
             String instrumentKey, String side, String orderType,
-            String productType, int quantity, BigDecimal limitPrice, String tag) {}
+            String productType, int quantity, BigDecimal limitPrice, String variety, String tag) {}
 
     /** Determine if a trade is a short entry based on strategy type. */
     private boolean isShortTrade(com.algo.trade.persistence.TradeEntity trade) {
@@ -556,5 +640,25 @@ public class TradingControlController {
         }
         String reason = trade.getEntryReason();
         return reason != null && (reason.contains("[SELL_CE]") || reason.contains("[SELL_PE]"));
+    }
+
+    /** Check if a trade belongs to the current user (or is unowned / default user). */
+    private boolean isOwnedByCurrentUser(com.algo.trade.persistence.TradeEntity trade, Long currentUserId) {
+        // Per-user scoping that MATCHES the entry gate's sameUser logic: treat a null owner / null current
+        // user as the DEFAULT (single-user) id, then require an exact match. Previously the primary
+        // (== DEFAULT_USER_ID) short-circuited to "see everything", which made the entries-blocked panel
+        // AGGREGATE every user's open trades / loss streak against ONE user's limit — the cross-user "2/2"
+        // and "consec losses (2)" display on 2026-06-29 (1 loss each for u=1 + u=8). The gate is per-user,
+        // so the dashboard must be too. Single-user mode is unaffected (everything maps to DEFAULT).
+        Long owner = trade.getUserId() != null ? trade.getUserId() : com.algo.trade.multiuser.UserContext.DEFAULT_USER_ID;
+        Long cu = currentUserId != null ? currentUserId : com.algo.trade.multiuser.UserContext.DEFAULT_USER_ID;
+        return owner.equals(cu);
+    }
+
+    /** Check if an order belongs to the current user (per-user, matches the gate's sameUser logic). */
+    private boolean isOrderOwnedByCurrentUser(com.algo.trade.persistence.OrderEntity order, Long currentUserId) {
+        Long owner = order.getUserId() != null ? order.getUserId() : com.algo.trade.multiuser.UserContext.DEFAULT_USER_ID;
+        Long cu = currentUserId != null ? currentUserId : com.algo.trade.multiuser.UserContext.DEFAULT_USER_ID;
+        return owner.equals(cu);
     }
 }

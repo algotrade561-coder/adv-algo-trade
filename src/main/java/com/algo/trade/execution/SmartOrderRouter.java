@@ -213,10 +213,20 @@ public class SmartOrderRouter {
      * SELL: round DOWN to nearest tick (willing to accept less for fill)
      */
     private static BigDecimal roundToTickSize(BigDecimal price, com.algo.trade.domain.OrderSide side) {
-        BigDecimal tickSize = new BigDecimal("0.05");
         java.math.RoundingMode mode = side == com.algo.trade.domain.OrderSide.BUY
                 ? java.math.RoundingMode.UP
                 : java.math.RoundingMode.DOWN;
+        return roundToTickSize(price, mode);
+    }
+
+    /**
+     * Round price to the nearest valid tick (₹0.05) using an explicit rounding direction.
+     * Used where the side-default direction is NOT what we want — e.g. the anticipatory BUY
+     * discount, which must round DOWN (toward the lower/cheaper price) even though BUY normally
+     * rounds UP for fill probability.
+     */
+    private static BigDecimal roundToTickSize(BigDecimal price, java.math.RoundingMode mode) {
+        BigDecimal tickSize = new BigDecimal("0.05");
         return price.divide(tickSize, 0, mode).multiply(tickSize).setScale(2, java.math.RoundingMode.HALF_UP);
     }
 
@@ -291,7 +301,7 @@ public class SmartOrderRouter {
         discountedPrice = discountedPrice.max(absoluteFloor);
 
         // Round to tick size (round DOWN for buy discount — we want the lower price)
-        discountedPrice = roundToTickSize(discountedPrice, com.algo.trade.domain.OrderSide.BUY);
+        discountedPrice = roundToTickSize(discountedPrice, java.math.RoundingMode.FLOOR);
 
         double actualDiscountPct = currentPrice.subtract(discountedPrice)
                 .divide(currentPrice, MC).multiply(BigDecimal.valueOf(100)).doubleValue();
@@ -322,10 +332,10 @@ public class SmartOrderRouter {
 
         Optional<Quote> quoteOpt = marketDataService.quote(instrumentKey);
         if (quoteOpt.isEmpty()) {
-            // No quote — apply simple discount to fallback
+            // No quote — apply simple discount to fallback (round DOWN to keep the discount)
             BigDecimal discounted = fallbackPrice.multiply(
                     BigDecimal.valueOf(1.0 - anticipatoryDiscountPercent / 100), MC);
-            discounted = roundToTickSize(discounted.max(BigDecimal.ONE), com.algo.trade.domain.OrderSide.BUY);
+            discounted = roundToTickSize(discounted.max(BigDecimal.ONE), java.math.RoundingMode.FLOOR);
             return new RoutingDecision(OrderType.LIMIT, Optional.of(discounted),
                     "No quote — anticipatory LIMIT at -" + anticipatoryDiscountPercent + "%",
                     0, LiquidityClass.UNKNOWN);

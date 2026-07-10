@@ -81,14 +81,14 @@ http://localhost:8089
 
 ## Zerodha Login Flow
 
-Use the `Kite Auth` screen:
+Use the `Kite Auth` screen (per-user flow — each user logs in with their OWN API key):
 
-1. Click `Get Login URL`.
-2. Open the returned Kite login URL.
+1. Sign in to the app with Google first (same browser).
+2. Click `Login to Kite` on the Kite Auth page.
 3. Complete Zerodha login.
-4. Zerodha redirects to `/auth/kite/callback`.
-5. The backend exchanges the request token and stores the same-day access token locally.
-6. Click `Start / Validate Session` to confirm the active session.
+4. Zerodha redirects to `/advalgotrade/me/broker/kite/callback`.
+5. The backend exchanges the request token and stores the same-day access token on YOUR user row.
+6. The Auth page shows `Token: present`.
 
 The UI never displays the raw Kite access token.
 
@@ -124,7 +124,7 @@ That single public host serves both the UI and Kite callback:
 
 ```text
 https://your-tunnel.ngrok-free.app/
-https://your-tunnel.ngrok-free.app/auth/kite/callback
+https://your-tunnel.ngrok-free.app/advalgotrade/me/broker/kite/callback
 ```
 
 Open ngrok's local inspector to see the generated public URLs:
@@ -133,16 +133,16 @@ Open ngrok's local inspector to see the generated public URLs:
 http://localhost:4040
 ```
 
-For Zerodha login callbacks, configure the Kite developer redirect URL to the tunnel URL plus:
+For Zerodha login callbacks, configure EACH user's Kite developer redirect URL to the tunnel URL plus:
 
 ```text
-/auth/kite/callback
+/advalgotrade/me/broker/kite/callback
 ```
 
 Example:
 
 ```text
-https://your-tunnel.ngrok-free.app/auth/kite/callback
+https://your-tunnel.ngrok-free.app/advalgotrade/me/broker/kite/callback
 ```
 
 Important: the current backend does not include application-user authentication. Do not expose this UI publicly unless access is protected by a tunnel access policy, VPN, firewall allowlist, or a backend authentication layer. The UI contains controls for starting/stopping scans, changing routing, and enabling live execution when backend configuration allows it.

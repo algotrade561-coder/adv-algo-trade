@@ -39,6 +39,15 @@ public class OrderEntity {
     private Instant orderPlacedAt;
     private BigDecimal slippage;
     private String strategyType;
+    /** Tuning correlationKey of the entry signal — carried through a pending limit order so the TradeEntity
+     *  materialized on fill (OrderFillWatchdog.openTradeFromFilledOrder) inherits it for exit-event keying. */
+    @jakarta.persistence.Column(name = "entry_correlation_key", length = 64)
+    private String entryCorrelationKey;
+    /** C3 (2026-07-10): the ORIGINAL signal reason (e.g. "MEMORY_AVALANCHE strike=... vu=...") carried
+     *  through a pending limit order so a watchdog-materialized TradeEntity keeps its trade identity —
+     *  order text as entryReason silently broke every contains("MEMORY_AVALANCHE") check. */
+    @jakarta.persistence.Column(name = "signal_reason", length = 512)
+    private String signalReason;
     private boolean tradeMaterialized = false;
 
     /** User who placed this order (multi-user support). Null = legacy/default user. */
@@ -97,6 +106,10 @@ public class OrderEntity {
     public void setSlippage(BigDecimal v) { this.slippage = v; }
     public String getStrategyType() { return strategyType; }
     public void setStrategyType(String v) { this.strategyType = v; }
+    public String getEntryCorrelationKey() { return entryCorrelationKey; }
+    public void setEntryCorrelationKey(String v) { this.entryCorrelationKey = v; }
+    public String getSignalReason() { return signalReason; }
+    public void setSignalReason(String v) { this.signalReason = v != null && v.length() > 512 ? v.substring(0, 512) : v; }
 
     /** Signal-to-order latency in milliseconds. */
     public Long getSignalToOrderMs() {

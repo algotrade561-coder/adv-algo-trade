@@ -231,6 +231,60 @@ public class OptionInstrument {
     }
 
     /**
+     * TRUE windowed OI change (2026-07-01, FAST-OI). Unlike {@link #getOiChangeSince(int)}, which
+     * picks the OLDEST sample beyond the cutoff — and therefore, with a full 5×60s ring buffer,
+     * always measures ~5 minutes of change regardless of the argument — this returns the change
+     * versus the sample whose age is CLOSEST to {@code windowSec}. That gives a genuine trailing
+     * window (e.g. 60s → change vs the ~60s-old sample). Ring-buffer resolution is 60s, so the
+     * finest meaningful window is ~60s; sub-minute windows all collapse onto the newest sample.
+     *
+     * <p>Empirical basis: ATM-band OI refreshes on a ~57s exchange heartbeat, so a trailing 60s
+     * window reads a non-zero delta ~71% of the session while a 10s window is blind ~84% of it
+     * (data/tuning/atm-microstructure-2026-06-24.csv). 60s is the coverage knee.</p>
+     *
+     * @param windowSec desired lookback in seconds.
+     * @return {@code openInterest - oi(nearest sample to now-windowSec)}, or 0 if no usable sample.
+     */
+    public long getOiChangeSinceSeconds(int windowSec) {
+        if (windowSec <= 0) return 0;
+        if (openInterest <= 0) return 0;
+        long target = System.currentTimeMillis() - (windowSec * 1000L);
+        long bestOi = 0;
+        long bestDiff = Long.MAX_VALUE;
+        for (int i = 0; i < OI_HISTORY_SLOTS; i++) {
+            if (oiHistoryTimestamps[i] > 0 && oiHistory[i] > 0) {
+                long diff = Math.abs(oiHistoryTimestamps[i] - target);
+                if (diff < bestDiff) {
+                    bestDiff = diff;
+                    bestOi = oiHistory[i];
+                }
+            }
+        }
+        if (bestOi <= 0) return 0;
+        return openInterest - bestOi;
+    }
+
+    /**
+     * True when a real OI reference sample exists older than the {@code minutes} cutoff
+     * (i.e. {@link #getOiChangeSince} is backed by an actual baseline, not warm-up).
+     *
+     * <p>DATA-2 (2026-06-20): {@code getOiChangeSince} returns {@code 0} both when OI is
+     * genuinely flat AND when no baseline has been captured yet (opening warm-up). Callers
+     * that need to tell "available &amp; flat" apart from "not yet available" use this.</p>
+     */
+    public boolean hasOiBaseline(int minutes) {
+        if (minutes < 1 || minutes > OI_HISTORY_SLOTS) return false;
+        if (openInterest <= 0) return false;
+        long cutoff = System.currentTimeMillis() - (minutes * 60_000L);
+        for (int i = 0; i < OI_HISTORY_SLOTS; i++) {
+            if (oiHistoryTimestamps[i] > 0 && oiHistoryTimestamps[i] <= cutoff && oiHistory[i] > 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
      * Get OI change percentage over the last N minutes.
      */
     public double getOiChangePercentSince(int minutes) {

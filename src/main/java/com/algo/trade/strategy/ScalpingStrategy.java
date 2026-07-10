@@ -24,8 +24,8 @@ import java.util.concurrent.ConcurrentHashMap;
 public class ScalpingStrategy implements StrategyEvaluator {
 
     private static final Logger log = LoggerFactory.getLogger(ScalpingStrategy.class);
-    private static final LocalTime CUTOFF = LocalTime.of(14, 0);
-    private static final int MIN_CANDLES = 14;
+    private static final LocalTime CUTOFF = LocalTime.of(14, 45);
+    private static final int MIN_CANDLES = 10;
     private static final int CONFIRM_CANDLES = 2;
 
     private final EmaIndicator emaIndicator;
@@ -56,7 +56,7 @@ public class ScalpingStrategy implements StrategyEvaluator {
 
     public StrategyDiagnostics.WithSignal evaluateWithDiagnostics(List<Candle> candles5m, LocalTime marketTime,
                                                                    StrategyConfig config, UnderlyingSymbol underlying) {
-        if (marketTime.isBefore(LocalTime.of(9, 30)) || marketTime.isAfter(CUTOFF)) {
+        if (marketTime.isBefore(LocalTime.of(9, 20)) || marketTime.isAfter(CUTOFF)) {
             return new StrategyDiagnostics.WithSignal(Optional.empty(),
                     new StrategyDiagnostics("timeWindow", null, null, null, null, null, null, null, null));
         }
@@ -95,9 +95,9 @@ public class ScalpingStrategy implements StrategyEvaluator {
         int confirmCount = bullishCross ? bullCount : (bearishCross ? bearCount : 0);
 
         // ── Tightening filters ──────────────────────────────────────────────
-        // 1. Minimum EMA gap: EMA9 must be at least 0.05% away from EMA21 (filters weak/noisy crosses)
+        // 1. Minimum EMA gap: EMA9 must be at least 0.02% away from EMA21 (filters only dead-flat crosses)
         double emaGapPct = Math.abs(fastEma - slowEma) / slowEma * 100;
-        double minEmaGapPct = 0.05; // 0.05% = ~12 pts on NIFTY, ~26 pts on BANKNIFTY
+        double minEmaGapPct = 0.02; // relaxed from 0.05% — catches shallow but valid crosses in low-vol
 
         // 2. Price must be on the right side of the cross (momentum confirmation)
         double lastClose = candles5m.getLast().close().doubleValue();

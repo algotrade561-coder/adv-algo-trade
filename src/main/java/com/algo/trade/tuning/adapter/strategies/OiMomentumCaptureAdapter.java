@@ -50,6 +50,15 @@ import org.springframework.stereotype.Component;
 @Component
 public class OiMomentumCaptureAdapter implements TuningCaptureAdapter {
 
+    /**
+     * attr_extra schema version. Bump when fields are added/removed so the analyzer can migrate or
+     * reject mismatched rows instead of silently mis-joining. v2 (2026-06-26) adds the P1.2
+     * data-quality flags (spotAvailable/premiumAvailable/rangeAvailable/feedFresh/dataQuality).
+     * v3 (2026-07-01) adds fast-OI (fastOiEnabled/oiWindowSec/operatorSignalAgeSec) and
+     * multi-timeframe context (mtfBias/mtfRegime/mtfAligned).
+     */
+    private static final int SCHEMA_VER = 3;
+
     @Override
     public StrategyType strategy() {
         return StrategyType.OI_MOMENTUM;
@@ -192,6 +201,46 @@ public class OiMomentumCaptureAdapter implements TuningCaptureAdapter {
         a.put("pcrSlope5m", diag.pcrSlope5m());
         a.put("biasFloorRelaxed", diag.biasFloorRelaxed());
         a.put("biasFloorUsed", diag.biasFloorUsed());
+
+        // ── FAST-OI (2026-07-01): regime + operator freshness so the tuning/research loop can A/B
+        // fast-OI vs legacy and correlate operator lead-time with the exit outcome (join by
+        // correlationKey → exit maePct/mfePct/realizedPnlPct). Note: ceOiChange/peOiChange above
+        // ALREADY reflect the 60s window when fastOiEnabled, and operatorScore the fast-refreshed value.
+        a.put("fastOiEnabled", diag.fastOiEnabled());
+        a.put("oiWindowSec", diag.oiWindowSec());
+        a.put("operatorSignalAgeSec", diag.operatorSignalAgeSec());
+
+        // ── Multi-Timeframe Context (2026-07-01): day/week/month structure at signal time. ──
+        // mtfBias: higher-timeframe directional lean (-1/0/+1); mtfRegime: TRENDING/RANGING/VOLATILE/NEUTRAL;
+        // mtfAligned: entry-vs-structure (+1 aligned, -1 counter-trend, 0 neutral). A week of these joined to
+        // exit maePct/mfePct/realizedPnlPct tells us whether MTF alignment actually predicts edge.
+        a.put("mtfBias", diag.mtfBias());
+        a.put("mtfRegime", diag.mtfRegime());
+        a.put("mtfAligned", diag.mtfAligned());
+
+        // ── P1.2 (2026-06-26): explicit data-quality flags so 0 is never ambiguous ──
+        // For these strictly-positive fields, 0 means "not captured / stale", not a real value
+        // (an option LTP, spot, or 30-min range is never genuinely 0). The 06-23 audit showed
+        // 63% of rows with atmCeLast=0 / 40% with range=0; without these flags an analyzer can't
+        // tell a fabricated 0 from a real one and learns garbage (e.g. "atmCe=0 ⇒ reject").
+        // Derived here (one place) rather than rewriting the 30-field diagnostics record.
+        boolean spotOk = diag.spot() > 0;
+        boolean premiumOk = diag.atmCeLast() > 0 && diag.atmPeLast() > 0;
+        boolean rangeOk = diag.spot30mHigh() > 0 && diag.spot30mLow() > 0;
+        boolean vixOk = diag.vix() > 0;
+        a.put("schemaVer", SCHEMA_VER);
+        a.put("spotAvailable", spotOk);
+        a.put("premiumAvailable", premiumOk);
+        a.put("rangeAvailable", rangeOk);
+        a.put("vixAvailable", vixOk);
+        // feedFresh = the row is usable for entry-quality analysis (spot + both ATM legs present).
+        a.put("feedFresh", spotOk && premiumOk);
+        // Compact single-token reason for the first missing input — easy to GROUP BY in the report.
+        a.put("dataQuality", (spotOk && premiumOk && rangeOk) ? "OK"
+                : !spotOk ? "NO_SPOT"
+                : !premiumOk ? "NO_LTP"
+                : !rangeOk ? "NO_RANGE"
+                : "OK");
         return a;
     }
 

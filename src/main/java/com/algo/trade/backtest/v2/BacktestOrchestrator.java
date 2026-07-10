@@ -31,7 +31,7 @@ public class BacktestOrchestrator {
 
     private static final Logger log = LoggerFactory.getLogger(BacktestOrchestrator.class);
     private static final DateTimeFormatter RUN_FMT = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
-    private static final int DEFAULT_LOT_SIZE_NIFTY = 75;
+    private static final int DEFAULT_LOT_SIZE_NIFTY = 65; // NSE circular Jan 2026 (was 75)
     private static final int DEFAULT_LOT_SIZE_BANKNIFTY = 30;
 
     private final SnapshotLoader snapshotLoader;

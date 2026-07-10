@@ -8,4 +8,7 @@ public interface UserBrokerConfigRepository extends JpaRepository<UserBrokerConf
     Optional<UserBrokerConfig> findByUserId(Long userId);
     List<UserBrokerConfig> findByTradingEnabled(boolean enabled);
     boolean existsByUserId(Long userId);
+
+    /** The designated primary/system account (used for market analysis + default egress). */
+    Optional<UserBrokerConfig> findByPrimaryAccountTrue();
 }

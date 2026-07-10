@@ -16,6 +16,8 @@ import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -67,6 +69,14 @@ public class ParquetRollerService {
                           String errorMessage) {}
 
     private volatile LastRun lastRun;
+
+    /**
+     * Boot-time catch-up. The 15:30 cron self-heals backlog, but only if the app is healthy at that one
+     * slot — the day it isn't (e.g. 2026-06-25's auth incident), the previous day's CSV (2026-06-24) stays
+     * orphaned until some later 15:30 succeeds. A startup sweep makes recovery happen at boot too. Default on.
+     */
+    @Value("${tuning.roller.startup-catchup-enabled:true}")
+    private boolean startupCatchupEnabled = true;
 
     public LastRun lastRun() {
         return lastRun;
@@ -136,6 +146,83 @@ public class ParquetRollerService {
         } catch (Exception ex) {
             log.warn("[ParquetRoller] post-market roll failed (non-fatal): {}", ex.getMessage());
             lastRun = new LastRun(startedAt, 0, 0, 0, false, ex.getMessage());
+        }
+        warnOnOrphanedDateDirs(today);
+    }
+
+    /**
+     * Boot-time catch-up sweep. Rolls genuine backlog — date dirs older than <em>yesterday</em> — so an
+     * orphan from a missed 15:30 (e.g. 2026-06-24, stranded when 2026-06-25's roll never ran) is recovered
+     * at the next boot instead of waiting for another healthy 15:30. We deliberately exclude
+     * {@code today} and {@code yesterday}: yesterday's forward-checkpoint backfill runs this same morning and
+     * is still appending to its CSV, so rolling it now would archive an incomplete file. The 15:30 cron
+     * handles yesterday after that backfill settles. Idempotent (re-rolling an existing Parquet is a no-op).
+     */
+    @EventListener(ApplicationReadyEvent.class)
+    public void catchUpOnStartup() {
+        if (!startupCatchupEnabled || !properties.isEnabled()) {
+            return;
+        }
+        LocalDate cutoffExclusive = clock.todayIst().minusDays(1); // roll strictly-before-yesterday
+        try {
+            int rolled = 0;
+            List<LocalDate> backlog = listPastDateDirs(clock.todayIst()).stream()
+                    .filter(d -> d.isBefore(cutoffExclusive))
+                    .toList();
+            for (LocalDate date : backlog) {
+                rolled += rollDate(date);
+                buildDailySummary(date);
+            }
+            if (!backlog.isEmpty()) {
+                log.info("[ParquetRoller] startup catch-up rolled backlog: {} dates, {} files ({})",
+                        backlog.size(), rolled, backlog);
+            }
+        } catch (Exception ex) {
+            log.warn("[ParquetRoller] startup catch-up failed (non-fatal): {}", ex.getMessage());
+        }
+    }
+
+    /**
+     * On-demand roll for the given dates — invoked by report generation so a report for an unrolled day
+     * (e.g. one stranded by a missed 15:30) archives it first instead of reading nothing. Idempotent and
+     * safe to call any time; returns the number of files rolled. Builds the daily summary for each date too.
+     */
+    public int rollDatesOnDemand(List<LocalDate> dates) {
+        if (dates == null || dates.isEmpty()) {
+            return 0;
+        }
+        int rolled = 0;
+        for (LocalDate date : dates) {
+            try {
+                rolled += rollDate(date);
+                buildDailySummary(date);
+            } catch (Exception ex) {
+                log.warn("[ParquetRoller] on-demand roll failed for {} (non-fatal): {}", date, ex.getMessage());
+            }
+        }
+        log.info("[ParquetRoller] on-demand roll: {} files across {} dates", rolled, dates.size());
+        return rolled;
+    }
+
+    /**
+     * Loud data-quality signal: any past-date {@code events/<date>/} dir that still holds CSVs after a roll
+     * attempt means an archive is stuck (verify-mismatch, IO error, or an interrupted run). Surfacing it here
+     * is what would have flagged 2026-06-24 the day it was orphaned, instead of weeks later by hand.
+     */
+    private void warnOnOrphanedDateDirs(LocalDate today) {
+        try {
+            for (LocalDate date : listPastDateDirs(today)) {
+                Path dateDir = eventsBaseDir.resolve(date.toString());
+                try (Stream<Path> walk = Files.walk(dateDir)) {
+                    boolean hasCsv = walk.anyMatch(p -> p.getFileName().toString().endsWith(".csv"));
+                    if (hasCsv) {
+                        log.warn("[ParquetRoller] ⚠ ORPHANED event archive: {} still has un-rolled CSVs — "
+                                + "data will be missing from reports until this rolls. Investigate.", dateDir);
+                    }
+                }
+            }
+        } catch (Exception ex) {
+            log.debug("[ParquetRoller] orphan check failed (non-fatal): {}", ex.getMessage());
         }
     }
 

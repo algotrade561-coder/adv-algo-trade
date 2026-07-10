@@ -31,6 +31,15 @@ public interface TuningAnalyzerPlugin {
     StrategyType strategy();
 
     /**
+     * Render order. Plugins with a <b>negative</b> order render <em>before</em> the standard breakdowns
+     * (use this for a data-health header that must be read first); plugins with order ≥ 0 render after the
+     * standard breakdowns, ascending. Default 100 = "after, in injection order".
+     */
+    default int order() {
+        return 100;
+    }
+
+    /**
      * Returns custom sections for the given query. May return an empty list if no
      * matching data exists in the query window — caller treats this as "no custom
      * sections needed."

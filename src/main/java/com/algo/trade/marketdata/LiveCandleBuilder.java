@@ -3,8 +3,10 @@ package com.algo.trade.marketdata;
 import com.algo.trade.domain.Candle;
 import com.algo.trade.domain.CandleClosedEvent;
 import com.algo.trade.domain.Timeframe;
+import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Component;
 
@@ -13,6 +15,9 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Aggregates raw ticks into OHLCV candles for 1m, 5m, and 15m timeframes.
@@ -36,6 +41,25 @@ public class LiveCandleBuilder {
 
     private final ApplicationEventPublisher eventPublisher;
 
+    /**
+     * When true (default), CandleClosedEvent is dispatched OFF the WebSocket tick thread on a dedicated
+     * single-thread executor. Root cause (2026-07-01): the candle-close scan (AlgoTradeExecution +
+     * exit monitors, all @EventListeners) runs synchronously on the publisher's thread — which IS the
+     * WS tick thread (parseBinaryTicks → onTick → publishEvent). The heavy 15-min scan blocked tick
+     * processing for ~30s, so lastTickTime went stale and the zombie detector fired a spurious
+     * force-reconnect at every 15-min candle boundary. Offloading the dispatch keeps the tick thread
+     * free. Set false to restore the old inline behaviour without a redeploy.
+     */
+    @Value("${marketdata.candle-event-async:true}")
+    private boolean candleEventAsync = true;
+
+    /** Single-thread so candle-close ordering is preserved; daemon so it never blocks JVM shutdown. */
+    private final ExecutorService candleEventExecutor = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "candle-event");
+        t.setDaemon(true);
+        return t;
+    });
+
     // Key: "token:TIMEFRAME" → current open candle
     private final Map<String, OpenCandle> openCandles = new ConcurrentHashMap<>();
     // Key: "token:TIMEFRAME" → completed candle history
@@ -43,6 +67,19 @@ public class LiveCandleBuilder {
 
     public LiveCandleBuilder(ApplicationEventPublisher eventPublisher) {
         this.eventPublisher = eventPublisher;
+    }
+
+    @PreDestroy
+    void shutdown() {
+        candleEventExecutor.shutdown();
+        try {
+            if (!candleEventExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                candleEventExecutor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            candleEventExecutor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
     }
 
     // ── Tick ingestion ────────────────────────────────────────────────────────
@@ -75,15 +112,12 @@ public class LiveCandleBuilder {
         OpenCandle open = openCandles.get(key);
 
         if (open != null && !open.bucketStart().equals(bucketStart)) {
-            // Period closed — publish event and start new candle
+            // Period closed — record history synchronously (so listeners see the closed bar), then
+            // dispatch the event. History add stays on the tick thread; only the (heavy) listener
+            // dispatch is offloaded so it can't starve tick processing.
             Candle closed = open.toCandle(String.valueOf(token), tf);
             getHistory(key).add(closed);
-            try {
-                eventPublisher.publishEvent(new CandleClosedEvent(closed, tf, token));
-            } catch (Exception e) {
-                log.error("CandleClosedEvent listener threw — scan may have been skipped: token={} tf={} error={}",
-                        token, tf, e.getMessage(), e);
-            }
+            publishCandleClosed(closed, tf, token);
             log.debug("Candle closed: token={} tf={} close={}", token, tf, closed.close());
             open = null;
         }
@@ -94,6 +128,34 @@ public class LiveCandleBuilder {
             openCandles.put(key, new OpenCandle(bucketStart, p, p, p, p, volume, volume, oi));
         } else {
             openCandles.put(key, open.update(p, volume, oi));
+        }
+    }
+
+    /**
+     * Dispatch a CandleClosedEvent. When {@code candleEventAsync} (default) the event is handed to the
+     * dedicated single-thread executor so the heavy candle-close scan runs OFF the WS tick thread — the
+     * tick thread returns immediately and {@code lastTickTime} keeps advancing (no spurious zombie
+     * reconnect). Falls back to inline dispatch when the flag is off.
+     */
+    private void publishCandleClosed(Candle closed, Timeframe tf, long token) {
+        if (candleEventAsync) {
+            try {
+                candleEventExecutor.execute(() -> dispatchCandleClosed(closed, tf, token));
+            } catch (java.util.concurrent.RejectedExecutionException rex) {
+                // executor shutting down (app stopping) — fall back to inline so the close isn't lost
+                dispatchCandleClosed(closed, tf, token);
+            }
+        } else {
+            dispatchCandleClosed(closed, tf, token);
+        }
+    }
+
+    private void dispatchCandleClosed(Candle closed, Timeframe tf, long token) {
+        try {
+            eventPublisher.publishEvent(new CandleClosedEvent(closed, tf, token));
+        } catch (Exception e) {
+            log.error("CandleClosedEvent listener threw — scan may have been skipped: token={} tf={} error={}",
+                    token, tf, e.getMessage(), e);
         }
     }
 

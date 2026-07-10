@@ -7,6 +7,7 @@ import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -19,6 +20,7 @@ import com.algo.trade.domain.OrderRequest;
 import com.algo.trade.domain.OrderResponse;
 import com.algo.trade.domain.OrderSide;
 import com.algo.trade.domain.OrderStatus;
+import com.algo.trade.domain.Position;
 import com.algo.trade.domain.SignalType;
 import com.algo.trade.domain.StrategyDecision;
 import com.algo.trade.domain.TradeStatus;
@@ -71,6 +73,12 @@ class ExecutionEngineTest {
         when(globalConfigService.getDailyProfitTarget()).thenReturn(BigDecimal.ZERO);
         when(globalConfigService.getMaxPendingOrders()).thenReturn(3);
         when(globalConfigService.getLimitOrderCancelMinutes()).thenReturn(1);
+        // logArmedExits reads the global exit profile after every trade materialization — leaving these
+        // null NPEs the entry path and turns an accepted fill into a rejected result.
+        when(globalConfigService.getStopLossPercent()).thenReturn(BigDecimal.valueOf(10));
+        when(globalConfigService.getTargetPercent()).thenReturn(BigDecimal.valueOf(20));
+        when(globalConfigService.getTrailingStopActivationPercent()).thenReturn(BigDecimal.valueOf(8));
+        when(globalConfigService.getTrailingGapPercent()).thenReturn(BigDecimal.valueOf(4));
 
         var mockConfigService = mock(StrategyConfigService.class);
         StrategyConfig directionalBuyConfig = new StrategyConfig(StrategyType.DIRECTIONAL_BUY);
@@ -151,8 +159,10 @@ class ExecutionEngineTest {
         assertThat(result.accepted()).isFalse();
         assertThat(result.reasons()).contains("Broker timeout");
         verify(errorEventRepository).save(any());
+        // P0-1: quantity is now 1 REAL lot × contract lot 65 = 65 (the recovered desiredLots from the
+        // folded lotSize 75 is round(75/65)=1). Previously the cap mis-applied folded blocks → 300.
         verify(outcomeCsvRecorder).recordEntry(eq(buyDecision()), eq(BigDecimal.valueOf(100)), eq(75),
-                eq("BROKER_ERROR"), eq(false), eq(300), any(), any(), any(), eq(List.of("Broker timeout")), any());
+                eq("BROKER_ERROR"), eq(false), eq(65), any(), any(), any(), eq(List.of("Broker timeout")), any());
     }
 
     @Test
@@ -187,6 +197,10 @@ class ExecutionEngineTest {
         );
         when(tradeRepository.findById("TRD-1")).thenReturn(Optional.of(trade));
         when(brokerClient.placeOrder(any(OrderRequest.class))).thenReturn(exitOrder);
+        // Broker-flat exit guard (§B2): the engine verifies the broker actually holds the position
+        // before selling; an empty positions() would reconcile-close WITHOUT placing the SELL.
+        when(brokerClient.positions()).thenReturn(List.of(new Position(
+                "NFO:NIFTY24APR24000CE", 75, BigDecimal.valueOf(100), BigDecimal.valueOf(112), BigDecimal.ZERO)));
 
         ExecutionResult result = executionEngine.closeTrade("TRD-1", BigDecimal.valueOf(111), "trailing stop");
 
@@ -346,6 +360,40 @@ class ExecutionEngineTest {
         assertThat(result.accepted()).isFalse();
         assertThat(result.reasons()).contains("Open buy order already exists for instrument: NFO:NIFTY24APR24000CE");
         verify(brokerClient, never()).placeOrder(any());
+    }
+
+    @Test
+    void pendingExitRetainsCloseGuardUntilReleased() {
+        // P0-5b: a placed-but-unfilled (OPEN) exit is "accepted" and the close guard is retained so
+        // duplicate exits are suppressed; releaseCloseGuard() (called by the watchdog when the exit is
+        // cancelled unfilled) must allow a fresh exit so the trade isn't wedged.
+        var trade = new TradeEntity("TRD-1", "NFO:NIFTY24APR24000CE", "NIFTY", "CE",
+                TradeStatus.OPEN, 65, BigDecimal.valueOf(100), Instant.now(clock), "entry");
+        when(tradeRepository.findById("TRD-1")).thenReturn(Optional.of(trade));
+        var pendingExit = new OrderResponse("EXIT-1", Optional.of("BROKER-EXIT-1"),
+                "NFO:NIFTY24APR24000CE", OrderSide.SELL, OrderStatus.OPEN, 65, 0,
+                Optional.empty(), Optional.empty(), Instant.now(clock));
+        when(brokerClient.placeOrder(any(OrderRequest.class))).thenReturn(pendingExit);
+        // Broker-flat exit guard (§B2): broker must report the holding or the close reconciles without a SELL.
+        when(brokerClient.positions()).thenReturn(List.of(new Position(
+                "NFO:NIFTY24APR24000CE", 65, BigDecimal.valueOf(100), BigDecimal.valueOf(111), BigDecimal.ZERO)));
+
+        // 1st close → pending exit accepted (watchdog tracking); trade stays OPEN, guard retained
+        ExecutionResult first = executionEngine.closeTrade("TRD-1", BigDecimal.valueOf(111), "trailing stop");
+        assertThat(first.accepted()).isTrue();
+
+        // 2nd close → suppressed by the guard (no duplicate broker exit)
+        ExecutionResult second = executionEngine.closeTrade("TRD-1", BigDecimal.valueOf(111), "trailing stop");
+        assertThat(second.accepted()).isFalse();
+        assertThat(second.reasons()).anyMatch(r -> r.contains("Close already in progress"));
+
+        // Release the guard (exit cancelled unfilled) → close allowed again
+        executionEngine.releaseCloseGuard("TRD-1");
+        ExecutionResult third = executionEngine.closeTrade("TRD-1", BigDecimal.valueOf(111), "trailing stop");
+        assertThat(third.accepted()).isTrue();
+
+        // placeOrder ran on the 1st and 3rd attempts only — the 2nd was suppressed
+        verify(brokerClient, times(2)).placeOrder(any(OrderRequest.class));
     }
 
     private StrategyDecision buyDecision() {

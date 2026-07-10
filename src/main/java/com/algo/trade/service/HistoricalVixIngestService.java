@@ -78,6 +78,16 @@ public class HistoricalVixIngestService {
     @org.springframework.context.annotation.Lazy
     private com.algo.trade.indicator.IVRankTracker ivRankTracker;
 
+    /** Lazily injected — reloaded after the dedicated INDIA_VIX series is seeded. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    @org.springframework.context.annotation.Lazy
+    private com.algo.trade.indicator.IndiaVixHistory indiaVixHistory;
+
+    /** Dedicated key for the clean, unscaled India-VIX series used by the MarketGuard percentile
+     *  gate. Kept separate from the per-index keys (which IVRankTracker overwrites with live ATM
+     *  IV), so the gate never ranks against contaminated data. */
+    public static final String INDIA_VIX_KEY = "INDIA_VIX";
+
     /** Auto-seed on startup if the iv_samples table is empty. Default ON. Disable
      *  with {@code tuning.iv-sample-bootstrap.enabled=false}. */
     @Value("${tuning.iv-sample-bootstrap.enabled:true}")
@@ -86,6 +96,12 @@ public class HistoricalVixIngestService {
     /** Years of India VIX history to fetch when auto-seeding. Default 5. */
     @Value("${tuning.iv-sample-bootstrap.years:5}")
     private int autoSeedYears = 5;
+
+    /** §3.7 (2026-06-27): when set to a date (e.g. the Black-76 fix date), delete the contaminated
+     *  per-index VIX-proxy seed rows dated before it on startup, so IVRankTracker rebuilds from real
+     *  Black-76 ATM IV. Empty (default) = disabled. INDIA_VIX is never touched; idempotent. */
+    @Value("${tuning.iv-sample.purge-proxy-seed-before:}")
+    private String purgeProxySeedBefore;
 
     public HistoricalVixIngestService(IVSampleRepository repository) {
         this.repository = repository;
@@ -116,6 +132,7 @@ public class HistoricalVixIngestService {
      */
     @EventListener(ApplicationReadyEvent.class)
     public void autoSeedIfEmpty() {
+        purgeContaminatedProxySeed();   // §3.7: opt-in, date-bounded, INDIA_VIX-safe; no-op unless configured
         if (!autoSeedEnabled) {
             log.info("[VixIngest] auto-seed disabled by config (tuning.iv-sample-bootstrap.enabled=false)");
             return;
@@ -129,6 +146,9 @@ public class HistoricalVixIngestService {
         }
         if (existing > 0) {
             log.info("[VixIngest] auto-seed: iv_samples table already has {} rows — leaving as-is", existing);
+            // Even with the table populated, the dedicated clean INDIA_VIX series may be missing on
+            // installs that were seeded before it existed (Gap 2). Seed it once in the background.
+            ensureIndiaVixSeededAsync();
             return;
         }
         log.warn("[VixIngest] auto-seed: iv_samples is EMPTY → scheduling background fetch of {} years "
@@ -149,12 +169,72 @@ public class HistoricalVixIngestService {
                                 ex.getMessage());
                     }
                 }
+                if (indiaVixHistory != null) {
+                    try { indiaVixHistory.reload(); } catch (Exception ignored) {}
+                }
             } catch (Exception ex) {
                 log.warn("[VixIngest] auto-seed FAILED — IVRankTracker will fall back to VIX-bucket proxy "
                         + "until the operator runs POST /admin/iv-samples/seed-india-vix manually. Cause: {}",
                         ex.getMessage());
             }
         }, "iv-sample-autoseed");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    /**
+     * §3.7: opt-in, idempotent purge of the contaminated per-index VIX-proxy seed. Deletes only the
+     * per-index keys (NIFTY/BANKNIFTY/SENSEX) dated before the configured cutoff — never INDIA_VIX —
+     * so {@code IVRankTracker} rebuilds its ATM-IV series from the corrected Black-76 live IV. No-op
+     * unless {@code tuning.iv-sample.purge-proxy-seed-before} is set. Re-running is safe (only
+     * pre-cutoff rows exist to remove; live IV is dated today).
+     */
+    private void purgeContaminatedProxySeed() {
+        if (purgeProxySeedBefore == null || purgeProxySeedBefore.isBlank()) return;
+        try {
+            java.time.LocalDate before = java.time.LocalDate.parse(purgeProxySeedBefore.trim());
+            for (IndexType ix : IndexType.values()) {
+                repository.deleteByIndexTypeAndSampleDateBefore(ix.name(), before);
+            }
+            log.warn("[VixIngest] purged contaminated per-index proxy-seed iv_samples before {} "
+                    + "(INDIA_VIX untouched) — IVRankTracker rebuilds from live Black-76 ATM IV", before);
+            if (ivRankTracker != null) ivRankTracker.reloadFromDb();
+        } catch (Exception e) {
+            log.warn("[VixIngest] proxy-seed purge skipped ({}): {}", purgeProxySeedBefore, e.getMessage());
+        }
+    }
+
+    /**
+     * Seed the dedicated clean {@code INDIA_VIX} series (Gap 2) when it is missing/thin, without
+     * disturbing the already-populated per-index keys. Runs the Yahoo fetch on a background daemon
+     * thread and reloads {@link com.algo.trade.indicator.IndiaVixHistory} so the gate picks it up
+     * without a restart. Best-effort: a Yahoo failure just leaves the gate on its fixed fallback.
+     */
+    private void ensureIndiaVixSeededAsync() {
+        int indiaVixRows;
+        try {
+            indiaVixRows = repository.findByIndexTypeOrderBySampleDateAsc(INDIA_VIX_KEY).size();
+        } catch (Exception ex) {
+            log.warn("[VixIngest] INDIA_VIX count failed, skipping clean-series seed: {}", ex.getMessage());
+            return;
+        }
+        if (indiaVixRows >= 20) {
+            return;   // already seeded
+        }
+        log.warn("[VixIngest] clean INDIA_VIX series has {} rows → scheduling background seed", indiaVixRows);
+        Thread t = new Thread(() -> {
+            try {
+                // ingest() also upserts the INDIA_VIX series; per-index rows are unchanged unless
+                // Yahoo differs, which only corrects historical values.
+                IngestResult result = ingest(autoSeedYears, java.util.List.of(IndexType.NIFTY));
+                log.warn("[VixIngest] INDIA_VIX clean-series seed COMPLETE: {}", result);
+                if (indiaVixHistory != null) {
+                    try { indiaVixHistory.reload(); } catch (Exception ignored) {}
+                }
+            } catch (Exception ex) {
+                log.warn("[VixIngest] INDIA_VIX seed FAILED (gate stays on fixed fallback): {}", ex.getMessage());
+            }
+        }, "india-vix-seed");
         t.setDaemon(true);
         t.start();
     }
@@ -215,6 +295,26 @@ public class HistoricalVixIngestService {
                     repository.save(new IVSampleEntity(ix.name(), dc.date(), iv));
                     inserted.incrementAndGet();
                 }
+            }
+        }
+
+        // Dedicated clean India-VIX series (unscaled, scale 1.00) for the MarketGuard percentile
+        // gate. Never written by IVRankTracker, so it stays pure India VIX (Gap 2 fix).
+        for (DailyClose dc : closes) {
+            double iv = dc.close();
+            if (iv <= 0 || iv > 200) continue;
+            Optional<IVSampleEntity> existing =
+                    repository.findByIndexTypeAndSampleDate(INDIA_VIX_KEY, dc.date());
+            if (existing.isPresent()) {
+                IVSampleEntity row = existing.get();
+                if (Math.abs(row.getIv() - iv) > 0.0001) {
+                    row.setIv(iv);
+                    repository.save(row);
+                    updated.incrementAndGet();
+                }
+            } else {
+                repository.save(new IVSampleEntity(INDIA_VIX_KEY, dc.date(), iv));
+                inserted.incrementAndGet();
             }
         }
 

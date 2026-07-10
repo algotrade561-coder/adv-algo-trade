@@ -257,6 +257,26 @@ public class OptionChainSnapshotScheduler {
                 strikes
         );
 
+        // IV quality validation: warn if >20% of strikes have implausible IV (< 3% or > 60%).
+        // Post-GreeksCalculator fix, invalid IVs should be 0 (NaN → not stored), but this
+        // guard catches any regression or feed-level corruption.
+        if (!strikes.isEmpty()) {
+            long totalLegs = 0;
+            long invalidLegs = 0;
+            for (var s : strikes) {
+                if (s.ceIV() > 0) { totalLegs++; if (s.ceIV() < 3.0 || s.ceIV() > 60.0) invalidLegs++; }
+                if (s.peIV() > 0) { totalLegs++; if (s.peIV() < 3.0 || s.peIV() > 60.0) invalidLegs++; }
+            }
+            if (totalLegs > 0) {
+                double invalidPct = (double) invalidLegs / totalLegs * 100.0;
+                if (invalidPct > 20.0) {
+                    log.warn("[ChainSnapshot] {} IV QUALITY POOR: {}/{} legs ({}%) have implausible IV — "
+                            + "snapshot may distort IV-dependent strategies",
+                            indexType, invalidLegs, totalLegs, String.format("%.0f", invalidPct));
+                }
+            }
+        }
+
         return Optional.of(snapshot);
     }
 

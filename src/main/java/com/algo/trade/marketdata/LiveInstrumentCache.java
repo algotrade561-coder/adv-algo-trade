@@ -8,6 +8,7 @@ import com.algo.trade.indicator.GreeksCalculator;
 import com.algo.trade.indicator.IVRankTracker;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDate;
@@ -37,10 +38,17 @@ public class LiveInstrumentCache {
     private final Map<String, OptionInstrument> bySymbol = new ConcurrentHashMap<>();
     // "INDEXTYPE|strike|CE_or_PE|expiry" → OptionInstrument for O(1) getOption() lookup
     private final Map<String, OptionInstrument> byCompoundKey = new ConcurrentHashMap<>();
-    // IndexType → current futures/spot price
+    // IndexType → current spot price (index LTP; NOTE: this is spot, not the futures price)
     private final Map<IndexType, Double> futuresPriceCache = new ConcurrentHashMap<>();
     // IndexType → previous day's closing price (seeded at startup from REST historical API)
     private final Map<IndexType, Double> previousDayClose = new ConcurrentHashMap<>();
+    // "INDEXTYPE|expiry" → market forward (put-call parity at ATM); used as the Black-76 underlying
+    private final Map<String, Double> forwardCache = new ConcurrentHashMap<>();
+
+    /** When true, IV/greeks use the put-call-parity forward (Sensibull-style Black-76); when false
+     *  they use the spot-carry forward, which reproduces the legacy spot+q=0 numbers exactly. */
+    @Value("${greeks.use-synthetic-forward:true}")
+    private boolean useSyntheticForward;
 
     public LiveInstrumentCache(GreeksCalculator greeksCalculator, IVRankTracker ivRankTracker,
                                ExpiryCalendar expiryCalendar) {
@@ -123,25 +131,48 @@ public class LiveInstrumentCache {
         if (askQty > 0) inst.setBestAskQty(askQty);
 
         // Recalculate Greeks on every price update
-        double underlying = futuresPriceCache.getOrDefault(inst.getIndexType(), 0.0);
-        if (underlying > 0) {
-            greeksCalculator.calculateAndUpdate(inst, underlying);
+        double spot = futuresPriceCache.getOrDefault(inst.getIndexType(), 0.0);
+        if (spot > 0) {
+            greeksCalculator.calculateAndUpdate(inst, forwardFor(inst.getIndexType(), inst.getExpiry(), spot));
         }
     }
 
-    /** Update futures/spot price — called when index spot tick arrives. */
+    /** Update spot price — called when index spot tick arrives (param is the index LTP, i.e. spot). */
     public void updateFuturesPrice(IndexType indexType, double price) {
         futuresPriceCache.put(indexType, price);
-        // Record ATM IV for IV rank tracking
+        // Refresh the market forward (put-call parity at ATM) and record ATM IV for IV-rank tracking.
         try {
             LocalDate expiry = expiryCalendar.getCurrentExpiry(indexType);
             int atm = indexType.roundToATM(price);
-            getOption(indexType, atm, "CE", expiry).ifPresent(ce -> {
+            var ceOpt = getOption(indexType, atm, "CE", expiry);
+            var peOpt = getOption(indexType, atm, "PE", expiry);
+            if (useSyntheticForward && ceOpt.isPresent() && peOpt.isPresent()) {
+                double f = greeksCalculator.forwardFromParity(
+                        atm, ceOpt.get().getLastPrice(), peOpt.get().getLastPrice(), expiry);
+                // Sanity: a real forward sits within ~3% of spot. Reject stale/illiquid ATM reads so a
+                // bad quote never poisons IV/greeks — the calc then falls back to the spot-carry forward.
+                if (!Double.isNaN(f) && f > 0 && Math.abs(f - price) / price <= 0.03) {
+                    forwardCache.put(fwdKey(indexType, expiry), f);
+                }
+            }
+            ceOpt.ifPresent(ce -> {
                 if (ce.getImpliedVolatility() > 0) {
                     ivRankTracker.recordIV(indexType, ce.getImpliedVolatility());
                 }
             });
         } catch (Exception ignored) {}
+    }
+
+    private static String fwdKey(IndexType idx, LocalDate expiry) { return idx.name() + "|" + expiry; }
+
+    /** Black-76 underlying for (index, expiry): the cached put-call-parity forward when available,
+     *  else the spot-carry forward (which reproduces the legacy spot+q=0 numbers exactly). */
+    private double forwardFor(IndexType idx, LocalDate expiry, double spot) {
+        if (useSyntheticForward) {
+            Double f = forwardCache.get(fwdKey(idx, expiry));
+            if (f != null && f > 0) return f;
+        }
+        return greeksCalculator.forwardFromSpot(spot, expiry);
     }
 
     // ── Lookups ───────────────────────────────────────────────────────────────
@@ -239,9 +270,9 @@ public class LiveInstrumentCache {
             }
             inst.sampleOiIfDue(); // writes current OI at now; feeds OI ring buffer → resolves CASE5_SKIP
         }
-        double underlying = futuresPriceCache.getOrDefault(inst.getIndexType(), 0.0);
-        if (underlying > 0 && lastPrice > 0) {
-            greeksCalculator.calculateAndUpdate(inst, underlying);
+        double spot = futuresPriceCache.getOrDefault(inst.getIndexType(), 0.0);
+        if (spot > 0 && lastPrice > 0) {
+            greeksCalculator.calculateAndUpdate(inst, forwardFor(inst.getIndexType(), inst.getExpiry(), spot));
         }
     }
 
@@ -354,5 +385,52 @@ public class LiveInstrumentCache {
             }
         }
         return new long[]{ceChange, peChange};
+    }
+
+    /**
+     * TRUE windowed variant of {@link #getAtmOiChange} (2026-07-01, FAST-OI). Measures ATM±N band
+     * OI change over a genuine trailing {@code windowSec} (nearest-sample), instead of the legacy
+     * method's oldest-sample reach-back that collapses to ~5 minutes with a full ring buffer.
+     * Empirically 60s is the coverage knee (see {@link OptionInstrument#getOiChangeSinceSeconds}).
+     *
+     * @return [ceOiChange, peOiChange] over the trailing {@code windowSec}.
+     */
+    public long[] getAtmOiChangeSeconds(IndexType indexType, int atmStrike, int strikesAround, int windowSec) {
+        int interval = indexType.strikeInterval();
+        long ceChange = 0, peChange = 0;
+        for (int i = -strikesAround; i <= strikesAround; i++) {
+            int strike = atmStrike + (i * interval);
+            for (OptionInstrument opt : byToken.values()) {
+                if (opt.getIndexType() != indexType) continue;
+                if (opt.getStrikePrice() != strike) continue;
+                long change = opt.getOiChangeSinceSeconds(windowSec);
+                if ("CE".equals(opt.getOptionType())) ceChange += change;
+                else peChange += change;
+            }
+        }
+        return new long[]{ceChange, peChange};
+    }
+
+    /**
+     * True when at least one strike in the ATM ± N band has a real OI baseline older than
+     * the {@code minutesBack} cutoff — i.e. {@link #getAtmOiChange} reflects an actual
+     * reading rather than opening warm-up.
+     *
+     * <p>DATA-2 (2026-06-20): lets callers distinguish "OI available &amp; flat" (band has a
+     * baseline, net change ~0) from "OI not yet available" (no baseline). {@code getAtmOiChange}
+     * returns {@code [0,0]} for both; this disambiguates them. Used by the opening-window OI
+     * gate and by DataHealthRecorder's OI-availability metric.</p>
+     */
+    public boolean isAtmOiChangeAvailable(IndexType indexType, int atmStrike, int strikesAround, int minutesBack) {
+        int interval = indexType.strikeInterval();
+        for (int i = -strikesAround; i <= strikesAround; i++) {
+            int strike = atmStrike + (i * interval);
+            for (OptionInstrument opt : byToken.values()) {
+                if (opt.getIndexType() != indexType) continue;
+                if (opt.getStrikePrice() != strike) continue;
+                if (opt.hasOiBaseline(minutesBack)) return true;
+            }
+        }
+        return false;
     }
 }

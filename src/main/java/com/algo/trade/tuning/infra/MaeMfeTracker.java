@@ -212,8 +212,16 @@ public class MaeMfeTracker {
         // Resolve the exact instrument by its symbol/key — this is what the adapter
         // already knows it traded. Avoids needing strike+expiry combos to uniquely
         // identify the option.
+        String key = state.entry.instrumentKey();
         Optional<com.algo.trade.domain.OptionInstrument> opt =
-                liveInstrumentCache.getBySymbol(state.entry.instrumentKey());
+                liveInstrumentCache.getBySymbol(key);
+        if (opt.isEmpty() && key != null && key.indexOf(':') >= 0) {
+            // DATA-11 (2026-06-19): callers (e.g. OI_MOMENTUM) pass exchange-prefixed keys
+            // ("NFO:NIFTY...", "BFO:SENSEX..."), but bySymbol is keyed by the bare tradingSymbol.
+            // Without this fallback every tick bailed here → MAE/MFE/timeToMfe recorded as 0 for
+            // ALL trades regardless of duration, blinding the exit analysis. Strip the prefix.
+            opt = liveInstrumentCache.getBySymbol(key.substring(key.indexOf(':') + 1));
+        }
         if (opt.isEmpty()) {
             return;
         }

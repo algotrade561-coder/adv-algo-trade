@@ -41,7 +41,7 @@ public class PayoffSimulator {
             @RequestParam(defaultValue = "100") double premium,
             @RequestParam(defaultValue = "0") double premium2,
             @RequestParam(defaultValue = "1") int lots,
-            @RequestParam(defaultValue = "75") int lotSize,
+            @RequestParam(defaultValue = "65") int lotSize,
             @RequestParam(defaultValue = "10") double rangePct) {
 
         if (spot <= 0) return badRequest("spot must be positive");
