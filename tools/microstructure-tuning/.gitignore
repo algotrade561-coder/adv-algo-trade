@@ -1,0 +1,6 @@
+# Raw tape data is large + re-fetchable (scripts/fetch-data.sh) — don't commit it.
+data/**
+!data/.gitkeep
+
+# DuckDB jar is resolved from ~/.m2 (or dropped in by hand) — don't commit binaries.
+scripts/lib/**
